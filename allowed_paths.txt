@@ -1,4 +1,2 @@
 ./persona
 ./logs
-C:\Users\brite\OneDrive\Documents\Bots\LimeBot
-C:\Users\brite\OneDrive\Documents

@@ -3,13 +3,8 @@
   "skills": {
     "enabled": [
       "browser",
-      "download_image",
-      "filesystem",
-      "discord",
-      "whatsapp",
-      "docx-creator",
-      "discord-voice",
-      "github"
+      "filesystem"
+  
     ],
     "installed": {}
   }
