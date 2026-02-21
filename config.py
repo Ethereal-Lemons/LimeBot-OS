@@ -47,6 +47,9 @@ def load_config(force_reload=False):
     ]
 
     config.autonomous_mode = os.getenv("AUTONOMOUS_MODE", "false").lower() == "true"
+    config.allow_unsafe_commands = (
+        os.getenv("ALLOW_UNSAFE_COMMANDS", "false").lower() == "true"
+    )
 
     try:
         config.max_iterations = int(os.getenv("MAX_ITERATIONS", "30"))
