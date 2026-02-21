@@ -1,0 +1,43 @@
+services:
+  backend:
+    build: .
+    container_name: limebot-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./persona:/app/persona
+      - ./skills:/app/skills
+      - ./.env:/app/.env
+      - ./limebot.json:/app/limebot.json
+      - ./allowed_paths.txt:/app/allowed_paths.txt
+    env_file:
+      - .env
+    environment:
+      - WHATSAPP_BRIDGE_URL=ws://bridge:3000
+    depends_on:
+      bridge:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    build: ./web
+    container_name: limebot-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+  bridge:
+    build: ./bridge
+    container_name: limebot-bridge
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./bridge/session:/app/session
+    environment:
+      - PORT=3000
+    restart: unless-stopped

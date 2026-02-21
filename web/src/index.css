@@ -1,0 +1,568 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+
+    --card: 240 10% 6%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 240 10% 6%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 84 81% 44%;
+    --primary-foreground: 240 5.9% 10%;
+
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+
+    --accent: 84 81% 44%;
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 84 81% 44%;
+  }
+
+  /* --- PREDEFINED THEMES --- */
+
+  [data-theme='purple'] {
+    --primary: 262 83% 58%;
+    /* Purple 500 */
+    --accent: 262 83% 58%;
+    --ring: 262 83% 58%;
+  }
+
+  [data-theme='blue'] {
+    --primary: 221 83% 53%;
+    /* Blue 500 */
+    --accent: 221 83% 53%;
+    --ring: 221 83% 53%;
+  }
+
+  [data-theme='orange'] {
+    --primary: 25 95% 53%;
+    /* Orange 500 */
+    --accent: 25 95% 53%;
+    --ring: 25 95% 53%;
+  }
+
+  [data-theme='red'] {
+    --primary: 0 84% 60%;
+    /* Red 500 */
+    --accent: 0 84% 60%;
+    --ring: 0 84% 60%;
+  }
+
+  [data-theme='pink'] {
+    --primary: 330 81% 60%;
+    /* Pink 500 */
+    --accent: 330 81% 60%;
+    --ring: 330 81% 60%;
+  }
+
+  /* --- SPECIAL THEMES --- */
+  [data-theme='frutiger-aero'] {
+    --primary: 200 95% 45%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 150 80% 50%;
+    --ring: 195 100% 50%;
+
+    --foreground: 220 50% 10%;
+    --card-foreground: 220 50% 10%;
+    --popover-foreground: 220 50% 10%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215 25% 40%;
+
+    --background: 195 60% 90%;
+    --card: 195 100% 95% / 0.7;
+    --popover: 195 100% 98% / 0.9;
+
+    --border: 0 0% 100% / 0.8;
+
+    /* Frutiger Aero Gradient */
+    --bg-image: linear-gradient(180deg,
+        #0ea5e9 0%,
+        /* Bright Sky Blue */
+        #e0f2fe 50%,
+        /* Soft Horizon White */
+        #22c55e 100%
+        /* Vibrant Grass Green */
+      );
+  }
+
+  [data-theme='angelcore-racing'] {
+    --primary: 0 0% 100%;
+    --primary-foreground: 0 0% 0%;
+
+    --accent: 0 0% 80%;
+    --accent-foreground: 0 0% 0%;
+
+    --ring: 0 0% 100%;
+
+    --foreground: 0 0% 98%;
+    --card-foreground: 0 0% 100%;
+    --popover-foreground: 0 0% 100%;
+    --muted-foreground: 0 0% 70%;
+
+    --background: 0 0% 0%;
+    --card: 0 0% 10% / 0.5;
+    --popover: 0 0% 8% / 0.9;
+
+    --border: 0 0% 100% / 0.4;
+
+    /* Racing Gradient */
+    --bg-image: radial-gradient(circle at top,
+        #262626 0%,
+        /* Dark Carbon */
+        #000000 70%
+        /* Deep Void */
+      );
+  }
+
+  [data-theme='cyberpunk'] {
+    --primary: 320 100% 50%;
+    /* Neon Pink */
+    --primary-foreground: 0 0% 100%;
+
+    --accent: 180 100% 50%;
+    /* Cyan */
+    --accent-foreground: 0 0% 0%;
+
+    --ring: 320 100% 50%;
+
+    --foreground: 180 100% 90%;
+    /* Light Cyan Text */
+    --card-foreground: 180 100% 90%;
+    --popover-foreground: 180 100% 90%;
+    --muted-foreground: 180 50% 60%;
+
+    --background: 280 60% 5%;
+    /* Deep Purple/Black */
+    --card: 280 60% 8% / 0.8;
+    --popover: 280 60% 8% / 0.9;
+
+    --border: 320 100% 50% / 0.5;
+    /* Pink Borders */
+
+    --bg-image: repeating-linear-gradient(0deg,
+        transparent,
+        transparent 19px,
+        rgba(255, 0, 255, 0.1) 20px), linear-gradient(180deg,
+        #050014 0%,
+        #1a0b2e 100%);
+  }
+
+  [data-theme='retro-terminal'] {
+    --primary: 120 100% 50%;
+    /* Pure Green */
+    --primary-foreground: 0 0% 0%;
+
+    --accent: 120 100% 50%;
+    --accent-foreground: 0 0% 0%;
+
+    --ring: 120 100% 50%;
+
+    --foreground: 120 100% 50%;
+    --card-foreground: 120 100% 50%;
+    --popover-foreground: 120 100% 50%;
+    --muted-foreground: 120 70% 30%;
+
+    --background: 0 0% 0%;
+    --card: 0 0% 5%;
+    --popover: 0 0% 5%;
+
+    --border: 120 100% 50% / 0.6;
+    --radius: 0;
+    /* Blocky edges */
+
+    --bg-image: none;
+  }
+
+  [data-theme='midnight-synth'] {
+    --primary: 45 100% 50%;
+    /* Gold */
+    --primary-foreground: 0 0% 0%;
+
+    --accent: 260 100% 60%;
+    /* Deep Purple */
+    --accent-foreground: 0 0% 100%;
+
+    --ring: 45 100% 50%;
+
+    --foreground: 260 20% 90%;
+    --card-foreground: 260 20% 90%;
+    --popover-foreground: 260 20% 90%;
+    --muted-foreground: 260 30% 60%;
+
+    --background: 260 50% 5%;
+    /* Very Dark Indigo */
+    --card: 260 50% 8% / 0.8;
+    --popover: 260 50% 8% / 0.9;
+
+    --border: 45 100% 50% / 0.3;
+    /* Gold subtle */
+
+    --bg-image: linear-gradient(135deg,
+        #0f0524 0%,
+        #1a0b3e 50%,
+        #2d1b4e 100%);
+  }
+
+  [data-theme='paperback'] {
+    --primary: 25 76% 31%;
+    /* Leather Brown */
+    --primary-foreground: 35 30% 90%;
+
+    --accent: 35 30% 80%;
+    /* Beige */
+    --accent-foreground: 25 76% 31%;
+
+    --ring: 25 76% 31%;
+
+    --foreground: 25 10% 20%;
+    /* Ink Black/Brown */
+    --card-foreground: 25 10% 20%;
+    --popover-foreground: 25 10% 20%;
+    --muted-foreground: 25 10% 40%;
+
+    --background: 40 50% 94%;
+    /* Parchment */
+    --card: 40 30% 90%;
+    --popover: 40 30% 92%;
+
+    --border: 25 20% 70%;
+
+    --bg-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100' height='100' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E"), linear-gradient(to bottom, #fdfbf7, #f5f1e8);
+  }
+
+  [data-theme='synthwave-84'] {
+    --primary: 320 100% 60%;
+    /* Hot Pink */
+    --primary-foreground: 0 0% 100%;
+
+    --accent: 260 100% 60%;
+    /* Deep Purple */
+    --accent-foreground: 0 0% 100%;
+
+    --ring: 320 100% 60%;
+
+    --foreground: 280 40% 95%;
+    --card-foreground: 280 40% 95%;
+    --popover-foreground: 280 40% 95%;
+    --muted-foreground: 280 40% 70%;
+
+    --background: 270 50% 10%;
+    /* Deep Purple Space */
+    --card: 270 50% 15% / 0.8;
+    --popover: 270 50% 15% / 0.9;
+
+    --border: 320 100% 60% / 0.4;
+    --radius: 0.25rem;
+
+    --bg-image: repeating-linear-gradient(0deg,
+        transparent,
+        transparent 19px,
+        rgba(255, 0, 255, 0.05) 20px), linear-gradient(180deg,
+        #240046 0%,
+        /* Deep Indigo */
+        #3c096c 50%,
+        /* Purple */
+        #5a189a 100%
+        /* Vivid Purple */
+      );
+  }
+
+  [data-theme='glacier'] {
+    --primary: 190 90% 50%;
+    /* Ice Blue */
+    --primary-foreground: 220 50% 10%;
+
+    --accent: 200 80% 90%;
+    /* Frost White */
+    --accent-foreground: 220 50% 10%;
+
+    --ring: 190 90% 50%;
+
+    --foreground: 220 30% 20%;
+    --card-foreground: 220 30% 20%;
+    --popover-foreground: 220 30% 20%;
+    --muted-foreground: 220 20% 50%;
+
+    --background: 195 50% 96%;
+    /* Very Light Blue */
+    --card: 200 60% 98% / 0.7;
+    --popover: 200 60% 98% / 0.9;
+
+    --border: 190 50% 80%;
+    --radius: 1rem;
+
+    --muted: 210 30% 90%;
+    /* Light Blue-Grey for bot bubbles */
+
+    --bg-image: linear-gradient(135deg,
+        #e0f7fa 0%,
+        #b2ebf2 50%,
+        #80deea 100%);
+  }
+
+  [data-theme='coffee-shop'] {
+    --primary: 25 40% 35%;
+    /* Espresso */
+    --primary-foreground: 35 20% 90%;
+
+    --accent: 30 50% 60%;
+    /* Caramel */
+    --accent-foreground: 25 40% 20%;
+
+    --ring: 25 40% 35%;
+
+    --foreground: 25 30% 25%;
+    --card-foreground: 25 30% 25%;
+    --popover-foreground: 25 30% 25%;
+    --muted-foreground: 25 20% 50%;
+
+    --background: 35 30% 92%;
+    /* Cream */
+    --card: 35 30% 96% / 0.9;
+    --popover: 35 30% 98% / 0.95;
+
+    --border: 30 30% 80%;
+    --radius: 0.75rem;
+
+    --muted: 35 30% 88%;
+    /* Light Cream for bot bubbles */
+
+    --bg-image: url("data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23a1887f' fill-opacity='0.1' fill-rule='evenodd'%3E%3Ccircle cx='3' cy='3' r='3'/%3E%3Ccircle cx='13' cy='13' r='3'/%3E%3C/g%3E%3C/svg%3E"), linear-gradient(to bottom, #d7ccc8, #efebe9);
+  }
+
+  /* Override User Bubble for Coffee Shop to match theme */
+  [data-theme='coffee-shop'] .bg-zinc-800 {
+    background-color: hsl(25, 40%, 35%);
+    /* Espresso */
+    color: white;
+    /* Ensure text is white against dark espresso */
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    background-size: cover;
+    background-attachment: fixed;
+    background-position: center;
+    background-image: var(--bg-image, none);
+  }
+
+  /* Glassmorphism utility for special themes */
+  [data-theme='frutiger-aero'] .bg-card,
+  [data-theme='frutiger-aero'] .bg-popover,
+  [data-theme='frutiger-aero'] aside {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  [data-theme='angelcore-racing'] .bg-card,
+  [data-theme='angelcore-racing'] .bg-popover,
+  [data-theme='angelcore-racing'] aside {
+    backdrop-filter: blur(4px);
+    /* Sharper blur for stark contrast */
+    -webkit-backdrop-filter: blur(4px);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+
+  [data-theme='cyberpunk'] .bg-card,
+  [data-theme='cyberpunk'] .bg-popover,
+  [data-theme='cyberpunk'] aside {
+    backdrop-filter: blur(8px);
+    box-shadow: 0 0 10px rgba(255, 0, 255, 0.2), inset 0 0 20px rgba(0, 255, 255, 0.05);
+  }
+
+  [data-theme='retro-terminal'] * {
+    font-family: 'Courier New', Courier, monospace;
+    text-shadow: 0 0 5px rgba(51, 255, 0, 0.5);
+  }
+
+  [data-theme='retro-terminal'] ::selection {
+    background: #33ff00;
+    color: black;
+  }
+
+  [data-theme='midnight-synth'] .bg-card,
+  [data-theme='midnight-synth'] .bg-popover,
+  [data-theme='midnight-synth'] aside {
+    backdrop-filter: blur(12px);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 215, 0, 0.1);
+    border-radius: 4px;
+    /* Slightly more angular */
+  }
+
+  [data-theme='paperback'] * {
+    font-family: 'Georgia', 'Times New Roman', serif;
+  }
+
+  [data-theme='paperback'] .bg-card,
+  [data-theme='paperback'] .bg-popover,
+  [data-theme='paperback'] aside {
+    box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.05), inset 0 0 40px rgba(139, 69, 19, 0.05);
+    /* Paper texture shadow */
+    border-radius: 2px;
+  }
+
+  /* --- NEW THEME STYLES --- */
+
+  [data-theme='synthwave-84'] * {
+    text-shadow: 0 0 2px rgba(255, 0, 255, 0.3);
+  }
+
+  [data-theme='synthwave-84'] .bg-card,
+  [data-theme='synthwave-84'] .bg-popover,
+  [data-theme='synthwave-84'] aside {
+    backdrop-filter: blur(8px);
+    box-shadow: 0 0 15px rgba(138, 43, 226, 0.3), inset 0 0 20px rgba(255, 0, 255, 0.05);
+    border: 1px solid rgba(255, 0, 255, 0.3);
+  }
+
+  [data-theme='glacier'] .bg-card,
+  [data-theme='glacier'] .bg-popover,
+  [data-theme='glacier'] aside {
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.1) 100%);
+  }
+
+  /* Override User Bubble for Glacier to match theme */
+  [data-theme='glacier'] .bg-zinc-800 {
+    background-color: hsl(200, 90%, 35%);
+    /* Deep Glacier Blue */
+    color: white;
+  }
+
+  [data-theme='coffee-shop'] * {
+    font-family: 'Verdana', sans-serif;
+  }
+
+  [data-theme='coffee-shop'] .bg-card,
+  [data-theme='coffee-shop'] .bg-popover,
+  [data-theme='coffee-shop'] aside {
+    box-shadow: 4px 4px 10px rgba(62, 39, 35, 0.15);
+    border: 1px solid rgba(121, 85, 72, 0.2);
+  }
+
+  /* Sakura Theme */
+  [data-theme='sakura'] {
+    --primary: 330 100% 70%;
+    /* Soft Pink */
+    --primary-foreground: 330 100% 20%;
+
+    --accent: 330 100% 85%;
+    /* Pale Pink */
+    --accent-foreground: 330 100% 20%;
+
+    --ring: 330 100% 70%;
+
+    --foreground: 330 40% 30%;
+    /* Dark Purple-Pink text */
+    --card-foreground: 330 40% 30%;
+    --popover-foreground: 330 40% 30%;
+    --muted-foreground: 330 20% 60%;
+
+    --background: 330 30% 98%;
+    /* Near White Pink */
+    --card: 330 40% 99% / 0.8;
+    --popover: 330 40% 99% / 0.9;
+
+    --border: 330 30% 90%;
+    --radius: 1rem;
+
+    --muted: 330 30% 95%;
+    /* Light Pink for bot bubbles */
+
+    --bg-image: url("data:image/svg+xml,%3Csvg width='50' height='50' viewBox='0 0 50 50' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23fbcfe8' fill-opacity='0.4' fill-rule='evenodd'%3E%3Cpath d='M25 25c-5 0-8-5-8-10s5-5 10-5 8 5 8 10-5 5-10 5z'/%3E%3C/g%3E%3C/svg%3E"), linear-gradient(135deg, #fff1f2 0%, #fce7f3 100%);
+  }
+
+  [data-theme='sakura'] .bg-card,
+  [data-theme='sakura'] .bg-popover,
+  [data-theme='sakura'] aside {
+    backdrop-filter: blur(8px);
+    box-shadow: 0 4px 20px rgba(251, 207, 232, 0.4), inset 0 0 40px rgba(255, 255, 255, 0.5);
+    border: 1px solid rgba(251, 207, 232, 0.6);
+    background: rgba(255, 255, 255, 0.7);
+  }
+
+  /* Override User Bubble for Sakura to match theme */
+  [data-theme='sakura'] .bg-zinc-800 {
+    background-color: hsl(330, 80%, 60%);
+    color: white;
+  }
+
+  /* Override hardcoded dark elements for Sakura theme readability */
+  [data-theme='sakura'] .bg-zinc-950\/50,
+  [data-theme='sakura'] .bg-black\/20 {
+    background-color: hsla(330, 30%, 90%, 0.5);
+    border-color: hsla(330, 100%, 70%, 0.2);
+  }
+
+  [data-theme='sakura'] .text-slate-300,
+  [data-theme='sakura'] .text-zinc-400,
+  [data-theme='sakura'] .text-zinc-500 {
+    color: hsl(330, 40%, 30%);
+  }
+
+  /* Custom Theme Glassmorphism */
+  [data-custom-theme='true'] .bg-card,
+  [data-custom-theme='true'] .bg-popover,
+  [data-custom-theme='true'] aside {
+    backdrop-filter: blur(8px);
+    background: rgba(var(--card), 0.8);
+    /* Fallback */
+  }
+}

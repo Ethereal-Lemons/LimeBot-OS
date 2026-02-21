@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+
+# Environment
+.env
+.DS_Store
+
+# Logs / Temp
+logs/
+temp/
+videos/
+sounds/
+
+# Ignore sensitive persona data
+persona/MEMORY.md
+persona/sessions/
+persona/memory/
+persona/users/
+
+# Dynamic App Data
+data/
+bridge/session/
+bridge/dist/
+
+# Backups
+*.bak

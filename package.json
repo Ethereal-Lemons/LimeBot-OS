@@ -1,0 +1,29 @@
+{
+  "name": "lime-bot",
+  "version": "1.0.0",
+  "description": "LimeBot - The elegant and powerful agentic bot",
+  "main": "bin/cli.js",
+  "bin": {
+    "lime-bot": "bin/cli.js",
+    "limebot": "bin/cli.js"
+  },
+  "scripts": {
+    "lime-bot": "node bin/cli.js",
+    "start": "node bin/cli.js start",
+    "start:quick": "node bin/cli.js start --quick",
+    "status": "node bin/cli.js status",
+    "doctor": "node bin/cli.js doctor",
+    "stop": "node bin/cli.js stop",
+    "logs": "node bin/cli.js logs",
+    "skill": "node bin/cli.js skill",
+    "install-browser": "node bin/cli.js install-browser",
+    "web:dev": "cd web && npm run dev -- --host 0.0.0.0",
+    "backend:dev": "python main.py"
+  },
+  "dependencies": {},
+  "workspaces": [
+    "web",
+    "bridge"
+  ],
+  "type": "module"
+}
