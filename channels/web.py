@@ -204,28 +204,21 @@ class WebChannel(BaseChannel):
                 mood_file = persona_dir / "MOOD.md"
 
                 lines = ["# IDENTITY.md - Who I Am", ""]
-                if data.get("name"):
-                    lines.append(f"*   **Name:** {data['name']}")
-                if data.get("emoji"):
-                    lines.append(f"*   **Emoji:** {data['emoji']}")
-                if data.get("pfp_url"):
-                    lines.append(f"*   **Pfp_URL:** {data['pfp_url']}")
-                if data.get("style"):
-                    lines.append(f"*   **Style:** {data['style']}")
-                if data.get("catchphrases"):
-                    lines.append(f"*   **Catchphrases:** {data['catchphrases']}")
-                if data.get("interests"):
-                    lines.append(f"*   **Interests:** {data['interests']}")
-                if data.get("birthday"):
-                    lines.append(f"*   **Birthday:** {data['birthday']}")
-                if data.get("discord_style"):
-                    lines.append(f"*   **Discord Style:** {data['discord_style']}")
-                if data.get("whatsapp_style"):
-                    lines.append(f"*   **WhatsApp Style:** {data['whatsapp_style']}")
-                if data.get("web_style"):
-                    lines.append(f"*   **Web Style:** {data['web_style']}")
-                if data.get("reaction_emojis"):
-                    lines.append(f"*   **Reaction Emojis:** {data['reaction_emojis']}")
+                lines.append(f"*   **Name:** {data.get('name', '')}")
+                lines.append(f"*   **Emoji:** {data.get('emoji', '')}")
+                lines.append(f"*   **Pfp_URL:** {data.get('pfp_url', '')}")
+                lines.append(f"*   **Style:** {data.get('style', '')}")
+                lines.append(f"*   **Catchphrases:** {data.get('catchphrases', '')}")
+                lines.append(f"*   **Interests:** {data.get('interests', '')}")
+                lines.append(f"*   **Birthday:** {data.get('birthday', '')}")
+                lines.append(f"*   **Discord Style:** {data.get('discord_style', '')}")
+                lines.append(
+                    f"*   **WhatsApp Style:** {data.get('whatsapp_style', '')}"
+                )
+                lines.append(f"*   **Web Style:** {data.get('web_style', '')}")
+                lines.append(
+                    f"*   **Reaction Emojis:** {data.get('reaction_emojis', '')}"
+                )
                 lines.append("")
                 identity_file.write_text("\n".join(lines), encoding="utf-8")
 
