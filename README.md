@@ -121,11 +121,18 @@ Skills extend what LimeBot can do. Each skill is a folder with a `SKILL.md` (the
 
 **ClawHub Skills:**
 
-LimeBot supports installing skills from the [ClawHub](https://github.com/openclaw/clawhub) registry. These skills are prefixed with `clawhub_` and can be used dynamically.
+LimeBot supports installing skills from the [ClawHub](https://github.com/openclaw/clawhub) registry. These are community-built tools that LimeBot can call as `clawhub_<skill_name>`.
 
 | Skill | What it does |
 |-------|-------------|
 | `clawhub_weather` | Get current weather and forecasts for any location (no API key required) |
+
+**Install a ClawHub skill:**
+```bash
+npx clawhub install <skill-name> --workdir ./skills/clawhub --dir installed
+```
+
+Installed skills appear in `skills/clawhub/installed/` and are automatically available as tools. Enable or disable them from the **Skills** tab in the web dashboard.
 
 **Install community skills from GitHub:**
 ```bash
@@ -139,7 +146,7 @@ python -m core.skill_installer install user/my-lime-skill
 npm run lime-bot skill install https://github.com/user/my-lime-skill
 ```
 
-The installer auto-detects the repo's default branch (no more `--ref master` needed), and automatically runs `pip install` or `npm install` if dependency files are present.
+The installer auto-detects the repo's default branch, and automatically runs `pip install` or `npm install` if dependency files are present.
 
 **Other skill commands:**
 ```bash
