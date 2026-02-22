@@ -66,8 +66,44 @@ function commandExists(cmd) {
 }
 
 async function getSystemPython() {
+    if (process.platform === 'win32' && await commandExists('py')) return 'py';
     if (await commandExists('python3')) return 'python3';
-    if (await commandExists('python')) return 'python';
+    if (await commandExists('python')) {
+        // On Windows, verify it's real Python—not the Microsoft Store alias
+        if (process.platform === 'win32') {
+            const ver = await getVersion('python');
+            if (ver && ver.toLowerCase().includes('python')) return 'python';
+        } else {
+            return 'python';
+        }
+    }
+
+    if (process.platform === 'win32') {
+        const candidates = [];
+
+        try {
+            for (const entry of fs.readdirSync('C:\\')) {
+                if (/^Python\d/i.test(entry)) {
+                    candidates.push(path.join('C:\\', entry, 'python.exe'));
+                }
+            }
+        } catch { /* ignore */ }
+
+        const localAppData = process.env.LOCALAPPDATA;
+        if (localAppData) {
+            const pyDir = path.join(localAppData, 'Programs', 'Python');
+            try {
+                for (const entry of fs.readdirSync(pyDir)) {
+                    if (/^Python\d/i.test(entry)) {
+                        candidates.push(path.join(pyDir, entry, 'python.exe'));
+                    }
+                }
+            } catch { /* missing */ }
+        }
+        for (const c of candidates) {
+            if (fs.existsSync(c)) return c;
+        }
+    }
     return 'python';
 }
 
@@ -81,7 +117,7 @@ function getVersion(cmd, args = ['--version']) {
     });
 }
 
-// FIX: removed `new Promise(async ...)` anti-pattern
+
 async function checkPlaywrightBrowsers() {
     const venvPython = venvPythonPath();
     const systemPython = await getSystemPython();
@@ -105,7 +141,7 @@ function venvPythonPath() {
     return path.join(rootDir, '.venv', bin, exe);
 }
 
-/** Build the child environment with the venv activated if it exists. */
+
 function buildChildEnv() {
     const venvDir = path.join(rootDir, '.venv');
     const childEnv = { ...process.env };
@@ -119,7 +155,7 @@ function buildChildEnv() {
     return childEnv;
 }
 
-/** Read ENABLE_WHATSAPP from .env — properly skips commented lines. */
+
 function isWhatsAppEnabled() {
     try {
         const envPath = path.join(rootDir, '.env');
@@ -137,7 +173,7 @@ function isWhatsAppEnabled() {
     }
 }
 
-/** Kill a process cross-platform, best-effort. */
+
 function killProc(proc) {
     if (!proc) return;
     try {
@@ -149,7 +185,7 @@ function killProc(proc) {
     } catch { /* already gone */ }
 }
 
-/** Kill whatever is listening on a port, cross-platform. */
+
 function killPort(port) {
     return new Promise((resolve) => {
         if (process.platform === 'win32') {

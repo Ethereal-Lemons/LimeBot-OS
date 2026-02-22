@@ -119,6 +119,7 @@ function App() {
         ]);
       } catch (err) {
         console.error("Initialization failed:", err);
+        setForceSetup(true);
       } finally {
         setIsInitialized(true);
       }
