@@ -14,6 +14,8 @@ from litellm import (
     token_counter,
     RateLimitError,
     InternalServerError,
+    APIConnectionError,
+    ServiceUnavailableError,
 )
 from loguru import logger
 
@@ -507,20 +509,32 @@ class AgentLoop:
                     kwargs["stream_options"] = {"include_usage": True}
                 return await acompletion(**kwargs)
 
-            except (RateLimitError, InternalServerError) as e:
+            except (
+                RateLimitError,
+                InternalServerError,
+                APIConnectionError,
+                ServiceUnavailableError,
+            ) as e:
                 is_500 = isinstance(e, InternalServerError)
+                is_conn = isinstance(e, (APIConnectionError, ServiceUnavailableError))
                 wait_time = (2**attempt) * 5
-                error_type = "Server error (500)" if is_500 else "Rate limit"
+                if is_conn:
+                    error_type = "Connection error"
+                elif is_500:
+                    error_type = "Server error (500)"
+                else:
+                    error_type = "Rate limit"
                 logger.warning(
                     f"⚠ {error_type} attempt {attempt + 1}/{max_retries}. Waiting {wait_time}s…"
                 )
 
                 if attempt == 0 and msg:
-                    text = (
-                        "⏳ AI service unstable — retrying…"
-                        if is_500
-                        else "⏳ Rate limit hit — retrying…"
-                    )
+                    if is_conn:
+                        text = "⏳ Connection lost — retrying when network is back…"
+                    elif is_500:
+                        text = "⏳ AI service unstable — retrying…"
+                    else:
+                        text = "⏳ Rate limit hit — retrying…"
                     await self.bus.publish_outbound(
                         OutboundMessage(
                             content=text,
@@ -533,11 +547,12 @@ class AgentLoop:
                 await asyncio.sleep(wait_time)
 
                 if attempt == max_retries - 1:
-                    content = (
-                        "❌ AI service experiencing errors. Try again in a few minutes."
-                        if is_500
-                        else "❌ API rate limit exceeded. Please wait a minute."
-                    )
+                    if is_conn:
+                        content = "❌ Cannot reach AI service. Check your internet connection."
+                    elif is_500:
+                        content = "❌ AI service experiencing errors. Try again in a few minutes."
+                    else:
+                        content = "❌ API rate limit exceeded. Please wait a minute."
                     if msg:
                         await self.bus.publish_outbound(
                             OutboundMessage(
