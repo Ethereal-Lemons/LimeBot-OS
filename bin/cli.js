@@ -178,7 +178,9 @@ function killProc(proc) {
     if (!proc) return;
     try {
         if (process.platform === 'win32') {
-            execSync(`taskkill /PID ${proc.pid} /F /T`, { stdio: 'ignore' });
+            // FIX: Do NOT use /T — it kills the entire process tree,
+            // which on some Windows systems walks up to the parent terminal.
+            execSync(`taskkill /PID ${proc.pid} /F`, { stdio: 'ignore' });
         } else {
             proc.kill('SIGTERM');
         }
@@ -643,7 +645,11 @@ async function cmdStart(args) {
         killProc(backendProc);
         killProc(frontendProc);
         killProc(bridgeProc);
-        process.exit(0);
+        // FIX: Don't use process.exit() during SIGINT — on Windows it can
+        // exit with code 2 (STATUS_CONTROL_C_EXIT) instead of 0, which
+        // causes some terminals (e.g. VS Code) to show an error and close.
+        // Setting exitCode and letting Node drain naturally avoids this.
+        process.exitCode = 0;
     };
     process.once('SIGINT', cleanup);
     process.once('SIGTERM', cleanup);

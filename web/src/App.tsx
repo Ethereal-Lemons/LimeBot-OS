@@ -98,31 +98,50 @@ function App() {
     );
 
 
-    // Run initialization checks
+    
     const init = async () => {
-      try {
-        await Promise.all([
-          axios.get(`${API_BASE_URL}/api/identity`)
-            .then(res => { setBotIdentity(res.data); lastExplicitIdentityFetch.current = Date.now(); }),
-          axios.get(`${API_BASE_URL}/api/config`)
-            .then(res => {
-              if (res.data.env?.AUTONOMOUS_MODE === 'true') {
-                setAutonomousMode(true);
-              }
-            }),
-          axios.get(`${API_BASE_URL}/api/setup/status`)
-            .then(res => {
-              if (!res.data.configured) {
-                setForceSetup(true);
-              }
-            })
-        ]);
-      } catch (err) {
-        console.error("Initialization failed:", err);
-        setForceSetup(true);
-      } finally {
-        setIsInitialized(true);
+      
+      const MAX_RETRIES = 5;
+      const RETRY_DELAY = 2000;
+
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          await Promise.all([
+            axios.get(`${API_BASE_URL}/api/identity`)
+              .then(res => { setBotIdentity(res.data); lastExplicitIdentityFetch.current = Date.now(); }),
+            axios.get(`${API_BASE_URL}/api/config`)
+              .then(res => {
+                if (res.data.env?.AUTONOMOUS_MODE === 'true') {
+                  setAutonomousMode(true);
+                }
+              }),
+            axios.get(`${API_BASE_URL}/api/setup/status`)
+              .then(res => {
+                if (!res.data.configured) {
+                  setForceSetup(true);
+                }
+              })
+          ]);
+          
+          break;
+        } catch (err: any) {
+          const status = err?.response?.status;
+          
+          if (status === 401 || status === 403) break;
+
+          
+          if (!err?.response && attempt < MAX_RETRIES) {
+            console.log(`Backend not reachable, retrying in ${RETRY_DELAY}ms (${attempt + 1}/${MAX_RETRIES})...`);
+            await new Promise(r => setTimeout(r, RETRY_DELAY));
+            continue;
+          }
+
+          // All retries exhausted or got a real error response
+          console.error("Initialization failed:", err);
+          if (!err?.response) setForceSetup(true);
+        }
       }
+      setIsInitialized(true);
     };
 
     init();
