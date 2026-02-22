@@ -256,58 +256,82 @@ def get_identity_data(identity_content: Optional[str] = None) -> dict:
         if not content:
             return _default
 
-        name_match = re.search(r"\*\*Name:\*\*\s*(.*)", content, re.IGNORECASE)
-        emoji_match = re.search(r"\*\*Emoji:\*\*\s*(.*)", content, re.IGNORECASE)
-        avatar_match = re.search(
-            r"\*\*(?:Avatar|Pfp_URL|Pfp|Profile_Picture):\*\*\s*(.*)",
-            content,
-            re.IGNORECASE,
+        def _clean(val: str | None) -> str:
+            if not val:
+                return ""
+            v = val.strip()
+            if v.lower() in ("none", "n/a", "null", "undefined"):
+                return ""
+            return v
+
+        name_match = re.search(
+            r"^\*\s*\*\*Name:\*\*[ \t]*(.*)", content, re.MULTILINE | re.IGNORECASE
         )
-        style_match = re.search(r"\*\*Style:\*\*\s*(.*)", content, re.IGNORECASE)
+        emoji_match = re.search(
+            r"^\*\s*\*\*Emoji:\*\*[ \t]*(.*)", content, re.MULTILINE | re.IGNORECASE
+        )
+        avatar_match = re.search(
+            r"^\*\s*\*\*(?:Avatar|Pfp_URL|Pfp|Profile_Picture):\*\*[ \t]*(.*)",
+            content,
+            re.MULTILINE | re.IGNORECASE,
+        )
+        style_match = re.search(
+            r"^\*\s*\*\*Style:\*\*[ \t]*(.*)", content, re.MULTILINE | re.IGNORECASE
+        )
 
         discord_style_match = re.search(
-            r"\*\*Discord Style:\*\*\s*(.*)", content, re.IGNORECASE
+            r"^\*\s*\*\*Discord Style:\*\*[ \t]*(.*)",
+            content,
+            re.MULTILINE | re.IGNORECASE,
         )
         whatsapp_style_match = re.search(
-            r"\*\*WhatsApp Style:\*\*\s*(.*)", content, re.IGNORECASE
+            r"^\*\s*\*\*WhatsApp Style:\*\*[ \t]*(.*)",
+            content,
+            re.MULTILINE | re.IGNORECASE,
         )
         web_style_match = re.search(
-            r"\*\*Web Style:\*\*\s*(.*)", content, re.IGNORECASE
+            r"^\*\s*\*\*Web Style:\*\*[ \t]*(.*)", content, re.MULTILINE | re.IGNORECASE
         )
         reaction_match = re.search(
-            r"\*\*Reaction Emojis:\*\*\s*(.*)", content, re.IGNORECASE
+            r"^\*\s*\*\*Reaction Emojis:\*\*[ \t]*(.*)",
+            content,
+            re.MULTILINE | re.IGNORECASE,
         )
         catchphrases_match = re.search(
-            r"\*\*Catchphrases:\*\*\s*(.*)", content, re.IGNORECASE
+            r"^\*\s*\*\*Catchphrases:\*\*[ \t]*(.*)",
+            content,
+            re.MULTILINE | re.IGNORECASE,
         )
         interests_match = re.search(
-            r"\*\*Interests:\*\*\s*(.*)", content, re.IGNORECASE
+            r"^\*\s*\*\*Interests:\*\*[ \t]*(.*)", content, re.MULTILINE | re.IGNORECASE
         )
-        birthday_match = re.search(r"\*\*Birthday:\*\*\s*(.*)", content, re.IGNORECASE)
+        birthday_match = re.search(
+            r"^\*\s*\*\*Birthday:\*\*[ \t]*(.*)", content, re.MULTILINE | re.IGNORECASE
+        )
 
-        avatar = avatar_match.group(1).strip() if avatar_match else None
+        avatar = _clean(avatar_match.group(1)) if avatar_match else None
 
         return {
-            "name": name_match.group(1).strip() if name_match else "LimeBot",
-            "emoji": emoji_match.group(1).strip() if emoji_match else "🍋",
+            "name": _clean(name_match.group(1)) if name_match else "LimeBot",
+            "emoji": _clean(emoji_match.group(1)) if emoji_match else "🍋",
             "avatar": avatar,
             "pfp_url": avatar,
-            "style": style_match.group(1).strip() if style_match else "",
-            "discord_style": discord_style_match.group(1).strip()
+            "style": _clean(style_match.group(1)) if style_match else "",
+            "discord_style": _clean(discord_style_match.group(1))
             if discord_style_match
-            else None,
-            "whatsapp_style": whatsapp_style_match.group(1).strip()
+            else "",
+            "whatsapp_style": _clean(whatsapp_style_match.group(1))
             if whatsapp_style_match
-            else None,
-            "web_style": web_style_match.group(1).strip() if web_style_match else None,
-            "reaction_emojis": reaction_match.group(1).strip()
+            else "",
+            "web_style": _clean(web_style_match.group(1)) if web_style_match else "",
+            "reaction_emojis": _clean(reaction_match.group(1))
             if reaction_match
             else "",
-            "catchphrases": catchphrases_match.group(1).strip()
+            "catchphrases": _clean(catchphrases_match.group(1))
             if catchphrases_match
             else "",
-            "interests": interests_match.group(1).strip() if interests_match else "",
-            "birthday": birthday_match.group(1).strip() if birthday_match else "",
+            "interests": _clean(interests_match.group(1)) if interests_match else "",
+            "birthday": _clean(birthday_match.group(1)) if birthday_match else "",
         }
     except Exception:
         return _default
