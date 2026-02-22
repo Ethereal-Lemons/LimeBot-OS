@@ -170,7 +170,10 @@ class AgentLoop:
             await self.vector_service._get_embedding("hi")
             logger.info("✅ Embedding API connection warmed.")
         except Exception as e:
-            logger.warning(f"⚠ Embedding warmup failed (non-critical): {e}")
+            if prompt_module.is_setup_complete():
+                logger.warning(f"⚠ Embedding warmup failed (non-critical): {e}")
+            else:
+                logger.debug(f"Embedding warmup skipped/failed during setup: {e}")
 
         # 3. Warm the chat LLM HTTP connection with a minimal 1-token call
         try:
@@ -187,7 +190,10 @@ class AgentLoop:
             logger.info("✅ LLM connection pool warmed.")
         except Exception as e:
             # Warmup failure is never fatal — log and continue
-            logger.warning(f"⚠ LLM warmup failed (non-critical): {e}")
+            if prompt_module.is_setup_complete():
+                logger.warning(f"⚠ LLM warmup failed (non-critical): {e}")
+            else:
+                logger.debug(f"LLM warmup skipped/failed during setup: {e}")
 
     def _refresh_tool_definitions(self) -> None:
         """Rebuild and cache tool definitions. Call only when skills change."""
