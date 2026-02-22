@@ -1,8 +1,10 @@
-import { useState } from 'react';
-import { Palette } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Palette, Code2, RotateCcw, Copy, Check } from 'lucide-react';
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { CustomThemeCreator } from './CustomThemeCreator';
+import { injectCss, CSS_STORAGE_KEY } from '@/lib/css-injector';
 
 interface AppearancePageProps {
     onThemeChange?: (theme: string) => void;
@@ -129,6 +131,143 @@ export function AppearancePage({ onThemeChange }: AppearancePageProps) {
                         </div>
                     </div>
                 </div>
+                {/* Custom CSS Card */}
+                <CustomCssEditor />
+
+            </div>
+        </div>
+    );
+}
+
+// ── Custom CSS Editor ─────────────────────────────────────────────────────────
+
+const CSS_PLACEHOLDER = `/* Paste any CSS here — it's injected live into the page.
+
+Examples:
+
+  /* Change chat bubble color */
+  .message-bubble { background: #1a1a2e !important; }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--primary)); border-radius: 2px; }
+
+  /* Glassmorphism sidebar */
+  aside { backdrop-filter: blur(12px) !important; background: rgba(0,0,0,0.4) !important; }
+*/`;
+
+function CustomCssEditor() {
+    const [css, setCss] = useState(() => localStorage.getItem(CSS_STORAGE_KEY) ?? '');
+    const [saved, setSaved] = useState(true);
+    const [copied, setCopied] = useState(false);
+    const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Apply saved CSS on mount
+    useEffect(() => { injectCss(css); }, []);
+
+    const handleChange = (value: string) => {
+        setCss(value);
+        setSaved(false);
+
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+        debounceRef.current = setTimeout(() => injectCss(value), 300);
+    };
+
+    const handleSave = () => {
+        localStorage.setItem(CSS_STORAGE_KEY, css);
+        injectCss(css);
+        setSaved(true);
+    };
+
+    const handleReset = () => {
+        setCss('');
+        localStorage.removeItem(CSS_STORAGE_KEY);
+        injectCss('');
+        setSaved(true);
+    };
+
+    const handleCopy = async () => {
+        await navigator.clipboard.writeText(css);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+    };
+
+    return (
+        <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
+            <div className="flex flex-col space-y-1.5 p-6 pb-3">
+                <h3 className="font-semibold leading-none tracking-tight flex items-center gap-2">
+                    <Code2 className="h-5 w-5 text-primary" />
+                    Custom CSS
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                    Inject raw CSS directly into the page. Applied live as you type.
+                </p>
+            </div>
+
+            <div className="p-6 pt-2 space-y-3">
+                <div className="relative">
+                    <textarea
+                        value={css}
+                        onChange={e => handleChange(e.target.value)}
+                        placeholder={CSS_PLACEHOLDER}
+                        spellCheck={false}
+                        className={`
+                            w-full min-h-[220px] resize-y rounded-lg border bg-muted/30 p-3
+                            font-mono text-xs leading-relaxed text-foreground
+                            placeholder:text-muted-foreground/40
+                            focus:outline-none focus:ring-2 focus:ring-primary/50
+                            transition-colors
+                            ${!saved ? 'border-primary/60' : 'border-border'}
+                        `}
+                    />
+                    {!saved && (
+                        <span className="absolute top-2 right-2 text-[10px] text-primary/70 font-mono">
+                            unsaved
+                        </span>
+                    )}
+                </div>
+
+                <div className="flex items-center justify-between">
+                    <div className="flex gap-2">
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 gap-1.5 text-xs text-muted-foreground"
+                            onClick={handleCopy}
+                            disabled={!css}
+                        >
+                            {copied
+                                ? <><Check className="h-3 w-3" /> Copied</>
+                                : <><Copy className="h-3 w-3" /> Copy</>
+                            }
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 gap-1.5 text-xs text-destructive/70 hover:text-destructive"
+                            onClick={handleReset}
+                            disabled={!css}
+                        >
+                            <RotateCcw className="h-3 w-3" />
+                            Clear
+                        </Button>
+                    </div>
+
+                    <Button
+                        size="sm"
+                        className="h-7 gap-1.5 text-xs"
+                        onClick={handleSave}
+                        disabled={saved}
+                    >
+                        <Code2 className="h-3 w-3" />
+                        {saved ? 'Saved' : 'Save & Apply'}
+                    </Button>
+                </div>
+
+                <p className="text-[10px] text-muted-foreground">
+                    CSS is saved to your browser and re-applied on every page load.
+                    Use browser DevTools to inspect element class names.
+                </p>
             </div>
         </div>
     );
@@ -160,4 +299,3 @@ function ThemeButton({ theme, isActive, onClick, isSpecial }: { theme: any, isAc
         </button>
     );
 }
-

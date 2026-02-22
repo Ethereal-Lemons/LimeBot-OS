@@ -25,6 +25,7 @@ import { PersonaPage } from "@/components/persona/PersonaPage";
 import { AuthKeyModal } from "@/components/auth/AuthKeyModal";
 import { CronPage } from "@/components/cron/CronPage";
 import { MemoryPage } from "@/components/memory/MemoryPage";
+import { injectCss, CSS_STORAGE_KEY } from "@/lib/css-injector";
 
 import { ToolExecution } from "@/components/chat/ToolCard";
 import { ConfirmationRequest } from "@/components/chat/ConfirmationCard";
@@ -97,10 +98,12 @@ function App() {
       }
     );
 
+    // Apply custom global CSS
+    const customCss = localStorage.getItem(CSS_STORAGE_KEY) || '';
+    injectCss(customCss);
 
-    
     const init = async () => {
-      
+
       const MAX_RETRIES = 5;
       const RETRY_DELAY = 2000;
 
@@ -122,14 +125,14 @@ function App() {
                 }
               })
           ]);
-          
+
           break;
         } catch (err: any) {
           const status = err?.response?.status;
-          
+
           if (status === 401 || status === 403) break;
 
-          
+
           if (!err?.response && attempt < MAX_RETRIES) {
             console.log(`Backend not reachable, retrying in ${RETRY_DELAY}ms (${attempt + 1}/${MAX_RETRIES})...`);
             await new Promise(r => setTimeout(r, RETRY_DELAY));
