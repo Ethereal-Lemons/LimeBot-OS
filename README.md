@@ -10,11 +10,13 @@
 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-lime.svg)](https://opensource.org/licenses/MIT)
+[![Status](https://img.shields.io/badge/Status-Public%20Beta-orange.svg)](#-getting-started)
+[![Optimized for](https://img.shields.io/badge/Optimized%20for-Google%20Gemini-blue.svg)](https://ai.google.dev/)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![LiteLLM](https://img.shields.io/badge/LLM-LiteLLM%20Universal-blueviolet.svg)](https://github.com/BerriAI/litellm)
 [![Local First](https://img.shields.io/badge/Privacy-Local%20First-green.svg)](#-privacy--security)
 
-LimeBot is not a wrapper around an API. It's a full agentic system — event-driven, multi-channel, and built to remember who you are. It browses the web, manages your files, schedules reminders, spawns sub-agents for complex tasks, and evolves its personality through every conversation. All of it runs on your hardware.
+LimeBot is not a wrapper around an API. It's a full agentic system — event-driven, multi-channel, and built to remember who you are. It browses the web, manages your files, schedules reminders, spawns sub-agents for complex tasks, and evolves its personality through every conversation. All of it runs on your hardware. **Currently in public Beta and works better with Google Gemini.**
 
 ---
 
