@@ -531,7 +531,7 @@ class WebChannel(BaseChannel):
             cfg = load_config()
             env_dict = {
                 "LLM_MODEL": cfg.llm.model,
-                "GEMINI_API_KEY": cfg.llm.api_key,
+                "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),
                 "DISCORD_TOKEN": cfg.discord.token,
                 "DISCORD_ALLOW_FROM": ",".join(cfg.discord.allow_from),
                 "DISCORD_ALLOW_CHANNELS": ",".join(cfg.discord.allow_channels),

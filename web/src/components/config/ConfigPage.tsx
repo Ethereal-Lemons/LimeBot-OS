@@ -180,7 +180,15 @@ export function ConfigPage() {
                                             }
                                             onValueChange={(val) => {
                                                 if (val === "custom") {
-                                                    handleChange("LLM_MODEL", "");
+                                                    // Only clear if switching FROM a known model to custom.
+                                                    // If the current value is already a custom/unknown string,
+                                                    // keep it — don't wipe it just because the dropdown
+                                                    // re-renders with value="custom" (e.g. after API key changes).
+                                                    const isCurrentlyKnown = filteredModels.find(m => m.id === config.LLM_MODEL);
+                                                    if (isCurrentlyKnown) {
+                                                        handleChange("LLM_MODEL", "");
+                                                    }
+                                                    // else: already custom, leave LLM_MODEL intact
                                                 } else {
                                                     handleChange("LLM_MODEL", val);
                                                 }
