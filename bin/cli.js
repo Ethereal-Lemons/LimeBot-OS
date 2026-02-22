@@ -19,6 +19,37 @@ const colors = {
     lime: "\x1b[38;5;154m",
 };
 
+const LOGO = `${colors.lime}
+                                                                                                    
+                                 ========                  ==++++**                                 
+                               ========----              ---===++****                               
+                              ============---          ---===++++*****                              
+                              ==========    --       ---    +++++*****                              
+                                             --======-==                                            
+                                         ==================+                                        
+                                      =====================+++                                      
+                                    =====+%@@@@*====+%@@@@*++++*                                    
+                                   =====#@@@@@@@#==+@@@@@@@%++++*                                   
+                                  =====*@@@@@@@@%==#@@@@@@@@#+++**                                  
+                                  =====*@@@@@@@@#==*@@@@@@@@%+++**                                   
+                                   =====%@@@@@@%====%@@@@@@@++++*                                   
+                                    ======#%@%+======+%@@%++++++                                    
+                                      =====================+++                                      
+                                        ===================+                                        
+                                            =============                                           
+                                                 ===                                                
+                                                                                                    
+               ===     ====                               ======                 ==                 
+              =====    ===                               ==========             ====                
+              =====    ==== ================    =======  ====  =====  =======  =======              
+              =====    ==== ================= ========== ========== ==================              
+              =====    ==== ====   ====  =============== ========== ====   ==== ====                
+              =====    ==== ====   ====  =============== ====   ========   ==== ====                
+              ======== ==== ====   ====  =============== =========== =========  ======              
+               ======= ==== ====   ====   ===    =====   =========     =====      ====              
+
+${colors.reset}`;
+
 const log = (color, text) => console.log(`${color}${text}${colors.reset}`);
 const success = (text) => log(colors.green, `  ✓ ${text}`);
 const warning = (text) => log(colors.yellow, `  ⚠ ${text}`);
@@ -222,6 +253,7 @@ function killPort(port) {
 // ── Commands ───────────────────────────────────────────────────────
 
 async function cmdHelp() {
+    process.stdout.write(LOGO);
     console.log(`${colors.lime}${colors.bright}
   🍋 LimeBot CLI
 ${colors.reset}
@@ -235,12 +267,17 @@ ${colors.reset}
     ${colors.cyan}doctor${colors.reset}           Diagnose common issues
     ${colors.cyan}logs${colors.reset}             Show recent logs
     ${colors.cyan}install-browser${colors.reset}  Install Chromium for browser tool (optional)
+    ${colors.cyan}autorun${colors.reset}          Configure LimeBot to start automatically
     ${colors.cyan}help${colors.reset}             Show this help message
 
   ${colors.bright}Start Options:${colors.reset}
     ${colors.gray}--quick, -q${colors.reset}        Skip dependency checks
     ${colors.gray}--backend-only${colors.reset}     Start only the Python backend
     ${colors.gray}--frontend-only${colors.reset}    Start only the web frontend
+
+  ${colors.bright}Autorun Commands:${colors.reset}
+    ${colors.dim}limebot autorun enable${colors.reset}
+    ${colors.dim}limebot autorun disable${colors.reset}
 
   ${colors.bright}Skill Commands:${colors.reset}
     ${colors.dim}limebot skill list${colors.reset}
@@ -254,6 +291,90 @@ ${colors.reset}
     ${colors.dim}limebot doctor${colors.reset}
     ${colors.dim}limebot install-browser${colors.reset}
 `);
+}
+
+async function cmdAutorun(args) {
+    const action = args[0]?.toLowerCase();
+    if (action !== 'enable' && action !== 'disable') {
+        error("Usage: limebot autorun <enable|disable>");
+        process.exit(1);
+    }
+
+    console.log(`${colors.lime}${colors.bright}\n  🍋 LimeBot Autorun Configuration${colors.reset}\n`);
+
+    if (process.platform === 'win32') {
+        const taskName = "LimeBotOSGateway";
+        const gatewayPath = path.join(rootDir, 'bin', 'gateway.cmd');
+
+        if (action === 'enable') {
+            info(`Creating Windows Scheduled Task: ${taskName}`);
+            try {
+                execSync(`schtasks /create /tn "${taskName}" /tr "${gatewayPath}" /sc onlogon /f`, { stdio: 'pipe' });
+                success("Autorun enabled! LimeBot will start whenever you log in.");
+            } catch (e) {
+                const errorLog = (e.stdout?.toString() || "") + (e.stderr?.toString() || "");
+                if (errorLog.toLowerCase().includes('acceso denegado') || errorLog.toLowerCase().includes('access is denied') || e.status === 1) {
+                    error("Access Denied: Creating a Scheduled Task requires Administrator privileges.");
+                    log(colors.yellow, "  Please restart your terminal (PowerShell/CMD) as Administrator and run the command again.");
+                } else {
+                    error(`Failed to enable autorun: ${e.message}`);
+                }
+            }
+        } else {
+            info(`Removing Windows Scheduled Task: ${taskName}`);
+            try {
+                execSync(`schtasks /delete /tn "${taskName}" /f`, { stdio: 'inherit' });
+                success("Autorun disabled (Scheduled Task removed).");
+            } catch (e) {
+                error(`Could not disable autorun: ${e.message}`);
+                log(colors.yellow, "  Note: You may need to run this command as Administrator.");
+            }
+        }
+    } else {
+        // Assume Linux/systemd for non-Windows
+        const serviceName = "limebot-os.service";
+        const homeDir = process.env.HOME;
+        const systemdDir = path.join(homeDir, '.config', 'systemd', 'user');
+        const servicePath = path.join(systemdDir, serviceName);
+        const gatewayPath = path.join(rootDir, 'bin', 'gateway.sh');
+
+        if (action === 'enable') {
+            info(`Creating systemd user service: ${serviceName}`);
+            const serviceContent = `[Unit]
+Description=LimeBot OS Gateway
+After=network.target
+
+[Service]
+ExecStart=${gatewayPath}
+Restart=always
+
+[Install]
+WantedBy=default.target
+`;
+            try {
+                if (!fs.existsSync(systemdDir)) fs.mkdirSync(systemdDir, { recursive: true });
+                fs.writeFileSync(servicePath, serviceContent);
+                execSync('systemctl --user daemon-reload', { stdio: 'inherit' });
+                execSync(`systemctl --user enable ${serviceName.replace('.service', '')}`, { stdio: 'inherit' });
+                execSync(`systemctl --user start ${serviceName.replace('.service', '')}`, { stdio: 'inherit' });
+                success("Autorun enabled! LimeBot is now running as a systemd user service.");
+            } catch (e) {
+                error(`Failed to enable autorun: ${e.message}`);
+            }
+        } else {
+            info(`Removing systemd user service: ${serviceName}`);
+            try {
+                execSync(`systemctl --user stop ${serviceName.replace('.service', '')}`, { stdio: 'inherit' });
+                execSync(`systemctl --user disable ${serviceName.replace('.service', '')}`, { stdio: 'inherit' });
+                if (fs.existsSync(servicePath)) fs.unlinkSync(servicePath);
+                execSync('systemctl --user daemon-reload', { stdio: 'inherit' });
+                success("Autorun disabled.");
+            } catch (e) {
+                error(`Failed to disable autorun: ${e.message}`);
+            }
+        }
+    }
+    console.log('');
 }
 
 async function cmdDoctor() {
@@ -459,6 +580,8 @@ async function cmdStart(args) {
     console.log(`${colors.lime}${colors.bright}\n  🍋 Starting LimeBot${colors.reset}\n`);
     if (quickMode) info('Quick mode: Skipping dependency checks...');
 
+    log(colors.gray, `  ${colors.bright}Tip:${colors.reset} Run ${colors.cyan}npm run limebot help${colors.reset} to see all available CLI commands.`);
+
     const envFile = path.join(rootDir, '.env');
     const isConfigured = fs.existsSync(envFile);
     if (!isConfigured) warning('Initial configuration not found. Setup wizard will open.');
@@ -600,6 +723,7 @@ async function cmdStart(args) {
 
     // FIX: check bridge state after backend is started so the restart-on-enable path works correctly
     if (!frontendOnly) await startBackend();
+    process.stdout.write(LOGO);
 
     await updateBridgeState();
 
@@ -668,6 +792,7 @@ async function main() {
         case 'doctor': await cmdDoctor(); break;
         case 'logs': await cmdLogs(args.slice(1)); break;
         case 'install-browser': await cmdInstallBrowser(); break;
+        case 'autorun': await cmdAutorun(args.slice(1)); break;
         case 'skill': await cmdSkill(args.slice(1)); break;
         case 'help': case '--help': case '-h':
             await cmdHelp(); break;

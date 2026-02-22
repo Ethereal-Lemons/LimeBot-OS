@@ -9,6 +9,7 @@
   },
   "scripts": {
     "lime-bot": "node bin/cli.js",
+    "limebot": "node bin/cli.js",
     "start": "node bin/cli.js start",
     "start:quick": "node bin/cli.js start --quick",
     "status": "node bin/cli.js status",
