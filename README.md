@@ -78,7 +78,7 @@ For complex multi-step tasks, LimeBot can delegate work to an isolated backgroun
 
 | Channel | How it works |
 |---------|-------------|
-| **Web Dashboard** | React + Vite UI connecting over WebSocket. Streams tokens as they arrive, shows live tool execution cards, confirmation prompts, thinking traces, and ghost activity indicators for background memory operations. |
+| **Web Dashboard** | React + Vite UI connecting over WebSocket. Streams tokens as they arrive, shows live tool execution cards, confirmation prompts, thinking traces, and ghost activity indicators. **Includes a Custom CSS editor for global UI personalization.** |
 | **Discord** | Full `discord.py` integration. Responds to DMs and `@mentions`. Configurable allow-list by user ID and channel ID. Custom presence status, activity type, and display name. |
 | **WhatsApp** | Connects to a local `whatsapp-web.js` bridge over WebSocket. Contact approval whitelist with pending/blocked states. QR code displayed in the web dashboard for easy pairing. |
 
@@ -115,7 +115,6 @@ Skills extend what LimeBot can do. Each skill is a folder with a `SKILL.md` (the
 | `download_image` | Download high-res images from Pinterest, Reddit, Wikimedia, or direct URLs |
 | `filesystem` | Extended file operations beyond the core toolbox |
 | `discord` | Send messages and embeds to any Discord channel by ID |
-| `discord-voice` | ElevenLabs TTS voice bot for Discord with slash commands and voice cloning |
 | `whatsapp` | Send files and media to WhatsApp conversations |
 | `docx-creator` | Generate formatted Microsoft Word `.docx` documents |
 

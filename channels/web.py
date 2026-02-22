@@ -1213,7 +1213,7 @@ class WebChannel(BaseChannel):
 
                 chat_id = msg.get("chat_id") or msg.get("sessionId") or "web-chat"
                 content = msg.get("content", "")
-                # Allow callers (e.g. the discord-voice skill) to supply their
+                # Allow callers (e.g. specialized skills) to supply their
                 # own sender_id so each user gets a separate LimeBot profile.
                 sender_id = msg.get("sender_id") or "web-user"
                 sender_name = msg.get("sender_name") or ""
