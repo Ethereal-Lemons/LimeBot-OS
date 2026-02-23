@@ -16,7 +16,7 @@
 [![LiteLLM](https://img.shields.io/badge/LLM-LiteLLM%20Universal-blueviolet.svg)](https://github.com/BerriAI/litellm)
 [![Local First](https://img.shields.io/badge/Privacy-Local%20First-green.svg)](#-privacy--security)
 
-LimeBot is not a wrapper around an API. It's a full agentic system — event-driven, multi-channel, and built to remember who you are. It browses the web, manages your files, schedules reminders, spawns sub-agents for complex tasks, and evolves its personality through every conversation. All of it runs on your hardware. **Currently in public Beta and works better with Google Gemini.**
+LimeBot is not a wrapper around an API. It's a full agentic system — event-driven, multi-channel, and built to remember who you are. It browses the web, manages your files, schedules reminders, spawns sub-agents for complex tasks, and evolves its personality through every conversation. All of it runs on your hardware. **Currently in public Beta and works best with Google Gemini.**
 
 ---
 
@@ -97,8 +97,8 @@ LimeBot uses [LiteLLM](https://github.com/BerriAI/litellm) — any model it supp
 | **Anthropic** | `anthropic/claude-3-5-sonnet-20241022` |
 | **xAI** | `xai/grok-2` |
 | **DeepSeek** | `deepseek/deepseek-chat` |
-| **Mistral** | `mistral/mistral-large-latest` |
-| **NVIDIA NIM** | `nvidia/meta/llama-3.1-405b-instruct` |
+| **NVIDIA Reference** | `nvidia/mistralai/mixtral-8x22b-instruct-v0.1` (Mistral support via NVIDIA) |
+| **NVIDIA Reference** | `nvidia/meta/llama-3.1-405b-instruct` |
 | **Ollama (local)** | `ollama/llama3.2` + `LLM_BASE_URL=http://localhost:11434` |
 
 Switch models live from the web dashboard without restarting.

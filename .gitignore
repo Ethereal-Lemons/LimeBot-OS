@@ -26,3 +26,5 @@ bridge/dist/
 
 # Backups
 *.bak
+.venv/
+allowed_paths.txt

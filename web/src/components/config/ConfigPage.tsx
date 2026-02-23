@@ -23,7 +23,6 @@ interface ConfigState {
     ANTHROPIC_API_KEY?: string;
     XAI_API_KEY?: string;
     DEEPSEEK_API_KEY?: string;
-    MISTRAL_API_KEY?: string;
     NVIDIA_API_KEY?: string;
     DISCORD_TOKEN?: string;
     LLM_MODEL?: string;
@@ -61,12 +60,11 @@ export function ConfigPage() {
         if (!config) return [];
         return availableModels.filter(model => {
             if (model.provider === 'gemini') return !!config.GEMINI_API_KEY;
-            if (model.provider === 'openai') return !!(config as any).OPENAI_API_KEY;
-            if (model.provider === 'anthropic') return !!(config as any).ANTHROPIC_API_KEY;
-            if (model.provider === 'xai') return !!(config as any).XAI_API_KEY;
-            if (model.provider === 'deepseek') return !!(config as any).DEEPSEEK_API_KEY;
-
-            if (model.provider === 'nvidia') return !!(config as any).NVIDIA_API_KEY;
+            if (model.provider === 'openai') return !!config.OPENAI_API_KEY;
+            if (model.provider === 'anthropic') return !!config.ANTHROPIC_API_KEY;
+            if (model.provider === 'xai') return !!config.XAI_API_KEY;
+            if (model.provider === 'deepseek') return !!config.DEEPSEEK_API_KEY;
+            if (model.provider === 'nvidia') return !!config.NVIDIA_API_KEY;
             return true;
         });
     };

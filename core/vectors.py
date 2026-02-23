@@ -13,7 +13,7 @@ class VectorService:
     """
     Service for semantic search using LanceDB and litellm embeddings.
     Supports multiple LLM providers (Gemini, OpenAI, Anthropic, xAI,
-    DeepSeek, NVIDIA, Mistral, Ollama) via litellm.
+    DeepSeek, NVIDIA, Ollama) via litellm.
     """
 
     PROVIDER_EMBEDDING_MODELS = {
@@ -21,7 +21,6 @@ class VectorService:
         "vertex_ai": "gemini/gemini-embedding-001",
         "openai": "text-embedding-3-small",
         "azure": "azure/text-embedding-3-small",
-        "mistral": "mistral/mistral-embed",
         "nvidia": "nvidia_nim/nvidia/NV-Embed-v2",
         "deepseek": "gemini/gemini-embedding-001",
         "anthropic": "gemini/gemini-embedding-001",
@@ -35,7 +34,6 @@ class VectorService:
         "vertex_ai": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "openai": ["OPENAI_API_KEY"],
         "azure": ["OPENAI_API_KEY"],
-        "mistral": ["MISTRAL_API_KEY"],
         "nvidia": ["NVIDIA_API_KEY"],
         "deepseek": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "anthropic": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],

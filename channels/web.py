@@ -354,42 +354,7 @@ class WebChannel(BaseChannel):
         @self.app.get("/api/llm/models")
         async def get_llm_models():
             models = [
-                # Google Gemini Models (Native)
-                {
-                    "id": "gemini/gemini-1.5-pro",
-                    "name": "Gemini 1.5 Pro",
-                    "provider": "gemini",
-                },
-                {
-                    "id": "gemini/gemini-1.5-flash",
-                    "name": "Gemini 1.5 Flash",
-                    "provider": "gemini",
-                },
-                {
-                    "id": "gemini/gemini-2.0-flash",
-                    "name": "Gemini 2.0 Flash",
-                    "provider": "gemini",
-                },
-                {
-                    "id": "gemini/gemini-2.0-flash-lite-preview",
-                    "name": "Gemini 2.0 Flash-Lite (Preview)",
-                    "provider": "gemini",
-                },
-                {
-                    "id": "gemini/gemini-2.5-pro",
-                    "name": "Gemini 2.5 Pro",
-                    "provider": "gemini",
-                },
-                {
-                    "id": "gemini/gemini-2.5-flash",
-                    "name": "Gemini 2.5 Flash",
-                    "provider": "gemini",
-                },
-                {
-                    "id": "gemini/gemini-2.5-flash-lite",
-                    "name": "Gemini 2.5 Flash-Lite",
-                    "provider": "gemini",
-                },
+                # ── Google Gemini ─────────────────────────────────────────────
                 {
                     "id": "gemini/gemini-3.1-pro-preview",
                     "name": "Gemini 3.1 Pro (Preview)",
@@ -405,42 +370,88 @@ class WebChannel(BaseChannel):
                     "name": "Gemini 3 Flash (Preview)",
                     "provider": "gemini",
                 },
-                # The Heavyweights: Orchestration & Tool Use
                 {
-                    "id": "nvidia/gpt-oss/120b",
-                    "name": "GPT-OSS 120B (Orchestration)",
-                    "provider": "nvidia",
+                    "id": "gemini/gemini-2.5-pro",
+                    "name": "Gemini 2.5 Pro",
+                    "provider": "gemini",
                 },
                 {
-                    "id": "nvidia/gpt-oss/20b",
-                    "name": "GPT-OSS 20B (Local Edge)",
-                    "provider": "nvidia",
+                    "id": "gemini/gemini-2.5-flash",
+                    "name": "Gemini 2.5 Flash",
+                    "provider": "gemini",
                 },
                 {
-                    "id": "nvidia/glm/4.7",
-                    "name": "GLM 4.7 (Agentic Brain)",
-                    "provider": "nvidia",
+                    "id": "gemini/gemini-2.5-flash-lite-preview-06-17",
+                    "name": "Gemini 2.5 Flash-Lite",
+                    "provider": "gemini",
                 },
                 {
-                    "id": "nvidia/moonshotai/kimi-k2.5",
-                    "name": "Kimi K2.5 (Multimodal Agent)",
-                    "provider": "nvidia",
+                    "id": "gemini/gemini-2.0-flash",
+                    "name": "Gemini 2.0 Flash",
+                    "provider": "gemini",
                 },
+                {
+                    "id": "gemini/gemini-2.0-flash-lite",
+                    "name": "Gemini 2.0 Flash-Lite",
+                    "provider": "gemini",
+                },
+                {
+                    "id": "gemini/gemini-1.5-pro",
+                    "name": "Gemini 1.5 Pro",
+                    "provider": "gemini",
+                },
+                {
+                    "id": "gemini/gemini-1.5-flash",
+                    "name": "Gemini 1.5 Flash",
+                    "provider": "gemini",
+                },
+                # ── OpenAI ────────────────────────────────────────────────────
+                {
+                    "id": "openai/gpt-4o",
+                    "name": "GPT-4o",
+                    "provider": "openai",
+                },
+                {
+                    "id": "openai/gpt-4o-mini",
+                    "name": "GPT-4o Mini",
+                    "provider": "openai",
+                },
+                {
+                    "id": "openai/o3-mini",
+                    "name": "o3-mini",
+                    "provider": "openai",
+                },
+                {
+                    "id": "openai/o1",
+                    "name": "o1",
+                    "provider": "openai",
+                },
+                # ── Anthropic ─────────────────────────────────────────────────
+                {
+                    "id": "anthropic/claude-3-7-sonnet-20250219",
+                    "name": "Claude 3.7 Sonnet",
+                    "provider": "anthropic",
+                },
+                {
+                    "id": "anthropic/claude-3-5-sonnet-20241022",
+                    "name": "Claude 3.5 Sonnet",
+                    "provider": "anthropic",
+                },
+                {
+                    "id": "anthropic/claude-3-5-haiku-20241022",
+                    "name": "Claude 3.5 Haiku",
+                    "provider": "anthropic",
+                },
+                {
+                    "id": "anthropic/claude-3-opus-20240229",
+                    "name": "Claude 3 Opus",
+                    "provider": "anthropic",
+                },
+                # ── xAI Grok ─────────────────────────────────────────────────
                 {
                     "id": "xai/grok-4",
-                    "name": "Grok 4 (Frontier Reasoning)",
+                    "name": "Grok 4",
                     "provider": "xai",
-                },
-                # The Problem Solvers: Coding & Autonomous Execution
-                {
-                    "id": "deepseek/deepseek-r1",
-                    "name": "DeepSeek R1 (Reasoning)",
-                    "provider": "deepseek",
-                },
-                {
-                    "id": "deepseek/deepseek-v3.2",
-                    "name": "DeepSeek V3.2 (Coding)",
-                    "provider": "deepseek",
                 },
                 {
                     "id": "xai/grok-4.1-fast-reasoning",
@@ -452,37 +463,107 @@ class WebChannel(BaseChannel):
                     "name": "Grok 4 Fast (Reasoning)",
                     "provider": "xai",
                 },
-                # The Memory Banks: Long-Context & RAG
                 {
-                    "id": "nvidia/qwen/3-30b-a3b-instruct",
-                    "name": "Qwen 3-30B (Long Context)",
+                    "id": "xai/grok-4.1-fast-non-reasoning",
+                    "name": "Grok 4.1 Fast",
+                    "provider": "xai",
+                },
+                {
+                    "id": "xai/grok-3",
+                    "name": "Grok 3",
+                    "provider": "xai",
+                },
+                {
+                    "id": "xai/grok-3-mini",
+                    "name": "Grok 3 Mini",
+                    "provider": "xai",
+                },
+                {
+                    "id": "xai/grok-2-1212",
+                    "name": "Grok 2",
+                    "provider": "xai",
+                },
+                # ── DeepSeek ──────────────────────────────────────────────────
+                {
+                    "id": "deepseek/deepseek-v3.2",
+                    "name": "DeepSeek V3.2",
+                    "provider": "deepseek",
+                },
+                {
+                    "id": "deepseek/deepseek-chat",
+                    "name": "DeepSeek V3",
+                    "provider": "deepseek",
+                },
+                {
+                    "id": "deepseek/deepseek-reasoner",
+                    "name": "DeepSeek R1",
+                    "provider": "deepseek",
+                },
+                # ── NVIDIA NIM (static fallbacks — dynamic list fetched below) ─
+                {
+                    "id": "nvidia/gpt-oss/120b",
+                    "name": "GPT-OSS 120B",
+                    "provider": "nvidia",
+                },
+                {
+                    "id": "nvidia/gpt-oss/20b",
+                    "name": "GPT-OSS 20B",
+                    "provider": "nvidia",
+                },
+                {
+                    "id": "nvidia/glm/4.7",
+                    "name": "GLM 4.7",
+                    "provider": "nvidia",
+                },
+                {
+                    "id": "nvidia/moonshotai/kimi-k2.5",
+                    "name": "Kimi K2.5",
                     "provider": "nvidia",
                 },
                 {
                     "id": "nvidia/llama/4-scout",
-                    "name": "Llama 4 Scout (10M Context)",
+                    "name": "Llama 4 Scout",
                     "provider": "nvidia",
                 },
                 {
                     "id": "nvidia/llama/4-maverick",
-                    "name": "Llama 4 Maverick (Generalist)",
+                    "name": "Llama 4 Maverick",
                     "provider": "nvidia",
                 },
-                # Lightweight Champions: Edge & Low-Latency Sub-Agents
                 {
-                    "id": "nvidia/gemma/3-27b",
-                    "name": "Gemma 3 27B (Low Latency)",
+                    "id": "nvidia/qwen/3-30b-a3b-instruct",
+                    "name": "Qwen 3 30B",
+                    "provider": "nvidia",
+                },
+                {
+                    "id": "nvidia/meta/llama-3.1-405b-instruct",
+                    "name": "Llama 3.1 405B Instruct",
+                    "provider": "nvidia",
+                },
+                {
+                    "id": "nvidia/meta/llama-3.3-70b-instruct",
+                    "name": "Llama 3.3 70B Instruct",
+                    "provider": "nvidia",
+                },
+                {
+                    "id": "nvidia/mistralai/mixtral-8x22b-instruct-v0.1",
+                    "name": "Mixtral 8x22B Instruct",
+                    "provider": "nvidia",
+                },
+                {
+                    "id": "nvidia/mistralai/mistral-large-2-instruct",
+                    "name": "Mistral Large 2",
                     "provider": "nvidia",
                 },
                 {
                     "id": "nvidia/ministral/14b-reasoning",
-                    "name": "Ministral 14B (Sub-Agent)",
+                    "name": "Ministral 14B",
                     "provider": "nvidia",
                 },
                 {
-                    "id": "xai/grok-4.1-fast-non-reasoning",
-                    "name": "Grok 4.1 Fast (High Throughput)",
-                    "provider": "xai",
+                    "id": "nvidia/qwen/qwen2.5-72b-instruct",
+                    "name": "Qwen 2.5 72B Instruct",
+                    "provider": "nvidia",
                 },
             ]
 
@@ -624,7 +705,6 @@ class WebChannel(BaseChannel):
                 "ANTHROPIC_API_KEY",
                 "XAI_API_KEY",
                 "DEEPSEEK_API_KEY",
-                "MISTRAL_API_KEY",
                 "NVIDIA_API_KEY",
                 "LLM_BASE_URL",
             ]:

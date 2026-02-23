@@ -55,6 +55,50 @@ const success = (text) => log(colors.green, `  ✓ ${text}`);
 const warning = (text) => log(colors.yellow, `  ⚠ ${text}`);
 const error = (text) => log(colors.red, `  ✗ ${text}`);
 const info = (text) => log(colors.blue, `  ${text}`);
+const step = (text) => log(colors.lime, `  ${colors.bright}→ ${text}${colors.reset}`);
+
+// ── Spinner Utility ────────────────────────────────────────────────
+
+class Spinner {
+    constructor(text) {
+        this.text = text;
+        this.frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        this.frameIdx = 0;
+        this.interval = null;
+    }
+
+    start() {
+        process.stdout.write(`  ${colors.lime}${this.frames[0]}${colors.reset} ${this.text}`);
+        this.interval = setInterval(() => {
+            this.frameIdx = (this.frameIdx + 1) % this.frames.length;
+            process.stdout.current_line = `  ${colors.lime}${this.frames[this.frameIdx]}${colors.reset} ${this.text}`;
+            process.stdout.write(`\r${process.stdout.current_line}`);
+        }, 80);
+    }
+
+    stop(msg, success = true) {
+        if (this.interval) clearInterval(this.interval);
+        process.stdout.write(`\r\x1b[K`); // Clear line
+        if (success) {
+            console.log(`  ${colors.green}✓${colors.reset} ${msg || this.text}`);
+        } else {
+            console.log(`  ${colors.red}✗${colors.reset} ${msg || this.text}`);
+        }
+    }
+}
+
+async function runWithSpinner(text, fn) {
+    const s = new Spinner(text);
+    s.start();
+    try {
+        const result = await fn();
+        s.stop();
+        return result;
+    } catch (e) {
+        s.stop(text, false);
+        throw e;
+    }
+}
 
 // ── Utilities ──────────────────────────────────────────────────────
 
@@ -70,7 +114,7 @@ function isPortReachable(port) {
 }
 
 function openBrowser(url) {
-    // FIX: Windows 'start' needs an empty title arg and quoted URL to handle special chars
+
     const cmd = process.platform === 'darwin' ? `open "${url}"`
         : process.platform === 'win32' ? `start "" "${url}"`
             : `xdg-open "${url}"`;
@@ -100,7 +144,7 @@ async function getSystemPython() {
     if (process.platform === 'win32' && await commandExists('py')) return 'py';
     if (await commandExists('python3')) return 'python3';
     if (await commandExists('python')) {
-        // On Windows, verify it's real Python—not the Microsoft Store alias
+
         if (process.platform === 'win32') {
             const ver = await getVersion('python');
             if (ver && ver.toLowerCase().includes('python')) return 'python';
@@ -118,7 +162,7 @@ async function getSystemPython() {
                     candidates.push(path.join('C:\\', entry, 'python.exe'));
                 }
             }
-        } catch { /* ignore */ }
+        } catch { }
 
         const localAppData = process.env.LOCALAPPDATA;
         if (localAppData) {
@@ -129,7 +173,7 @@ async function getSystemPython() {
                         candidates.push(path.join(pyDir, entry, 'python.exe'));
                     }
                 }
-            } catch { /* missing */ }
+            } catch { }
         }
         for (const c of candidates) {
             if (fs.existsSync(c)) return c;
@@ -140,7 +184,7 @@ async function getSystemPython() {
 
 function getVersion(cmd, args = ['--version']) {
     return new Promise((resolve) => {
-        // FIX: also read stderr — some tools (e.g. git, python) print version to stderr
+
         exec(`${cmd} ${args.join(' ')}`, (err, stdout, stderr) => {
             if (err) resolve(null);
             else resolve((stdout || stderr).trim().split('\n')[0]);
@@ -209,8 +253,6 @@ function killProc(proc) {
     if (!proc) return;
     try {
         if (process.platform === 'win32') {
-            // FIX: Do NOT use /T — it kills the entire process tree,
-            // which on some Windows systems walks up to the parent terminal.
             execSync(`taskkill /PID ${proc.pid} /F`, { stdio: 'ignore' });
         } else {
             proc.kill('SIGTERM');
@@ -291,90 +333,6 @@ ${colors.reset}
     ${colors.dim}limebot doctor${colors.reset}
     ${colors.dim}limebot install-browser${colors.reset}
 `);
-}
-
-async function cmdAutorun(args) {
-    const action = args[0]?.toLowerCase();
-    if (action !== 'enable' && action !== 'disable') {
-        error("Usage: limebot autorun <enable|disable>");
-        process.exit(1);
-    }
-
-    console.log(`${colors.lime}${colors.bright}\n  🍋 LimeBot Autorun Configuration${colors.reset}\n`);
-
-    if (process.platform === 'win32') {
-        const taskName = "LimeBotOSGateway";
-        const gatewayPath = path.join(rootDir, 'bin', 'gateway.cmd');
-
-        if (action === 'enable') {
-            info(`Creating Windows Scheduled Task: ${taskName}`);
-            try {
-                execSync(`schtasks /create /tn "${taskName}" /tr "${gatewayPath}" /sc onlogon /f`, { stdio: 'pipe' });
-                success("Autorun enabled! LimeBot will start whenever you log in.");
-            } catch (e) {
-                const errorLog = (e.stdout?.toString() || "") + (e.stderr?.toString() || "");
-                if (errorLog.toLowerCase().includes('acceso denegado') || errorLog.toLowerCase().includes('access is denied') || e.status === 1) {
-                    error("Access Denied: Creating a Scheduled Task requires Administrator privileges.");
-                    log(colors.yellow, "  Please restart your terminal (PowerShell/CMD) as Administrator and run the command again.");
-                } else {
-                    error(`Failed to enable autorun: ${e.message}`);
-                }
-            }
-        } else {
-            info(`Removing Windows Scheduled Task: ${taskName}`);
-            try {
-                execSync(`schtasks /delete /tn "${taskName}" /f`, { stdio: 'inherit' });
-                success("Autorun disabled (Scheduled Task removed).");
-            } catch (e) {
-                error(`Could not disable autorun: ${e.message}`);
-                log(colors.yellow, "  Note: You may need to run this command as Administrator.");
-            }
-        }
-    } else {
-        // Assume Linux/systemd for non-Windows
-        const serviceName = "limebot-os.service";
-        const homeDir = process.env.HOME;
-        const systemdDir = path.join(homeDir, '.config', 'systemd', 'user');
-        const servicePath = path.join(systemdDir, serviceName);
-        const gatewayPath = path.join(rootDir, 'bin', 'gateway.sh');
-
-        if (action === 'enable') {
-            info(`Creating systemd user service: ${serviceName}`);
-            const serviceContent = `[Unit]
-Description=LimeBot OS Gateway
-After=network.target
-
-[Service]
-ExecStart=${gatewayPath}
-Restart=always
-
-[Install]
-WantedBy=default.target
-`;
-            try {
-                if (!fs.existsSync(systemdDir)) fs.mkdirSync(systemdDir, { recursive: true });
-                fs.writeFileSync(servicePath, serviceContent);
-                execSync('systemctl --user daemon-reload', { stdio: 'inherit' });
-                execSync(`systemctl --user enable ${serviceName.replace('.service', '')}`, { stdio: 'inherit' });
-                execSync(`systemctl --user start ${serviceName.replace('.service', '')}`, { stdio: 'inherit' });
-                success("Autorun enabled! LimeBot is now running as a systemd user service.");
-            } catch (e) {
-                error(`Failed to enable autorun: ${e.message}`);
-            }
-        } else {
-            info(`Removing systemd user service: ${serviceName}`);
-            try {
-                execSync(`systemctl --user stop ${serviceName.replace('.service', '')}`, { stdio: 'inherit' });
-                execSync(`systemctl --user disable ${serviceName.replace('.service', '')}`, { stdio: 'inherit' });
-                if (fs.existsSync(servicePath)) fs.unlinkSync(servicePath);
-                execSync('systemctl --user daemon-reload', { stdio: 'inherit' });
-                success("Autorun disabled.");
-            } catch (e) {
-                error(`Failed to disable autorun: ${e.message}`);
-            }
-        }
-    }
-    console.log('');
 }
 
 async function cmdDoctor() {
@@ -567,7 +525,92 @@ async function cmdStop() {
     console.log('');
 }
 
+async function cmdAutorun(args) {
+    const action = args[0]?.toLowerCase();
+    if (action !== 'enable' && action !== 'disable') {
+        error("Usage: limebot autorun <enable|disable>");
+        process.exit(1);
+    }
+
+    console.log(`${colors.lime}${colors.bright}\n  🍋 LimeBot Autorun Configuration${colors.reset}\n`);
+
+    if (process.platform === 'win32') {
+        const taskName = "LimeBotGateway";
+        const gatewayPath = path.join(rootDir, 'bin', 'gateway.cmd');
+
+        if (action === 'enable') {
+            info(`Creating Windows Scheduled Task: ${taskName}`);
+            try {
+                execSync(`schtasks /create /tn "${taskName}" /tr "${gatewayPath}" /sc onlogon /f`, { stdio: 'pipe' });
+                success("Autorun enabled! LimeBot will start whenever you log in.");
+            } catch (e) {
+                const errorLog = (e.stdout?.toString() || "") + (e.stderr?.toString() || "");
+                if (errorLog.toLowerCase().includes('acceso denegado') || errorLog.toLowerCase().includes('access is denied') || e.status === 1) {
+                    error("Access Denied: Creating a Scheduled Task requires Administrator privileges.");
+                    log(colors.yellow, "  Please restart your terminal (PowerShell/CMD) as Administrator and run the command again.");
+                } else {
+                    error(`Failed to enable autorun: ${e.message}`);
+                }
+            }
+        } else {
+            info(`Removing Windows Scheduled Task: ${taskName}`);
+            try {
+                execSync(`schtasks /delete /tn "${taskName}" /f`, { stdio: 'inherit' });
+                success("Autorun disabled (Scheduled Task removed).");
+            } catch (e) {
+                error(`Could not disable autorun: ${e.message}`);
+                log(colors.yellow, "  Note: You may need to run this command as Administrator.");
+            }
+        }
+    } else {
+
+        const serviceName = "limebot.service";
+        const homeDir = process.env.HOME;
+        const systemdDir = path.join(homeDir, '.config', 'systemd', 'user');
+        const servicePath = path.join(systemdDir, serviceName);
+        const gatewayPath = path.join(rootDir, 'bin', 'gateway.sh');
+
+        if (action === 'enable') {
+            info(`Creating systemd user service: ${serviceName}`);
+            const serviceContent = `[Unit]
+Description=LimeBot Gateway
+After=network.target
+
+[Service]
+ExecStart=${gatewayPath}
+Restart=always
+
+[Install]
+WantedBy=default.target
+`;
+            try {
+                if (!fs.existsSync(systemdDir)) fs.mkdirSync(systemdDir, { recursive: true });
+                fs.writeFileSync(servicePath, serviceContent);
+                execSync('systemctl --user daemon-reload', { stdio: 'inherit' });
+                execSync('systemctl --user enable limebot', { stdio: 'inherit' });
+                execSync('systemctl --user start limebot', { stdio: 'inherit' });
+                success("Autorun enabled! LimeBot is now running as a systemd user service.");
+            } catch (e) {
+                error(`Failed to enable autorun: ${e.message}`);
+            }
+        } else {
+            info(`Removing systemd user service: ${serviceName}`);
+            try {
+                execSync('systemctl --user stop limebot', { stdio: 'inherit' });
+                execSync('systemctl --user disable limebot', { stdio: 'inherit' });
+                if (fs.existsSync(servicePath)) fs.unlinkSync(servicePath);
+                execSync('systemctl --user daemon-reload', { stdio: 'inherit' });
+                success("Autorun disabled.");
+            } catch (e) {
+                error(`Failed to disable autorun: ${e.message}`);
+            }
+        }
+    }
+    console.log('');
+}
+
 async function cmdStart(args) {
+    process.stdout.write(LOGO);
     const quickMode = args.includes('--quick') || args.includes('-q');
     const backendOnly = args.includes('--backend-only');
     const frontendOnly = args.includes('--frontend-only');
@@ -578,9 +621,8 @@ async function cmdStart(args) {
     }
 
     console.log(`${colors.lime}${colors.bright}\n  🍋 Starting LimeBot${colors.reset}\n`);
+    log(colors.gray, `  ${colors.bright}Tip:${colors.reset} Run ${colors.cyan}npm run lime-bot help${colors.reset} to see all available CLI commands.`);
     if (quickMode) info('Quick mode: Skipping dependency checks...');
-
-    log(colors.gray, `  ${colors.bright}Tip:${colors.reset} Run ${colors.cyan}npm run limebot help${colors.reset} to see all available CLI commands.`);
 
     const envFile = path.join(rootDir, '.env');
     const isConfigured = fs.existsSync(envFile);
@@ -599,10 +641,13 @@ async function cmdStart(args) {
         const needsBridge = !backendOnly && !fs.existsSync(bridgeModules);
 
         if (!fs.existsSync(nodeModules) || !fs.existsSync(webModules) || needsBridge) {
-            info('Installing NPM dependencies (root & workspaces)...');
-            await new Promise((resolve) => {
-                const p = spawn('npm', ['install'], { cwd: rootDir, shell: true, stdio: 'inherit', env: childEnv });
-                p.on('close', resolve);
+            await runWithSpinner('Installing NPM dependencies (root & workspaces)...', () => {
+                return new Promise((resolve, reject) => {
+                    const p = spawn('npm', ['install'], { cwd: rootDir, shell: true, stdio: 'pipe', env: childEnv });
+                    let stderr = '';
+                    p.stderr.on('data', (d) => { stderr += d.toString(); });
+                    p.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr || `npm install exited ${code}`)));
+                });
             });
         } else {
             success('NPM dependencies up to date.');
@@ -611,44 +656,30 @@ async function cmdStart(args) {
         // FIX: venv is for the backend — only needed when NOT frontend-only
         if (!frontendOnly) {
             if (!fs.existsSync(venvDir)) {
-                info('Creating Python virtual environment...');
-                const systemPython = await getSystemPython();
-                await new Promise((resolve) => {
-                    const p = spawn(systemPython, ['-m', 'venv', '.venv'], { cwd: rootDir, shell: true, stdio: 'inherit' });
-                    p.on('close', resolve);
+                await runWithSpinner('Creating Python virtual environment...', () => {
+                    return new Promise((resolve, reject) => {
+                        const systemPython = getSystemPython();
+                        systemPython.then(py => {
+                            const p = spawn(py, ['-m', 'venv', '.venv'], { cwd: rootDir, shell: true, stdio: 'pipe' });
+                            p.on('close', (code) => code === 0 ? resolve() : reject(new Error(`venv creation failed (code ${code})`)));
+                        });
+                    });
                 });
             }
 
-            info('Checking backend requirements...');
             const systemPython = await getSystemPython();
             const pythonCmd = fs.existsSync(venvPython) ? venvPython : systemPython;
 
-            const pipInstall = (resolve, reject) => {
-                const p = spawn(pythonCmd, ['-m', 'pip', 'install', '-r', 'requirements.txt', '--quiet'], {
-                    cwd: rootDir, shell: true, stdio: 'inherit', env: childEnv,
-                });
-                p.on('close', (code) => code === 0 ? resolve() : reject(new Error(`pip exited ${code}`)));
-            };
-
-            try {
-                await new Promise(pipInstall);
-                success('Backend dependencies installed.');
-            } catch (e) {
-                warning('pip install failed. Attempting to bootstrap pip...');
-                try {
-                    await new Promise((resolve, reject) => {
-                        const p = spawn(pythonCmd, ['-m', 'ensurepip', '--default-pip'], {
-                            cwd: rootDir, shell: true, stdio: 'inherit', env: childEnv,
-                        });
-                        p.on('close', (code) => code === 0 ? resolve() : reject(new Error('ensurepip failed')));
+            await runWithSpinner('Checking backend requirements...', () => {
+                return new Promise((resolve, reject) => {
+                    const p = spawn(pythonCmd, ['-m', 'pip', 'install', '-r', 'requirements.txt', '--quiet'], {
+                        cwd: rootDir, shell: true, stdio: 'pipe', env: childEnv,
                     });
-                    await new Promise(pipInstall);
-                    success('Backend dependencies installed (after pip bootstrap).');
-                } catch (retryErr) {
-                    error(`Could not install backend dependencies: ${retryErr.message}`);
-                    info('Try deleting .venv and running again, or run: pip install -r requirements.txt');
-                }
-            }
+                    let stderr = '';
+                    p.stderr.on('data', (d) => { stderr += d.toString(); });
+                    p.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr || `pip install exited ${code}`)));
+                });
+            });
         }
     }
 
@@ -691,15 +722,16 @@ async function cmdStart(args) {
         const enabled = isWhatsAppEnabled();
 
         if (enabled && !bridgeProc) {
-            info('WhatsApp enabled. Starting bridge...');
             const bridgeDir = path.join(rootDir, 'bridge');
             if (fs.existsSync(bridgeDir) && !fs.existsSync(path.join(bridgeDir, 'dist', 'index.js'))) {
-                info('Building WhatsApp bridge...');
-                await new Promise((resolve) => {
-                    const p = spawn('npm', ['run', 'build'], { cwd: bridgeDir, shell: true, stdio: 'inherit', env: childEnv });
-                    p.on('close', resolve);
+                await runWithSpinner('Building WhatsApp bridge...', () => {
+                    return new Promise((resolve, reject) => {
+                        const p = spawn('npm', ['run', 'build'], { cwd: bridgeDir, shell: true, stdio: 'pipe', env: childEnv });
+                        p.on('close', (code) => code === 0 ? resolve() : reject(new Error(`bridge build failed (code ${code})`)));
+                    });
                 });
             }
+            info('WhatsApp enabled. Starting bridge...');
 
             bridgeProc = spawn('node', ['dist/index.js'], {
                 cwd: path.join(rootDir, 'bridge'), shell: true, stdio: 'inherit', env: childEnv,
@@ -723,7 +755,6 @@ async function cmdStart(args) {
 
     // FIX: check bridge state after backend is started so the restart-on-enable path works correctly
     if (!frontendOnly) await startBackend();
-    process.stdout.write(LOGO);
 
     await updateBridgeState();
 
@@ -792,8 +823,8 @@ async function main() {
         case 'doctor': await cmdDoctor(); break;
         case 'logs': await cmdLogs(args.slice(1)); break;
         case 'install-browser': await cmdInstallBrowser(); break;
-        case 'autorun': await cmdAutorun(args.slice(1)); break;
         case 'skill': await cmdSkill(args.slice(1)); break;
+        case 'autorun': await cmdAutorun(args.slice(1)); break;
         case 'help': case '--help': case '-h':
             await cmdHelp(); break;
         default:

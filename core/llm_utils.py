@@ -141,10 +141,8 @@ def get_api_key_for_model(model: str) -> Optional[str]:
         return os.getenv("DEEPSEEK_API_KEY")
     elif model.startswith("nvidia/"):
         return os.getenv("NVIDIA_API_KEY")
-    elif model.startswith("mistral/"):
-        return os.getenv("MISTRAL_API_KEY")
 
-    # Fallback to any available key in a specific order
+    
     return (
         os.getenv("GEMINI_API_KEY")
         or os.getenv("OPENAI_API_KEY")
@@ -152,7 +150,6 @@ def get_api_key_for_model(model: str) -> Optional[str]:
         or os.getenv("XAI_API_KEY")
         or os.getenv("DEEPSEEK_API_KEY")
         or os.getenv("NVIDIA_API_KEY")
-        or os.getenv("MISTRAL_API_KEY")
     )
 
 
@@ -160,6 +157,7 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
     """
     Resolve model, base_url, api_key, and custom_llm_provider for LiteLLM.
     """
+
     api_key = get_api_key_for_model(model)
     base_url = default_base_url
     custom_llm_provider = None

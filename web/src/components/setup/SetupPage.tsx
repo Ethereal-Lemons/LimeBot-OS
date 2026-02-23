@@ -9,6 +9,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Key, Bot, ShieldCheck, ArrowRight, CheckCircle2, RefreshCw, Trash, Plus } from 'lucide-react';
 
+const FALLBACK_MODELS = [
+    { id: 'gemini/gemini-2.0-flash', name: 'Gemini 2.0 Flash', provider: 'gemini' },
+    { id: 'gemini/gemini-1.5-flash', name: 'Gemini 1.5 Flash', provider: 'gemini' },
+    { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'openai' },
+    { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai' },
+    { id: 'anthropic/claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet', provider: 'anthropic' },
+    { id: 'anthropic/claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'anthropic' },
+    { id: 'deepseek/deepseek-chat', name: 'DeepSeek V3', provider: 'deepseek' },
+    { id: 'xai/grok-2-1212', name: 'Grok 2', provider: 'xai' },
+];
+
 export function SetupPage() {
     const [step, setStep] = useState(1);
     const [config, setConfig] = useState({
@@ -24,18 +35,27 @@ export function SetupPage() {
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const [availableModels, setAvailableModels] = useState<any[]>([]);
+    const [availableModels, setAvailableModels] = useState<any[]>(FALLBACK_MODELS);
+    const [isLoadingModels, setIsLoadingModels] = useState(false);
 
     useEffect(() => {
         fetchModels();
     }, []);
 
-    const fetchModels = async () => {
+    const fetchModels = async (retries = 3) => {
+        setIsLoadingModels(true);
         try {
             const res = await axios.get(`${API_BASE_URL}/api/llm/models`);
-            if (res.data.models) setAvailableModels(res.data.models);
+            if (res.data.models && res.data.models.length > 0) {
+                setAvailableModels(res.data.models);
+            }
         } catch (err) {
             console.error("Failed to load models:", err);
+            if (retries > 0) {
+                setTimeout(() => fetchModels(retries - 1), 2000);
+            }
+        } finally {
+            setIsLoadingModels(false);
         }
     };
 
@@ -136,10 +156,15 @@ export function SetupPage() {
                                         <SelectItem value="anthropic">Anthropic Claude</SelectItem>
                                         <SelectItem value="xai">xAI (Grok)</SelectItem>
                                         <SelectItem value="deepseek">DeepSeek</SelectItem>
-                                        <SelectItem value="mistral">Mistral</SelectItem>
                                         <SelectItem value="nvidia">NVIDIA</SelectItem>
                                     </SelectContent>
                                 </Select>
+                                {isLoadingModels && (
+                                    <p className="text-[10px] text-primary animate-pulse flex items-center gap-1 mt-1">
+                                        <RefreshCw className="h-2 w-2 animate-spin" />
+                                        Updating latest models...
+                                    </p>
+                                )}
                             </div>
 
                             <div className="space-y-2">
@@ -229,19 +254,6 @@ export function SetupPage() {
                                         />
                                     </div>
                                 )}
-                                {config.LLM_MODEL.startsWith('mistral') && (
-                                    <div className="space-y-2">
-                                        <Label htmlFor="mistral_key">Mistral API Key</Label>
-                                        <Input
-                                            id="mistral_key"
-                                            type="password"
-                                            placeholder="sk-..."
-                                            value={(config as any).MISTRAL_API_KEY || ''}
-                                            onChange={(e) => handleChange('MISTRAL_API_KEY', e.target.value)}
-                                            className="bg-background/50"
-                                        />
-                                    </div>
-                                )}
                                 {config.LLM_MODEL.startsWith('nvidia') && (
                                     <div className="space-y-2">
                                         <Label htmlFor="nvidia_key">NVIDIA API Key</Label>
@@ -268,8 +280,7 @@ export function SetupPage() {
                                     (config.LLM_MODEL.startsWith('openai') && !(config as any).OPENAI_API_KEY) ||
                                     (config.LLM_MODEL.startsWith('anthropic') && !(config as any).ANTHROPIC_API_KEY) ||
                                     (config.LLM_MODEL.startsWith('xai') && !(config as any).XAI_API_KEY) ||
-                                    (config.LLM_MODEL.startsWith('deepseek') && !(config as any).DEEPSEEK_API_KEY) ||
-                                    (config.LLM_MODEL.startsWith('mistral') && !(config as any).MISTRAL_API_KEY)
+                                    (config.LLM_MODEL.startsWith('deepseek') && !(config as any).DEEPSEEK_API_KEY)
                                 }
                             >
                                 Continue
