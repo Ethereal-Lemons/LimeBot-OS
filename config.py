@@ -69,17 +69,11 @@ def load_config(force_reload=False):
         logger.warning("Invalid STALL_TIMEOUT in .env, defaulting to 30.")
         config.stall_timeout = 30
 
+    from core.llm_utils import get_api_key_for_model
+
     config.llm = SimpleNamespace()
     config.llm.model = os.getenv("LLM_MODEL") or "gemini/gemini-2.0-flash"
-    config.llm.api_key = (
-        os.getenv("GEMINI_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY")
-        or os.getenv("XAI_API_KEY")
-        or os.getenv("DEEPSEEK_API_KEY")
-        or os.getenv("NVIDIA_API_KEY")
-        or os.getenv("MISTRAL_API_KEY")
-    )
+    config.llm.api_key = get_api_key_for_model(config.llm.model)
     config.llm.enable_dynamic_personality = (
         os.getenv("ENABLE_DYNAMIC_PERSONALITY", "false").lower() == "true"
     )

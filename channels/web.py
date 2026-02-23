@@ -554,15 +554,20 @@ class WebChannel(BaseChannel):
             model = os.getenv("LLM_MODEL", "gemini/gemini-2.0-flash")
             start = time.time()
             try:
-                from config import load_config
+                from core.llm_utils import resolve_provider_config
 
-                cfg = load_config()
+                p_cfg = resolve_provider_config(
+                    model, default_base_url=self.config.llm.base_url
+                )
+
                 await asyncio.to_thread(
                     completion,
-                    model=model,
+                    model=p_cfg["model"],
                     messages=[{"role": "user", "content": "hi"}],
                     max_tokens=5,
-                    api_key=cfg.llm.api_key,
+                    api_key=p_cfg["api_key"],
+                    base_url=p_cfg["base_url"],
+                    custom_llm_provider=p_cfg["custom_llm_provider"],
                 )
                 latency = int((time.time() - start) * 1000)
                 return {

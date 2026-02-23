@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import re
 import time
 import uuid
@@ -214,23 +213,17 @@ class AgentLoop:
         Return (model, base_url, api_key, custom_llm_provider).
         Called once at init; call again via set_model() when the model changes.
         """
-        model = self.model
-        base_url = self.config.llm.base_url
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        custom_llm_provider: Optional[str] = None
+        from core.llm_utils import resolve_provider_config
 
-        if model.startswith("nvidia/"):
-            base_url = "https://integrate.api.nvidia.com/v1"
-            api_key = os.environ.get("NVIDIA_API_KEY")
-            model = model.removeprefix("nvidia/")
-            custom_llm_provider = "openai"
-        elif model.startswith("xai/"):
-            base_url = "https://api.x.ai/v1"
-            api_key = os.environ.get("XAI_API_KEY")
-            model = model.removeprefix("xai/")
-            custom_llm_provider = "openai"
-
-        return model, base_url, api_key, custom_llm_provider
+        p_cfg = resolve_provider_config(
+            self.model, default_base_url=self.config.llm.base_url
+        )
+        return (
+            p_cfg["model"],
+            p_cfg["base_url"],
+            p_cfg["api_key"],
+            p_cfg["custom_llm_provider"],
+        )
 
     def set_model(self, model: str) -> None:
         """Switch the active model and refresh cached provider config."""
