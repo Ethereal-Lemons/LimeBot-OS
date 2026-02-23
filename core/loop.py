@@ -166,11 +166,14 @@ class AgentLoop:
 
         # 2. Warm embedding API HTTP connection with a 1-token probe
         try:
-            await self.vector_service._get_embedding("hi")
-            logger.info("✅ Embedding API connection warmed.")
+            emb = await self.vector_service._get_embedding("hi")
+            if emb is not None:
+                logger.info("✅ Embedding API connection warmed.")
+            else:
+                logger.warning("⚠ Embedding warmup failed (check API keys). Using keyword fallback.")
         except Exception as e:
             if prompt_module.is_setup_complete():
-                logger.warning(f"⚠ Embedding warmup failed (non-critical): {e}")
+                logger.warning(f"⚠ Embedding warmup error (non-critical): {e}")
             else:
                 logger.debug(f"Embedding warmup skipped/failed during setup: {e}")
 

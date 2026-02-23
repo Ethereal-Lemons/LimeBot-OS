@@ -109,6 +109,17 @@ function App() {
 
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
+          // 1. Initial configuration check (no auth needed)
+          const statusRes = await axios.get(`${API_BASE_URL}/api/setup/status`);
+          if (statusRes.data.configured) {
+            setForceSetup(false);
+          } else {
+            setForceSetup(true);
+            setIsInitialized(true);
+            return;
+          }
+
+          // 2. Load authenticated data if configured
           await Promise.all([
             axios.get(`${API_BASE_URL}/api/identity`)
               .then(res => { setBotIdentity(res.data); lastExplicitIdentityFetch.current = Date.now(); }),
@@ -117,12 +128,6 @@ function App() {
                 if (res.data.env?.AUTONOMOUS_MODE === 'true') {
                   setAutonomousMode(true);
                 }
-              }),
-            axios.get(`${API_BASE_URL}/api/setup/status`)
-              .then(res => {
-                if (!res.data.configured) {
-                  setForceSetup(true);
-                }
               })
           ]);
 
@@ -130,8 +135,8 @@ function App() {
         } catch (err: any) {
           const status = err?.response?.status;
 
+          // If unauthorized, wait for AuthKeyModal
           if (status === 401 || status === 403) break;
-
 
           if (!err?.response && attempt < MAX_RETRIES) {
             console.log(`Backend not reachable, retrying in ${RETRY_DELAY}ms (${attempt + 1}/${MAX_RETRIES})...`);
@@ -490,6 +495,33 @@ function App() {
           <div className="flex flex-col items-center gap-4">
             <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin" />
             <p className="text-muted-foreground animate-pulse text-sm font-medium tracking-widest uppercase text-center">Initializing System...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isInitialized) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
+        <div className="fixed inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(50,205,50,0.05),transparent_70%)]" />
+        <div className="relative space-y-8 text-center animate-in fade-in zoom-in duration-700">
+          <div className="inline-block relative">
+            <div className="absolute inset-0 bg-primary/20 blur-3xl rounded-full scale-150 animate-pulse" />
+            <img src="/lime.png" alt="LimeBot" className="h-40 w-auto relative drop-shadow-2xl" />
+          </div>
+          <div className="space-y-3">
+            <h1 className="text-4xl font-black tracking-tighter text-foreground drop-shadow-sm">
+              LIME<span className="text-primary italic">BOT</span>
+            </h1>
+            <div className="flex items-center justify-center gap-2">
+              <div className="h-1.5 w-1.5 rounded-full bg-primary animate-bounce" />
+              <div className="h-1.5 w-1.5 rounded-full bg-primary animate-bounce [animation-delay:0.2s]" />
+              <div className="h-1.5 w-1.5 rounded-full bg-primary animate-bounce [animation-delay:0.4s]" />
+              <span className="text-xs font-mono text-muted-foreground uppercase tracking-widest ml-1">
+                Connecting to backend
+              </span>
+            </div>
           </div>
         </div>
       </div>

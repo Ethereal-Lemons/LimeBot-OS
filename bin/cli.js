@@ -514,10 +514,43 @@ async function cmdLogs(args) {
 async function cmdStop() {
     console.log(`${colors.lime}${colors.bright}\n  🍋 Stopping LimeBot${colors.reset}\n`);
 
-    // FIX: await each kill so success/failure messages are accurate
-    for (const [port, label] of [[8000, 'backend'], [5173, 'frontend'], [3000, 'WhatsApp bridge']]) {
+    
+    const primaryPorts = [
+        [8000, 'backend'],
+        [5173, 'frontend'],
+        [3000, 'WhatsApp bridge']
+    ];
+
+    let anyKilled = false;
+    for (const [port, label] of primaryPorts) {
         const killed = await killPort(port);
         killed ? success(`Stopped ${label} (port ${port})`) : info(`${label} was not running`);
+        if (killed) anyKilled = true;
+    }
+
+   
+    if (process.platform === 'win32') {
+        try {
+           
+            execSync('wmic process where "commandline like \'%main.py%\'" delete', { stdio: 'ignore' });
+          
+            execSync('wmic process where "commandline like \'%bridge/dist/index.js%\' or commandline like \'%vite%\' or commandline like \'%bin/cli.js%\'" delete', { stdio: 'ignore' });
+            anyKilled = true; 
+        } catch (e) {  }
+    } else {
+      
+        try {
+            execSync('pkill -f "main.py"', { stdio: 'ignore' });
+            execSync('pkill -f "bridge/dist/index.js"', { stdio: 'ignore' });
+            execSync('pkill -f "vite"', { stdio: 'ignore' });
+            anyKilled = true;
+        } catch (e) { }
+    }
+
+    if (!anyKilled) {
+        info('No running LimeBot processes found.');
+    } else {
+        success('Deep clean complete: All LimeBot instances terminated.');
     }
 
     // Give OS time to release ports

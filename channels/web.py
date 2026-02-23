@@ -1380,15 +1380,57 @@ class WebChannel(BaseChannel):
             logger.info("Web client disconnected")
 
     async def start(self) -> None:
-        try:
-            config = uvicorn.Config(
-                self.app, host="0.0.0.0", port=8000, log_level="info"
-            )
-            self.server = uvicorn.Server(config)
-            logger.info("Web channel starting on port 8000")
-            await self.server.serve()
-        except Exception as e:
-            logger.exception(f"CRITICAL: WebChannel failed to start: {e}")
+        import socket
+        import uvicorn
+        
+        # Safely get port from config, defaulting to 8000
+        web_config = getattr(self.config, "web", None)
+        base_port = getattr(web_config, "port", 8000) if web_config else 8000
+        
+        max_retries = 10
+        
+        for port_offset in range(max_retries):
+            current_port = base_port + port_offset
+            try:
+               
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("0.0.0.0", current_port))
+                
+               
+                config = uvicorn.Config(
+                    self.app, host="0.0.0.0", port=current_port, log_level="info"
+                )
+                self.server = uvicorn.Server(config)
+                self.actual_port = current_port
+                logger.info(f"Web channel starting on port {current_port}")
+                
+               
+                try:
+                    await self.server.serve()
+                    return
+                except (OSError, SystemExit) as e:
+                  
+                    if isinstance(e, SystemExit) and e.code != 0:
+                         logger.warning(f"Uvicorn failed to start on port {current_port}, likely bind conflict.")
+                    else:
+                         logger.warning(f"OS error on port {current_port}: {e}")
+                    
+                    if port_offset < max_retries - 1:
+                        logger.warning(f"Retrying next port...")
+                        continue
+                    else:
+                        raise
+                
+            except OSError:
+                if port_offset < max_retries - 1:
+                    logger.warning(f"Port {current_port} is in use (socket bind failed), trying {current_port + 1}...")
+                    continue
+                else:
+                    logger.error(f"Failed to find an available port after {max_retries} attempts.")
+                    raise
+            except Exception as e:
+                logger.exception(f"CRITICAL: WebChannel failed to start: {e}")
+                break
 
     async def stop(self) -> None:
         if self.server:
