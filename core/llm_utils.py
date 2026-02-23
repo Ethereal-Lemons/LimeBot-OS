@@ -38,7 +38,23 @@ async def fetch_openai_compatible_models(
                     if not model_id:
                         continue
 
-                    if "embed" in model_id.lower() or "audio" in model_id.lower():
+                    non_text_keywords = [
+                        "embed",
+                        "audio",
+                        "dall-e",
+                        "tts",
+                        "stt",
+                        "whisper",
+                        "moderation",
+                        "stable-diffusion",
+                        "flux",
+                        "rerank",
+                        "bge-",
+                        "gte-",
+                        "clip",
+                        "siglip",
+                    ]
+                    if any(kw in model_id.lower() for kw in non_text_keywords):
                         continue
 
                     display_name = model_id.split("/")[-1].replace("-", " ").title()
