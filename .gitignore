@@ -28,3 +28,4 @@ bridge/dist/
 *.bak
 .venv/
 allowed_paths.txt
+persona/IDENTITY.md
