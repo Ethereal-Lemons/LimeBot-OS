@@ -22,7 +22,11 @@ class SessionManager:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
         self.sessions: Dict[str, Any] = {}
+        self._skills_cache: Optional[list] = None
+        self._last_skills_refresh: float = 0
         self._lock = asyncio.Lock()
+        self._save_task: Optional[asyncio.Task] = None
+        self._save_debounce_s: float = 2.0
 
         self.sessions = self._load_sessions()
 
@@ -37,15 +41,25 @@ class SessionManager:
         return {}
 
     async def _save_sessions(self):
-        """Persist sessions to JSON file using an atomic write pattern (Flaw #1)."""
+        """Persist sessions to JSON file using an atomic write pattern."""
         async with self._lock:
             try:
                 temp_file = SESSION_FILE.with_suffix(".tmp")
-                content = json.dumps(self.sessions, indent=2)
+                content = await asyncio.to_thread(json.dumps, self.sessions)
                 await asyncio.to_thread(temp_file.write_text, content, encoding="utf-8")
                 await asyncio.to_thread(shutil.move, str(temp_file), str(SESSION_FILE))
             except Exception as e:
                 logger.error(f"Error saving sessions: {e}")
+
+    async def _save_sessions_debounced(self):
+        if self._save_task and not self._save_task.done():
+            return
+
+        async def _delayed_save():
+            await asyncio.sleep(self._save_debounce_s)
+            await self._save_sessions()
+
+        self._save_task = asyncio.create_task(_delayed_save())
 
     async def update_session(
         self,
@@ -111,18 +125,22 @@ class SessionManager:
             session["total_tokens"]["output"] += c_tokens
             session["total_tokens"]["total"] += t_tokens
 
-        asyncio.create_task(self._save_sessions())
+        await self._save_sessions_debounced()
 
-    def append_chat_log(self, session_key: str, message: Dict[str, Any]):
-        """Append a message to the session's JSONL log."""
-        log_file = LOGS_DIR / f"{session_key}.jsonl"
-        try:
-            with open(log_file, "a", encoding="utf-8") as f:
-                msg_with_time = message.copy()
-                msg_with_time["timestamp"] = time.time()
-                f.write(json.dumps(msg_with_time) + "\n")
-        except Exception as e:
-            logger.error(f"Error appending chat log: {e}")
+    async def append_chat_log(self, session_key: str, message: Dict[str, Any]):
+        """Append a message to the session's JSONL log (background)."""
+
+        def _sync_append():
+            log_file = LOGS_DIR / f"{session_key}.jsonl"
+            try:
+                with open(log_file, "a", encoding="utf-8") as f:
+                    msg_with_time = message.copy()
+                    msg_with_time["timestamp"] = time.time()
+                    f.write(json.dumps(msg_with_time) + "\n")
+            except Exception as e:
+                logger.error(f"Error appending chat log: {e}")
+
+        await asyncio.to_thread(_sync_append)
 
     async def save_history(self, session_key: str, history: list):
         """Persist full conversation history to disk (JSON)."""
@@ -130,7 +148,7 @@ class SessionManager:
         history_dir.mkdir(parents=True, exist_ok=True)
         history_file = history_dir / f"{session_key}.json"
         try:
-            content = json.dumps(history, ensure_ascii=False, indent=2, default=str)
+            content = await asyncio.to_thread(json.dumps, history, default=str)
             await asyncio.to_thread(history_file.write_text, content, encoding="utf-8")
         except Exception as e:
             logger.error(f"Error saving history for {session_key}: {e}")
@@ -160,13 +178,11 @@ class SessionManager:
     async def delete_session(self, session_key: str) -> bool:
         """Delete a session and its logs."""
         async with self._lock:
-            self.sessions = self._load_sessions()
-
             if session_key in self.sessions:
                 del self.sessions[session_key]
 
                 temp_file = SESSION_FILE.with_suffix(".tmp")
-                content = json.dumps(self.sessions, indent=2)
+                content = await asyncio.to_thread(json.dumps, self.sessions)
                 await asyncio.to_thread(temp_file.write_text, content, encoding="utf-8")
                 await asyncio.to_thread(shutil.move, str(temp_file), str(SESSION_FILE))
 
@@ -181,18 +197,49 @@ class SessionManager:
                 return True
         return False
 
+    async def delete_sessions(self, session_keys: list[str]) -> int:
+        """Delete multiple sessions and their logs efficiently."""
+        deleted_count = 0
+        async with self._lock:
+            for key in session_keys:
+                if key in self.sessions:
+                    del self.sessions[key]
+                    deleted_count += 1
+
+                    # Delete logs
+                    log_file = LOGS_DIR / f"{key}.jsonl"
+                    if log_file.exists():
+                        try:
+                            await asyncio.to_thread(os.remove, log_file)
+                        except Exception as e:
+                            logger.error(f"Error deleting log file {log_file}: {e}")
+
+                    # Delete history
+                    self.delete_history(key)
+
+            if deleted_count > 0:
+                # Save once after all deletions
+                temp_file = SESSION_FILE.with_suffix(".tmp")
+                content = await asyncio.to_thread(json.dumps, self.sessions)
+                await asyncio.to_thread(temp_file.write_text, content, encoding="utf-8")
+                await asyncio.to_thread(shutil.move, str(temp_file), str(SESSION_FILE))
+
+        return deleted_count
+
     def get_sessions(self) -> Dict[str, Any]:
-        """Return all sessions (reloaded from disk)."""
-        self.sessions = self._load_sessions()
+        """Return all sessions from memory snapshot."""
         current_skills = self._get_skills()
         for session in self.sessions.values():
             session["skills"] = current_skills
         return self.sessions
 
     def _get_skills(self) -> list:
-        """Scan skills directory for available skills, excluding disabled ones."""
-        skills = []
+        """Scan skills directory for available skills (cached 30s)."""
+        now = time.time()
+        if self._skills_cache is not None and now - self._last_skills_refresh < 30:
+            return self._skills_cache
 
+        skills = []
         enabled = []
         try:
             config_path = Path("limebot.json")
@@ -207,4 +254,7 @@ class SessionManager:
                 if item.is_dir() and not item.name.startswith("__"):
                     if item.name in enabled:
                         skills.append(item.name)
-        return sorted(skills)
+
+        self._skills_cache = sorted(skills)
+        self._last_skills_refresh = now
+        return self._skills_cache

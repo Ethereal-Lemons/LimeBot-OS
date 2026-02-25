@@ -25,6 +25,7 @@ import { PersonaPage } from "@/components/persona/PersonaPage";
 import { AuthKeyModal } from "@/components/auth/AuthKeyModal";
 import { CronPage } from "@/components/cron/CronPage";
 import { MemoryPage } from "@/components/memory/MemoryPage";
+import { McpPage } from "./components/config/McpPage";
 import { injectCss, CSS_STORAGE_KEY } from "@/lib/css-injector";
 
 import { ToolExecution } from "@/components/chat/ToolCard";
@@ -71,8 +72,7 @@ function App() {
   useEffect(() => {
     document.documentElement.classList.add('dark');
 
-    // Load saved theme
-    // Load saved theme
+
     const savedTheme = localStorage.getItem('limebot-theme') || 'lime';
     if (savedTheme.startsWith('custom-')) {
       document.documentElement.removeAttribute('data-theme');
@@ -98,9 +98,11 @@ function App() {
       }
     );
 
-    // Apply custom global CSS
+
     const customCss = localStorage.getItem(CSS_STORAGE_KEY) || '';
     injectCss(customCss);
+
+
 
     const init = async () => {
 
@@ -254,42 +256,37 @@ function App() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'message' || data.type === 'full_content') {
-
-
           setIsTyping(false);
           let variant: 'default' | 'destructive' | 'warning' = 'default';
           if (data.metadata?.is_error) variant = 'destructive';
           if (data.metadata?.is_warning) variant = 'warning';
 
           setMessages(prev => {
-            // Prevent double-adding identical consecutive messages
-            const lastMsg = prev[prev.length - 1];
-            if (lastMsg && lastMsg.sender === 'bot' && lastMsg.content === data.content && !data.metadata?.type) { // Fix: Allow updates if it's a stream chunk or similar
-              // Actually for full_content we might want to replace.
-              // But the existing logic seems to just append.
-              // Let's keep it simple for now.
-              return prev;
-            }
-            // Logic for full content replacement or append?
-            // Since "full_content" usually comes at the end or as a whole message.
-            // If we were streaming, we'd update the last message.
 
-            // Check if we are updating a streaming message
-            if (lastMsg && lastMsg.sender === 'bot' && lastMsg.type !== 'tool') {
-              // If it was a stream update, we just replace the content
-              // But full_content usually means "final" content.
-              return prev.map((m, i) => i === prev.length - 1 ? { ...m, content: data.content } : m);
+            const lastBotIdx = [...prev].map((m, i) => ({ m, i })).reverse()
+              .find(({ m }) => m.sender === 'bot' && m.type !== 'tool' && !m.confirmation)?.i ?? -1;
+
+            if (lastBotIdx !== -1) {
+              const newMessages = [...prev];
+              newMessages[lastBotIdx] = {
+                ...newMessages[lastBotIdx],
+                content: data.content,
+                variant,
+                type: 'text'
+              };
+              return newMessages;
             }
+
 
             return [...prev, {
               sender: 'bot',
               content: data.content,
-              variant
+              variant,
+              type: 'text'
             }];
           });
 
           if (data.metadata && data.metadata.identity_updated) {
-            // FIX 6: use refreshIdentity so the poll skips for 8 s after this
             refreshIdentity();
           }
         }
@@ -489,20 +486,6 @@ function App() {
 
   if (!isInitialized) {
     return (
-      <div className="flex h-screen w-full items-center justify-center bg-[#0a0a0a]">
-        <div className="flex flex-col items-center gap-6">
-          <img src="/limesimple.png" alt="LimeBot Logo" className="w-16 h-16 animate-pulse" />
-          <div className="flex flex-col items-center gap-4">
-            <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin" />
-            <p className="text-muted-foreground animate-pulse text-sm font-medium tracking-widest uppercase text-center">Initializing System...</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!isInitialized) {
-    return (
       <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
         <div className="fixed inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(50,205,50,0.05),transparent_70%)]" />
         <div className="relative space-y-8 text-center animate-in fade-in zoom-in duration-700">
@@ -584,6 +567,8 @@ function App() {
           <PersonaPage />
         ) : currentView === 'appearance' ? (
           <AppearancePage onThemeChange={handleThemeChange} />
+        ) : currentView === 'mcp' ? (
+          <McpPage />
         ) : currentView === 'config' ? (
           <ConfigPage />
         ) : (

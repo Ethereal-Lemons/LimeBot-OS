@@ -3,8 +3,9 @@
 import asyncio
 import json
 import os
+import socket
 import time
-from typing import Any
+from typing import Any, Optional
 
 import uvicorn
 from fastapi import (
@@ -63,11 +64,16 @@ class WebChannel(BaseChannel):
 
     name = "web"
 
-    def __init__(self, config: Any, bus: MessageBus):
+    def __init__(
+        self,
+        config: Any,
+        bus: MessageBus,
+        session_manager: Optional[SessionManager] = None,
+    ):
         super().__init__(config, bus)
         self.app = FastAPI()
         self.server = None
-        self.session_manager = SessionManager()
+        self.session_manager = session_manager or SessionManager()
 
         async def verify_api_key(request: Request, x_api_key: str = Header(None)):
             internal_key = getattr(self.config.whitelist, "api_key", None)
@@ -89,6 +95,7 @@ class WebChannel(BaseChannel):
         self.channels = []
         self._whatsapp_qr: str | None = None
         self.start_time = time.time()
+        self.actual_port = getattr(self.config.web, "port", 8000)
         self.scheduler = None
 
         self._provider_models_cache: dict[str, list] = {}
@@ -346,6 +353,22 @@ class WebChannel(BaseChannel):
                     "message": f"Instance {instance_id} deleted",
                 }
             raise HTTPException(status_code=404, detail="Instance not found")
+
+        @self.app.post(
+            "/api/instances/delete-batch", dependencies=[Depends(self.verify_auth)]
+        )
+        async def delete_instances_batch(request: Request):
+            data = await request.json()
+            ids = data.get("ids", [])
+            if not ids:
+                return {"status": "success", "deleted": 0}
+
+            count = await self.session_manager.delete_sessions(ids)
+            return {
+                "status": "success",
+                "message": f"Deleted {count} instances",
+                "deleted": count,
+            }
 
         @self.app.get("/api/sessions", dependencies=[Depends(self.verify_auth)])
         async def get_sessions():
@@ -699,6 +722,8 @@ class WebChannel(BaseChannel):
                 "ALLOW_UNSAFE_COMMANDS": str(
                     getattr(cfg, "allow_unsafe_commands", False)
                 ).lower(),
+                "WEB_PORT": str(getattr(cfg.web, "port", 8000)),
+                "LLM_PROXY_URL": getattr(cfg.llm, "proxy_url", ""),
             }
             for key in [
                 "OPENAI_API_KEY",
@@ -707,6 +732,7 @@ class WebChannel(BaseChannel):
                 "DEEPSEEK_API_KEY",
                 "NVIDIA_API_KEY",
                 "LLM_BASE_URL",
+                "LLM_PROXY_URL",
             ]:
                 val = os.getenv(key)
                 if val:
@@ -769,6 +795,37 @@ class WebChannel(BaseChannel):
             except Exception as e:
                 logger.error(f"Error updating config: {e}")
                 return {"error": str(e)}
+
+        @self.app.get("/api/mcp/config", dependencies=[Depends(self.verify_auth)])
+        async def get_mcp_config():
+            from core.mcp_client import CONFIG_PATH
+            import json
+            if not CONFIG_PATH.exists():
+                return {"mcpServers": {}}
+            return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+
+        @self.app.post("/api/mcp/config", dependencies=[Depends(self.verify_auth)])
+        async def update_mcp_config(data: dict):
+            from core.mcp_client import CONFIG_PATH, get_mcp_manager, validate_mcp_config
+            import json
+            try:
+                ok, err = validate_mcp_config(data)
+                if not ok:
+                    return {"error": err}
+                CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                # Re-initialize MCP manager to apply changes
+                mcp_manager = get_mcp_manager()
+                asyncio.create_task(mcp_manager.initialize())
+                return {"status": "success", "message": "MCP configuration updated"}
+            except Exception as e:
+                logger.error(f"Error updating MCP config: {e}")
+                return {"error": str(e)}
+
+        @self.app.get("/api/mcp/status", dependencies=[Depends(self.verify_auth)])
+        async def get_mcp_status():
+            from core.mcp_client import get_mcp_manager
+            manager = get_mcp_manager()
+            return {"status": manager.get_status()}
 
         @self.app.get("/api/setup/status")
         async def get_setup_status():
@@ -853,7 +910,7 @@ class WebChannel(BaseChannel):
             subagents = [s for s in sessions.values() if s.get("parent_id")]
             return {
                 "uptime": uptime,
-                "gateway_url": "ws://localhost:8000/ws",
+                "gateway_url": f"ws://localhost:{self.actual_port}/ws",
                 "channels": channel_stats,
                 "sessions": len(sessions),
                 "sessions_count": len(sessions),
@@ -1380,53 +1437,55 @@ class WebChannel(BaseChannel):
             logger.info("Web client disconnected")
 
     async def start(self) -> None:
-        import socket
-        import uvicorn
-        
+
         # Safely get port from config, defaulting to 8000
         web_config = getattr(self.config, "web", None)
         base_port = getattr(web_config, "port", 8000) if web_config else 8000
-        
+
         max_retries = 10
-        
+
         for port_offset in range(max_retries):
             current_port = base_port + port_offset
             try:
-               
+                # First try to see if we can bind a socket to this port
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.bind(("0.0.0.0", current_port))
-                
-               
+
+                # If we got here, the port is likely available
                 config = uvicorn.Config(
                     self.app, host="0.0.0.0", port=current_port, log_level="info"
                 )
                 self.server = uvicorn.Server(config)
                 self.actual_port = current_port
                 logger.info(f"Web channel starting on port {current_port}")
-                
-               
+
                 try:
                     await self.server.serve()
                     return
                 except (OSError, SystemExit) as e:
-                  
                     if isinstance(e, SystemExit) and e.code != 0:
-                         logger.warning(f"Uvicorn failed to start on port {current_port}, likely bind conflict.")
+                        logger.warning(
+                            f"Uvicorn failed to start on port {current_port}, likely bind conflict."
+                        )
                     else:
-                         logger.warning(f"OS error on port {current_port}: {e}")
-                    
+                        logger.warning(f"OS error on port {current_port}: {e}")
+
                     if port_offset < max_retries - 1:
-                        logger.warning(f"Retrying next port...")
+                        logger.warning("Retrying next port...")
                         continue
                     else:
                         raise
-                
+
             except OSError:
                 if port_offset < max_retries - 1:
-                    logger.warning(f"Port {current_port} is in use (socket bind failed), trying {current_port + 1}...")
+                    logger.warning(
+                        f"Port {current_port} is in use (socket bind failed), trying {current_port + 1}..."
+                    )
                     continue
                 else:
-                    logger.error(f"Failed to find an available port after {max_retries} attempts.")
+                    logger.error(
+                        f"Failed to find an available port after {max_retries} attempts."
+                    )
                     raise
             except Exception as e:
                 logger.exception(f"CRITICAL: WebChannel failed to start: {e}")

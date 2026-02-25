@@ -566,3 +566,47 @@
     /* Fallback */
   }
 }
+
+@keyframes lime-avatar-pulse {
+  0% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.35); }
+  70% { box-shadow: 0 0 0 10px hsl(var(--primary) / 0); }
+  100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0); }
+}
+
+.lime-avatar-pulse {
+  border-radius: 999px;
+  animation: lime-avatar-pulse 1.6s ease-out infinite;
+}
+
+.lime-activity-ribbon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: hsl(var(--primary) / 0.08);
+  border: 1px solid hsl(var(--primary) / 0.18);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.lime-activity-ribbon .lime-step {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: transparent;
+  transition: all 200ms ease;
+}
+
+.lime-activity-ribbon .lime-step.is-active {
+  color: hsl(var(--primary-foreground));
+  background: hsl(var(--primary) / 0.65);
+  box-shadow: 0 0 8px hsl(var(--primary) / 0.5);
+}
+
+/* Chat grouping tweaks */
+.chat-group-spacer {
+  height: 6px;
+}

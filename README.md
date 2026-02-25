@@ -74,6 +74,13 @@ For complex multi-step tasks, LimeBot can delegate work to an isolated backgroun
 - Reports back to the parent session when complete
 - Useful for long-running research, file processing, or anything that shouldn't block the main conversation
 
+### 🔌 Model Context Protocol (MCP) Support
+LimeBot is a fully-featured MCP client:
+- **Universal Tool Integration** — connect to any MCP server (Fetch, Filesystem, Brave Search, etc.) to immediately expand the bot's capabilities.
+- **Dynamic Discovery** — tools from connected MCP servers are automatically prefixed with `mcp_server_name_` and injected into the AI's tool registry.
+- **Configurable Servers** — manage server arguments and environment variables directly from the web dashboard.
+- **Safety & Resilience** — built-in timeouts and error handling ensure that misbehaving MCP servers don't hang the main agent loop.
+
 ---
 
 ## 📡 Channels
@@ -97,11 +104,13 @@ LimeBot uses [LiteLLM](https://github.com/BerriAI/litellm) — any model it supp
 | **Anthropic** | `anthropic/claude-3-5-sonnet-20241022` |
 | **xAI** | `xai/grok-2` |
 | **DeepSeek** | `deepseek/deepseek-chat` |
-| **NVIDIA Reference** | `nvidia/mistralai/mixtral-8x22b-instruct-v0.1` (Mistral support via NVIDIA) |
 | **NVIDIA Reference** | `nvidia/meta/llama-3.1-405b-instruct` |
-| **Ollama (local)** | `ollama/llama3.2` + `LLM_BASE_URL=http://localhost:11434` |
-
 Switch models live from the web dashboard without restarting.
+
+### 🛡️ AI Gateway & Proxy Support
+LimeBot supports routing all LLM traffic through external security or caching middleware (like AI Gateway, Open Guardian, or Helicone):
+- **`LLM_PROXY_URL`** — configure a global proxy URL in the dashboard or `.env`. This overrides the default base URL for all providers.
+- **Provider Normalization** — LiteLLM handles the complex routing and header manipulation required to use custom gateways with cloud providers.
 
 ---
 
@@ -164,10 +173,13 @@ Skills can also be managed from the **Skills** tab in the web dashboard.
 
 ## 🚀 Getting Started
 
-### Prerequisites
-- Python 3.11+
-- Node.js 18+
-- A Gemini API key (or any LiteLLM-compatible key)
+### Prerequisites & Requirements
+- **OS**: Windows 10+, macOS 11+, or Linux (Ubuntu 20.04+)
+- **CPU**: Dual-core (Quad-core recommended for browser tools)
+- **RAM**: 4GB Minimum (8GB recommended for multitasking)
+- **Disk**: ~2GB for installation (venv, node_modules, Chromium)
+- **Software**: Node.js 18+, Python 3.11+
+- **Connectivity**: Stable internet for LLM API and web browsing
 
 ### Quick Start
 ```bash
@@ -215,6 +227,7 @@ APP_API_KEY=optional_dashboard_password
 
 # Features
 ENABLE_DYNAMIC_PERSONALITY=false   # per-user affinity, mood tracking, proactive greetings
+LLM_PROXY_URL=http://localhost:8080/v1 # Optional: Route all traffic through a gateway
 ```
 
 Everything can also be changed live from the **Config** tab in the web dashboard — changes write `.env` and trigger a clean restart.

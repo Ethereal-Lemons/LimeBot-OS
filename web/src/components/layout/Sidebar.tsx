@@ -8,7 +8,8 @@ import {
     FileText,
     Palette,
     User2,
-    Brain
+    Brain,
+    Cpu
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -37,6 +38,7 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
 
     const agentItems = [
         { id: 'skills', icon: Zap, label: "Skills" },
+        { id: 'mcp', icon: Cpu, label: "MCP" },
         // { icon: Box, label: "Nodes", active: false },
     ];
 

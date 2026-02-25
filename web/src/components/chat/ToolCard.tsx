@@ -90,8 +90,8 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
     };
 
     const cardClasses = cn(
-        "bg-slate-900 border-slate-800 text-slate-300 overflow-hidden",
-        needsConfirmation && confirmationStatus === null && "border-amber-500/50 bg-amber-950/20"
+        "bg-card border-border text-foreground overflow-hidden",
+        needsConfirmation && confirmationStatus === null && "border-primary/40 bg-primary/10"
     );
 
     return (
@@ -104,8 +104,8 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                     <div className={cn(
                         "p-2 rounded-md",
                         needsConfirmation && confirmationStatus === null
-                            ? "bg-amber-500/20"
-                            : "bg-slate-800",
+                            ? "bg-primary/20"
+                            : "bg-muted",
                         execution.status === 'running' && !needsConfirmation && "animate-pulse"
                     )}>
                         {getIcon()}
@@ -116,14 +116,14 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                             <span className={cn(
                                 "font-medium text-sm",
                                 needsConfirmation && confirmationStatus === null
-                                    ? "text-amber-200"
-                                    : "text-slate-200"
+                                    ? "text-primary"
+                                    : "text-foreground"
                             )}>
                                 {needsConfirmation && confirmationStatus === null
-                                    ? "⚠️ Confirmation Required"
+                                    ? "Confirmation Required"
                                     : execution.tool}
                             </span>
-                            <span className="text-xs text-slate-500">
+                            <span className="text-xs text-muted-foreground">
                                 {confirmationStatus === 'approved' ? 'Approved' :
                                     confirmationStatus === 'denied' ? 'Denied' :
                                         needsConfirmation && confirmationStatus === null ? 'Blocked' :
@@ -131,16 +131,16 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                                                 execution.status === 'completed' ? 'Completed' : 'Failed'}
                             </span>
                         </div>
-                        <div className="text-xs text-slate-400 truncate font-mono">
+                        <div className="text-xs text-muted-foreground truncate font-mono">
                             {getSummary()}
                         </div>
                     </div>
 
-                    <div className="flex items-center gap-2 text-slate-500">
+                    <div className="flex items-center gap-2 text-muted-foreground">
                         {execution.status === 'running' && !needsConfirmation && <Loader2 className="h-4 w-4 animate-spin" />}
-                        {execution.status === 'completed' && !isBlocked && <CheckCircle2 className="h-4 w-4 text-green-500" />}
+                        {execution.status === 'completed' && !isBlocked && <CheckCircle2 className="h-4 w-4 text-primary" />}
                         {execution.status === 'error' && <XCircle className="h-4 w-4 text-red-500" />}
-                        {confirmationStatus === 'approved' && <CheckCircle2 className="h-4 w-4 text-green-500" />}
+                        {confirmationStatus === 'approved' && <CheckCircle2 className="h-4 w-4 text-primary" />}
                         {confirmationStatus === 'denied' && <XCircle className="h-4 w-4 text-red-500" />}
 
                         {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
@@ -148,7 +148,7 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                 </div>
 
                 {needsConfirmation && confirmationStatus === null && (
-                    <div className="flex gap-2 p-2 pt-2 border-t border-amber-500/30 bg-amber-950/10">
+                    <div className="flex gap-2 p-2 pt-2 border-t border-primary/30 bg-primary/5">
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
@@ -158,7 +158,7 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                                     onConfirm?.(execution.tool_call_id, true);
                                 }
                             }}
-                            className="bg-amber-500/20 hover:bg-amber-500/30 text-amber-500 px-3 py-1 rounded text-xs font-semibold"
+                            className="bg-primary/20 hover:bg-primary/30 text-primary px-3 py-1 rounded text-xs font-semibold"
                         >
                             Allow Once
                         </button>
@@ -171,7 +171,7 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                                     onConfirmSession?.(execution.tool_call_id);
                                 }
                             }}
-                            className="bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 px-3 py-1 rounded text-xs font-semibold"
+                            className="bg-secondary hover:bg-secondary/80 text-secondary-foreground px-3 py-1 rounded text-xs font-semibold"
                             title="Allow all executions of this tool for the rest of this session"
                         >
                             Allow Session
@@ -186,7 +186,7 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                                     onConfirm?.(execution.tool_call_id, false);
                                 }
                             }}
-                            className="bg-red-500/20 hover:bg-red-500/30 text-red-500 px-3 py-1 rounded text-xs font-semibold"
+                            className="bg-destructive/20 hover:bg-destructive/30 text-destructive px-3 py-1 rounded text-xs font-semibold"
                         >
                             Deny
                         </button>
@@ -194,8 +194,8 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                 )}
 
                 {isExpanded && (
-                    <div className="p-3 pt-0 border-t border-slate-800/50 bg-slate-950/30">
-                        <div className="mt-2 text-xs font-mono whitespace-pre-wrap text-slate-400 max-h-60 overflow-y-auto">
+                    <div className="p-3 pt-0 border-t border-border/50 bg-background/40">
+                        <div className="mt-2 text-xs font-mono whitespace-pre-wrap text-muted-foreground max-h-60 overflow-y-auto">
                             {execution.logs && execution.logs.length > 0 && (
                                 <div className="mb-3 flex flex-col gap-1">
                                     {execution.logs.map((log, i) => (
@@ -213,12 +213,12 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                             )}
 
                             <div className="mb-2">
-                                <span className="text-slate-500 select-none">$ args: </span>
+                                <span className="text-muted-foreground select-none">$ args: </span>
                                 {JSON.stringify(execution.args, null, 2)}
                             </div>
                             {execution.result && (
                                 <div>
-                                    <span className="text-slate-500 select-none">$ result: </span>
+                                    <span className="text-muted-foreground select-none">$ result: </span>
                                     {execution.result}
                                 </div>
                             )}

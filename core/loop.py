@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from litellm import (
     acompletion,
     completion,
-    token_counter,
     RateLimitError,
     InternalServerError,
     APIConnectionError,
@@ -79,7 +78,11 @@ class AgentLoop:
     """Agent loop supporting interactive persona setup and user context."""
 
     def __init__(
-        self, bus: MessageBus, model: str = "gpt-3.5-turbo", scheduler: Any = None
+        self,
+        bus: MessageBus,
+        model: str = "gpt-3.5-turbo",
+        scheduler: Any = None,
+        session_manager: Optional[SessionManager] = None,
     ):
         self.bus = bus
         self.model = model
@@ -93,7 +96,7 @@ class AgentLoop:
         self.session_locks: Dict[str, asyncio.Lock] = {}
         self.session_whitelists: Dict[str, Set[str]] = {}
 
-        self.session_manager = SessionManager()
+        self.session_manager = session_manager or SessionManager()
         self.metrics = MetricsCollector()
         self.tool_cache = ToolCache()
         self.pending_confirmations: Dict[str, Dict[str, Any]] = {}
@@ -129,48 +132,59 @@ class AgentLoop:
             "cron_add": self.toolbox.cron_add,
             "cron_list": self.toolbox.cron_list,
             "cron_remove": self.toolbox.cron_remove,
+            "create_skill": self.toolbox.create_skill,
         }
 
         self.skill_registry = SkillRegistry(skill_dirs=["./skills"], config=cfg)
 
         self._tool_definitions: Optional[List[Dict]] = None
+        self._warmed = False
         asyncio.create_task(self._init_skills_and_tools())
 
         self._stable_prompt_cache: Dict[str, Tuple[str, float]] = {}
         self._STABLE_PROMPT_TTL = 30.0
+        self._history_flush_interval = 5.0
+        self._last_history_flush: Dict[str, float] = {}
 
     async def _init_skills_and_tools(self) -> None:
         """Background: discover skills, build tool definitions, then warm up slow services."""
         await asyncio.to_thread(self.skill_registry.discover_and_load)
+
+        # Initialize MCP servers if available
+        try:
+            from core.mcp_client import get_mcp_manager
+
+            await get_mcp_manager().initialize()
+        except Exception as e:
+            logger.error(f"Failed to initialize MCP servers: {e}")
+
         self._refresh_tool_definitions()
         # Pre-initialize LanceDB and HTTP connection pools so the first user
         # message doesn't pay the cold-start penalty.
         asyncio.create_task(self._warm_up_services())
 
     async def _warm_up_services(self) -> None:
-        """
-        Eagerly initialize everything that would otherwise block the first message:
-          1. LanceDB connect — lancedb.connect() is slow on first call (~500ms–2s).
-          2. Embedding HTTP pool — first Gemini/OpenAI embedding call pays TLS overhead.
-          3. Chat LLM HTTP pool — same for the main acompletion endpoint.
-        After this runs, every subsequent call hits warm sockets and cached handles.
-        """
+
+        if self._warmed:
+            return
+        self._warmed = True
+
         logger.info("🔥 Warming up services…")
 
-        # 1. Pre-init LanceDB (opens the database, acquires lock, creates table if needed)
         try:
             await self.vector_service._ensure_init()
             logger.info("✅ LanceDB pre-initialized.")
         except Exception as e:
             logger.warning(f"⚠ LanceDB warmup failed (non-critical): {e}")
 
-        # 2. Warm embedding API HTTP connection with a 1-token probe
         try:
             emb = await self.vector_service._get_embedding("hi")
             if emb is not None:
                 logger.info("✅ Embedding API connection warmed.")
             else:
-                logger.warning("⚠ Embedding warmup failed (check API keys). Using keyword fallback.")
+                logger.warning(
+                    "⚠ Embedding warmup failed (check API keys). Using keyword fallback."
+                )
         except Exception as e:
             if prompt_module.is_setup_complete():
                 logger.warning(f"⚠ Embedding warmup error (non-critical): {e}")
@@ -200,6 +214,7 @@ class AgentLoop:
     def _refresh_tool_definitions(self) -> None:
         """Rebuild and cache tool definitions. Call only when skills change."""
         self._tool_definitions = self.toolbox.get_tool_definitions()
+
         logger.debug(
             f"Tool definitions refreshed ({len(self._tool_definitions)} tools)."
         )
@@ -234,7 +249,7 @@ class AgentLoop:
         self._provider = self._resolve_provider()
         self._stable_prompt_cache.clear()
 
-    def _get_stable_prompt(
+    async def _get_stable_prompt(
         self, sender_id: str, channel: str, chat_id: str, sender_name: str = ""
     ) -> str:
         """
@@ -249,9 +264,13 @@ class AgentLoop:
             return cached[0]
 
         try:
-            soul = SOUL_FILE.read_text(encoding="utf-8") if SOUL_FILE.exists() else ""
+            soul = (
+                await asyncio.to_thread(SOUL_FILE.read_text, encoding="utf-8")
+                if SOUL_FILE.exists()
+                else ""
+            )
             identity_raw = (
-                IDENTITY_FILE.read_text(encoding="utf-8")
+                await asyncio.to_thread(IDENTITY_FILE.read_text, encoding="utf-8")
                 if IDENTITY_FILE.exists()
                 else ""
             )
@@ -288,7 +307,7 @@ class AgentLoop:
         ]:
             del self._stable_prompt_cache[key]
 
-    def _build_full_system_prompt(
+    async def _build_full_system_prompt(
         self,
         sender_id: str,
         channel: str,
@@ -297,7 +316,7 @@ class AgentLoop:
         sender_name: str = "",
     ) -> str:
         """Stable (cached) + volatile (per-message: memory + RAG + timestamp)."""
-        stable = self._get_stable_prompt(sender_id, channel, chat_id, sender_name)
+        stable = await self._get_stable_prompt(sender_id, channel, chat_id, sender_name)
         volatile = prompt_module.get_volatile_prompt_suffix(recalled_context)
         return stable + volatile
 
@@ -361,13 +380,19 @@ class AgentLoop:
     def _mark_dirty(self, session_key: str) -> None:
         self._history_dirty[session_key] = True
 
-    async def _flush_history(self, session_key: str) -> None:
+    async def _flush_history(self, session_key: str, force: bool = False) -> None:
         """Persist history only if it changed since the last flush."""
-        if self._history_dirty.get(session_key) and session_key in self.history:
-            await self.session_manager.save_history(
-                session_key, self.history[session_key]
-            )
-            self._history_dirty[session_key] = False
+        if not (self._history_dirty.get(session_key) and session_key in self.history):
+            return
+
+        now = time.monotonic()
+        last = self._last_history_flush.get(session_key, 0.0)
+        if not force and (now - last) < self._history_flush_interval:
+            return
+
+        await self.session_manager.save_history(session_key, self.history[session_key])
+        self._history_dirty[session_key] = False
+        self._last_history_flush[session_key] = now
 
     async def run_subagent(
         self, parent_session_key: str, sub_session_key: str, task: str
@@ -402,8 +427,10 @@ class AgentLoop:
                 {"role": "system", "content": sub_system},
                 {"role": "user", "content": f"Task: {task}"},
             ]
-            self.session_manager.append_chat_log(
-                sub_session_key, {"role": "user", "content": task}
+            asyncio.create_task(
+                self.session_manager.append_chat_log(
+                    sub_session_key, {"role": "user", "content": task}
+                )
             )
 
             iteration = 0
@@ -572,7 +599,7 @@ class AgentLoop:
         if self._last_msg_hash.get(session_key) == msg_hash:
             self._last_msg_hash.pop(session_key, None)
 
-    async def _trim_history(self, session_key: str, max_tokens: int = 15_000) -> None:
+    async def _trim_history(self, session_key: str, max_tokens: int = 12_000) -> None:
         if session_key not in self.history or len(self.history[session_key]) <= 1:
             return
 
@@ -601,8 +628,8 @@ class AgentLoop:
                         f"[SQUASHED - {name}]\n{c[:80]}…\n…({len(c)} chars)…\n…{c[-80:]}"
                     )
 
-        sys_tokens = token_counter(model=self.model, messages=[system_msg])
-        total_tokens = token_counter(model=self.model, messages=conv) + sys_tokens
+        sys_tokens = self._estimate_tokens([system_msg])
+        total_tokens = self._estimate_tokens(conv) + sys_tokens
 
         if total_tokens <= max_tokens:
             self.history[session_key] = [system_msg] + conv
@@ -656,14 +683,20 @@ class AgentLoop:
         except Exception as e:
             logger.error(f"❌ Summarisation failed: {e}. Falling back to truncation.")
 
-            target_chars = (max_tokens - sys_tokens) * 4
-            while conv and self._estimate_tokens(conv) * 4 > target_chars:
+            target_tokens = max_tokens - sys_tokens
+            current_tokens = self._estimate_tokens(conv)
+
+            while conv and current_tokens > target_tokens:
                 popped = conv.pop(0)
+                current_tokens -= self._estimate_tokens([popped])
+
                 if popped.get("role") == "assistant" and popped.get("tool_calls"):
                     while conv and conv[0].get("role") == "tool":
-                        conv.pop(0)
+                        tool_msg = conv.pop(0)
+                        current_tokens -= self._estimate_tokens([tool_msg])
                 while conv and conv[0].get("role") == "tool":
-                    conv.pop(0)
+                    tool_msg = conv.pop(0)
+                    current_tokens -= self._estimate_tokens([tool_msg])
 
         self.history[session_key] = [system_msg] + conv
         self._mark_dirty(session_key)
@@ -772,6 +805,12 @@ class AgentLoop:
                 function_name.startswith("browser_") or function_name == "google_search"
             ):
                 result = await self._execute_browser_tool(function_name, function_args)
+            elif function_name.startswith("mcp_"):
+                from core.mcp_client import get_mcp_manager
+
+                result = await get_mcp_manager().execute_tool(
+                    function_name, function_args
+                )
             else:
                 handler = self._tool_registry.get(function_name)
                 result = (
@@ -1048,9 +1087,16 @@ class AgentLoop:
                     )
 
                 t0 = time.time()
-                result = await self._execute_tool(
-                    function_name, function_args, session_key
-                )
+                try:
+                    # General safety timeout for ANY tool execution (MCP, Browser, etc.)
+                    result = await asyncio.wait_for(
+                        self._execute_tool(function_name, function_args, session_key),
+                        timeout=120.0,
+                    )
+                except asyncio.TimeoutError:
+                    result = f"Error: Tool '{function_name}' timed out after 120s."
+                    logger.error(result)
+
                 self.metrics.record_tool_call(
                     session_key, function_name, time.time() - t0
                 )
@@ -1274,6 +1320,10 @@ class AgentLoop:
         ghost_active: Optional[str] = None
         match_index = 0
         dedup_active = bool(previous_content)
+        streamed_to_web: bool = False
+        last_flush = time.monotonic()
+        flush_interval_s = 0.08
+        flush_min_chars = 256
 
         try:
             async for chunk in response_stream:
@@ -1330,7 +1380,13 @@ class AgentLoop:
                     if msg.channel == "web" and not is_potential_json and to_stream:
                         display_buffer += to_stream
 
-                        while display_buffer:
+                        now = time.monotonic()
+                        should_flush = (
+                            len(display_buffer) >= flush_min_chars
+                            or (now - last_flush) >= flush_interval_s
+                        )
+
+                        while display_buffer and should_flush:
                             if not ghost_active:
                                 tag_start = display_buffer.find("<")
                                 if tag_start == -1:
@@ -1343,6 +1399,7 @@ class AgentLoop:
                                         )
                                     )
                                     display_buffer = ""
+                                    last_flush = time.monotonic()
                                     break
 
                                 if tag_start > 0:
@@ -1354,6 +1411,8 @@ class AgentLoop:
                                             metadata={"type": "chunk"},
                                         )
                                     )
+                                    streamed_to_web = True
+                                    last_flush = time.monotonic()
                                     display_buffer = display_buffer[tag_start:]
 
                                 tag_end = display_buffer.find(">")
@@ -1389,6 +1448,8 @@ class AgentLoop:
                                         )
                                     )
                                     display_buffer = display_buffer[tag_end + 1 :]
+                                elif tag_content.startswith("</"):
+                                    display_buffer = display_buffer[tag_end + 1 :]
                                 else:
                                     await self.bus.publish_outbound(
                                         OutboundMessage(
@@ -1398,6 +1459,7 @@ class AgentLoop:
                                             metadata={"type": "chunk"},
                                         )
                                     )
+                                    streamed_to_web = True
                                     display_buffer = display_buffer[tag_end + 1 :]
                             else:
                                 closing = f"</{ghost_active}>"
@@ -1480,6 +1542,8 @@ class AgentLoop:
                     metadata={"type": "chunk"},
                 )
             )
+            streamed_to_web = True
+            display_buffer = ""
 
         if not tool_calls and full_content:
             extracted = self._extract_tool_from_content(full_content)
@@ -1501,7 +1565,18 @@ class AgentLoop:
                 tc["id"] = f"call_{uuid.uuid4().hex[:8]}"
             if not tc.get("type"):
                 tc["type"] = "function"
-            if tc.get("function", {}).get("name"):
+
+            fn = tc.get("function", {})
+            if fn.get("name"):
+                # Fix common LLM hallucination: double JSON objects in arguments
+                args = fn.get("arguments", "")
+                if args.startswith("{") and "}{" in args:
+                    try:
+                        idx = args.find("}{")
+                        json.loads(args[: idx + 1])
+                        fn["arguments"] = args[: idx + 1]
+                    except Exception:
+                        pass
                 valid_tcs.append(tc)
         tool_calls = valid_tcs
 
@@ -1510,6 +1585,7 @@ class AgentLoop:
             and not tool_calls
             and full_content.strip()
             and msg.channel == "web"
+            and not streamed_to_web
         ):
             await self.bus.publish_outbound(
                 OutboundMessage(
@@ -1599,7 +1675,15 @@ class AgentLoop:
             if msg_hash is not None and msg_hash == self._last_msg_hash.get(
                 session_key
             ):
-                logger.debug("♻️ Skipping duplicate.")
+                if (
+                    session_key in self.session_locks
+                    and self.session_locks[session_key].locked()
+                ):
+                    logger.warning(
+                        f"♻️ Message '{msg.content[:20]}...' skipped - session {session_key} is currently BUSY processing another task."
+                    )
+                else:
+                    logger.debug("♻️ Skipping identical duplicate message.")
                 return
             self._last_msg_hash[session_key] = msg_hash
 
@@ -1656,7 +1740,15 @@ class AgentLoop:
                             )
                         )
                         return
-            # ────────────────────────────────────────────────────────────────
+
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="",
+                    metadata={"type": "typing"},
+                )
+            )
 
             current_task = asyncio.current_task()
             if current_task:
@@ -1666,26 +1758,64 @@ class AgentLoop:
 
             async with self.session_locks[session_key]:
                 try:
-                    recalled_context = ""
-                    if (
-                        content
-                        and len(content) > 5
-                        and not content.startswith(("/", "@"))
-                    ):
+                    # ── Parallel: Auto-RAG + history load ───────────────────
+
+                    _RAG_TIMEOUT = 0.2
+
+                    # Fast-path: skip RAG for short/casual messages that
+                    # won't benefit from memory recall anyway.
+                    _CASUAL = frozenset(
+                        {
+                            "hi",
+                            "hey",
+                            "hello",
+                            "yo",
+                            "sup",
+                            "ok",
+                            "okay",
+                            "k",
+                            "yes",
+                            "no",
+                            "nope",
+                            "yep",
+                            "sure",
+                            "thanks",
+                            "thank you",
+                            "lol",
+                            "lmao",
+                            "haha",
+                            "nice",
+                            "cool",
+                            "good",
+                            "great",
+                            "bye",
+                            "cya",
+                            "ttyl",
+                            "brb",
+                        }
+                    )
+
+                    async def _do_rag() -> str:
+                        if not (
+                            content
+                            and len(content) > 10
+                            and not content.startswith(("/", "@"))
+                        ):
+                            return ""
+                        # Skip RAG for single casual words
+                        if content.strip().lower() in _CASUAL:
+                            return ""
                         try:
                             results: list = []
-
                             resolved_key = self.vector_service._resolve_api_key(
                                 self.config
                             )
                             provider = self.vector_service._get_provider()
-
                             if provider in ("ollama", "local") or resolved_key:
                                 try:
                                     semantic_results = await self.vector_service.search(
                                         content, limit=3
                                     )
-
                                     results = [
                                         r
                                         for r in semantic_results
@@ -1693,31 +1823,65 @@ class AgentLoop:
                                     ]
                                 except Exception as e:
                                     logger.warning(f"Semantic search failed: {e}")
-
                             if not results:
                                 results = await self.vector_service.search_grep(
                                     content, limit=3
                                 )
-
                             if results:
                                 seen, lines = set(), []
                                 for r in results:
                                     text = r["text"].strip()
                                     if text not in seen:
                                         seen.add(text)
-
-                                        ts = r.get("timestamp", "unknown")
-                                        lines.append(f"- {text} (Date: {ts})")
+                                        lines.append(
+                                            f"- {text} (Date: {r.get('timestamp', 'unknown')})"
+                                        )
                                 if lines:
-                                    recalled_context = "\n".join(lines)
                                     logger.info(
                                         f"🧠 Auto-RAG: {len(lines)} memories recalled."
                                     )
+                                    return "\n".join(lines)
                         except Exception as e:
                             logger.warning(f"⚠ Auto-RAG failed: {e}")
+                        return ""
+
+                    async def _do_history_load():
+                        if session_key not in self.history:
+                            return await self.session_manager.load_history(session_key)
+                        return None
+
+                    _rag_needed = (
+                        bool(content)
+                        and len(content) > 10
+                        and not content.startswith(("/", "@"))
+                        and content.strip().lower() not in _CASUAL
+                    )
+
+                    if _rag_needed:
+                        rag_coro = asyncio.wait_for(_do_rag(), timeout=_RAG_TIMEOUT)
+                        rag_task = asyncio.create_task(rag_coro)
+                    else:
+                        rag_task = None
+
+                    hist_task = asyncio.create_task(_do_history_load())
+
+                    if rag_task is not None:
+                        try:
+                            recalled_context = await rag_task
+                        except asyncio.TimeoutError:
+                            recalled_context = ""
+                            logger.debug("⚡ Auto-RAG timeout — skipping.")
+                        except Exception as e:
+                            recalled_context = ""
+                            logger.warning(f"⚠ Auto-RAG error: {e}")
+                    else:
+                        recalled_context = ""
+                        logger.debug("⚡ Auto-RAG skipped (short/casual message).")
+
+                    persisted = await hist_task
 
                     sender_name = msg.metadata.get("sender_name", "")
-                    system_prompt = self._build_full_system_prompt(
+                    system_prompt = await self._build_full_system_prompt(
                         sender_id,
                         channel=msg.channel,
                         chat_id=msg.chat_id,
@@ -1726,7 +1890,6 @@ class AgentLoop:
                     )
 
                     if session_key not in self.history:
-                        persisted = await self.session_manager.load_history(session_key)
                         if persisted:
                             self.history[session_key] = persisted
                             logger.info(
@@ -1756,9 +1919,15 @@ class AgentLoop:
                     )
                     self._mark_dirty(session_key)
 
-                    self.session_manager.append_chat_log(
-                        session_key,
-                        {"role": "user", "content": content, "image": bool(image_data)},
+                    asyncio.create_task(
+                        self.session_manager.append_chat_log(
+                            session_key,
+                            {
+                                "role": "user",
+                                "content": content,
+                                "image": bool(image_data),
+                            },
+                        )
                     )
 
                     injected = [
@@ -1768,50 +1937,18 @@ class AgentLoop:
                     ]
                     if (USERS_DIR / f"{sender_id}.md").exists():
                         injected.append(f"users/{sender_id}.md")
-                    await self.session_manager.update_session(
-                        session_key=session_key,
-                        model=self.model,
-                        origin=msg.channel,
-                        injected_files=injected,
+
+                    asyncio.create_task(
+                        self.session_manager.update_session(
+                            session_key=session_key,
+                            model=self.model,
+                            origin=msg.channel,
+                            injected_files=injected,
+                        )
                     )
 
                     await self._trim_history(session_key)
-                    # Flush immediately after trimming so a restart doesn't
-                    # re-pay the summarization cost. Without this, the disk
-                    # still holds the un-summarized history until the very end
-                    # of _process_message, so every cold-start re-triggers the
-                    # extra LLM round-trip.
-                    await self._flush_history(session_key)
-
-                    for hist_msg in self.history.get(session_key, []):
-                        for tc in hist_msg.get("tool_calls", []):
-                            if isinstance(tc, dict) and "function" in tc:
-                                fn = tc["function"]
-                                if not tc.get("id"):
-                                    tc["id"] = f"call_{uuid.uuid4().hex[:8]}"
-                                if not tc.get("type"):
-                                    tc["type"] = "function"
-                                if not fn.get("name"):
-                                    fn["name"] = "failed_tool_call"
-                                a = fn.get("arguments", "")
-                                if a == "{}{}":
-                                    fn["arguments"] = "{}"
-                                elif a.startswith("{") and "}{" in a:
-                                    try:
-                                        idx = a.find("}{")
-                                        json.loads(a[: idx + 1])
-                                        fn["arguments"] = a[: idx + 1]
-                                    except Exception:
-                                        pass
-
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content="",
-                            metadata={"type": "typing"},
-                        )
-                    )
+                    asyncio.create_task(self._flush_history(session_key))
 
                     stream = await self._llm_call_with_retry(
                         messages=self.history[session_key],
@@ -1897,32 +2034,43 @@ class AgentLoop:
                                     accumulated_content.strip(),
                                     nxt_content.strip(),
                                 )
+
                                 if acc_s and nxt_s:
-                                    if nxt_s.startswith(acc_s):
-                                        idx = nxt_content.find(acc_s)
-                                        clean_next = (
-                                            nxt_content[idx + len(acc_s) :].lstrip()
-                                            if idx != -1
-                                            else ""
-                                        )
-                                    else:
-                                        tail = acc_s[-min(50, len(acc_s)) :]
-                                        tail_idx = nxt_content[:500].rfind(tail)
-                                        if tail_idx != -1:
-                                            clean_next = nxt_content[
-                                                tail_idx + len(tail) :
-                                            ].lstrip()
+                                    max_overlap = min(len(acc_s), len(nxt_s), 100)
+                                    found_overlap = False
+                                    for length in range(max_overlap, 4, -1):
+                                        suffix = acc_s[-length:]
+                                        if nxt_s.lower().startswith(suffix.lower()):
+                                            match = re.search(
+                                                re.escape(suffix),
+                                                nxt_content,
+                                                re.IGNORECASE,
+                                            )
+                                            if match:
+                                                idx = match.start()
+                                                clean_next = nxt_content[
+                                                    idx + length :
+                                                ].lstrip()
+                                                found_overlap = True
+                                                break
+
+                                    if not clean_next.strip() and found_overlap:
+                                        clean_next = ""
 
                                 if clean_next:
-                                    sep = (
-                                        " "
-                                        if accumulated_content
+                                    sep = ""
+                                    if (
+                                        accumulated_content
                                         and not accumulated_content.endswith(
                                             ("\n", " ")
                                         )
-                                        and not clean_next.startswith(("\n", " "))
-                                        else ""
-                                    )
+                                    ):
+                                        if not clean_next.startswith(("\n", " ")):
+                                            if (
+                                                clean_next
+                                                and clean_next[0] not in ".,!?;:"
+                                            ):
+                                                sep = " "
                                     accumulated_content += sep + clean_next
 
                                 if not nxt_tool_calls:
@@ -1986,8 +2134,10 @@ class AgentLoop:
                         )
                         self._mark_dirty(session_key)
 
-                    self.session_manager.append_chat_log(
-                        session_key, {"role": "assistant", "content": raw_reply}
+                    asyncio.create_task(
+                        self.session_manager.append_chat_log(
+                            session_key, {"role": "assistant", "content": raw_reply}
+                        )
                     )
 
                     if reply_to_user:
@@ -2050,5 +2200,5 @@ class AgentLoop:
                     )
 
         finally:
-            await self._flush_history(session_key)
+            await self._flush_history(session_key, force=True)
             self.active_tasks.pop(session_key, None)

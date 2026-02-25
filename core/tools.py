@@ -92,6 +92,16 @@ class Toolbox:
         except Exception as e:
             logger.warning(f"Failed to load ClawHub tools: {e}")
 
+        # Load MCP tools dynamically
+        try:
+            from core.mcp_client import get_mcp_manager
+            mcp_tools = get_mcp_manager().get_tools()
+            for mt in mcp_tools:
+                tools.append(mt)
+                logger.debug(f"Registered MCP tool: {mt['function']['name']}")
+        except Exception as e:
+            logger.warning(f"Failed to load MCP tools: {e}")
+
         return tools
 
     def _is_path_allowed(self, path_str: Union[str, Path]) -> bool:
@@ -244,8 +254,10 @@ class Toolbox:
             if STALL_TIMEOUT <= 0:
                 STALL_TIMEOUT = None
 
+            last_progress = _time.monotonic()
+
             async def read_stream(stream, name):
-                nonlocal last_activity
+                nonlocal last_activity, last_progress
                 async for line in stream:
                     last_activity = _time.monotonic()
                     line_text = line.decode("utf-8", errors="replace").strip()
@@ -253,10 +265,11 @@ class Toolbox:
                         if len(line_text) > 1000:
                             line_text = line_text[:1000] + "... [Line too long]"
 
-                        await self.send_progress(f"[{name}] {line_text}")
+                        now = _time.monotonic()
+                        if now - last_progress >= 0.02:
+                            await self.send_progress(f"[{name}] {line_text}")
+                            last_progress = now
                         full_output.append(line_text)
-
-                        await asyncio.sleep(0.01)
 
             async def _force_kill(proc):
                 """Force-kill a process tree (Windows-safe)."""
@@ -493,3 +506,38 @@ class Toolbox:
             return f"Error: Job {job_id} not found."
         except Exception as e:
             return f"Error removing cron: {e}"
+
+    async def create_skill(self, name: str, description: str) -> str:
+        """Initialize a new skill directory with a template SKILL.md."""
+        import re
+
+        if not re.match(r"^[a-z0-9_]+$", name):
+            return "Error: Skill name must be snake_case (alphanumeric and underscores only)."
+
+        skill_dir = Path("skills") / name
+        if skill_dir.exists():
+            return f"Error: Skill '{name}' already exists in 'skills/'."
+
+        try:
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            skill_md = skill_dir / "SKILL.md"
+            content = (
+                f"---\n"
+                f"name: {name}\n"
+                f"description: {description}\n"
+                f"version: 1.0.0\n"
+                f"---\n\n"
+                f"# {name.replace('_', ' ').title()}\n\n"
+                f"{description}\n\n"
+                f"## Usage\n"
+                f"Describe how to use this skill here.\n"
+            )
+            await asyncio.to_thread(skill_md.write_text, content, encoding="utf-8")
+
+            # Reload skills in registry if agent is present
+            if self.agent and hasattr(self.agent, "skill_registry"):
+                await asyncio.to_thread(self.agent.skill_registry.discover_and_load)
+
+            return f"Success: Created skill '{name}' in 'skills/{name}'. You can now add logic to 'skills/{name}/api.py'."
+        except Exception as e:
+            return f"Error creating skill: {e}"

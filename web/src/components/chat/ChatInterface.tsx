@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useLayoutEffect } from 'react';
+import { useRef, useEffect, useState, useLayoutEffect, memo } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import axios from 'axios';
@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
-import { Send, Bot, Power, Paperclip, X, User, Plus, Zap } from "lucide-react";
+import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, Check, Copy } from "lucide-react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -28,6 +28,7 @@ import { AlertTriangle, Info } from "lucide-react";
 
 
 import { ThinkingBubble } from './ThinkingBubble';
+import { ToolTimeline } from './ToolTimeline';
 
 interface Message {
     sender: 'user' | 'bot';
@@ -54,6 +55,220 @@ interface ChatInterfaceProps {
     autonomousMode?: boolean;
 }
 
+const MemoizedCodeBlock = memo(({ language, value }: { language: string; value: string }) => {
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = () => {
+        navigator.clipboard.writeText(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+
+    return (
+        <div className="rounded-lg my-3 border border-border overflow-hidden text-sm shadow-sm group">
+            <div className="bg-zinc-900 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-zinc-800 flex justify-between items-center">
+                <span>{language}</span>
+                <button
+                    onClick={handleCopy}
+                    className="opacity-0 group-hover:opacity-100 transition-all duration-200 hover:text-foreground flex items-center gap-1.5 bg-zinc-800/50 px-2 py-0.5 rounded border border-white/5"
+                >
+                    {copied ? (
+                        <>
+                            <Check className="h-3 w-3 text-green-500" />
+                            <span className="text-green-500">Copied!</span>
+                        </>
+                    ) : (
+                        <>
+                            <Copy className="h-3 w-3" />
+                            <span>Copy</span>
+                        </>
+                    )}
+                </button>
+            </div>
+            <div className="max-h-[450px] overflow-y-auto custom-scrollbar">
+                <SyntaxHighlighter
+                    style={vscDarkPlus}
+                    language={language}
+                    PreTag="div"
+                    customStyle={{ margin: 0, padding: '1.25rem', background: '#09090b', fontSize: '13px', lineHeight: '1.6' }}
+                >
+                    {value}
+                </SyntaxHighlighter>
+            </div>
+        </div>
+    );
+});
+
+const MemoizedMessageItem = memo(({
+    msg,
+    botIdentity,
+    handleToolConfirmSideChannel,
+    onSendMessage,
+    showAvatar,
+    showHeader
+}: {
+    msg: Message;
+    botIdentity: ChatInterfaceProps['botIdentity'];
+    handleToolConfirmSideChannel: (confId: string, approved: boolean, sessionWhitelist: boolean) => Promise<void>;
+    onSendMessage: ChatInterfaceProps['onSendMessage'];
+    showAvatar: boolean;
+    showHeader: boolean;
+}) => {
+    const isUser = msg.sender === 'user';
+    const isBot = msg.sender === 'bot';
+
+    if (msg.content?.includes('[CONFIRM_SESSION]') || msg.content?.includes('[CONFIRM_EXECUTION]')) {
+        return null; // Hidden confirmation trace messages
+    }
+
+    return (
+        <div className={cn(
+            "flex w-full gap-4",
+            isUser ? "ml-auto flex-row-reverse max-w-[85%]" : "max-w-[90%]"
+        )}>
+            {showAvatar ? (
+                <Avatar className="h-9 w-9 mt-1 shrink-0 border border-border shadow-sm">
+                    {isBot ? (
+                        <>
+                            <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
+                        <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">Bot</AvatarFallback>
+                        </>
+                    ) : (
+                        <>
+                            <AvatarImage src={undefined} />
+                        <AvatarFallback className="bg-secondary text-secondary-foreground">
+                            <User className="h-5 w-5" />
+                        </AvatarFallback>
+                        </>
+                    )}
+                </Avatar>
+            ) : (
+                <div className="h-9 w-9 mt-1 shrink-0" />
+            )}
+
+            <div className={cn(
+                "flex flex-col gap-1 min-w-0 flex-1",
+                isUser ? "items-end" : "items-start"
+            )}>
+                {!isUser && showHeader && (
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest opacity-50 mb-0.5 ml-1">
+                        <span className="text-primary">{botIdentity?.name || "LimeBot"}</span>
+                        <span className="h-1 w-1 rounded-full bg-muted-foreground/30" />
+                        <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+                )}
+
+                {msg.type === 'tool' && msg.toolExecution ? (
+                    <div className="w-full max-w-2xl">
+                        <ToolCard
+                            execution={msg.toolExecution}
+                            onConfirmSideChannel={handleToolConfirmSideChannel}
+                            onConfirm={(_id, approved) => {
+                                if (approved) {
+                                    const argsStr = JSON.stringify(msg.toolExecution?.args).slice(0, 500);
+                                    onSendMessage(`[CONFIRM_EXECUTION] Proceed with ${msg.toolExecution?.tool} using args: ${argsStr}`);
+                                } else {
+                                    onSendMessage(`Cancel execution of ${msg.toolExecution?.tool}`);
+                                }
+                            }}
+                            onConfirmSession={(_id) => {
+                                const argsStr = JSON.stringify(msg.toolExecution?.args).slice(0, 500);
+                                onSendMessage(`[CONFIRM_SESSION] Proceed with ${msg.toolExecution?.tool} using args: ${argsStr}`);
+                            }}
+                        />
+                    </div>
+                ) : msg.type === 'confirmation' && msg.confirmation ? (
+                    <div className="w-full max-w-2xl">
+                        <ConfirmationCard request={msg.confirmation} />
+                    </div>
+                ) : msg.variant && msg.variant !== 'default' ? (
+                    <Alert variant={msg.variant} className="max-w-xl shadow-sm border-l-4">
+                        {msg.variant === 'destructive' ? <AlertTriangle className="h-4 w-4" /> : <Info className="h-4 w-4" />}
+                        <AlertTitle className="ml-2 font-bold">{msg.variant === 'destructive' ? 'Error' : 'Warning'}</AlertTitle>
+                        <AlertDescription className="ml-2 mt-1 text-xs opacity-90">{msg.content}</AlertDescription>
+                    </Alert>
+                ) : (
+                    <div className={cn(
+                        "relative group px-3.5 py-2 text-[14px] leading-tight transition-all duration-300",
+                        isUser
+                            ? "bg-zinc-800 text-white rounded-2xl rounded-tr-none shadow-sm hover:bg-zinc-700/90 hover:shadow-md"
+                            : "bg-muted/80 backdrop-blur-sm text-foreground rounded-2xl rounded-tl-none border shadow-sm hover:bg-muted/90 hover:border-primary/30 hover:shadow-md"
+                    )}>
+                        {/* Thinking Bubble */}
+                        {msg.thinking && (
+                            <ThinkingBubble
+                                content={msg.thinking}
+                                isComplete={!!msg.content}
+                                defaultCollapsed={!!msg.content}
+                            />
+                        )}
+
+                        <div className="whitespace-pre-wrap break-words">
+                            {msg.image && (
+                                <ChatImage src={msg.image} alt="Uploaded content" />
+                            )}
+                            <div className="prose prose-sm dark:prose-invert max-w-none break-words leading-tight text-inherit">
+                                <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    components={{
+                                        a: ({ node, ...props }) => (
+                                            <a
+                                                {...props}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="font-bold underline text-primary decoration-primary/30 hover:decoration-primary"
+                                            />
+                                        ),
+                                        p: ({ node, ...props }) => <p {...props} className="last:mb-1" />,
+                                        code: ({ node, className, children, ...props }: any) => {
+                                            const content = String(children || '').trim();
+                                            if (!content) return null;
+                                            const match = /language-(\w+)/.exec(className || '');
+
+                                            return !match ? (
+                                                <code className={cn("bg-muted/50 px-1.5 py-0.5 rounded font-mono text-[12px]", isUser ? "bg-black/30" : "bg-zinc-200/50 dark:bg-zinc-800/50")} {...props}>
+                                                    {children}
+                                                </code>
+                                            ) : (
+                                                <MemoizedCodeBlock language={match[1]} value={content} />
+                                            );
+                                        },
+                                        table: ({ node, ...props }) => (
+                                            <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-card/30 backdrop-blur-sm shadow-sm">
+                                                <table className="w-full text-left text-[13px]" {...props} />
+                                            </div>
+                                        ),
+                                        thead: ({ node, ...props }) => <thead className="bg-muted/50 text-muted-foreground border-b border-border" {...props} />,
+                                        tbody: ({ node, ...props }) => <tbody className="divide-y divide-border/30" {...props} />,
+                                        tr: ({ node, ...props }) => <tr className="hover:bg-muted/20 transition-colors" {...props} />,
+                                        th: ({ node, ...props }) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...props} />,
+                                        td: ({ node, ...props }) => <td className="px-4 py-3 align-top" {...props} />,
+                                        h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-4 mb-2 border-b border-border/50 pb-1" {...props} />,
+                                        h2: ({ node, ...props }) => <h2 className="text-lg font-bold mt-3 mb-2" {...props} />,
+                                        h3: ({ node, ...props }) => <h3 className="text-md font-bold mt-2 mb-1" {...props} />,
+                                        blockquote: ({ node, ...props }) => (
+                                            <blockquote className="border-l-4 border-primary/30 pl-4 py-1 my-3 italic text-muted-foreground bg-primary/5 rounded-r" {...props} />
+                                        ),
+                                        img: ({ node, ...props }: any) => <ChatImage src={props.src || ''} alt={props.alt || ''} />,
+                                    }}
+                                >
+                                    {msg.content}
+                                </ReactMarkdown>
+                            </div>
+                        </div>
+
+                        {isUser && (
+                            <div className="absolute -left-12 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-40 transition-opacity text-[9px] font-medium uppercase tracking-tighter hidden md:block">
+                                {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+});
+
 export function ChatInterface({
     messages,
     inputValue,
@@ -72,13 +287,27 @@ export function ChatInterface({
     const [visibleCount, setVisibleCount] = useState(10);
     const lastScrollHeightRef = useRef(0);
     const isLoadingHistoryRef = useRef(false);
+    const isAtBottomRef = useRef(true);
 
 
     useEffect(() => {
-        if (scrollRef.current) {
+        if (!scrollRef.current) return;
+        const lastMsg = messages[messages.length - 1];
+        const shouldStick = isAtBottomRef.current || lastMsg?.sender === 'user';
+        if (shouldStick) {
             scrollRef.current.scrollIntoView({ behavior: 'smooth' });
         }
     }, [messages, selectedImage]);
+
+    const hasThinking = [...messages].reverse().some(
+        (m) => m.sender === 'bot' && !!m.thinking
+    );
+    const runningTool = [...messages].reverse().find(
+        (m) => m.type === 'tool' && m.toolExecution?.status === 'running'
+    );
+    const waitingTool = [...messages].reverse().find(
+        (m) => m.type === 'tool' && (m.toolExecution?.status === 'waiting_confirmation' || m.toolExecution?.status === 'pending_confirmation')
+    );
 
     const handleKeyPress = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -150,6 +379,8 @@ export function ChatInterface({
 
     const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
         const viewport = e.currentTarget;
+        const atBottom = viewport.scrollHeight - (viewport.scrollTop + viewport.clientHeight) < 80;
+        isAtBottomRef.current = atBottom;
         if (viewport.scrollTop === 0 && messages.length > visibleCount) {
             isLoadingHistoryRef.current = true;
             lastScrollHeightRef.current = viewport.scrollHeight;
@@ -445,206 +676,115 @@ export function ChatInterface({
                                 </div>
                             </div>
                         )}
-                        {messages.slice(-visibleCount).map((msg, index) => (
-                            <div
-                                key={index}
-                                className={cn(
-                                    "flex w-full gap-4 max-w-[85%]",
-                                    msg.sender === 'user' ? "ml-auto flex-row-reverse" : ""
-                                )}
-                            >
-                                <Avatar className="h-8 w-8 mt-1 shrink-0">
-                                    {msg.sender === 'bot' ? (
-                                        <>
-                                            <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
-                                            <AvatarFallback className="bg-primary text-primary-foreground text-xs">LB</AvatarFallback>
-                                        </>
-                                    ) : (
-                                        <AvatarFallback className="bg-muted text-muted-foreground">
-                                            <User className="h-4 w-4" />
-                                        </AvatarFallback>
-                                    )}
-                                </Avatar>
+                        {(() => {
+                            const visible = messages.slice(-visibleCount);
+                            const items: Array<
+                                | { kind: 'message'; msg: Message; showAvatar: boolean; showHeader: boolean; key: string }
+                                | { kind: 'tool_timeline'; executions: ToolExecution[]; key: string }
+                            > = [];
 
-                                {msg.type === 'tool' && msg.toolExecution ? (
-                                    <ToolCard
-                                        execution={msg.toolExecution}
-                                        onConfirmSideChannel={handleToolConfirmSideChannel}
-                                        onConfirm={(_id, approved) => {
-                                            if (approved) {
-                                                const argsStr = JSON.stringify(msg.toolExecution?.args).slice(0, 500);
-                                                onSendMessage(`[CONFIRM_EXECUTION] Proceed with ${msg.toolExecution?.tool} using args: ${argsStr}`);
-                                            } else {
-                                                onSendMessage(`Cancel execution of ${msg.toolExecution?.tool}`);
-                                            }
-                                        }}
-                                        onConfirmSession={(_id) => {
-                                            const argsStr = JSON.stringify(msg.toolExecution?.args).slice(0, 500);
-                                            onSendMessage(`[CONFIRM_SESSION] Proceed with ${msg.toolExecution?.tool} using args: ${argsStr}`);
-                                        }}
+                            for (let i = 0; i < visible.length; i++) {
+                                const msg = visible[i];
+                                if (msg.type === 'tool' && msg.toolExecution) {
+                                    const start = i;
+                                    const toolGroup: ToolExecution[] = [];
+                                    while (i < visible.length && visible[i].type === 'tool' && visible[i].toolExecution) {
+                                        toolGroup.push(visible[i].toolExecution as ToolExecution);
+                                        i++;
+                                    }
+                                    const count = toolGroup.length;
+                                    if (count >= 3) {
+                                        items.push({
+                                            kind: 'tool_timeline',
+                                            executions: toolGroup,
+                                            key: `${activeChatId}-tools-${start}`,
+                                        });
+                                    } else {
+                                        for (let j = 0; j < toolGroup.length; j++) {
+                                            const m = visible[start + j];
+                                            items.push({
+                                                kind: 'message',
+                                                msg: m,
+                                                showAvatar: j === 0,
+                                                showHeader: j === 0,
+                                                key: `${activeChatId}-${start + j}`,
+                                            });
+                                        }
+                                    }
+                                    i -= 1;
+                                    continue;
+                                }
+
+                                const prev = items.length > 0 && items[items.length - 1].kind === 'message'
+                                    ? (items[items.length - 1] as { kind: 'message'; msg: Message }).msg
+                                    : null;
+                                const showAvatar = !prev || prev.sender !== msg.sender || prev.type !== msg.type;
+                                const showHeader = showAvatar && msg.sender === 'bot';
+
+                                items.push({
+                                    kind: 'message',
+                                    msg,
+                                    showAvatar,
+                                    showHeader,
+                                    key: `${activeChatId}-${i}`,
+                                });
+                            }
+
+                            return items.map((item) => {
+                                if (item.kind === 'tool_timeline') {
+                                    return (
+                                        <ToolTimeline
+                                            key={item.key}
+                                            executions={item.executions}
+                                            botIdentity={botIdentity}
+                                        />
+                                    );
+                                }
+
+                                return (
+                                    <MemoizedMessageItem
+                                        key={item.key}
+                                        msg={item.msg}
+                                        botIdentity={botIdentity}
+                                        handleToolConfirmSideChannel={handleToolConfirmSideChannel}
+                                        onSendMessage={onSendMessage}
+                                        showAvatar={item.showAvatar}
+                                        showHeader={item.showHeader}
                                     />
-                                ) : msg.type === 'confirmation' && msg.confirmation ? (
-                                    <ConfirmationCard
-                                        request={msg.confirmation}
-                                    />
-                                ) : msg.variant && msg.variant !== 'default' ? (
-                                    <Alert variant={msg.variant} className="max-w-xl shadow-md">
-                                        {msg.variant === 'destructive' ? (
-                                            <AlertTriangle className="h-4 w-4" />
-                                        ) : (
-                                            <Info className="h-4 w-4" />
-                                        )}
-                                        <AlertTitle className="ml-2">
-                                            {msg.variant === 'destructive' ? 'Error' : 'Warning'}
-                                        </AlertTitle>
-                                        <AlertDescription className="ml-2 mt-2">
-                                            {msg.content}
-                                        </AlertDescription>
-                                    </Alert>
-                                ) : (
-                                    <div className={cn(
-                                        "relative flex flex-col gap-1 px-4 py-3 text-sm min-w-0",
-                                        msg.sender === 'user'
-                                            ? "bg-zinc-800 text-white rounded-xl rounded-tr-sm"
-                                            : "bg-muted text-foreground rounded-xl rounded-tl-sm",
-                                        // Special styling for confirmation messages (hidden if possible but keeping styles just in case)
-                                        msg.content.includes('[CONFIRM_SESSION]') && "bg-purple-900/20 border border-purple-500/30 text-purple-200 py-1 px-3 rounded-full text-xs w-fit self-end hidden",
-                                        msg.content.includes('[CONFIRM_EXECUTION]') && "bg-amber-900/20 border border-amber-500/30 text-amber-200 py-1 px-3 rounded-full text-xs w-fit self-end hidden"
-                                    )}>
-                                        {!msg.content.includes('[CONFIRM_SESSION]') && !msg.content.includes('[CONFIRM_EXECUTION]') && (
-                                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide opacity-60 mb-1">
-                                                {msg.sender === 'user'
-                                                    ? <span>You</span>
-                                                    : <span className="text-primary">{botIdentity?.name || "LimeBot"}</span>
-                                                }
-                                            </div>
-                                        )}
-
-                                        {/* Thinking Bubble */}
-                                        {msg.thinking && (
-                                            <ThinkingBubble
-                                                content={msg.thinking}
-                                                isComplete={!!msg.content}
-                                                defaultCollapsed={!!msg.content}
-                                            />
-                                        )}
-
-                                        <div className="leading-relaxed whitespace-pre-wrap break-words">
-                                            {msg.image && (
-                                                <ChatImage src={msg.image} alt="Uploaded content" />
-                                            )}
-                                            <div className="prose prose-sm dark:prose-invert max-w-none break-words leading-relaxed">
-                                                <ReactMarkdown
-                                                    remarkPlugins={[remarkGfm]}
-                                                    components={{
-                                                        a: ({ node, ...props }) => (
-                                                            <a
-                                                                {...props}
-                                                                target="_blank"
-                                                                rel="noopener noreferrer"
-                                                                className={cn(
-                                                                    "font-bold underline break-all",
-                                                                    msg.sender === 'user'
-                                                                        ? "text-primary hover:text-primary/80 decoration-primary/50"
-                                                                        : "text-primary hover:opacity-80 decoration-primary/30"
-                                                                )}
-                                                            />
-                                                        ),
-                                                        p: ({ node, ...props }) => <p {...props} className="mb-1 last:mb-0" />,
-                                                        code: ({ node, className, children, ...props }: any) => {
-                                                            // Hide empty code blocks
-                                                            const content = String(children || '').trim();
-                                                            if (!content) return null;
-
-                                                            const match = /language-(\w+)/.exec(className || '');
-
-                                                            return !match ? (
-                                                                <code className={cn("bg-muted/50 px-1 py-0.5 rounded font-mono text-xs", msg.sender === 'user' ? "bg-black/40" : "bg-muted")} {...props}>
-                                                                    {children}
-                                                                </code>
-                                                            ) : (
-                                                                <div className="rounded-lg my-2 border border-border overflow-hidden text-sm">
-                                                                    <div className="bg-zinc-900 px-3 py-1 text-xs text-muted-foreground border-b border-zinc-800 flex justify-between items-center">
-                                                                        <span>{match[1]}</span>
-                                                                    </div>
-                                                                    <SyntaxHighlighter
-                                                                        {...props}
-                                                                        style={vscDarkPlus}
-                                                                        language={match[1]}
-                                                                        PreTag="div"
-                                                                        customStyle={{ margin: 0, padding: '1rem', background: '#18181b' }} // zinc-950
-                                                                    >
-                                                                        {content}
-                                                                    </SyntaxHighlighter>
-                                                                </div>
-                                                            );
-                                                        },
-                                                        table: ({ node, ...props }) => (
-                                                            <div className="my-4 w-full overflow-y-auto rounded-lg border border-border bg-card/50 shadow-sm">
-                                                                <table className="w-full text-left text-sm" {...props} />
-                                                            </div>
-                                                        ),
-                                                        thead: ({ node, ...props }) => (
-                                                            <thead className="bg-muted/50 text-muted-foreground font-medium border-b border-border" {...props} />
-                                                        ),
-                                                        tbody: ({ node, ...props }) => <tbody className="divide-y divide-border/50" {...props} />,
-                                                        tr: ({ node, ...props }) => <tr className="hover:bg-muted/30 transition-colors" {...props} />,
-                                                        th: ({ node, ...props }) => <th className="px-4 py-3 font-semibold text-xs uppercase tracking-wider text-muted-foreground/80" {...props} />,
-                                                        td: ({ node, ...props }) => <td className="px-4 py-2 align-top text-foreground/90" {...props} />,
-
-                                                        // Headings
-                                                        h1: ({ node, ...props }) => <h1 className="text-2xl font-bold mt-6 mb-4 pb-2 border-b border-border text-foreground" {...props} />,
-                                                        h2: ({ node, ...props }) => <h2 className="text-xl font-semibold mt-5 mb-3 text-foreground/90" {...props} />,
-                                                        h3: ({ node, ...props }) => <h3 className="text-lg font-medium mt-4 mb-2 text-foreground/90" {...props} />,
-                                                        h4: ({ node, ...props }) => <h4 className="text-base font-medium mt-3 mb-2 text-foreground/80" {...props} />,
-
-                                                        // Block elements
-                                                        blockquote: ({ node, ...props }) => (
-                                                            <blockquote className="border-l-4 border-primary/40 pl-4 py-1 my-4 italic text-muted-foreground bg-muted/20 rounded-r" {...props} />
-                                                        ),
-                                                        ul: ({ node, ...props }) => <ul className="list-disc pl-5 mb-3 space-y-1 text-foreground/90" {...props} />,
-                                                        ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mb-3 space-y-1 text-foreground/90" {...props} />,
-                                                        li: ({ node, ...props }) => <li className="pl-1" {...props} />,
-
-                                                        // Hide horizontal rules (often left behind after stripping tags)
-                                                        hr: () => <hr className="my-6 border-border" />,
-
-                                                        // Images
-                                                        img: ({ node, ...props }: any) => (
-                                                            <ChatImage src={props.src || ''} alt={props.alt || ''} />
-                                                        ),
-                                                    }}
-                                                >
-                                                    {msg.content}
-                                                </ReactMarkdown>
-                                            </div>
-                                        </div>
-
-                                        <span className={cn(
-                                            "absolute -bottom-5 text-[9px] font-medium opacity-40 text-black",
-                                            msg.sender === 'user' ? "right-1" : "left-1"
-                                        )}>
-                                            {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                        </span>
-                                    </div>
-                                )}
-
-
-                            </div>
-                        ))}
+                                );
+                            });
+                        })()}
                     </div>
 
                     {/* Typing Indicator */}
                     {isTyping && (
                         <div className="flex w-full gap-4 max-w-[85%]">
-                            <Avatar className="h-8 w-8 mt-1 shrink-0">
+                            <Avatar className={cn(
+                                "h-8 w-8 mt-1 shrink-0",
+                                (isTyping || runningTool || waitingTool) && "lime-avatar-pulse"
+                            )}>
                                 <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
                                 <AvatarFallback className="bg-primary text-primary-foreground text-xs">LB</AvatarFallback>
                             </Avatar>
-                            <div className="bg-muted text-foreground rounded-xl rounded-tl-sm px-4 py-3 flex items-center gap-1">
-                                <div className="w-2 h-2 rounded-full bg-primary/50 animate-bounce [animation-delay:-0.3s]"></div>
-                                <div className="w-2 h-2 rounded-full bg-primary/50 animate-bounce [animation-delay:-0.15s]"></div>
-                                <div className="w-2 h-2 rounded-full bg-primary/50 animate-bounce"></div>
+                            <div className="flex flex-col gap-2">
+                                {hasThinking && (
+                                    <div className="lime-activity-ribbon">
+                                        <div className={cn("lime-step", hasThinking && "is-active")}>Memory</div>
+                                        <div className={cn(
+                                            "lime-step",
+                                            (runningTool || waitingTool) && "is-active"
+                                        )}>Tools</div>
+                                        <div className={cn(
+                                            "lime-step",
+                                            !(runningTool || waitingTool) && hasThinking && "is-active"
+                                        )}>Compose</div>
+                                    </div>
+                                )}
+                                <div className="bg-muted text-foreground rounded-xl rounded-tl-sm px-4 py-3 flex items-center gap-1">
+                                    <div className="w-2 h-2 rounded-full bg-primary/50 animate-bounce [animation-delay:-0.3s]"></div>
+                                    <div className="w-2 h-2 rounded-full bg-primary/50 animate-bounce [animation-delay:-0.15s]"></div>
+                                    <div className="w-2 h-2 rounded-full bg-primary/50 animate-bounce"></div>
+                                </div>
                             </div>
                         </div>
                     )}
@@ -749,7 +889,7 @@ export function ChatInterface({
                 </div>
                 <div className="max-w-4xl mx-auto mt-2 flex justify-between px-1 text-[10px] font-medium text-muted-foreground">
                     <span>Secure Channel</span>
-                    <span>LimeBot v1.0.0</span>
+                    <span>LimeBot v1.0.2</span>
                 </div>
             </div>
         </div>

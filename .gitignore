@@ -1,31 +1,111 @@
-# Dependencies
-node_modules/
-venv/
-__pycache__/
-
-# Environment
-.env
+# System & OS
 .DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-# Logs / Temp
-/logs/
-temp/
-videos/
-sounds/
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
 
-# Ignore sensitive persona data
-persona/MEMORY.md
-persona/sessions/
-persona/memory/
-persona/users/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Dynamic App Data
-data/
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Node.js / Web
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+web/.next/
+web/build/
+web/dist/
 bridge/session/
+bridge/store.json
+bridge/auth_info_baileys/
+bridge/baileys_auth_info/
+pre-key*
+sender-key*
+bridge/session*
 bridge/dist/
 
-# Backups
-*.bak
-.venv/
-allowed_paths.txt
+# IDE settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# LimeBot Specific (Private Data)
+persona/users/
+persona/memory/
+persona/sessions/
+persona/sessions/logs/
+persona/*.bak
+persona/**/*.bak
+persona/sessions/*.json
+persona/sessions/logs/*.jsonl
 persona/IDENTITY.md
+persona/SOUL.md
+persona/MEMORY.md
+persona/USER.md
+
+# Logs
+/logs/
+*.log
+**/discord.log
+**/limebot.log
+
+# Sensitive Data
+data/*.json
+data/contacts.json
+data/cron.json
+contacts.json
+server_diagnostics/
+tests/
+data/vectors/
+temp/
+jira/
+mysql_query/
+vendor_management/
+limebot.json
+
+# ClawHub Integration
+skills/clawhub/.clawhub/lock.json
+skills/clawhub/installed/*
+!skills/clawhub/installed/.gitkeep
+RELATIONSHIPS.md
+allowed_paths.txt
+skills/discord-voice/*
+skills/github/*
+skills/discord_bot_bridge/*
+mcp/mcp_config.json

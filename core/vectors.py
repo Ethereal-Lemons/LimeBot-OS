@@ -1,9 +1,12 @@
 import os
 import asyncio
+import hashlib
+import time as _time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from config import load_config
 from datetime import datetime
+from loguru import logger
 
 
 class VectorService:
@@ -52,6 +55,14 @@ class VectorService:
         self._failed = False
         self._config = None
 
+        # ── Embedding cache ───────────────────────────────────────────────
+        # Keyed by SHA-256 of the input text. Entries expire after TTL.
+        # Eliminates the HTTP round-trip for repeated / near-identical queries,
+        # which is the main reason RAG stalls the chat.
+        self._emb_cache: Dict[str, Any] = {}  # key -> {vec, ts}
+        self._EMB_CACHE_TTL = 300.0  # 5 minutes
+        self._EMB_CACHE_MAX = 256  # evict oldest when full
+
         Path(db_path).parent.mkdir(exist_ok=True, parents=True)
 
     async def _ensure_init(self):
@@ -65,16 +76,15 @@ class VectorService:
 
             try:
                 import lancedb
+
                 self.db = await asyncio.to_thread(lancedb.connect, self.db_path)
 
                 if self.table_name in self.db.table_names():
                     self.table = self.db.open_table(self.table_name)
                 else:
-                    from loguru import logger
                     logger.info(f"Creating new vector table: {self.table_name}")
 
             except Exception as e:
-                from loguru import logger
                 logger.error(f"Failed to initialize LanceDB: {e}")
                 self._failed = True
 
@@ -99,20 +109,26 @@ class VectorService:
         # If it's a Gemini or OpenAI provider, we should only return the key if it's the expected one
         # avoid falling back to unrelated model keys
         if provider == "gemini" and os.getenv("GEMINI_API_KEY"):
-             return os.getenv("GEMINI_API_KEY")
+            return os.getenv("GEMINI_API_KEY")
         if provider == "openai" and os.getenv("OPENAI_API_KEY"):
-             return os.getenv("OPENAI_API_KEY")
+            return os.getenv("OPENAI_API_KEY")
 
         # Only fallback if providers are not explicitly restricted
         if provider not in ("gemini", "openai", "nvidia"):
             return cfg.llm.api_key or None
-        
+
         return None
 
     async def _get_embedding(self, text: str) -> List[float]:
         """Generate embedding for text using litellm (supports multiple providers)."""
         if self._disabled:
             return None
+
+        # ── Cache check ───────────────────────────────────────────
+        cache_key = hashlib.sha256(text.encode()).hexdigest()
+        hit = self._emb_cache.get(cache_key)
+        if hit and (_time.monotonic() - hit["ts"]) < self._EMB_CACHE_TTL:
+            return hit["vec"]
 
         try:
             if not self._config:
@@ -122,7 +138,6 @@ class VectorService:
 
             provider = self._get_provider()
             if provider not in ("ollama", "local") and not api_key:
-                from loguru import logger
                 logger.warning(
                     f"Skipping embedding: No API key found for model '{self.model}'"
                 )
@@ -137,8 +152,18 @@ class VectorService:
                 kwargs["base_url"] = cfg.llm.base_url
 
             from litellm import embedding
+
             response = await asyncio.to_thread(embedding, **kwargs)
-            return response.data[0]["embedding"]
+            vec = response.data[0]["embedding"]
+
+            # ── Store in cache ────────────────────────────────────────
+            if len(self._emb_cache) >= self._EMB_CACHE_MAX:
+                # Evict the oldest entry
+                oldest = min(self._emb_cache, key=lambda k: self._emb_cache[k]["ts"])
+                del self._emb_cache[oldest]
+            self._emb_cache[cache_key] = {"vec": vec, "ts": _time.monotonic()}
+
+            return vec
 
         except Exception as e:
             msg = str(e)
@@ -154,6 +179,7 @@ class VectorService:
             ):
                 if not self._disabled:
                     from loguru import logger
+
                     logger.warning(
                         f"Embedding failed (Credentials/Model): {msg}. "
                         "Disabling vector search for this session."
@@ -162,6 +188,7 @@ class VectorService:
                 return None
 
             from loguru import logger
+
             logger.error(f"Embedding generation failed: {e}")
             raise
 
@@ -201,15 +228,18 @@ class VectorService:
                 )
 
             from loguru import logger
+
             logger.info(f"Added entry to vector memory: {text[:50]}...")
         except Exception as e:
             from loguru import logger
+
             logger.error(f"Failed to add vector entry: {e}")
 
     async def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Search for similar text entries. Falls back to keyword search if vectors disabled."""
         if not self.is_enabled:
             from loguru import logger
+
             logger.info("Semantic search disabled, using keyword fallback.")
             return await self.search_grep(query, limit)
 
@@ -222,6 +252,7 @@ class VectorService:
             vector = await self._get_embedding(query)
             if vector is None:
                 from loguru import logger
+
                 logger.warning("Embedding failed for query, using keyword fallback.")
                 return await self.search_grep(query, limit)
 
@@ -251,6 +282,7 @@ class VectorService:
             return normalized
         except Exception as e:
             from loguru import logger
+
             logger.error(f"Vector search failed: {e}. Falling back to keyword search.")
             return await self.search_grep(query, limit)
 
@@ -276,6 +308,7 @@ class VectorService:
             return results[:limit]
         except Exception as e:
             from loguru import logger
+
             logger.error(f"Failed to get all vector entries: {e}")
             return []
 
@@ -289,6 +322,7 @@ class VectorService:
             return True
         except Exception as e:
             from loguru import logger
+
             logger.error(f"Failed to delete vector entry {entry_id}: {e}")
             return False
 
@@ -307,20 +341,21 @@ class VectorService:
         if cached and (_time.monotonic() - cached["ts"]) < self._GREP_CACHE_TTL:
             return cached["results"]
 
-        results = []
         keywords = [k.lower() for k in query.split() if len(k) > 3]
         if not keywords:
             return []
 
-        MEMORY_DIR = Path("persona/memory")
-        if not MEMORY_DIR.exists():
-            MEMORY_DIR = Path(__file__).parent.parent / "persona" / "memory"
+        def _scan_files() -> List[Dict[str, Any]]:
+            results = []
 
-        if not MEMORY_DIR.exists():
-            return []
+            memory_dir = Path("persona/memory")
+            if not memory_dir.exists():
+                memory_dir = Path(__file__).parent.parent / "persona" / "memory"
 
-        try:
-            for file_path in MEMORY_DIR.glob("*.md"):
+            if not memory_dir.exists():
+                return []
+
+            for file_path in memory_dir.glob("*.md"):
                 try:
                     content = file_path.read_text(encoding="utf-8")
                 except Exception:
@@ -341,13 +376,15 @@ class VectorService:
                         )
 
             results.sort(key=lambda x: x["score"], reverse=True)
-            final = results[:limit]
+            return results[:limit]
 
+        try:
+            final = await asyncio.to_thread(_scan_files)
             self._grep_cache[cache_key] = {"results": final, "ts": _time.monotonic()}
             return final
-
         except Exception as e:
             from loguru import logger
+
             logger.error(f"Grep search failed: {e}")
             return []
 
@@ -383,6 +420,7 @@ def get_vector_service(config=None) -> VectorService:
     if _instance is not None:
         if config and _instance.model != model:
             from loguru import logger
+
             logger.info(f"Re-initializing Vector service with new model: {model}")
             _instance = None
         else:
@@ -390,6 +428,7 @@ def get_vector_service(config=None) -> VectorService:
 
     if _instance is None:
         from loguru import logger
+
         logger.info(f"Vector service using embedding model: {model}")
         _instance = VectorService(model=model)
         if config:

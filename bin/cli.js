@@ -102,23 +102,29 @@ async function runWithSpinner(text, fn) {
 
 // ── Utilities ──────────────────────────────────────────────────────
 
-function isPortReachable(port) {
-    return new Promise((resolve) => {
+async function isPortReachable(port) {
+    const tryConnect = (host) => new Promise((resolve) => {
         const socket = new net.Socket();
         const onError = () => { socket.destroy(); resolve(false); };
-        socket.setTimeout(1000);
+        socket.setTimeout(500);
         socket.on('error', onError);
         socket.on('timeout', onError);
-        socket.connect(port, '127.0.0.1', () => { socket.end(); resolve(true); });
+        socket.connect(port, host, () => { socket.end(); resolve(true); });
     });
+
+    if (await tryConnect('127.0.0.1')) return true;
+    if (await tryConnect('localhost')) return true;
+    return false;
 }
 
 function openBrowser(url) {
-
+    info(`Opening browser: ${url}`);
     const cmd = process.platform === 'darwin' ? `open "${url}"`
         : process.platform === 'win32' ? `start "" "${url}"`
             : `xdg-open "${url}"`;
-    exec(cmd);
+    exec(cmd, (err) => {
+        if (err) error(`Failed to open browser: ${err.message}`);
+    });
 }
 
 async function waitForServer(port, maxAttempts = 60) {
@@ -253,8 +259,10 @@ function killProc(proc) {
     if (!proc) return;
     try {
         if (process.platform === 'win32') {
-            execSync(`taskkill /PID ${proc.pid} /F`, { stdio: 'ignore' });
+
+            execSync(`taskkill /T /F /PID ${proc.pid}`, { stdio: 'ignore' });
         } else {
+
             proc.kill('SIGTERM');
         }
     } catch { /* already gone */ }
@@ -268,14 +276,15 @@ function killPort(port) {
                 if (err || !stdout) return resolve(false);
                 const pids = new Set();
                 for (const line of stdout.split('\n')) {
-                    if (!line.includes('LISTENING')) continue;
-                    const pid = line.trim().split(/\s+/).pop();
+                    const part = line.trim();
+                    if (!part) continue;
+                    const pid = part.split(/\s+/).pop();
                     if (pid && /^\d+$/.test(pid) && pid !== '0') pids.add(pid);
                 }
                 let pending = pids.size;
                 if (pending === 0) return resolve(false);
                 for (const pid of pids) {
-                    exec(`taskkill /PID ${pid} /F`, () => { if (--pending === 0) resolve(true); });
+                    exec(`taskkill /T /F /PID ${pid}`, () => { if (--pending === 0) resolve(true); });
                 }
             });
         } else {
@@ -306,7 +315,7 @@ ${colors.reset}
     ${colors.cyan}stop${colors.reset}             Stop all running LimeBot processes
     ${colors.cyan}status${colors.reset}           Check if LimeBot services are running
     ${colors.cyan}skill${colors.reset}            Manage skills (install, uninstall, update, list)
-    ${colors.cyan}doctor${colors.reset}           Diagnose common issues
+    ${colors.cyan}doctor${colors.reset}           Diagnose common issues + run tests
     ${colors.cyan}logs${colors.reset}             Show recent logs
     ${colors.cyan}install-browser${colors.reset}  Install Chromium for browser tool (optional)
     ${colors.cyan}autorun${colors.reset}          Configure LimeBot to start automatically
@@ -331,13 +340,18 @@ ${colors.reset}
     ${colors.dim}limebot start${colors.reset}
     ${colors.dim}limebot start --quick${colors.reset}
     ${colors.dim}limebot doctor${colors.reset}
+    ${colors.dim}limebot doctor --skip-tests${colors.reset}
+    ${colors.dim}limebot doctor --skip-perf${colors.reset}
     ${colors.dim}limebot install-browser${colors.reset}
 `);
 }
 
-async function cmdDoctor() {
+async function cmdDoctor(args = []) {
     console.log(`${colors.lime}${colors.bright}\n  🍋 LimeBot Doctor${colors.reset}\n`);
     let issues = 0;
+
+    const runTests = !args.includes('--skip-tests');
+    const skipPerf = args.includes('--skip-perf');
 
     const pythonCmd = await getSystemPython();
     if (await commandExists(pythonCmd)) {
@@ -384,10 +398,40 @@ async function cmdDoctor() {
         ? success('Browser tool: Chromium installed')
         : info(`Browser tool: Not installed ${colors.dim}(run ${colors.cyan}limebot install-browser${colors.dim} to enable)${colors.reset}`);
 
+    if (runTests) {
+        console.log('');
+        info('Running tests...');
+        const venvPython = venvPythonPath();
+        const systemPython = await getSystemPython();
+        const py = fs.existsSync(venvPython) ? venvPython : systemPython;
+        const env = { ...process.env };
+        if (skipPerf) env.LIMEBOT_SKIP_PERF = '1';
+
+        const testExit = await new Promise((resolve) => {
+            const proc = spawn(py, ['-m', 'unittest', 'discover', '-s', 'tests'], {
+                cwd: rootDir,
+                stdio: 'inherit',
+                env,
+            });
+            proc.on('close', (code) => resolve(code ?? 1));
+            proc.on('error', () => resolve(1));
+        });
+
+        if (testExit === 0) {
+            success('Tests passed');
+        } else {
+            error('Tests failed');
+            issues++;
+        }
+    } else {
+        info(`Skipping tests ${colors.dim}(--skip-tests)${colors.reset}`);
+    }
+
     console.log('');
     issues === 0
         ? log(colors.green, `  ${colors.bright}All checks passed!${colors.reset} Run ${colors.cyan}limebot start${colors.reset} to launch.`)
         : log(colors.yellow, `  ${colors.bright}${issues} issue(s) found.${colors.reset} Please resolve before starting.`);
+    process.exitCode = issues === 0 ? 0 : 1;
     console.log('');
 }
 
@@ -514,7 +558,8 @@ async function cmdLogs(args) {
 async function cmdStop() {
     console.log(`${colors.lime}${colors.bright}\n  🍋 Stopping LimeBot${colors.reset}\n`);
 
-    
+
+    // 1. Stop primary services by port (standard behavior)
     const primaryPorts = [
         [8000, 'backend'],
         [5173, 'frontend'],
@@ -528,17 +573,17 @@ async function cmdStop() {
         if (killed) anyKilled = true;
     }
 
-   
+
+
+
     if (process.platform === 'win32') {
         try {
-           
-            execSync('wmic process where "commandline like \'%main.py%\'" delete', { stdio: 'ignore' });
-          
-            execSync('wmic process where "commandline like \'%bridge/dist/index.js%\' or commandline like \'%vite%\' or commandline like \'%bin/cli.js%\'" delete', { stdio: 'ignore' });
-            anyKilled = true; 
-        } catch (e) {  }
+            // Aggressive pattern-based cleanup for Windows orphans
+            // Using 'call terminate' is often more reliable than 'delete'
+            execSync('wmic process where "commandline like \'%main.py%\' or commandline like \'%bridge/dist/index.js%\' or commandline like \'%vite%\'" call terminate', { stdio: 'ignore' });
+        } catch (e) { /* ignore */ }
     } else {
-      
+
         try {
             execSync('pkill -f "main.py"', { stdio: 'ignore' });
             execSync('pkill -f "bridge/dist/index.js"', { stdio: 'ignore' });
@@ -595,8 +640,58 @@ async function cmdAutorun(args) {
                 log(colors.yellow, "  Note: You may need to run this command as Administrator.");
             }
         }
-    } else {
+    } else if (process.platform === 'darwin') {
+        const label = "com.limebot.gateway";
+        const plistPath = path.join(process.env.HOME, 'Library', 'LaunchAgents', `${label}.plist`);
+        const gatewayPath = path.join(rootDir, 'bin', 'gateway.sh');
 
+        if (action === 'enable') {
+            info(`Creating macOS LaunchAgent: ${label}`);
+            const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${gatewayPath}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>${rootDir}</string>
+    <key>StandardOutPath</key>
+    <string>${path.join(rootDir, 'logs', 'gateway.log')}</string>
+    <key>StandardErrorPath</key>
+    <string>${path.join(rootDir, 'logs', 'gateway.log')}</string>
+</dict>
+</plist>`;
+            try {
+                const launchAgentsDir = path.join(process.env.HOME, 'Library', 'LaunchAgents');
+                if (!fs.existsSync(launchAgentsDir)) fs.mkdirSync(launchAgentsDir, { recursive: true });
+                fs.writeFileSync(plistPath, plistContent);
+                execSync(`launchctl load "${plistPath}"`, { stdio: 'inherit' });
+                success("Autorun enabled! LimeBot will start automatically on login.");
+            } catch (e) {
+                error(`Failed to enable autorun: ${e.message}`);
+            }
+        } else {
+            info(`Removing macOS LaunchAgent: ${label}`);
+            try {
+                if (fs.existsSync(plistPath)) {
+                    execSync(`launchctl unload "${plistPath}"`, { stdio: 'inherit' });
+                    fs.unlinkSync(plistPath);
+                }
+                success("Autorun disabled.");
+            } catch (e) {
+                error(`Failed to disable autorun: ${e.message}`);
+            }
+        }
+    } else {
+        // Linux (systemd)
         const serviceName = "limebot.service";
         const homeDir = process.env.HOME;
         const systemdDir = path.join(homeDir, '.config', 'systemd', 'user');
@@ -786,12 +881,8 @@ async function cmdStart(args) {
 
     // ── Startup sequence ──────────────────────────────────────────
 
-    // FIX: check bridge state after backend is started so the restart-on-enable path works correctly
-    if (!frontendOnly) await startBackend();
-
     await updateBridgeState();
-
-    // Watch .env for live changes
+    if (!frontendOnly && !backendProc) await startBackend();
     let debounceTimer;
     try {
         fs.watch(path.join(rootDir, '.env'), () => {
@@ -801,6 +892,21 @@ async function cmdStart(args) {
         info('Watching .env for configuration changes...');
     } catch {
         warning('Could not watch .env — restart to apply config changes.');
+    }
+
+    // ── Wait for backend before starting frontend ─────────────────
+    // Vite proxies /api and /ws immediately on startup. If the backend
+    // isn't listening yet, every request gets ECONNREFUSED. We wait up
+    // to 30 s for port 8000 before spawning Vite so the proxy is warm.
+    if (!frontendOnly && !backendOnly) {
+        const spinner = new Spinner('Waiting for backend to be ready...');
+        spinner.start();
+        const backendReady = await waitForServer(8000, 30);
+        if (backendReady) {
+            spinner.stop('Backend is ready.');
+        } else {
+            spinner.stop('Backend did not respond in 30 s — starting frontend anyway.', false);
+        }
     }
 
     if (!backendOnly) {
@@ -827,20 +933,20 @@ async function cmdStart(args) {
             : error('Backend did not start in time. Check logs.');
     }
 
-    // FIX: register cleanup once, not inside a helper that could be called multiple times
+    let cleaned = false;
     const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+
         log(colors.gray, '\n  Stopping LimeBot...');
         killProc(backendProc);
         killProc(frontendProc);
         killProc(bridgeProc);
-        // FIX: Don't use process.exit() during SIGINT — on Windows it can
-        // exit with code 2 (STATUS_CONTROL_C_EXIT) instead of 0, which
-        // causes some terminals (e.g. VS Code) to show an error and close.
-        // Setting exitCode and letting Node drain naturally avoids this.
         process.exitCode = 0;
     };
     process.once('SIGINT', cleanup);
     process.once('SIGTERM', cleanup);
+    process.once('exit', cleanup);
 }
 
 // ── Entry point ───────────────────────────────────────────────────
@@ -853,7 +959,7 @@ async function main() {
         case 'start': await cmdStart(args.slice(1)); break;
         case 'stop': await cmdStop(); break;
         case 'status': await cmdStatus(); break;
-        case 'doctor': await cmdDoctor(); break;
+        case 'doctor': await cmdDoctor(args.slice(1)); break;
         case 'logs': await cmdLogs(args.slice(1)); break;
         case 'install-browser': await cmdInstallBrowser(); break;
         case 'skill': await cmdSkill(args.slice(1)); break;

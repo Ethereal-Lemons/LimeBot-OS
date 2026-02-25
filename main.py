@@ -10,15 +10,31 @@ from config import load_config
 from core.bus import MessageBus
 from core.loop import AgentLoop
 from core.scheduler import CronManager
+from core.session_manager import SessionManager
 from channels.discord import DiscordChannel
 from channels.whatsapp import WhatsAppChannel
 from channels.web import WebChannel
 
 
 logger.remove()
-logger.add(sys.stderr, level="INFO")
+logger.add(
+    sys.stderr,
+    level="DEBUG",
+    filter=lambda r: (
+        r["level"].no >= 10
+        and (r["level"].no >= 20 or "core.loop" in r["name"] or "⏱" in r["message"])
+    ),
+)
 os.makedirs("logs", exist_ok=True)
-logger.add("logs/limebot.log", rotation="1 MB", retention="10 days", level="INFO")
+logger.add(
+    "logs/limebot.log",
+    rotation="1 MB",
+    retention="10 days",
+    level="DEBUG",
+    filter=lambda r: (
+        r["level"].no >= 20 or "core.loop" in r["name"] or "⏱" in r["message"]
+    ),
+)
 
 
 async def main():
@@ -27,7 +43,7 @@ async def main():
     logger.info("Starting LimeBot...")
 
     bus = MessageBus()
-
+    session_manager = SessionManager()
     scheduler = CronManager(bus)
 
     channels = []
@@ -46,20 +62,32 @@ async def main():
     else:
         logger.info("WhatsApp channel disabled by config")
 
-    web_channel = WebChannel(config, bus)
+    web_channel = WebChannel(config, bus, session_manager=session_manager)
     web_channel.set_scheduler(scheduler)
     channels.append(web_channel)
     web_channel.set_channels(channels)
     bus.subscribe_outbound(web_channel.name, web_channel.send)
     logger.info("Web channel initialized")
 
-    agent = AgentLoop(bus, model=config.llm.model, scheduler=scheduler)
+    agent = AgentLoop(
+        bus,
+        model=config.llm.model,
+        scheduler=scheduler,
+        session_manager=session_manager,
+    )
 
     for c in channels:
         if hasattr(c, "set_agent"):
             c.set_agent(agent)
 
     async def init_background_services():
+        from core.reflection import get_reflection_service
+        from core.mcp_client import get_mcp_manager
+
+        # Initialize MCP Manager
+        mcp_manager = get_mcp_manager()
+        asyncio.create_task(mcp_manager.initialize())
+
         from core.reflection import get_reflection_service
 
         get_reflection_service(bus, model=config.llm.model)
@@ -103,9 +131,7 @@ async def main():
     tasks = []
 
     tasks.append(asyncio.create_task(scheduler.run()))
-
     tasks.append(asyncio.create_task(bus.dispatch_outbound()))
-
     tasks.append(asyncio.create_task(agent.run()))
 
     for channel in channels:
