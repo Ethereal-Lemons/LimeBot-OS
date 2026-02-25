@@ -91,7 +91,7 @@ data/contacts.json
 data/cron.json
 contacts.json
 server_diagnostics/
-tests/
+
 data/vectors/
 temp/
 jira/
