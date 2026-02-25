@@ -56,17 +56,10 @@ class MessageBus:
         while self._running:
             try:
                 msg = await self.outbound.get()
-                logger.debug(
-                    f"[BUS] Routing message to channel: {msg.channel}, chat_id: {msg.chat_id}"
-                )
                 subscribers = self._outbound_subscribers.get(msg.channel, [])
-                logger.debug(
-                    f"[BUS] Found {len(subscribers)} subscribers for channel '{msg.channel}'"
-                )
                 for callback in subscribers:
                     try:
                         await callback(msg)
-                        logger.info(f"[BUS] ✓ Delivered to {msg.channel}")
                     except Exception as e:
                         logger.error(f"[BUS] Error dispatching to {msg.channel}: {e}")
             except asyncio.CancelledError:

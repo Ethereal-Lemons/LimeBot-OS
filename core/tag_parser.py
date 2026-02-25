@@ -207,12 +207,22 @@ async def process_tags(
             break
         content = save_mem_match.group(1).strip()
         try:
+            existing_content = ""
+            if LONG_TERM_MEMORY_FILE.exists():
+                existing_content = LONG_TERM_MEMORY_FILE.read_text(
+                    encoding="utf-8"
+                ).strip()
+
             LONG_TERM_MEMORY_FILE.write_text(content, encoding="utf-8")
 
             if vector_service is not None:
-                asyncio.create_task(
-                    vector_service.add_entry(content, category="long_term")
+                is_template = (
+                    "No significant events or user data recorded yet" in content
                 )
+                if content != existing_content and not is_template:
+                    asyncio.create_task(
+                        vector_service.add_entry(content, category="long_term")
+                    )
         except Exception as e:
             logger.error(f"Error saving long-term memory: {e}")
         reply = reply.replace(save_mem_match.group(0), "", 1).strip()
@@ -295,6 +305,13 @@ async def process_tags(
         elif not channel_id:
             logger.warning("<discord_embed> tag missing channel_id — embed dropped")
         reply = reply.replace(discord_embed_match.group(0), "", 1).strip()
+
+    _ORPHAN_CLOSING = re.compile(
+        r"</(?:save_user|save_soul|save_identity|save_mood|save_relationship"
+        r"|log_memory|save_memory|discord_send|discord_embed)>",
+        re.IGNORECASE,
+    )
+    reply = _ORPHAN_CLOSING.sub("", reply)
 
     reply = re.sub(r"\n{3,}", "\n\n", reply).strip()
 

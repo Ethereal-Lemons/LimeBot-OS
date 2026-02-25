@@ -30,6 +30,8 @@ interface ConfigState {
     APP_API_KEY?: string;
     AUTONOMOUS_MODE?: string;
     MAX_ITERATIONS?: string;
+    WEB_PORT?: string;
+    LLM_PROXY_URL?: string;
     [key: string]: any;
 }
 
@@ -41,6 +43,7 @@ export function ConfigPage() {
     const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
 
     const [availableModels, setAvailableModels] = useState<any[]>([]);
+    const [modelsLoading, setModelsLoading] = useState(false);
 
     useEffect(() => {
         fetchConfig();
@@ -49,10 +52,13 @@ export function ConfigPage() {
 
     const fetchModels = async () => {
         try {
+            setModelsLoading(true);
             const res = await axios.get(`${API_BASE_URL}/api/llm/models`);
             if (res.data.models) setAvailableModels(res.data.models);
         } catch (err) {
             console.error("Failed to load models:", err);
+        } finally {
+            setModelsLoading(false);
         }
     };
 
@@ -171,39 +177,46 @@ export function ConfigPage() {
                                     <Label htmlFor="model">LLM Model</Label>
                                     <div className="flex gap-2">
                                         <Select
+                                            disabled={modelsLoading}
                                             value={
-                                                filteredModels.find(m => m.id === config.LLM_MODEL)
-                                                    ? config.LLM_MODEL
-                                                    : "custom"
+                                                modelsLoading
+                                                    ? "loading"
+                                                    : filteredModels.find(m => m.id === config.LLM_MODEL)
+                                                        ? config.LLM_MODEL
+                                                        : "custom"
                                             }
                                             onValueChange={(val) => {
+                                                if (val === "loading") return;
                                                 if (val === "custom") {
-                                                    // Only clear if switching FROM a known model to custom.
-                                                    // If the current value is already a custom/unknown string,
-                                                    // keep it — don't wipe it just because the dropdown
-                                                    // re-renders with value="custom" (e.g. after API key changes).
                                                     const isCurrentlyKnown = filteredModels.find(m => m.id === config.LLM_MODEL);
                                                     if (isCurrentlyKnown) {
                                                         handleChange("LLM_MODEL", "");
                                                     }
-                                                    // else: already custom, leave LLM_MODEL intact
                                                 } else {
                                                     handleChange("LLM_MODEL", val);
                                                 }
                                             }}
                                         >
                                             <SelectTrigger id="model" className="flex-1">
-                                                <SelectValue placeholder="Select Model" />
+                                                <SelectValue placeholder={modelsLoading ? "Scanning Models..." : "Select Model"} />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="custom" className="font-semibold text-primary">
-                                                    ✨ Custom / Local Model
-                                                </SelectItem>
-                                                {filteredModels.map((model) => (
-                                                    <SelectItem key={model.id} value={model.id}>
-                                                        {model.name}
+                                                {modelsLoading ? (
+                                                    <SelectItem value="loading" disabled className="text-muted-foreground flex items-center gap-2">
+                                                        <RefreshCw className="h-3 w-3 animate-spin" /> Scanning Models...
                                                     </SelectItem>
-                                                ))}
+                                                ) : (
+                                                    <>
+                                                        <SelectItem value="custom" className="font-semibold text-primary">
+                                                            ✨ Custom / Local Model
+                                                        </SelectItem>
+                                                        {filteredModels.map((model) => (
+                                                            <SelectItem key={model.id} value={model.id}>
+                                                                {model.name}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </>
+                                                )}
                                             </SelectContent>
                                         </Select>
                                     </div>
@@ -233,6 +246,20 @@ export function ConfigPage() {
                                     />
                                     <p className="text-[10px] text-muted-foreground">
                                         Required for local models (Ollama, LocalAI). Defaults to empty for cloud providers.
+                                    </p>
+                                </div>
+
+                                <div className="grid gap-2">
+                                    <Label htmlFor="llm_proxy_url">LLM Proxy / Gateway URL (Middleware)</Label>
+                                    <Input
+                                        id="llm_proxy_url"
+                                        placeholder="http://localhost:8080/v1 (e.g., Open Guardian, AI Gateway)"
+                                        value={config.LLM_PROXY_URL || ""}
+                                        onChange={(e) => handleChange("LLM_PROXY_URL", e.target.value)}
+                                        className="font-mono text-sm"
+                                    />
+                                    <p className="text-[10px] text-muted-foreground">
+                                        Routes all LLM traffic through external security or caching middleware. Overrides default provider endpoints.
                                     </p>
                                 </div>
                             </CardContent>
@@ -461,6 +488,27 @@ export function ConfigPage() {
                                         />
                                     </div>
                                 </div>
+                                <div className="mt-4 grid gap-3 p-4 bg-card/50 rounded-lg border border-border/50">
+                                    <div className="space-y-1">
+                                        <Label htmlFor="web_port" className="font-semibold flex items-center gap-2">
+                                            Web Server Port
+                                        </Label>
+                                        <p className="text-xs text-muted-foreground">
+                                            The port used by the web server and API. Changing this will require a restart.
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-4">
+                                        <Input
+                                            id="web_port"
+                                            type="number"
+                                            min="1"
+                                            max="65535"
+                                            value={config.WEB_PORT || "8000"}
+                                            onChange={(e) => handleChange("WEB_PORT", e.target.value)}
+                                            className="w-24 font-mono text-center"
+                                        />
+                                    </div>
+                                </div>
                                 <div className="mt-4 grid gap-3 p-4 bg-card/50 rounded-lg border border-yellow-500/30">
                                     <div className="flex items-center justify-between">
                                         <div className="space-y-1">
@@ -568,7 +616,7 @@ export function ConfigPage() {
                                         <div className="space-y-2 flex-1">
                                             <h3 className="text-sm font-medium">Network Interfaces</h3>
                                             <div className="space-y-1">
-                                                <RemoteStatus />
+                                                <RemoteStatus port={config.WEB_PORT || "8000"} />
                                             </div>
                                         </div>
                                     </div>
@@ -582,7 +630,7 @@ export function ConfigPage() {
     );
 }
 
-function RemoteStatus() {
+function RemoteStatus({ port }: { port: string }) {
     const [status, setStatus] = useState<any>(null);
     const [loading, setLoading] = useState(true);
 
@@ -614,7 +662,7 @@ function RemoteStatus() {
                         Tailscale Active
                     </div>
                     <div className="font-mono text-xs select-all cursor-text bg-background/50 p-1 rounded px-2">
-                        http://{tailscale.ip}:8000
+                        http://{tailscale.ip}:{port}
                     </div>
                 </div>
             ) : (
@@ -630,7 +678,7 @@ function RemoteStatus() {
                 <div className="space-y-1">
                     <div className="text-xs text-muted-foreground">LAN Access:</div>
                     <div className="font-mono text-xs select-all cursor-text bg-background/50 p-1 rounded px-2 inline-block">
-                        http://{lan.ip}:8000
+                        http://{lan.ip}:{port}
                     </div>
                 </div>
             )}

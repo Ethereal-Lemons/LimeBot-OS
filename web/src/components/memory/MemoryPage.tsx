@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Brain, Trash2, KeyRound, Search, ArrowUpDown } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 type SortOrder = "newest" | "oldest";
 
@@ -189,7 +191,7 @@ export function MemoryPage() {
             ) : (
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                     {filteredMemories.map(m => (
-                        <Card key={m.id} className="group relative overflow-hidden transition-all hover:bg-muted/50">
+                        <Card key={m.id} className="group relative overflow-hidden transition-all duration-300 hover:bg-muted/90 hover:border-primary/30 hover:shadow-md">
                             <CardHeader className="p-4 pb-2">
                                 <div className="flex justify-between items-start">
                                     <div className="bg-primary/20 text-primary uppercase tracking-widest text-[10px] font-bold px-2 py-0.5 rounded">
@@ -207,9 +209,22 @@ export function MemoryPage() {
                                 </div>
                             </CardHeader>
                             <CardContent className="p-4 pt-0">
-                                <p className="text-sm font-medium leading-relaxed">
-                                    "{m.text}"
-                                </p>
+                                <div className="prose prose-sm dark:prose-invert max-w-none break-words leading-snug text-inherit">
+                                    <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                        components={{
+                                            p: ({ node, ...props }) => <p {...props} className="mb-2 last:mb-0" />,
+                                            h1: ({ node, ...props }) => <h1 className="text-sm font-bold mt-2 mb-1" {...props} />,
+                                            h2: ({ node, ...props }) => <h2 className="text-xs font-bold mt-1.5 mb-1 opacity-90" {...props} />,
+                                            h3: ({ node, ...props }) => <h3 className="text-xs font-bold mt-1 mb-0.5 opacity-80" {...props} />,
+                                            ul: ({ node, ...props }) => <ul className="list-disc ml-4 mb-2" {...props} />,
+                                            ol: ({ node, ...props }) => <ol className="list-decimal ml-4 mb-2" {...props} />,
+                                            li: ({ node, ...props }) => <li className="mb-1" {...props} />,
+                                        }}
+                                    >
+                                        {m.text}
+                                    </ReactMarkdown>
+                                </div>
                                 <div className="mt-4 flex items-center text-[10px] text-muted-foreground">
                                     <span>
                                         Learned {m.timestamp ? formatDistanceToNow(new Date(m.timestamp), { addSuffix: true }) : "recently"}
