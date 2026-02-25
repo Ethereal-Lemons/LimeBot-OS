@@ -38,6 +38,12 @@ def load_config(force_reload=False):
     config.discord.activity_type = os.getenv("DISCORD_ACTIVITY_TYPE", "playing")
     config.discord.activity_text = os.getenv("DISCORD_ACTIVITY_TEXT", "LimeBot")
     config.discord.status = os.getenv("DISCORD_STATUS", "online")
+    config.web = SimpleNamespace()
+    try:
+        config.web.port = int(os.getenv("WEB_PORT") or os.getenv("PORT") or "8000")
+    except ValueError:
+        logger.warning("Invalid WEB_PORT/PORT in .env, defaulting to 8000.")
+        config.web.port = 8000
 
     config.whatsapp = SimpleNamespace()
     config.whatsapp.enabled = os.getenv("ENABLE_WHATSAPP", "false").lower() == "true"
