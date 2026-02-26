@@ -2,6 +2,10 @@
 name: discord
 description: Manage and interact with Discord servers, channels, and members.
 requires_backend: true
+dependencies:
+  python: []
+  node: []
+  binaries: []
 ---
 
 # Discord 🎧

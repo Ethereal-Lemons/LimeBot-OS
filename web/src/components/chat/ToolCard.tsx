@@ -49,6 +49,19 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
     // Check if the action is blocked by backend
     const isBlocked = execution.status === 'waiting_confirmation' || execution.result?.includes("ACTION BLOCKED: Confirmation Required");
 
+    const parseDepsNotice = (result?: string) => {
+        if (!result) return { notice: '', cleaned: result || '' };
+        const marker = "[SKILL_DEPS_MISSING]";
+        if (!result.includes(marker)) return { notice: '', cleaned: result };
+        const [before, after] = result.split(marker, 2);
+        return {
+            notice: (after || '').trim(),
+            cleaned: (before || '').trim(),
+        };
+    };
+
+    const depsNotice = parseDepsNotice(execution.result);
+
     // Needs confirmation if:
     // 1. Backend signaled waiting_confirmation status (New Way)
     // 2. Completed but blocked (Old Way - for compatibility)
@@ -91,7 +104,8 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
 
     const cardClasses = cn(
         "bg-card border-border text-foreground overflow-hidden",
-        needsConfirmation && confirmationStatus === null && "border-primary/40 bg-primary/10"
+        needsConfirmation && confirmationStatus === null && "border-primary/40 bg-primary/10",
+        depsNotice.notice && "border-red-500/30"
     );
 
     return (
@@ -123,6 +137,11 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                                     ? "Confirmation Required"
                                     : execution.tool}
                             </span>
+                            {depsNotice.notice && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded border border-red-500/30 text-red-500 bg-red-500/10">
+                                    Missing Deps
+                                </span>
+                            )}
                             <span className="text-xs text-muted-foreground">
                                 {confirmationStatus === 'approved' ? 'Approved' :
                                     confirmationStatus === 'denied' ? 'Denied' :
@@ -195,6 +214,12 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
 
                 {isExpanded && (
                     <div className="p-3 pt-0 border-t border-border/50 bg-background/40">
+                        {depsNotice.notice && (
+                            <div className="mt-3 mb-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-500">
+                                <div className="font-semibold mb-1">Skill dependencies missing</div>
+                                <div className="font-mono">{depsNotice.notice}</div>
+                            </div>
+                        )}
                         <div className="mt-2 text-xs font-mono whitespace-pre-wrap text-muted-foreground max-h-60 overflow-y-auto">
                             {execution.logs && execution.logs.length > 0 && (
                                 <div className="mb-3 flex flex-col gap-1">
@@ -216,10 +241,10 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                                 <span className="text-muted-foreground select-none">$ args: </span>
                                 {JSON.stringify(execution.args, null, 2)}
                             </div>
-                            {execution.result && (
+                            {depsNotice.cleaned && (
                                 <div>
                                     <span className="text-muted-foreground select-none">$ result: </span>
-                                    {execution.result}
+                                    {depsNotice.cleaned}
                                 </div>
                             )}
                         </div>

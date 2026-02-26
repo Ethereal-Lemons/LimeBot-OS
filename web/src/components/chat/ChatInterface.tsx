@@ -415,7 +415,10 @@ export function ChatInterface({
         }
     };
 
-    const toggleSkill = async (skillId: string, currentStatus: boolean) => {
+    const toggleSkill = async (skillId: string, currentStatus: boolean, missingDeps: boolean) => {
+        if (missingDeps && !currentStatus) {
+            return;
+        }
         // Optimistic update
         setSkills(prev => prev.map(s => s.id === skillId ? { ...s, active: !currentStatus } : s));
 
@@ -455,6 +458,30 @@ export function ChatInterface({
             fetchSkills();
         }
     }, [skillsModalOpen]);
+
+    const formatMissingDeps = (skill: any) => {
+        const missing = skill?.missing_deps || {};
+        const python = missing.python || [];
+        const node = missing.node || [];
+        const binaries = missing.binaries || [];
+        const parts: string[] = [];
+        if (python.length) parts.push(`python: ${python.join(", ")}`);
+        if (node.length) parts.push(`node: ${node.join(", ")}`);
+        if (binaries.length) parts.push(`binaries: ${binaries.join(", ")}`);
+        return parts.join(" | ");
+    };
+
+    const formatRequiredDeps = (skill: any) => {
+        const required = skill?.required_deps || {};
+        const python = required.python || [];
+        const node = required.node || [];
+        const binaries = required.binaries || [];
+        const parts: string[] = [];
+        if (python.length) parts.push(`python: ${python.join(", ")}`);
+        if (node.length) parts.push(`node: ${node.join(", ")}`);
+        if (binaries.length) parts.push(`binaries: ${binaries.join(", ")}`);
+        return parts.join(" | ");
+    };
 
 
     return (
@@ -556,17 +583,32 @@ export function ChatInterface({
                                                     <div className="flex items-center gap-2 mb-1">
                                                         <span className="font-semibold text-sm">{skill.name}</span>
                                                         {!skill.active && <span className="text-[10px] bg-muted-foreground/20 text-muted-foreground px-1.5 rounded">DISABLED</span>}
+                                                        {skill.deps_ok === false && (
+                                                            <span
+                                                                className="text-[10px] bg-red-500/10 text-red-500 px-1.5 rounded border border-red-500/20"
+                                                                title={formatMissingDeps(skill)}
+                                                            >
+                                                                MISSING DEPS
+                                                            </span>
+                                                        )}
                                                     </div>
                                                     <p className="text-xs text-muted-foreground truncate" title={skill.description}>
                                                         {skill.description}
                                                     </p>
+                                                    {formatRequiredDeps(skill) && (
+                                                        <div className="mt-2 text-[10px] text-muted-foreground font-mono bg-muted/40 rounded px-2 py-1 border border-border/60">
+                                                            <span className="uppercase tracking-wide text-[8px] text-muted-foreground/70 block mb-0.5">Dependencies</span>
+                                                            <div className="whitespace-pre-wrap break-words">{formatRequiredDeps(skill)}</div>
+                                                        </div>
+                                                    )}
                                                 </div>
                                                 <div className="flex items-center gap-2">
                                                     <Button
                                                         variant={skill.active ? "destructive" : "default"}
                                                         size="sm"
                                                         className="h-7 text-xs"
-                                                        onClick={() => toggleSkill(skill.id, skill.active)}
+                                                        disabled={skill.deps_ok === false && !skill.active}
+                                                        onClick={() => toggleSkill(skill.id, skill.active, skill.deps_ok === false)}
                                                     >
                                                         {skill.active ? "Disable" : "Enable"}
                                                     </Button>

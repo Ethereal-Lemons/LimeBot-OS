@@ -14,6 +14,17 @@ interface Skill {
     path: string;
     active: boolean;
     type?: "limebot" | "clawhub";
+    deps_ok?: boolean;
+    missing_deps?: {
+        python?: string[];
+        node?: string[];
+        binaries?: string[];
+    };
+    required_deps?: {
+        python?: string[];
+        node?: string[];
+        binaries?: string[];
+    };
 }
 
 export function SkillsPage() {
@@ -36,6 +47,9 @@ export function SkillsPage() {
     }, []);
 
     const toggleSkill = async (skill: Skill, enable: boolean) => {
+        if (skill.deps_ok === false && enable) {
+            return;
+        }
         // Optimistic update
         setSkills(skills.map(s => s.id === skill.id ? { ...s, active: enable } : s));
 
@@ -57,7 +71,38 @@ export function SkillsPage() {
     const limebotSkills = filteredSkills.filter(s => s.type !== "clawhub");
     const clawhubSkills = filteredSkills.filter(s => s.type === "clawhub");
 
-    const SkillCard = ({ skill }: { skill: Skill }) => (
+    const formatMissingDeps = (skill: Skill) => {
+        const missing = skill.missing_deps || {};
+        const python = missing.python || [];
+        const node = missing.node || [];
+        const binaries = missing.binaries || [];
+        const parts: string[] = [];
+        if (python.length) parts.push(`python: ${python.join(", ")}`);
+        if (node.length) parts.push(`node: ${node.join(", ")}`);
+        if (binaries.length) parts.push(`binaries: ${binaries.join(", ")}`);
+        return parts.join(" | ");
+    };
+
+    const formatRequiredDeps = (skill: Skill) => {
+        const required = skill.required_deps || {};
+        const python = required.python || [];
+        const node = required.node || [];
+        const binaries = required.binaries || [];
+        const parts: string[] = [];
+        if (python.length) parts.push(`python: ${python.join(", ")}`);
+        if (node.length) parts.push(`node: ${node.join(", ")}`);
+        if (binaries.length) parts.push(`binaries: ${binaries.join(", ")}`);
+        return parts.join(" | ");
+    };
+
+    const SkillCard = ({ skill }: { skill: Skill }) => {
+        const missingDeps = skill.deps_ok === false;
+        const missingSummary = missingDeps ? formatMissingDeps(skill) : "";
+        const disableEnable = missingDeps && !skill.active;
+        const requiredSummary = formatRequiredDeps(skill);
+        const hasRequired = !!requiredSummary;
+
+        return (
         <Card className="border-border hover:border-primary/30 transition-colors group">
             <CardHeader className="pb-3">
                 <div className="flex items-start justify-between">
@@ -77,11 +122,21 @@ export function SkillsPage() {
                                         CLAW
                                     </Badge>
                                 )}
+                                {missingDeps && (
+                                    <Badge
+                                        variant="destructive"
+                                        className="text-[10px] h-5"
+                                        title={missingSummary}
+                                    >
+                                        MISSING DEPS
+                                    </Badge>
+                                )}
                             </CardTitle>
                         </div>
                     </div>
                     <Switch
                         checked={skill.active}
+                        disabled={disableEnable}
                         onCheckedChange={(checked) => toggleSkill(skill, checked)}
                     />
                 </div>
@@ -90,6 +145,12 @@ export function SkillsPage() {
                 <CardDescription className="line-clamp-3 text-sm min-h-[60px]">
                     {skill.description}
                 </CardDescription>
+                {hasRequired && (
+                    <div className="mt-3 text-[11px] text-muted-foreground font-mono bg-muted/40 rounded-lg px-2.5 py-2 border border-border/60">
+                        <span className="uppercase tracking-wide text-[9px] text-muted-foreground/70 block mb-1">Dependencies</span>
+                        <div className="whitespace-pre-wrap break-words">{requiredSummary}</div>
+                    </div>
+                )}
                 <div className="mt-4 pt-4 border-t border-border flex items-center justify-between text-xs text-muted-foreground font-mono">
                     <span className="truncate max-w-[150px] opacity-70">
                         {skill.type === 'clawhub' ? 'clawhub/' : 'skills/'}{skill.id}
@@ -107,6 +168,7 @@ export function SkillsPage() {
             </CardContent>
         </Card>
     );
+    };
 
     return (
         <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">

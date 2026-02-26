@@ -1,6 +1,10 @@
 ---
 name: whatsapp
 description: Send files and media directly to WhatsApp conversations.
+dependencies:
+  python: []
+  node: []
+  binaries: []
 ---
 
 # WhatsApp 📱

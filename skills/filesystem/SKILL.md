@@ -1,6 +1,10 @@
 ---
 name: filesystem
 description: Safe local file operations and directory management.
+dependencies:
+  python: []
+  node: []
+  binaries: []
 ---
 
 # Filesystem 📁

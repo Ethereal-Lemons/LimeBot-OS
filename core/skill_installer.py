@@ -21,6 +21,8 @@ import re
 import shutil
 import subprocess
 import sys
+import shutil as _shutil
+from importlib import metadata as importlib_metadata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -30,6 +32,13 @@ from loguru import logger
 SKILLS_DIR = Path("skills")
 CLAW_SKILLS_DIR = SKILLS_DIR / "clawhub" / "installed"
 CONFIG_FILE = Path("limebot.json")
+
+try:
+    import yaml
+
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
 
 
 _SKILL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -88,7 +97,7 @@ class SkillInstaller:
     @staticmethod
     def _read_metadata(skill_md: Path) -> dict:
         """Read metadata (version, description) from SKILL.md frontmatter."""
-        meta: dict = {"version": "unknown", "description": ""}
+        meta: dict = {"version": "unknown", "description": "", "dependencies": {}}
         if not skill_md.exists():
             return meta
 
@@ -97,18 +106,144 @@ class SkillInstaller:
             if content.startswith("---"):
                 parts = content.split("---", 2)
                 if len(parts) >= 2:
-                    for line in parts[1].splitlines():
-                        if ":" in line:
-                            key, val = line.split(":", 1)
-                            key = key.strip()
-                            val = val.strip().strip('"').strip("'")
-                            if key == "version":
-                                meta["version"] = val
-                            elif key == "description":
-                                meta["description"] = val
+                    frontmatter = parts[1]
+                    if HAS_YAML:
+                        try:
+                            data = yaml.safe_load(frontmatter) or {}
+                        except Exception:
+                            data = {}
+                    else:
+                        data = {}
+                        for line in frontmatter.splitlines():
+                            line = line.strip()
+                            if ":" in line and not line.startswith("{"):
+                                key, val = line.split(":", 1)
+                                key = key.strip()
+                                val = val.strip().strip('"').strip("'")
+                                data[key] = val
+
+                    if isinstance(data, dict):
+                        if "version" in data:
+                            meta["version"] = str(data.get("version", "unknown"))
+                        if "description" in data:
+                            meta["description"] = str(data.get("description", ""))
+                        if "dependencies" in data:
+                            meta["dependencies"] = data.get("dependencies") or {}
         except Exception as e:
             logger.warning(f"Could not read metadata from {skill_md}: {e}")
         return meta
+
+    @staticmethod
+    def _normalize_deps(dep_map: dict) -> dict:
+        if not isinstance(dep_map, dict):
+            return {"python": [], "node": [], "binaries": []}
+        return {
+            "python": list(dep_map.get("python") or []),
+            "node": list(dep_map.get("node") or []),
+            "binaries": list(dep_map.get("binaries") or []),
+        }
+
+    @staticmethod
+    def _parse_requirements(reqs_path: Path) -> list[str]:
+        if not reqs_path.exists():
+            return []
+        packages: list[str] = []
+        try:
+            for raw in reqs_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith(("-", "--")):
+                    continue
+                line = line.split(";", 1)[0].strip()
+                if not line:
+                    continue
+                name = re.split(r"(==|>=|<=|~=|!=|>|<)", line, 1)[0].strip()
+                if "[" in name:
+                    name = name.split("[", 1)[0].strip()
+                if name:
+                    packages.append(name)
+        except Exception:
+            return []
+        return sorted(set(packages))
+
+    @staticmethod
+    def _parse_package_json(pkg_path: Path) -> list[str]:
+        if not pkg_path.exists():
+            return []
+        try:
+            data = json.loads(pkg_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        deps = []
+        for key in ("dependencies", "optionalDependencies"):
+            block = data.get(key, {})
+            if isinstance(block, dict):
+                deps.extend(list(block.keys()))
+        return sorted(set(deps))
+
+    @staticmethod
+    def _missing_python_deps(packages: list[str]) -> list[str]:
+        missing: list[str] = []
+        for pkg in packages:
+            try:
+                importlib_metadata.version(pkg)
+            except importlib_metadata.PackageNotFoundError:
+                missing.append(pkg)
+        return missing
+
+    @staticmethod
+    def _missing_node_deps(skill_dir: Path, packages: list[str]) -> list[str]:
+        if not packages:
+            return []
+        node_modules = skill_dir / "node_modules"
+        missing: list[str] = []
+        for pkg in packages:
+            if pkg.startswith("@") and "/" in pkg:
+                scope, name = pkg.split("/", 1)
+                pkg_path = node_modules / scope / name
+            else:
+                pkg_path = node_modules / pkg
+            if not pkg_path.exists():
+                missing.append(pkg)
+        return missing
+
+    @staticmethod
+    def _missing_binaries(binaries: list[str]) -> list[str]:
+        missing: list[str] = []
+        for binary in binaries:
+            if not _shutil.which(binary):
+                missing.append(binary)
+        return missing
+
+    def _evaluate_skill_deps(self, skill_dir: Path, meta: dict) -> tuple[bool, dict, dict]:
+        dep_map = self._normalize_deps(meta.get("dependencies") or {})
+
+        reqs_file = skill_dir / "requirements.txt"
+        pkg_json = skill_dir / "package.json"
+
+        python_deps = sorted(
+            set(dep_map["python"]) | set(self._parse_requirements(reqs_file))
+        )
+        node_deps = sorted(
+            set(dep_map["node"]) | set(self._parse_package_json(pkg_json))
+        )
+        bin_deps = sorted(set(dep_map["binaries"]))
+
+        required = {
+            "python": python_deps,
+            "node": node_deps,
+            "binaries": bin_deps,
+        }
+
+        missing = {
+            "python": self._missing_python_deps(python_deps),
+            "node": self._missing_node_deps(skill_dir, node_deps),
+            "binaries": self._missing_binaries(bin_deps),
+        }
+
+        deps_ok = not any(missing.values())
+        return deps_ok, missing, required
 
     @staticmethod
     def _install_deps(target_dir: Path) -> list[str]:
@@ -389,6 +524,7 @@ class SkillInstaller:
                 entry = installed.get(name, {})
                 version = entry.get("version") or meta.get("version") or ""
                 repo = entry.get("repo", "")
+                deps_ok, missing_deps, required_deps = self._evaluate_skill_deps(folder, meta)
 
                 # Core skills might not be in 'installed' map if they come pre-packaged
                 source = entry.get("source", "limebot")
@@ -404,6 +540,9 @@ class SkillInstaller:
                         "version": version,
                         "description": meta.get("description", "Core LimeBot Skill"),
                         "repo": repo,
+                        "deps_ok": deps_ok,
+                        "missing_deps": missing_deps,
+                        "required_deps": required_deps,
                     }
                 )
 
@@ -418,6 +557,7 @@ class SkillInstaller:
                 name = folder.name
 
                 is_enabled = name in enabled
+                deps_ok, missing_deps, required_deps = self._evaluate_skill_deps(folder, meta)
 
                 skills.append(
                     {
@@ -430,6 +570,9 @@ class SkillInstaller:
                         "version": meta.get("version", "1.0.0"),
                         "description": meta.get("description", "ClawHub Skill"),
                         "repo": "",  # Managed by clawhub CLI
+                        "deps_ok": deps_ok,
+                        "missing_deps": missing_deps,
+                        "required_deps": required_deps,
                     }
                 )
 

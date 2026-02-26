@@ -55,6 +55,27 @@ class Toolbox:
         """Set the scheduler instance."""
         self.scheduler = scheduler
 
+    def _detect_skill_path(self, command: str):
+        """Best-effort detection of a skill directory from a command string."""
+        import re
+
+        match = re.search(r"skills[\\/](?P<name>[^\\/\\s]+)", command)
+        if not match:
+            return None
+
+        name = match.group("name")
+        if name == "clawhub":
+            match = re.search(
+                r"skills[\\/]clawhub[\\/]installed[\\/](?P<name>[^\\/\\s]+)",
+                command,
+            )
+            if not match:
+                return None
+            name = match.group("name")
+            return {"name": name, "path": Path("skills") / "clawhub" / "installed" / name}
+
+        return {"name": name, "path": Path("skills") / name}
+
     async def send_progress(self, message: str):
         """Broadcast tool progress if an agent/bus is available."""
         if self.agent and hasattr(self.agent, "send_tool_progress"):
@@ -391,6 +412,33 @@ class Toolbox:
                 output = f"Success (Exit Code: {process.returncode}, No output)"
             else:
                 output += f"\n\nExit Code: {process.returncode}"
+
+            try:
+                skill_info = self._detect_skill_path(command)
+                if skill_info and process.returncode not in (0, None):
+                    from core.skill_installer import SkillInstaller
+
+                    skill_dir = skill_info["path"]
+                    if skill_dir.exists():
+                        installer = SkillInstaller()
+                        meta = installer._read_metadata(skill_dir / "SKILL.md")
+                        deps_ok, missing, _required = installer._evaluate_skill_deps(
+                            skill_dir, meta
+                        )
+                        if not deps_ok:
+                            logger.warning(
+                                f"Skill '{skill_info['name']}' failed; missing dependencies detected: {missing}"
+                            )
+                            output += (
+                                "\n\n[SKILL_DEPS_MISSING] "
+                                f"Skill '{skill_info['name']}' is missing dependencies. "
+                                f"python={missing.get('python', [])}, "
+                                f"node={missing.get('node', [])}, "
+                                f"binaries={missing.get('binaries', [])}. "
+                                "Install dependencies and retry."
+                            )
+            except Exception as e:
+                logger.debug(f"Dependency check skipped: {e}")
 
             return output
         except Exception as e:

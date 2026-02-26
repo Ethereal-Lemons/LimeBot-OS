@@ -1,6 +1,10 @@
 ---
 name: browser
 description: Control a real, local web browser to search, navigate, and extract information.
+dependencies:
+  python: []
+  node: []
+  binaries: []
 ---
 
 # Web Browser 🌐

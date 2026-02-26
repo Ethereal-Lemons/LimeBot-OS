@@ -1,6 +1,12 @@
 ---
 name: download_image
 description: A robust, "Honey Badger" image downloader that bypasses strict CDNs, ignores misleading Content-Types, and falls back to scraping if a direct link fails.
+dependencies:
+  python:
+    - requests
+    - beautifulsoup4
+  node: []
+  binaries: []
 ---
 
 # Image Downloader (Honey Badger Edition) 🖼️
