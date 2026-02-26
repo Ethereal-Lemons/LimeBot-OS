@@ -696,6 +696,9 @@ export function ChannelsPage() {
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                             <div className="space-y-2">
                                                 <Label>Per‑Guild Style Overrides (JSON)</Label>
+                                                <p className="text-[10px] text-muted-foreground">
+                                                    Map guild ID → style. Example: <span className="font-mono">{"{\"123\":{\"tone\":\"direct\",\"verbosity\":\"short\",\"emoji_usage\":\"none\"}}"}</span>
+                                                </p>
                                                 <textarea
                                                     className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
                                                     value={discordJson.styleGuilds}
@@ -705,6 +708,9 @@ export function ChannelsPage() {
                                             </div>
                                             <div className="space-y-2">
                                                 <Label>Per‑Channel Style Overrides (JSON)</Label>
+                                                <p className="text-[10px] text-muted-foreground">
+                                                    Map channel ID → style. Example: <span className="font-mono">{"{\"222\":{\"tone\":\"formal\",\"verbosity\":\"long\"}}"}</span>
+                                                </p>
                                                 <textarea
                                                     className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
                                                     value={discordJson.styleChannels}
@@ -717,6 +723,9 @@ export function ChannelsPage() {
                                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                             <div className="space-y-2">
                                                 <Label>Per‑Guild Nicknames (JSON)</Label>
+                                                <p className="text-[10px] text-muted-foreground">
+                                                    Map guild ID → nickname template. Example: <span className="font-mono">{"{\"123\":\"LimeBot • DevOps\"}"}</span>
+                                                </p>
                                                 <textarea
                                                     className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
                                                     value={discordJson.nickGuilds}
@@ -726,6 +735,9 @@ export function ChannelsPage() {
                                             </div>
                                             <div className="space-y-2">
                                                 <Label>Per‑Guild Embed Theme (JSON)</Label>
+                                                <p className="text-[10px] text-muted-foreground">
+                                                    Map guild ID → hex color. Example: <span className="font-mono">{"{\"123\":\"#F4D03F\"}"}</span>
+                                                </p>
                                                 <textarea
                                                     className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
                                                     value={discordJson.themeGuilds}
@@ -735,6 +747,9 @@ export function ChannelsPage() {
                                             </div>
                                             <div className="space-y-2">
                                                 <Label>Per‑Guild Avatar URL (JSON)</Label>
+                                                <p className="text-[10px] text-muted-foreground">
+                                                    Map guild ID → image URL. Example: <span className="font-mono">{"{\"123\":\"https://.../avatar.png\"}"}</span>
+                                                </p>
                                                 <textarea
                                                     className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
                                                     value={discordJson.avatarGuilds}
