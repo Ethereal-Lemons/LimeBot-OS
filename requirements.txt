@@ -13,3 +13,5 @@ croniter>=2.0.0
 lancedb>=0.5.0
 python-docx>=1.0.0
 mcp>=1.26.0
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
