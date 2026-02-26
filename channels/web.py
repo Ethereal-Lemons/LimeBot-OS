@@ -739,6 +739,44 @@ class WebChannel(BaseChannel):
                     env_dict[key] = val
             return {"env": env_dict}
 
+        @self.app.get("/api/discord/config", dependencies=[Depends(self.verify_auth)])
+        async def get_discord_config():
+            from pathlib import Path
+
+            cfg_path = Path("limebot.json")
+            if not cfg_path.exists():
+                return {"discord": {}}
+            try:
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.error(f"Error reading limebot.json: {e}")
+                return {"discord": {}}
+            return {"discord": data.get("discord", {})}
+
+        @self.app.post("/api/discord/config", dependencies=[Depends(self.verify_auth)])
+        async def update_discord_config(payload: dict):
+            from pathlib import Path
+
+            cfg_path = Path("limebot.json")
+            try:
+                data = {}
+                if cfg_path.exists():
+                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                discord_cfg = payload.get("discord")
+                if not isinstance(discord_cfg, dict):
+                    return {"error": "discord config must be an object"}
+                data["discord"] = discord_cfg
+                cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                logger.info("Discord UI config saved. Restarting...")
+                asyncio.get_running_loop().call_later(1.0, _spawn_restart)
+                return {
+                    "status": "updated",
+                    "message": "Discord configuration saved. Restarting...",
+                }
+            except Exception as e:
+                logger.error(f"Error saving discord config: {e}")
+                return {"error": str(e)}
+
         @self.app.post("/api/config", dependencies=[Depends(self.verify_auth)])
         async def update_config(data: dict):
             """Update .env file and restart to apply changes."""
@@ -1041,6 +1079,60 @@ class WebChannel(BaseChannel):
                 )
                 asyncio.get_running_loop().call_later(1.0, _spawn_restart)
             return result
+
+        @self.app.post("/api/notify", dependencies=[Depends(self.verify_auth)])
+        async def notify(request: Request):
+            """
+            Send a notification to one or more channels (web/discord).
+            Payload:
+              - channels: "web" | "discord" | ["web","discord"]
+              - content: message text
+              - web_chat_id: optional (default "system")
+              - discord_channel_ids: optional list or single id
+              - kind: optional string (e.g., "github_pr")
+              - data: optional object for structured notifications
+            """
+            data = await request.json()
+            channels = data.get("channels") or []
+            if isinstance(channels, str):
+                channels = [channels]
+            content = data.get("content", "").strip()
+            if not content:
+                raise HTTPException(status_code=400, detail="content is required")
+
+            web_chat_id = data.get("web_chat_id", "system")
+            discord_ids = data.get("discord_channel_ids") or []
+            if isinstance(discord_ids, str):
+                discord_ids = [discord_ids]
+
+            meta = {
+                "type": "notification",
+                "kind": data.get("kind"),
+                "data": data.get("data"),
+            }
+
+            if "web" in channels:
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel="web",
+                        chat_id=web_chat_id,
+                        content=content,
+                        metadata=meta,
+                    )
+                )
+
+            if "discord" in channels and discord_ids:
+                for chan_id in discord_ids:
+                    await self.bus.publish_outbound(
+                        OutboundMessage(
+                            channel="discord",
+                            chat_id=str(chan_id),
+                            content=content,
+                            metadata=meta,
+                        )
+                    )
+
+            return {"status": "success", "channels": channels}
 
         @self.app.post("/api/skill/{skill_name}/{action}")
         async def skill_api(skill_name: str, action: str, request: Request):

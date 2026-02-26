@@ -47,6 +47,29 @@ interface ConfigState {
     [key: string]: string | undefined;
 }
 
+interface DiscordUiConfig {
+    signature?: string;
+    emoji_set?: string[];
+    verbosity_limits?: { short?: number; medium?: number; long?: number };
+    tone_prefixes?: Record<string, string>;
+    style_overrides?: {
+        default?: {
+            tone?: string;
+            verbosity?: string;
+            emoji_usage?: string;
+            signature?: string;
+            prefix?: string;
+            suffix?: string;
+            max_length?: number;
+        };
+        guilds?: Record<string, any>;
+        channels?: Record<string, any>;
+    };
+    embed_theme?: { default?: string; guilds?: Record<string, string> };
+    nickname_templates?: { default?: string; guilds?: Record<string, string> };
+    avatar_overrides?: { guilds?: Record<string, string> };
+}
+
 function WhatsAppConnectionSection() {
     const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'scanning'>('disconnected');
     const [resetting, setResetting] = useState(false);
@@ -187,12 +210,23 @@ function WhatsAppConnectionSection() {
 
 export function ChannelsPage() {
     const [config, setConfig] = useState<ConfigState>({});
+    const [discordConfig, setDiscordConfig] = useState<DiscordUiConfig>({});
+    const [discordJson, setDiscordJson] = useState({
+        styleGuilds: "{}",
+        styleChannels: "{}",
+        nickGuilds: "{}",
+        themeGuilds: "{}",
+        avatarGuilds: "{}",
+    });
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+    const [discordSaving, setDiscordSaving] = useState(false);
+    const [discordStatus, setDiscordStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
 
     useEffect(() => {
         fetchConfig();
+        fetchDiscordConfig();
     }, []);
 
     const fetchConfig = () => {
@@ -210,6 +244,27 @@ export function ChannelsPage() {
                     setStatus({ type: 'error', message: "Failed to load configuration." });
                 }
                 setLoading(false);
+            });
+    };
+
+    const fetchDiscordConfig = () => {
+        axios.get(`${API_BASE_URL}/api/discord/config`)
+            .then(res => {
+                const dc = res.data.discord || {};
+                setDiscordConfig(dc);
+                setDiscordJson({
+                    styleGuilds: JSON.stringify(dc.style_overrides?.guilds || {}, null, 2),
+                    styleChannels: JSON.stringify(dc.style_overrides?.channels || {}, null, 2),
+                    nickGuilds: JSON.stringify(dc.nickname_templates?.guilds || {}, null, 2),
+                    themeGuilds: JSON.stringify(dc.embed_theme?.guilds || {}, null, 2),
+                    avatarGuilds: JSON.stringify(dc.avatar_overrides?.guilds || {}, null, 2),
+                });
+            })
+            .catch(err => {
+                if (err.response?.status !== 401) {
+                    console.error("Failed to load discord config:", err);
+                    setDiscordStatus({ type: 'error', message: "Failed to load Discord personalization." });
+                }
             });
     };
 
@@ -248,6 +303,68 @@ export function ChannelsPage() {
         setConfig(prev => ({ ...prev, [key]: value }));
     };
 
+    const updateDiscordField = (key: keyof DiscordUiConfig, value: any) => {
+        setDiscordConfig(prev => ({ ...prev, [key]: value }));
+    };
+
+    const parseJson = (label: string, value: string) => {
+        try {
+            return JSON.parse(value);
+        } catch (e) {
+            throw new Error(`${label} must be valid JSON`);
+        }
+    };
+
+    const handleDiscordSave = () => {
+        setDiscordSaving(true);
+        setDiscordStatus(null);
+        try {
+            const styleGuilds = parseJson("Style overrides (guilds)", discordJson.styleGuilds);
+            const styleChannels = parseJson("Style overrides (channels)", discordJson.styleChannels);
+            const nickGuilds = parseJson("Nickname templates (guilds)", discordJson.nickGuilds);
+            const themeGuilds = parseJson("Embed theme (guilds)", discordJson.themeGuilds);
+            const avatarGuilds = parseJson("Avatar overrides (guilds)", discordJson.avatarGuilds);
+
+            const payload: DiscordUiConfig = {
+                signature: discordConfig.signature || "",
+                emoji_set: discordConfig.emoji_set || [],
+                verbosity_limits: discordConfig.verbosity_limits || { short: 600, medium: 1800, long: 4000 },
+                tone_prefixes: discordConfig.tone_prefixes || {},
+                style_overrides: {
+                    default: discordConfig.style_overrides?.default || {},
+                    guilds: styleGuilds,
+                    channels: styleChannels,
+                },
+                embed_theme: {
+                    default: discordConfig.embed_theme?.default || "",
+                    guilds: themeGuilds,
+                },
+                nickname_templates: {
+                    default: discordConfig.nickname_templates?.default || "",
+                    guilds: nickGuilds,
+                },
+                avatar_overrides: {
+                    guilds: avatarGuilds,
+                },
+            };
+
+            axios.post(`${API_BASE_URL}/api/discord/config`, { discord: payload })
+                .then(res => {
+                    if (res.data.error) throw new Error(res.data.error);
+                    setDiscordStatus({ type: 'success', message: "Discord personalization saved. Restarting..." });
+                    setDiscordSaving(false);
+                })
+                .catch(err => {
+                    console.error("Failed to save discord config:", err);
+                    setDiscordStatus({ type: 'error', message: "Failed to save Discord personalization." });
+                    setDiscordSaving(false);
+                });
+        } catch (e: any) {
+            setDiscordStatus({ type: 'error', message: e.message || "Invalid JSON input." });
+            setDiscordSaving(false);
+        }
+    };
+
     if (loading) return <div className="p-8 text-muted-foreground">Loading channel settings...</div>;
 
     return (
@@ -268,6 +385,13 @@ export function ChannelsPage() {
                         {status.type === 'success' ? <RefreshCw className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
                         <AlertTitle>{status.type === 'success' ? "Saved" : "Error"}</AlertTitle>
                         <AlertDescription>{status.message}</AlertDescription>
+                    </Alert>
+                )}
+                {discordStatus && (
+                    <Alert className={discordStatus.type === 'success' ? "border-primary/50 bg-primary/10 text-primary" : "border-destructive/50 bg-destructive/10 text-destructive"}>
+                        {discordStatus.type === 'success' ? <RefreshCw className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+                        <AlertTitle>{discordStatus.type === 'success' ? "Discord Saved" : "Discord Error"}</AlertTitle>
+                        <AlertDescription>{discordStatus.message}</AlertDescription>
                     </Alert>
                 )}
 
@@ -447,6 +571,180 @@ export function ChannelsPage() {
                                         </div>
                                     </CardContent>
                                 </Card>
+
+                                <Card className="border-border/50 bg-card/50">
+                                    <CardHeader>
+                                        <CardTitle className="flex items-center gap-2">
+                                            <MessageCircle className="h-5 w-5 text-[#5865F2]" />
+                                            Discord Personalization
+                                        </CardTitle>
+                                        <CardDescription>
+                                            Configure tone, verbosity, emoji usage, signatures, themes, and per‑guild/channel overrides.
+                                        </CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="space-y-6">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div className="space-y-2">
+                                                <Label>Signature</Label>
+                                                <Input
+                                                    value={discordConfig.signature || ""}
+                                                    onChange={(e) => updateDiscordField("signature", e.target.value)}
+                                                    placeholder="LimeBot"
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>Emoji Set (comma‑separated)</Label>
+                                                <Input
+                                                    value={(discordConfig.emoji_set || []).join(", ")}
+                                                    onChange={(e) => updateDiscordField("emoji_set", e.target.value.split(",").map(s => s.trim()).filter(Boolean))}
+                                                    placeholder="🍋, ⚙️, ✨"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                            <div className="space-y-2">
+                                                <Label>Default Tone</Label>
+                                                <Select
+                                                    value={discordConfig.style_overrides?.default?.tone || "neutral"}
+                                                    onValueChange={(val) => updateDiscordField("style_overrides", {
+                                                        ...(discordConfig.style_overrides || {}),
+                                                        default: { ...(discordConfig.style_overrides?.default || {}), tone: val }
+                                                    })}
+                                                >
+                                                    <SelectTrigger><SelectValue placeholder="Select tone" /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="neutral">Neutral</SelectItem>
+                                                        <SelectItem value="friendly">Friendly</SelectItem>
+                                                        <SelectItem value="direct">Direct</SelectItem>
+                                                        <SelectItem value="formal">Formal</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>Default Verbosity</Label>
+                                                <Select
+                                                    value={discordConfig.style_overrides?.default?.verbosity || "medium"}
+                                                    onValueChange={(val) => updateDiscordField("style_overrides", {
+                                                        ...(discordConfig.style_overrides || {}),
+                                                        default: { ...(discordConfig.style_overrides?.default || {}), verbosity: val }
+                                                    })}
+                                                >
+                                                    <SelectTrigger><SelectValue placeholder="Select verbosity" /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="short">Short</SelectItem>
+                                                        <SelectItem value="medium">Medium</SelectItem>
+                                                        <SelectItem value="long">Long</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>Emoji Usage</Label>
+                                                <Select
+                                                    value={discordConfig.style_overrides?.default?.emoji_usage || "light"}
+                                                    onValueChange={(val) => updateDiscordField("style_overrides", {
+                                                        ...(discordConfig.style_overrides || {}),
+                                                        default: { ...(discordConfig.style_overrides?.default || {}), emoji_usage: val }
+                                                    })}
+                                                >
+                                                    <SelectTrigger><SelectValue placeholder="Select emoji usage" /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="none">None</SelectItem>
+                                                        <SelectItem value="light">Light</SelectItem>
+                                                        <SelectItem value="heavy">Heavy</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                            <div className="space-y-2">
+                                                <Label>Embed Theme (Default Hex)</Label>
+                                                <Input
+                                                    value={discordConfig.embed_theme?.default || ""}
+                                                    onChange={(e) => updateDiscordField("embed_theme", {
+                                                        ...(discordConfig.embed_theme || {}),
+                                                        default: e.target.value
+                                                    })}
+                                                    placeholder="#57F287"
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>Nickname Template (Default)</Label>
+                                                <Input
+                                                    value={discordConfig.nickname_templates?.default || ""}
+                                                    onChange={(e) => updateDiscordField("nickname_templates", {
+                                                        ...(discordConfig.nickname_templates || {}),
+                                                        default: e.target.value
+                                                    })}
+                                                    placeholder="LimeBot • DevOps"
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>Default Prefix (Optional)</Label>
+                                                <Input
+                                                    value={discordConfig.style_overrides?.default?.prefix || ""}
+                                                    onChange={(e) => updateDiscordField("style_overrides", {
+                                                        ...(discordConfig.style_overrides || {}),
+                                                        default: { ...(discordConfig.style_overrides?.default || {}), prefix: e.target.value }
+                                                    })}
+                                                    placeholder="Heads up:"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div className="space-y-2">
+                                                <Label>Per‑Guild Style Overrides (JSON)</Label>
+                                                <textarea
+                                                    className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
+                                                    value={discordJson.styleGuilds}
+                                                    onChange={(e) => setDiscordJson(prev => ({ ...prev, styleGuilds: e.target.value }))}
+                                                    placeholder='{"123456789012345678":{"tone":"direct","verbosity":"short","emoji_usage":"none"}}'
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>Per‑Channel Style Overrides (JSON)</Label>
+                                                <textarea
+                                                    className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
+                                                    value={discordJson.styleChannels}
+                                                    onChange={(e) => setDiscordJson(prev => ({ ...prev, styleChannels: e.target.value }))}
+                                                    placeholder='{"222222222222222222":{"tone":"formal","verbosity":"long","emoji_usage":"none"}}'
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                            <div className="space-y-2">
+                                                <Label>Per‑Guild Nicknames (JSON)</Label>
+                                                <textarea
+                                                    className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
+                                                    value={discordJson.nickGuilds}
+                                                    onChange={(e) => setDiscordJson(prev => ({ ...prev, nickGuilds: e.target.value }))}
+                                                    placeholder='{"123456789012345678":"LimeBot • DevOps"}'
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>Per‑Guild Embed Theme (JSON)</Label>
+                                                <textarea
+                                                    className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
+                                                    value={discordJson.themeGuilds}
+                                                    onChange={(e) => setDiscordJson(prev => ({ ...prev, themeGuilds: e.target.value }))}
+                                                    placeholder='{"123456789012345678":"#F4D03F"}'
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>Per‑Guild Avatar URL (JSON)</Label>
+                                                <textarea
+                                                    className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
+                                                    value={discordJson.avatarGuilds}
+                                                    onChange={(e) => setDiscordJson(prev => ({ ...prev, avatarGuilds: e.target.value }))}
+                                                    placeholder='{"123456789012345678":"https://.../avatar.png"}'
+                                                />
+                                            </div>
+                                        </div>
+                                    </CardContent>
+                                </Card>
                             </div>
                         )}
                     </TabsContent>
@@ -499,15 +797,28 @@ export function ChannelsPage() {
                 </Tabs>
 
                 <div className="flex justify-end pt-4 bg-background/95 backdrop-blur sticky bottom-0 p-4 border-t border-border mt-8">
-                    <Button onClick={handleSave} disabled={saving} className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold shadow-lg">
-                        {saving ? (
-                            <>Saving...</>
-                        ) : (
-                            <>
-                                <Save className="mr-2 h-4 w-4" /> Save Configuration
-                            </>
-                        )}
-                    </Button>
+                    <div className="flex items-center gap-3">
+                        <Button
+                            variant="outline"
+                            onClick={handleDiscordSave}
+                            disabled={discordSaving}
+                        >
+                            {discordSaving ? (
+                                <>Saving...</>
+                            ) : (
+                                <>Save Discord Personalization</>
+                            )}
+                        </Button>
+                        <Button onClick={handleSave} disabled={saving} className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold shadow-lg">
+                            {saving ? (
+                                <>Saving...</>
+                            ) : (
+                                <>
+                                    <Save className="mr-2 h-4 w-4" /> Save Configuration
+                                </>
+                            )}
+                        </Button>
+                    </div>
                 </div>
             </div>
         </div>

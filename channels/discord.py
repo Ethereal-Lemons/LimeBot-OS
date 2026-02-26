@@ -1,6 +1,7 @@
 """Discord channel implementation."""
 
 import asyncio
+import json
 import aiohttp
 import discord
 from discord import app_commands
@@ -152,11 +153,194 @@ class DiscordChannel(BaseChannel):
         self._allowed_channels: set[str] = set(raw_channels)
         self._tool_messages: dict[str, discord.Message] = {}
         self.agent = None
+        self._style_overrides = getattr(self.config, "style_overrides", {}) or {}
+        self._signature = getattr(self.config, "signature", "") or ""
+        self._emoji_set = getattr(self.config, "emoji_set", ["🍋", "⚙️", "✨"])
+        self._verbosity_limits = getattr(
+            self.config,
+            "verbosity_limits",
+            {"short": 600, "medium": 1800, "long": 4000},
+        )
+        self._tone_prefixes = getattr(
+            self.config,
+            "tone_prefixes",
+            {
+                "neutral": "",
+                "friendly": "Hey!",
+                "direct": "Heads up:",
+                "formal": "Note:",
+            },
+        )
+        self._embed_theme = getattr(self.config, "embed_theme", {}) or {}
+        self._nickname_templates = getattr(self.config, "nickname_templates", {}) or {}
+        self._avatar_overrides = getattr(self.config, "avatar_overrides", {}) or {}
 
         self._register_events()
 
     def set_agent(self, agent) -> None:
         self.agent = agent
+
+    def _get_style_for_target(self, target) -> dict:
+        style = {}
+        overrides = self._style_overrides or {}
+        default = overrides.get("default") or {}
+        style.update(default if isinstance(default, dict) else {})
+
+        guild_id = None
+        channel_id = None
+        try:
+            channel_id = str(getattr(target, "id", "") or "")
+            guild_id = (
+                str(getattr(target, "guild", None).id)
+                if getattr(target, "guild", None)
+                else None
+            )
+        except Exception:
+            guild_id = None
+
+        guilds = overrides.get("guilds") or {}
+        channels = overrides.get("channels") or {}
+        if guild_id and isinstance(guilds, dict) and guild_id in guilds:
+            if isinstance(guilds[guild_id], dict):
+                style.update(guilds[guild_id])
+        if channel_id and isinstance(channels, dict) and channel_id in channels:
+            if isinstance(channels[channel_id], dict):
+                style.update(channels[channel_id])
+        return style
+
+    def _apply_style(self, content: str, target) -> str:
+        if not content:
+            return content
+
+        import re
+
+        style = self._get_style_for_target(target)
+        text = content.strip()
+
+        prefix = style.get("prefix") or ""
+        tone = style.get("tone")
+        if not prefix and tone:
+            prefix = self._tone_prefixes.get(tone, "")
+        if prefix:
+            text = f"{prefix} {text}"
+
+        emoji_usage = (style.get("emoji_usage") or "light").lower()
+        emoji_set = style.get("emoji_set") or self._emoji_set
+        emoji = emoji_set[0] if emoji_set else "🍋"
+
+        if emoji_usage == "none":
+            text = re.sub(
+                r"[\U0001F300-\U0001FAFF\U00002700-\U000027BF\U0001F1E6-\U0001F1FF]+",
+                "",
+                text,
+            ).strip()
+        elif emoji_usage in ("light", "heavy"):
+            if emoji not in text:
+                if emoji_usage == "heavy":
+                    text = f"{emoji} {text} {emoji}"
+                else:
+                    text = f"{text} {emoji}"
+
+        max_len = style.get("max_length")
+        if not max_len:
+            verbosity = (style.get("verbosity") or "medium").lower()
+            max_len = self._verbosity_limits.get(verbosity)
+        if isinstance(max_len, int) and max_len > 0 and len(text) > max_len:
+            text = text[: max_len - 1].rstrip() + "…"
+
+        signature = style.get("signature")
+        if signature is None:
+            signature = self._signature
+        if signature:
+            text = f"{text}\n— {signature}"
+
+        suffix = style.get("suffix") or ""
+        if suffix:
+            text = f"{text}\n{suffix}"
+
+        return text
+
+    def _get_theme_color(self, target, fallback: int) -> int:
+        theme = self._embed_theme or {}
+        default = theme.get("default")
+        guilds = theme.get("guilds") or {}
+        color_str = default
+        try:
+            guild_id = (
+                str(getattr(target, "guild", None).id)
+                if getattr(target, "guild", None)
+                else None
+            )
+            if guild_id and guild_id in guilds:
+                color_str = guilds[guild_id]
+        except Exception:
+            color_str = default
+
+        if isinstance(color_str, str) and color_str.startswith("#"):
+            try:
+                return int(color_str.lstrip("#"), 16)
+            except ValueError:
+                return fallback
+        if isinstance(color_str, int):
+            return color_str
+        return fallback
+
+    async def _apply_guild_profile_overrides(self) -> None:
+        if not self.client.user:
+            return
+
+        async def _fetch_avatar_bytes(url: str) -> bytes | None:
+            import urllib.request
+            import asyncio as _asyncio
+
+            def _fetch():
+                with urllib.request.urlopen(url, timeout=10) as resp:
+                    return resp.read()
+
+            try:
+                return await _asyncio.to_thread(_fetch)
+            except Exception:
+                return None
+
+        nick_cfg = self._nickname_templates or {}
+        avatar_cfg = self._avatar_overrides or {}
+
+        for guild in self.client.guilds:
+            try:
+                member = guild.get_member(self.client.user.id)
+                if not member:
+                    member = await guild.fetch_member(self.client.user.id)
+            except Exception:
+                member = None
+
+            nick_template = None
+            if isinstance(nick_cfg, dict):
+                nick_template = nick_cfg.get("guilds", {}).get(str(guild.id)) or nick_cfg.get("default")
+            if nick_template and member:
+                nickname = nick_template.format(
+                    guild=guild.name, bot=self.client.user.name
+                )
+                try:
+                    await member.edit(nick=nickname)
+                    logger.info(f"[Discord] Set nickname in '{guild.name}' to '{nickname}'")
+                except Exception as e:
+                    logger.warning(f"[Discord] Failed to set nickname in '{guild.name}': {e}")
+
+            avatar_url = None
+            if isinstance(avatar_cfg, dict):
+                avatar_url = avatar_cfg.get("guilds", {}).get(str(guild.id))
+            if avatar_url:
+                avatar_bytes = await _fetch_avatar_bytes(avatar_url)
+                if avatar_bytes:
+                    try:
+                        if member and hasattr(member, "edit"):
+                            await member.edit(avatar=avatar_bytes)
+                            logger.info(f"[Discord] Set guild avatar in '{guild.name}'")
+                        else:
+                            await self.client.user.edit(avatar=avatar_bytes)
+                            logger.info("[Discord] Set global avatar (fallback).")
+                    except Exception as e:
+                        logger.warning(f"[Discord] Failed to set avatar in '{guild.name}': {e}")
 
     def _register_events(self) -> None:
         """Register discord.py event handlers."""
@@ -240,6 +424,7 @@ class DiscordChannel(BaseChannel):
                     )
 
             await self._set_presence()
+            await self._apply_guild_profile_overrides()
 
         @self.client.event
         async def on_message(message: discord.Message):
@@ -460,10 +645,12 @@ class DiscordChannel(BaseChannel):
         tool_name = metadata.get("tool", "unknown")
 
         if status == "running":
-            embed = discord.Embed(
-                title=f"🛠️ Tool Running: `{tool_name}`",
-                description="Executing with arguments...",
-                color=0x95A5A6,
+            embed = self._build_tool_embed(
+                target=target,
+                status=status,
+                tool_name=tool_name,
+                args=metadata.get("args"),
+                result=None,
             )
             message = await target.send(embed=embed)
             if tc_id:
@@ -471,21 +658,23 @@ class DiscordChannel(BaseChannel):
         elif status == "completed":
             if tc_id and tc_id in self._tool_messages:
                 message = self._tool_messages.pop(tc_id)
-                result = metadata.get("result", "")
-                embed = discord.Embed(
-                    title=f"✅ Tool Completed: `{tool_name}`",
-                    description=f"```\n{result[:1500]}\n```",
-                    color=0x57F287,
+                embed = self._build_tool_embed(
+                    target=target,
+                    status=status,
+                    tool_name=tool_name,
+                    args=metadata.get("args"),
+                    result=metadata.get("result", ""),
                 )
                 await message.edit(embed=embed)
         elif status == "error":
             if tc_id and tc_id in self._tool_messages:
                 message = self._tool_messages.pop(tc_id)
-                result = metadata.get("result", "Unknown error")
-                embed = discord.Embed(
-                    title=f"❌ Tool Error: `{tool_name}`",
-                    description=f"```\n{result[:1500]}\n```",
-                    color=0xED4245,
+                embed = self._build_tool_embed(
+                    target=target,
+                    status=status,
+                    tool_name=tool_name,
+                    args=metadata.get("args"),
+                    result=metadata.get("result", "Unknown error"),
                 )
                 await message.edit(embed=embed)
 
@@ -533,6 +722,11 @@ class DiscordChannel(BaseChannel):
                     )
                 else:
                     await self._handle_tool_execution(target, metadata)
+            elif msg_type == "notification":
+                if metadata.get("kind") == "github_pr" and metadata.get("data"):
+                    await self._send_github_pr_embed(target, msg.content, metadata)
+                else:
+                    await self._send_text(target, msg.content)
             elif msg_type == "typing":
                 await self._send_typing(target)
             elif msg_type == "file":
@@ -597,6 +791,8 @@ class DiscordChannel(BaseChannel):
             )
             return
 
+        content = self._apply_style(content, target)
+
         import re
         from pathlib import Path
 
@@ -637,6 +833,101 @@ class DiscordChannel(BaseChannel):
                 f"[Discord] Sent {len(files_to_send)} file(s) to {_target_name(target)}"
             )
 
+    def _apply_embed_footer(self, embed: discord.Embed, target) -> None:
+        style = self._get_style_for_target(target)
+        signature = style.get("signature")
+        if signature is None:
+            signature = self._signature
+        if not signature:
+            return
+        if embed.footer and embed.footer.text:
+            embed.set_footer(text=f"{embed.footer.text} • {signature}")
+        else:
+            embed.set_footer(text=signature)
+
+    def _build_tool_embed(
+        self, target, status: str, tool_name: str, args: dict | None, result: str | None
+    ) -> discord.Embed:
+        status = status or "running"
+        status_title = {
+            "running": "🛠️ Tool Running",
+            "completed": "✅ Tool Completed",
+            "error": "❌ Tool Failed",
+        }.get(status, "🛠️ Tool Update")
+
+        base_color = 0x5865F2
+        if status == "completed":
+            base_color = 0x57F287
+        elif status == "error":
+            base_color = 0xED4245
+        color = self._get_theme_color(target, base_color)
+
+        embed = discord.Embed(
+            title=f"{status_title}: `{tool_name}`",
+            color=color,
+        )
+        if self.client.user:
+            try:
+                embed.set_author(
+                    name="LimeBot Tools",
+                    icon_url=self.client.user.display_avatar.url,
+                )
+            except Exception:
+                pass
+
+        if args:
+            try:
+                args_preview = json.dumps(args, ensure_ascii=False)[:800]
+            except Exception:
+                args_preview = str(args)[:800]
+            embed.add_field(name="Args", value=f"```\n{args_preview}\n```", inline=False)
+
+        if result:
+            result_preview = str(result)[:900]
+            embed.add_field(
+                name="Result",
+                value=f"```\n{result_preview}\n```",
+                inline=False,
+            )
+
+        self._apply_embed_footer(embed, target)
+        return embed
+
+    async def _send_github_pr_embed(self, target, content: str, metadata: dict) -> None:
+        data = metadata.get("data") or {}
+        title = data.get("title") or "Pull Request"
+        url = data.get("url") or ""
+        repo = data.get("repo") or ""
+        labels = data.get("labels") or []
+        reviewers = data.get("reviewers") or []
+        head = data.get("head") or ""
+        base = data.get("base") or ""
+
+        desc = content or "GitHub PR created."
+        if url:
+            desc = f"[Open PR]({url})"
+
+        embed = discord.Embed(
+            title=f"✅ PR Created: {title}",
+            description=desc,
+            color=self._get_theme_color(target, 0x57F287),
+        )
+        if repo:
+            embed.add_field(name="Repo", value=repo, inline=True)
+        if head:
+            embed.add_field(name="Head", value=head, inline=True)
+        if base:
+            embed.add_field(name="Base", value=base, inline=True)
+        if labels:
+            embed.add_field(name="Labels", value=", ".join(labels), inline=False)
+        if reviewers:
+            embed.add_field(name="Reviewers", value=", ".join(reviewers), inline=False)
+        if url:
+            embed.url = url
+
+        self._apply_embed_footer(embed, target)
+        await target.send(embed=embed)
+
     async def _send_embed(
         self, target, embed_data: dict, metadata: dict, chat_id: str
     ) -> None:
@@ -648,6 +939,7 @@ class DiscordChannel(BaseChannel):
                 f"[Discord] Invalid embed color '{color_str}', using default."
             )
             color_int = 0x5865F2
+        color_int = self._get_theme_color(target, color_int)
 
         embed = discord.Embed(
             title=embed_data.get("title", ""),
@@ -667,6 +959,8 @@ class DiscordChannel(BaseChannel):
                 value=field.get("value", ""),
                 inline=field.get("inline", False),
             )
+
+        self._apply_embed_footer(embed, target)
 
         conf_id = metadata.get("conf_id")
         view = (

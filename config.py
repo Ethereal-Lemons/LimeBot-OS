@@ -186,6 +186,11 @@ def load_config(force_reload=False):
                 if "llm" in dynamic_config and isinstance(dynamic_config["llm"], dict):
                     for k, v in dynamic_config["llm"].items():
                         setattr(config.llm, k, v)
+                if "discord" in dynamic_config and isinstance(
+                    dynamic_config["discord"], dict
+                ):
+                    for k, v in dynamic_config["discord"].items():
+                        setattr(config.discord, k, v)
         except Exception as e:
             logger.error(f"Error loading limebot.json: {e}")
             config.skills = SimpleNamespace(disabled=[])
