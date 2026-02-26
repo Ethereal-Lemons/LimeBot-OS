@@ -328,19 +328,15 @@ class DiscordChannel(BaseChannel):
 
             avatar_url = None
             if isinstance(avatar_cfg, dict):
-                avatar_url = avatar_cfg.get("guilds", {}).get(str(guild.id))
+                avatar_url = avatar_cfg.get("global") or ""
             if avatar_url:
                 avatar_bytes = await _fetch_avatar_bytes(avatar_url)
                 if avatar_bytes:
                     try:
-                        if member and hasattr(member, "edit"):
-                            await member.edit(avatar=avatar_bytes)
-                            logger.info(f"[Discord] Set guild avatar in '{guild.name}'")
-                        else:
-                            await self.client.user.edit(avatar=avatar_bytes)
-                            logger.info("[Discord] Set global avatar (fallback).")
+                        await self.client.user.edit(avatar=avatar_bytes)
+                        logger.info("[Discord] Set global avatar (guild override fallback).")
                     except Exception as e:
-                        logger.warning(f"[Discord] Failed to set avatar in '{guild.name}': {e}")
+                        logger.warning(f"[Discord] Failed to set global avatar: {e}")
 
     def _register_events(self) -> None:
         """Register discord.py event handlers."""

@@ -67,7 +67,7 @@ interface DiscordUiConfig {
     };
     embed_theme?: { default?: string; guilds?: Record<string, string> };
     nickname_templates?: { default?: string; guilds?: Record<string, string> };
-    avatar_overrides?: { guilds?: Record<string, string> };
+    avatar_overrides?: { global?: string };
 }
 
 function WhatsAppConnectionSection() {
@@ -216,8 +216,8 @@ export function ChannelsPage() {
         styleChannels: "{}",
         nickGuilds: "{}",
         themeGuilds: "{}",
-        avatarGuilds: "{}",
     });
+    const [globalAvatarUrl, setGlobalAvatarUrl] = useState("");
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
@@ -257,8 +257,8 @@ export function ChannelsPage() {
                     styleChannels: JSON.stringify(dc.style_overrides?.channels || {}, null, 2),
                     nickGuilds: JSON.stringify(dc.nickname_templates?.guilds || {}, null, 2),
                     themeGuilds: JSON.stringify(dc.embed_theme?.guilds || {}, null, 2),
-                    avatarGuilds: JSON.stringify(dc.avatar_overrides?.guilds || {}, null, 2),
                 });
+                setGlobalAvatarUrl(dc.avatar_overrides?.global || "");
             })
             .catch(err => {
                 if (err.response?.status !== 401) {
@@ -323,7 +323,6 @@ export function ChannelsPage() {
             const styleChannels = parseJson("Style overrides (channels)", discordJson.styleChannels);
             const nickGuilds = parseJson("Nickname templates (guilds)", discordJson.nickGuilds);
             const themeGuilds = parseJson("Embed theme (guilds)", discordJson.themeGuilds);
-            const avatarGuilds = parseJson("Avatar overrides (guilds)", discordJson.avatarGuilds);
 
             const payload: DiscordUiConfig = {
                 signature: discordConfig.signature || "",
@@ -344,7 +343,7 @@ export function ChannelsPage() {
                     guilds: nickGuilds,
                 },
                 avatar_overrides: {
-                    guilds: avatarGuilds,
+                    global: globalAvatarUrl.trim(),
                 },
             };
 
@@ -746,15 +745,14 @@ export function ChannelsPage() {
                                                 />
                                             </div>
                                             <div className="space-y-2">
-                                                <Label>Per‑Guild Avatar URL (JSON)</Label>
+                                                <Label>Global Avatar URL</Label>
                                                 <p className="text-[10px] text-muted-foreground">
-                                                    Map guild ID → image URL. Example: <span className="font-mono">{"{\"123\":\"https://.../avatar.png\"}"}</span>
+                                                    Discord bots only support a single global avatar.
                                                 </p>
-                                                <textarea
-                                                    className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
-                                                    value={discordJson.avatarGuilds}
-                                                    onChange={(e) => setDiscordJson(prev => ({ ...prev, avatarGuilds: e.target.value }))}
-                                                    placeholder='{"123456789012345678":"https://.../avatar.png"}'
+                                                <Input
+                                                    value={globalAvatarUrl}
+                                                    onChange={(e) => setGlobalAvatarUrl(e.target.value)}
+                                                    placeholder="https://.../avatar.png"
                                                 />
                                             </div>
                                         </div>
