@@ -21,11 +21,12 @@ LimeBot is not a wrapper around an API. It's a full agentic system — event-dri
 ---
 
 
-## 🚀 Latest Updates (Latest Release)
-- **Gemini 3.1 Integration:** Upgraded core intelligence to Gemini 3.1, delivering 40% more efficiency and advanced reasoning.
-- **Auto-Run System:** Seamless background execution that automatically starts LimeBot upon system login.
-- **Atomic Writes & Backup Rotation:** Enhanced filesystem stability preventing data corruption during unexpected shutdowns.
-- **Tag Validation:** Improved internal memory handling and state persistence.
+## 🚀 Latest Updates (v1.0.3)
+- **Discord Personalization:** Added per-guild/per-channel tone, verbosity, emoji usage, signatures, and embed theming.
+- **GitHub Skill Defaults:** Automatic repo, base branch, PR templates, reviewers, labels, and push notifications.
+- **Skill Dependencies & UI:** Visibility of required dependencies and missing-deps alerts in the UI.
+- **Improved Reflection:** Skipping LLM reflection calls when no journal exists to prevent setup-time errors.
+- **Themed Discord Embeds:** Upgraded tool outputs visually.
 
 ## ✨ What It Can Actually Do
 
