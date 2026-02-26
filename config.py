@@ -68,6 +68,14 @@ def load_config(force_reload=False):
     except ValueError:
         logger.warning("Invalid COMMAND_TIMEOUT in .env, defaulting to 300.0.")
         config.command_timeout = 300.0
+ 
+    try:
+        config.tool_timeout = float(
+            os.getenv("TOOL_TIMEOUT", os.getenv("COMMAND_TIMEOUT", "120.0"))
+        )
+    except ValueError:
+        logger.warning("Invalid TOOL_TIMEOUT in .env, defaulting to 120.0.")
+        config.tool_timeout = 120.0
 
     try:
         config.stall_timeout = float(os.getenv("STALL_TIMEOUT", "30"))

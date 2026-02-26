@@ -1089,12 +1089,23 @@ class AgentLoop:
                 t0 = time.time()
                 try:
                     # General safety timeout for ANY tool execution (MCP, Browser, etc.)
-                    result = await asyncio.wait_for(
-                        self._execute_tool(function_name, function_args, session_key),
-                        timeout=120.0,
-                    )
+                    tool_timeout = getattr(self.config, "tool_timeout", 120.0)
+                    if tool_timeout and tool_timeout > 0:
+                        result = await asyncio.wait_for(
+                            self._execute_tool(function_name, function_args, session_key),
+                            timeout=tool_timeout,
+                        )
+                    else:
+                        result = await self._execute_tool(
+                            function_name, function_args, session_key
+                        )
                 except asyncio.TimeoutError:
-                    result = f"Error: Tool '{function_name}' timed out after 120s."
+                    timeout_msg = (
+                        f"{int(tool_timeout)}s"
+                        if tool_timeout and tool_timeout > 0
+                        else "configured limit"
+                    )
+                    result = f"Error: Tool '{function_name}' timed out after {timeout_msg}."
                     logger.error(result)
 
                 self.metrics.record_tool_call(

@@ -6,6 +6,8 @@ import aiohttp
 import discord
 from discord import app_commands
 import random
+import time
+import hashlib
 from typing import Any
 
 from core.bus import MessageBus
@@ -16,6 +18,8 @@ from loguru import logger
 
 _MAX_MESSAGE_LEN = 2000
 _CHUNK_SIZE = 1900
+_AVATAR_STATE_FILE = "data/discord_avatar_state.json"
+_AVATAR_COOLDOWN_SECS = 24 * 60 * 60
 
 
 class ToolConfirmationView(discord.ui.View):
@@ -304,6 +308,12 @@ class DiscordChannel(BaseChannel):
 
         nick_cfg = self._nickname_templates or {}
         avatar_cfg = self._avatar_overrides or {}
+        avatar_state = {}
+        try:
+            with open(_AVATAR_STATE_FILE, "r", encoding="utf-8") as f:
+                avatar_state = json.load(f)
+        except Exception:
+            avatar_state = {}
 
         for guild in self.client.guilds:
             try:
@@ -332,11 +342,32 @@ class DiscordChannel(BaseChannel):
             if avatar_url:
                 avatar_bytes = await _fetch_avatar_bytes(avatar_url)
                 if avatar_bytes:
+                    avatar_hash = hashlib.sha256(avatar_bytes).hexdigest()
+                    now = time.time()
+                    last = avatar_state.get("last_set", 0)
+                    last_hash = avatar_state.get("hash", "")
+                    if last_hash == avatar_hash and now - last < _AVATAR_COOLDOWN_SECS:
+                        logger.info("[Discord] Avatar unchanged; skipping update.")
+                        continue
                     try:
                         await self.client.user.edit(avatar=avatar_bytes)
                         logger.info("[Discord] Set global avatar (guild override fallback).")
+                        avatar_state = {"hash": avatar_hash, "last_set": now}
+                        try:
+                            with open(_AVATAR_STATE_FILE, "w", encoding="utf-8") as f:
+                                json.dump(avatar_state, f)
+                        except Exception:
+                            pass
                     except Exception as e:
                         logger.warning(f"[Discord] Failed to set global avatar: {e}")
+                        # Rate-limit protection: if Discord says "too fast", record cooldown.
+                        if "changing your avatar too fast" in str(e).lower():
+                            avatar_state = {"hash": avatar_hash, "last_set": now}
+                            try:
+                                with open(_AVATAR_STATE_FILE, "w", encoding="utf-8") as f:
+                                    json.dump(avatar_state, f)
+                            except Exception:
+                                pass
 
     def _register_events(self) -> None:
         """Register discord.py event handlers."""
