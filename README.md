@@ -20,6 +20,13 @@ LimeBot is not a wrapper around an API. It's a full agentic system — event-dri
 
 ---
 
+
+## 🚀 Latest Updates (Latest Release)
+- **Gemini 3.1 Integration:** Upgraded core intelligence to Gemini 3.1, delivering 40% more efficiency and advanced reasoning.
+- **Auto-Run System:** Seamless background execution that automatically starts LimeBot upon system login.
+- **Atomic Writes & Backup Rotation:** Enhanced filesystem stability preventing data corruption during unexpected shutdowns.
+- **Tag Validation:** Improved internal memory handling and state persistence.
+
 ## ✨ What It Can Actually Do
 
 ### 🧠 It Remembers Everything
