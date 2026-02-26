@@ -50,11 +50,14 @@ class ReflectiveService:
             today_str = datetime.now().strftime("%Y-%m-%d")
             journal_file = MEMORY_DIR / f"{today_str}.md"
 
-            journal_content = (
-                journal_file.read_text(encoding="utf-8")
-                if journal_file.exists()
-                else "No logs for today."
-            )
+            if not journal_file.exists():
+                logger.info("Reflection skipped: no journal file for today.")
+                return "No logs for today."
+
+            journal_content = journal_file.read_text(encoding="utf-8")
+            if not journal_content.strip():
+                logger.info("Reflection skipped: journal is empty.")
+                return "No logs for today."
             long_term_memory = (
                 LONG_TERM_MEMORY_FILE.read_text(encoding="utf-8")
                 if LONG_TERM_MEMORY_FILE.exists()
