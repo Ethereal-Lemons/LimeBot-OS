@@ -3,15 +3,54 @@ import { Palette, Code2, RotateCcw, Copy, Check } from 'lucide-react';
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CustomThemeCreator } from './CustomThemeCreator';
 import { injectCss, CSS_STORAGE_KEY } from '@/lib/css-injector';
 
 interface AppearancePageProps {
     onThemeChange?: (theme: string) => void;
+    onTimeThemeSettingsChange?: (settings: TimeThemeSettings) => void;
 }
 
-export function AppearancePage({ onThemeChange }: AppearancePageProps) {
+type TimeThemeSettings = {
+    enabled: boolean;
+    dayTheme: string;
+    nightTheme: string;
+    dayStart: number;
+    nightStart: number;
+};
+
+const TIME_THEME_STORAGE_KEY = 'limebot-time-theme';
+const DEFAULT_TIME_THEME_SETTINGS: TimeThemeSettings = {
+    enabled: false,
+    dayTheme: 'glacier',
+    nightTheme: 'midnight-synth',
+    dayStart: 7,
+    nightStart: 19,
+};
+
+function loadTimeThemeSettings(): TimeThemeSettings {
+    try {
+        const raw = localStorage.getItem(TIME_THEME_STORAGE_KEY);
+        if (!raw) return DEFAULT_TIME_THEME_SETTINGS;
+        const parsed = JSON.parse(raw);
+        return {
+            enabled: Boolean(parsed?.enabled),
+            dayTheme: typeof parsed?.dayTheme === 'string' ? parsed.dayTheme : DEFAULT_TIME_THEME_SETTINGS.dayTheme,
+            nightTheme: typeof parsed?.nightTheme === 'string' ? parsed.nightTheme : DEFAULT_TIME_THEME_SETTINGS.nightTheme,
+            dayStart: Number.isInteger(parsed?.dayStart) ? parsed.dayStart : DEFAULT_TIME_THEME_SETTINGS.dayStart,
+            nightStart: Number.isInteger(parsed?.nightStart) ? parsed.nightStart : DEFAULT_TIME_THEME_SETTINGS.nightStart,
+        };
+    } catch {
+        return DEFAULT_TIME_THEME_SETTINGS;
+    }
+}
+
+export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: AppearancePageProps) {
     const [currentTheme, setCurrentTheme] = useState(() => localStorage.getItem('limebot-theme') || 'lime');
+    const [timeTheme, setTimeTheme] = useState<TimeThemeSettings>(() => loadTimeThemeSettings());
 
     const standardThemes = [
         { id: 'lime', name: 'Cyber Lime', color: 'bg-[#84cc16]' },
@@ -33,7 +72,19 @@ export function AppearancePage({ onThemeChange }: AppearancePageProps) {
         { id: 'glacier', name: 'Glacier', color: 'bg-gradient-to-br from-blue-100 to-cyan-200' },
         { id: 'coffee-shop', name: 'Coffee Shop', color: 'bg-[#6d4c41]' },
         { id: 'sakura', name: 'Sakura', color: 'bg-gradient-to-br from-pink-200 to-pink-400' },
+        { id: 'sunset-mirage', name: 'Sunset Mirage', color: 'bg-gradient-to-br from-orange-300 via-rose-400 to-fuchsia-500' },
+        { id: 'emerald-depths', name: 'Emerald Depths', color: 'bg-gradient-to-br from-emerald-700 via-teal-700 to-cyan-900' },
     ];
+    const themeOptions = [...standardThemes, ...specialThemes];
+    const hourOptions = Array.from({ length: 24 }, (_, hour) => ({
+        value: String(hour),
+        label: `${String(hour).padStart(2, '0')}:00`,
+    }));
+
+    useEffect(() => {
+        localStorage.setItem(TIME_THEME_STORAGE_KEY, JSON.stringify(timeTheme));
+        onTimeThemeSettingsChange?.(timeTheme);
+    }, [timeTheme, onTimeThemeSettingsChange]);
 
     const handleThemeSelect = (themeId: string) => {
         setCurrentTheme(themeId);
@@ -107,6 +158,85 @@ export function AppearancePage({ onThemeChange }: AppearancePageProps) {
                                                 isSpecial
                                             />
                                         ))}
+                                    </div>
+                                </div>
+
+                                <div className="rounded-lg border bg-muted/20 p-4 space-y-4">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div>
+                                            <h4 className="text-sm font-semibold">Time-based Themes</h4>
+                                            <p className="text-xs text-muted-foreground">
+                                                Automatically switch between a day and night theme.
+                                            </p>
+                                        </div>
+                                        <Switch
+                                            checked={timeTheme.enabled}
+                                            onCheckedChange={(checked) =>
+                                                setTimeTheme(prev => ({ ...prev, enabled: checked }))
+                                            }
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs text-muted-foreground">Day Theme</Label>
+                                            <Select
+                                                value={timeTheme.dayTheme}
+                                                onValueChange={(value) => setTimeTheme(prev => ({ ...prev, dayTheme: value }))}
+                                            >
+                                                <SelectTrigger><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    {themeOptions.map(theme => (
+                                                        <SelectItem key={theme.id} value={theme.id}>{theme.name}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label className="text-xs text-muted-foreground">Night Theme</Label>
+                                            <Select
+                                                value={timeTheme.nightTheme}
+                                                onValueChange={(value) => setTimeTheme(prev => ({ ...prev, nightTheme: value }))}
+                                            >
+                                                <SelectTrigger><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    {themeOptions.map(theme => (
+                                                        <SelectItem key={theme.id} value={theme.id}>{theme.name}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div className="space-y-2">
+                                            <Label className="text-xs text-muted-foreground">Day Starts</Label>
+                                            <Select
+                                                value={String(timeTheme.dayStart)}
+                                                onValueChange={(value) => setTimeTheme(prev => ({ ...prev, dayStart: Number(value) }))}
+                                            >
+                                                <SelectTrigger><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    {hourOptions.map(hour => (
+                                                        <SelectItem key={hour.value} value={hour.value}>{hour.label}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label className="text-xs text-muted-foreground">Night Starts</Label>
+                                            <Select
+                                                value={String(timeTheme.nightStart)}
+                                                onValueChange={(value) => setTimeTheme(prev => ({ ...prev, nightStart: Number(value) }))}
+                                            >
+                                                <SelectTrigger><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    {hourOptions.map(hour => (
+                                                        <SelectItem key={hour.value} value={hour.value}>{hour.label}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
                                     </div>
                                 </div>
 

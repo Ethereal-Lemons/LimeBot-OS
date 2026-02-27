@@ -1,6 +1,7 @@
 import os
 import asyncio
 import hashlib
+import re
 import time as _time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -13,7 +14,7 @@ class VectorService:
     """
     Service for semantic search using LanceDB and litellm embeddings.
     Supports multiple LLM providers (Gemini, OpenAI, Anthropic, xAI,
-    DeepSeek, NVIDIA, Ollama) via litellm.
+    DeepSeek, NVIDIA, Qwen, Ollama) via litellm.
     """
 
     PROVIDER_EMBEDDING_MODELS = {
@@ -25,6 +26,7 @@ class VectorService:
         "deepseek": "gemini/gemini-embedding-001",
         "anthropic": "gemini/gemini-embedding-001",
         "xai": "gemini/gemini-embedding-001",
+        "qwen": "qwen/text-embedding-v4",
         "ollama": "ollama/nomic-embed-text",
         "local": "ollama/nomic-embed-text",
     }
@@ -38,9 +40,18 @@ class VectorService:
         "deepseek": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "anthropic": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "xai": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "qwen": ["DASHSCOPE_API_KEY"],
         "ollama": [],
         "local": [],
     }
+
+    LEGACY_MODEL_ALIASES = {
+        # Some older configs/UI values store this without provider prefix.
+        # LiteLLM requires either a provider-prefixed model OR custom_llm_provider.
+        "text-embedding-v4": "qwen/text-embedding-v4",
+    }
+
+    _KEY_RE = re.compile(r"\b(sk-[A-Za-z0-9_-]{8,})\b")
 
     def __init__(
         self, db_path: str = "data/vectors", model: str = "gemini/gemini-embedding-001"
@@ -90,10 +101,15 @@ class VectorService:
 
     def _get_provider(self) -> str:
         """Infer provider keyword from the current embedding model string."""
-        model = self.model.lower()
+        model = (self.model or "").lower()
         for provider in self.PROVIDER_API_KEYS:
             if provider in model:
                 return provider
+        # Handle bare/legacy model ids that don't include provider prefixes.
+        if model == "text-embedding-v4":
+            return "qwen"
+        if model.startswith("text-embedding-"):
+            return "openai"
         return "gemini"
 
     def _resolve_api_key(self, cfg) -> Optional[str]:
@@ -114,10 +130,38 @@ class VectorService:
             return os.getenv("OPENAI_API_KEY")
 
         # Only fallback if providers are not explicitly restricted
-        if provider not in ("gemini", "openai", "nvidia"):
+        if provider not in ("gemini", "openai", "nvidia", "qwen"):
             return cfg.llm.api_key or None
 
         return None
+
+    @classmethod
+    def _sanitize_error_message(cls, message: str) -> str:
+        """Redact API-key-like secrets from provider/library exception text."""
+        if not message:
+            return message
+        sanitized = cls._KEY_RE.sub("sk-***REDACTED***", message)
+        sanitized = re.sub(
+            r"(Incorrect API key provided:\s*)([^,\s]+)",
+            r"\1***REDACTED***",
+            sanitized,
+            flags=re.IGNORECASE,
+        )
+        return sanitized
+
+    @classmethod
+    def _is_auth_error(cls, message: str) -> bool:
+        lower = (message or "").lower()
+        needles = (
+            "invalid_api_key",
+            "incorrect api key",
+            "authenticationerror",
+            "unauthorized",
+            "error code: 401",
+            "'status': 401",
+            '"status": 401',
+        )
+        return any(n in lower for n in needles)
 
     async def _get_embedding(self, text: str) -> List[float]:
         """Generate embedding for text using litellm (supports multiple providers)."""
@@ -150,6 +194,14 @@ class VectorService:
             )
             if provider in ("ollama", "local") and cfg.llm.base_url:
                 kwargs["base_url"] = cfg.llm.base_url
+            if provider == "qwen":
+                kwargs["model"] = self.model.removeprefix("qwen/")
+                kwargs["base_url"] = (
+                    cfg.llm.base_url
+                    or os.getenv("DASHSCOPE_BASE_URL")
+                    or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+                )
+                kwargs["custom_llm_provider"] = "openai"
 
             from litellm import embedding
 
@@ -166,7 +218,15 @@ class VectorService:
             return vec
 
         except Exception as e:
-            msg = str(e)
+            msg = self._sanitize_error_message(str(e))
+            if self._is_auth_error(msg):
+                if not self._disabled:
+                    logger.warning(
+                        f"Embedding auth failed for model '{self.model}'. "
+                        "Disabling vector search for this session and using keyword fallback."
+                    )
+                    self._disabled = True
+                return None
             if any(
                 err in msg
                 for err in (
@@ -187,9 +247,7 @@ class VectorService:
                     self._disabled = True
                 return None
 
-            from loguru import logger
-
-            logger.error(f"Embedding generation failed: {e}")
+            logger.error(f"Embedding generation failed: {msg}")
             raise
 
     async def add_entry(
@@ -281,9 +339,10 @@ class VectorService:
                     normalized.append(row_dict)
             return normalized
         except Exception as e:
-            from loguru import logger
-
-            logger.error(f"Vector search failed: {e}. Falling back to keyword search.")
+            sanitized = self._sanitize_error_message(str(e))
+            logger.error(
+                f"Vector search failed: {sanitized}. Falling back to keyword search."
+            )
             return await self.search_grep(query, limit)
 
     @property
@@ -416,6 +475,9 @@ def get_vector_service(config=None) -> VectorService:
                 if provider in chat_model:
                     model = embedding_model
                     break
+
+    # Normalize known legacy/non-prefixed values to provider-qualified ids.
+    model = VectorService.LEGACY_MODEL_ALIASES.get(model, model)
 
     if _instance is not None:
         if config and _instance.model != model:

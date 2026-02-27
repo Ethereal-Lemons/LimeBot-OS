@@ -364,7 +364,13 @@ export function ChannelsPage() {
         }
     };
 
-    if (loading) return <div className="p-8 text-muted-foreground">Loading channel settings...</div>;
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center h-full">
+                <RefreshCw className="w-8 h-8 animate-spin text-primary" />
+            </div>
+        );
+    }
 
     return (
         <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">

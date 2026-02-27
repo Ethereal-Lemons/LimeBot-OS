@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Brain, Trash2, KeyRound, Search, ArrowUpDown } from "lucide-react";
+import { Brain, Trash2, KeyRound, Search, ArrowUpDown, RefreshCw } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -85,12 +85,8 @@ export function MemoryPage() {
 
     if (loading) {
         return (
-            <div className="h-full p-8">
-                <div className="animate-pulse space-y-4">
-                    <div className="h-8 bg-muted rounded w-1/4"></div>
-                    <div className="h-4 bg-muted rounded w-1/2"></div>
-                    <div className="h-32 bg-muted rounded w-full mt-8"></div>
-                </div>
+            <div className="flex items-center justify-center h-full">
+                <RefreshCw className="w-8 h-8 animate-spin text-primary" />
             </div>
         );
     }

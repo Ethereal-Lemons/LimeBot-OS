@@ -21,7 +21,8 @@ import {
     Settings2,
     Terminal,
     Globe,
-    AlertCircle
+    AlertCircle,
+    RefreshCw
 } from "lucide-react";
 import {
     Dialog,
@@ -200,9 +201,8 @@ export function McpPage() {
 
     if (isLoading && Object.keys(config.mcpServers).length === 0) {
         return (
-            <div className="flex flex-col items-center justify-center p-24 space-y-4">
-                <RefreshCcw className="h-10 w-10 animate-spin text-muted-foreground/50" />
-                <p className="text-muted-foreground font-medium">Loading MCP Configuration...</p>
+            <div className="flex items-center justify-center h-full min-h-[50vh]">
+                <RefreshCw className="w-8 h-8 animate-spin text-primary" />
             </div>
         );
     }

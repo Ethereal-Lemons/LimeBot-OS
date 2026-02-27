@@ -10,7 +10,8 @@ import {
     MessageSquare,
     Terminal,
     Trash2,
-    Zap
+    Zap,
+    RefreshCw
 } from 'lucide-react';
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -133,7 +134,11 @@ export function InstancesList({ currentSessionId }: { currentSessionId?: string 
     };
 
     if (loading && instances.length === 0) {
-        return <div className="p-8 text-muted-foreground">Loading instances...</div>;
+        return (
+            <div className="flex items-center justify-center h-full">
+                <RefreshCw className="w-8 h-8 animate-spin text-primary" />
+            </div>
+        );
     }
 
     return (

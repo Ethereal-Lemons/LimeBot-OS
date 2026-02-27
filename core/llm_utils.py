@@ -4,6 +4,19 @@ import os
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
+QWEN_COMPAT_BASE_URLS = [
+    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+]
+
+# Compatibility aliases for provider model IDs that were renamed or removed.
+MODEL_ALIASES = {
+    "xai/grok-4.1-fast-reasoning": "xai/grok-4-fast-reasoning",
+    "xai/grok-4.1-fast-non-reasoning": "xai/grok-4",
+    "grok-4.1-fast-reasoning": "xai/grok-4-fast-reasoning",
+    "grok-4.1-fast-non-reasoning": "xai/grok-4",
+}
 
 
 async def fetch_openai_compatible_models(
@@ -139,16 +152,19 @@ def get_api_key_for_model(model: str) -> Optional[str]:
         return os.getenv("XAI_API_KEY")
     elif model.startswith("deepseek/"):
         return os.getenv("DEEPSEEK_API_KEY")
+    elif model.startswith("qwen/") or model.startswith("qwen-"):
+        return os.getenv("DASHSCOPE_API_KEY")
     elif model.startswith("nvidia/"):
         return os.getenv("NVIDIA_API_KEY")
 
-    
+    # Fallback to any available key in a specific order
     return (
         os.getenv("GEMINI_API_KEY")
         or os.getenv("OPENAI_API_KEY")
         or os.getenv("ANTHROPIC_API_KEY")
         or os.getenv("XAI_API_KEY")
         or os.getenv("DEEPSEEK_API_KEY")
+        or os.getenv("DASHSCOPE_API_KEY")
         or os.getenv("NVIDIA_API_KEY")
     )
 
@@ -158,28 +174,44 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
     Resolve model, base_url, api_key, and custom_llm_provider for LiteLLM.
     """
 
-    api_key = get_api_key_for_model(model)
+    from config import load_config
+    cfg = load_config()
+
+    normalized_model = (model or "").strip()
+    if normalized_model and "/" not in normalized_model and normalized_model.startswith("qwen-"):
+        normalized_model = f"qwen/{normalized_model}"
+    normalized_model = MODEL_ALIASES.get(normalized_model, normalized_model)
+
+    api_key = get_api_key_for_model(normalized_model)
     base_url = default_base_url
     custom_llm_provider = None
-    target_model = model
+    target_model = normalized_model
 
-    if model.startswith("nvidia/"):
+    if hasattr(cfg.llm, "proxy_url") and cfg.llm.proxy_url:
+        base_url = cfg.llm.proxy_url
+    
+    if normalized_model.startswith("nvidia/"):
         base_url = "https://integrate.api.nvidia.com/v1"
-        target_model = model.removeprefix("nvidia/")
+        target_model = normalized_model.removeprefix("nvidia/")
         custom_llm_provider = "openai"
-    elif model.startswith("xai/"):
+    elif normalized_model.startswith("xai/"):
         base_url = "https://api.x.ai/v1"
-        target_model = model.removeprefix("xai/")
+        target_model = normalized_model.removeprefix("xai/")
         custom_llm_provider = "openai"
-    elif model.startswith("gemini/"):
-        target_model = model.removeprefix("gemini/")
+    elif normalized_model.startswith("qwen/"):
+        if not base_url:
+            base_url = os.getenv("DASHSCOPE_BASE_URL") or QWEN_COMPAT_BASE_URLS[0]
+        target_model = normalized_model.removeprefix("qwen/")
+        custom_llm_provider = "openai"
+    elif normalized_model.startswith("gemini/"):
+        target_model = normalized_model.removeprefix("gemini/")
         custom_llm_provider = "gemini"
-    elif model.startswith("openai/"):
-        target_model = model.removeprefix("openai/")
-    elif model.startswith("anthropic/"):
-        target_model = model.removeprefix("anthropic/")
-    elif model.startswith("deepseek/"):
-        target_model = model.removeprefix("deepseek/")
+    elif normalized_model.startswith("openai/"):
+        target_model = normalized_model.removeprefix("openai/")
+    elif normalized_model.startswith("anthropic/"):
+        target_model = normalized_model.removeprefix("anthropic/")
+    elif normalized_model.startswith("deepseek/"):
+        target_model = normalized_model.removeprefix("deepseek/")
 
     return {
         "model": target_model,

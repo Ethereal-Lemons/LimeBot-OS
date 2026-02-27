@@ -31,6 +31,7 @@ import { injectCss, CSS_STORAGE_KEY } from "@/lib/css-injector";
 import { ToolExecution } from "@/components/chat/ToolCard";
 import { ConfirmationRequest } from "@/components/chat/ConfirmationCard";
 import { GhostActivity } from "@/components/chat/GhostActivity";
+import { Toaster } from "@/components/ui/sonner";
 
 type Message = {
   sender: 'user' | 'bot';
@@ -42,6 +43,55 @@ type Message = {
   confirmation?: ConfirmationRequest;
   variant?: 'default' | 'destructive' | 'warning';
 };
+
+type TimeThemeSettings = {
+  enabled: boolean;
+  dayTheme: string;
+  nightTheme: string;
+  dayStart: number;
+  nightStart: number;
+};
+
+const TIME_THEME_STORAGE_KEY = 'limebot-time-theme';
+const DEFAULT_TIME_THEME_SETTINGS: TimeThemeSettings = {
+  enabled: false,
+  dayTheme: 'glacier',
+  nightTheme: 'midnight-synth',
+  dayStart: 7,
+  nightStart: 19,
+};
+
+function loadTimeThemeSettings(): TimeThemeSettings {
+  try {
+    const raw = localStorage.getItem(TIME_THEME_STORAGE_KEY);
+    if (!raw) return DEFAULT_TIME_THEME_SETTINGS;
+    const parsed = JSON.parse(raw);
+    return {
+      enabled: Boolean(parsed?.enabled),
+      dayTheme: typeof parsed?.dayTheme === 'string' ? parsed.dayTheme : DEFAULT_TIME_THEME_SETTINGS.dayTheme,
+      nightTheme: typeof parsed?.nightTheme === 'string' ? parsed.nightTheme : DEFAULT_TIME_THEME_SETTINGS.nightTheme,
+      dayStart: Number.isInteger(parsed?.dayStart) ? parsed.dayStart : DEFAULT_TIME_THEME_SETTINGS.dayStart,
+      nightStart: Number.isInteger(parsed?.nightStart) ? parsed.nightStart : DEFAULT_TIME_THEME_SETTINGS.nightStart,
+    };
+  } catch {
+    return DEFAULT_TIME_THEME_SETTINGS;
+  }
+}
+
+function resolveEffectiveTheme(baseTheme: string, settings: TimeThemeSettings): string {
+  if (!settings.enabled) return baseTheme;
+  const hour = new Date().getHours();
+  const dayStart = Math.max(0, Math.min(23, settings.dayStart));
+  const nightStart = Math.max(0, Math.min(23, settings.nightStart));
+
+  if (dayStart === nightStart) return settings.dayTheme;
+
+  const isDay =
+    dayStart < nightStart
+      ? hour >= dayStart && hour < nightStart
+      : hour >= dayStart || hour < nightStart;
+  return isDay ? settings.dayTheme : settings.nightTheme;
+}
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -68,20 +118,72 @@ function App() {
   // Initialization State (to prevent flash)
   const [isInitialized, setIsInitialized] = useState(false);
 
+  // Helper to apply custom theme variables
+  const applyCustomTheme = (themeId: string) => {
+    try {
+      const savedThemes = localStorage.getItem('limebot-custom-themes');
+      if (savedThemes) {
+        const themes = JSON.parse(savedThemes);
+        const theme = themes.find((t: any) => t.id === themeId);
+        if (theme) {
+          // Apply variables
+          Object.entries(theme.variables).forEach(([key, value]) => {
+            document.documentElement.style.setProperty(key, value as string);
+          });
+          // Apply background image if it exists
+          if (theme.bgImage) {
+            document.documentElement.style.setProperty('--bg-image', theme.bgImage);
+          }
+          document.documentElement.setAttribute('data-custom-theme', 'true');
+        }
+      }
+    } catch (e) {
+      console.error("Failed to apply custom theme", e);
+    }
+  };
+
+  const clearCustomThemeVars = () => {
+    const propsToRemove = [
+      '--primary', '--primary-foreground', '--background', '--foreground',
+      '--card', '--card-foreground', '--popover', '--popover-foreground',
+      '--border', '--input', '--accent', '--accent-foreground',
+      '--ring', '--radius', '--muted', '--muted-foreground', '--bg-image'
+    ];
+    propsToRemove.forEach(prop => document.documentElement.style.removeProperty(prop));
+    document.documentElement.removeAttribute('data-custom-theme');
+  };
+
+  const applyThemeToDom = (theme: string) => {
+    clearCustomThemeVars();
+    if (theme === 'lime') {
+      document.documentElement.removeAttribute('data-theme');
+    } else if (theme.startsWith('custom-')) {
+      document.documentElement.removeAttribute('data-theme');
+      applyCustomTheme(theme);
+    } else {
+      document.documentElement.setAttribute('data-theme', theme);
+    }
+  };
+
+  const applyThemeWithSchedule = (baseTheme: string) => {
+    const settings = loadTimeThemeSettings();
+    const effectiveTheme = resolveEffectiveTheme(baseTheme, settings);
+    applyThemeToDom(effectiveTheme);
+  };
 
   useEffect(() => {
     document.documentElement.classList.add('dark');
 
 
     const savedTheme = localStorage.getItem('limebot-theme') || 'lime';
-    if (savedTheme.startsWith('custom-')) {
-      document.documentElement.removeAttribute('data-theme');
-      applyCustomTheme(savedTheme);
-    } else if (savedTheme !== 'lime') {
-      document.documentElement.setAttribute('data-theme', savedTheme);
-    } else {
-      document.documentElement.removeAttribute('data-theme');
-    }
+    applyThemeWithSchedule(savedTheme);
+
+    const reapplyScheduledTheme = () => {
+      const baseTheme = localStorage.getItem('limebot-theme') || 'lime';
+      applyThemeWithSchedule(baseTheme);
+    };
+    const themeTimer = window.setInterval(reapplyScheduledTheme, 60_000);
+    document.addEventListener('visibilitychange', reapplyScheduledTheme);
 
     const apiKey = localStorage.getItem('limebot_api_key');
     if (apiKey) {
@@ -163,59 +265,20 @@ function App() {
     return () => {
       ws.current?.close();
       axios.interceptors.response.eject(interceptor);
+      window.clearInterval(themeTimer);
+      document.removeEventListener('visibilitychange', reapplyScheduledTheme);
     };
   }, []);
 
-  // Helper to apply custom theme variables
-  const applyCustomTheme = (themeId: string) => {
-    try {
-      const savedThemes = localStorage.getItem('limebot-custom-themes');
-      if (savedThemes) {
-        const themes = JSON.parse(savedThemes);
-        const theme = themes.find((t: any) => t.id === themeId);
-        if (theme) {
-          // Apply variables
-          Object.entries(theme.variables).forEach(([key, value]) => {
-            document.documentElement.style.setProperty(key, value as string);
-          });
-          // Apply background image if it exists
-          if (theme.bgImage) {
-            document.documentElement.style.setProperty('--bg-image', theme.bgImage);
-          }
-          document.documentElement.setAttribute('data-custom-theme', 'true');
-        }
-      }
-    } catch (e) {
-      console.error("Failed to apply custom theme", e);
-    }
-  };
-
-  const clearCustomThemeVars = () => {
-    // We can't easily accept *all* custom vars without a list, but we can look at what we typically set.
-    // Or simpler: remove the style attribute for the specific properties we know we set.
-    // A better approach for cleanup:
-    const propsToRemove = [
-      '--primary', '--primary-foreground', '--background', '--foreground',
-      '--card', '--card-foreground', '--popover', '--popover-foreground',
-      '--border', '--input', '--accent', '--accent-foreground',
-      '--ring', '--radius', '--muted', '--muted-foreground', '--bg-image'
-    ];
-    propsToRemove.forEach(prop => document.documentElement.style.removeProperty(prop));
-    document.documentElement.removeAttribute('data-custom-theme');
-  };
-
   const handleThemeChange = (theme: string) => {
-    clearCustomThemeVars();
-
-    if (theme === 'lime') {
-      document.documentElement.removeAttribute('data-theme');
-    } else if (theme.startsWith('custom-')) {
-      document.documentElement.removeAttribute('data-theme');
-      applyCustomTheme(theme);
-    } else {
-      document.documentElement.setAttribute('data-theme', theme);
-    }
     localStorage.setItem('limebot-theme', theme);
+    applyThemeWithSchedule(theme);
+  };
+
+  const handleTimeThemeSettingsChange = (settings: TimeThemeSettings) => {
+    localStorage.setItem(TIME_THEME_STORAGE_KEY, JSON.stringify(settings));
+    const savedTheme = localStorage.getItem('limebot-theme') || 'lime';
+    applyThemeWithSchedule(savedTheme);
   };
 
   const handleAuthSuccess = (key: string) => {
@@ -566,7 +629,10 @@ function App() {
         ) : currentView === 'persona' ? (
           <PersonaPage />
         ) : currentView === 'appearance' ? (
-          <AppearancePage onThemeChange={handleThemeChange} />
+          <AppearancePage
+            onThemeChange={handleThemeChange}
+            onTimeThemeSettingsChange={handleTimeThemeSettingsChange}
+          />
         ) : currentView === 'mcp' ? (
           <McpPage />
         ) : currentView === 'config' ? (
@@ -589,6 +655,7 @@ function App() {
       }
 
       <GhostActivity activity={activity} />
+      <Toaster position="top-right" />
     </AppLayout >
   );
 

@@ -4,6 +4,7 @@ import { API_BASE_URL } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Activity, Zap, Globe, Cpu, RefreshCw, Power, RotateCcw, Download, Upload, User, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 interface Stats {
     uptime: number;
@@ -27,8 +28,10 @@ export function OverviewPage() {
     const [identity, setIdentity] = useState<{ name: string, avatar: string | null } | null>(null);
     const [stats, setStats] = useState<Stats | null>(null);
     const [llmHealth, setLlmHealth] = useState<LLMHealth | null>(null);
+    const [gatewayToken, setGatewayToken] = useState("");
     const [loading, setLoading] = useState(true);
     const [checkingLLM, setCheckingLLM] = useState(false);
+    const [actionBusy, setActionBusy] = useState<null | "connect" | "token">(null);
 
     const fetchIdentity = () => {
         axios.get(`${API_BASE_URL}/api/identity`)
@@ -67,15 +70,53 @@ export function OverviewPage() {
             });
     };
 
+    const fetchGatewayConfig = () => {
+        axios.get(`${API_BASE_URL}/api/config`)
+            .then(res => setGatewayToken(res?.data?.env?.APP_API_KEY || ""))
+            .catch(() => setGatewayToken(""));
+    };
+
     const restartBackend = () => {
         if (!confirm("Are you sure you want to restart the backend?")) return;
         axios.post(`${API_BASE_URL}/api/control/restart`)
             .catch(err => console.error(err));
     };
 
+    const connectClient = async () => {
+        if (!stats?.gateway_url) return;
+        setActionBusy("connect");
+        const wsWithKey = gatewayToken
+            ? `${stats.gateway_url}?api_key=${encodeURIComponent(gatewayToken)}`
+            : stats.gateway_url;
+        try {
+            await navigator.clipboard.writeText(wsWithKey);
+            toast.success("Client URL copied", { description: "WebSocket endpoint copied to clipboard." });
+        } catch {
+            toast.error("Clipboard unavailable", { description: wsWithKey });
+        } finally {
+            setActionBusy(null);
+        }
+    };
+
+    const generateNewToken = async () => {
+        if (!confirm("Generate a new APP_API_KEY? Existing clients will be disconnected after restart.")) return;
+        setActionBusy("token");
+        const newToken = crypto.randomUUID();
+        axios.post(`${API_BASE_URL}/api/config`, { env: { APP_API_KEY: newToken } })
+            .then(() => {
+                localStorage.setItem("limebot_api_key", newToken);
+                axios.defaults.headers.common["X-API-Key"] = newToken;
+                setGatewayToken(newToken);
+                toast.success("Token generated", { description: "APP_API_KEY updated. Backend is restarting." });
+            })
+            .catch(err => toast.error("Failed to generate token", { description: str(err) }))
+            .finally(() => setActionBusy(null));
+    };
+
     useEffect(() => {
         fetchStats();
         fetchIdentity();
+        fetchGatewayConfig();
         // Initial LLM check
         checkLLM();
 
@@ -99,7 +140,11 @@ export function OverviewPage() {
     };
 
     if (loading && !stats) {
-        return <div className="p-8 text-center text-muted-foreground animate-pulse">Loading dashboard...</div>;
+        return (
+            <div className="flex items-center justify-center h-full min-h-[50vh]">
+                <RefreshCw className="w-8 h-8 animate-spin text-primary" />
+            </div>
+        );
     }
 
     return (
@@ -112,7 +157,7 @@ export function OverviewPage() {
                 </div>
                 <div className="flex items-center gap-2">
                     <button
-                        onClick={() => { fetchStats(); checkLLM(); fetchIdentity(); }}
+                        onClick={() => { fetchStats(); checkLLM(); fetchIdentity(); fetchGatewayConfig(); }}
                         className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground bg-card hover:bg-muted border border-border rounded-full transition-all"
                     >
                         <RefreshCw className={cn("w-3.5 h-3.5", (loading || checkingLLM) && "animate-spin")} />
@@ -243,7 +288,7 @@ export function OverviewPage() {
                                     <label className="text-xs font-medium text-muted-foreground uppercase">Gateway Token</label>
                                     <div className="relative group">
                                         <div className="p-2.5 bg-background rounded-md border border-input font-mono text-sm leading-none text-muted-foreground blur-sm group-hover:blur-none transition-all duration-300 select-all cursor-text overflow-hidden text-ellipsis">
-                                            4709168f208eff9ffa0718d
+                                            {gatewayToken || "Not configured"}
                                         </div>
                                         <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground/50 group-hover:hidden pointer-events-none">
                                             Hover to reveal
@@ -254,8 +299,8 @@ export function OverviewPage() {
                                 <div className="space-y-2">
                                     <label className="text-xs font-medium text-muted-foreground uppercase">Auth System</label>
                                     <div className="flex items-center gap-2 text-sm text-foreground/80">
-                                        <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
-                                        None (Local Network)
+                                        <span className={cn("w-2 h-2 rounded-full", gatewayToken ? "bg-green-500" : "bg-yellow-500")}></span>
+                                        {gatewayToken ? "API Key (APP_API_KEY)" : "None (Local Network)"}
                                     </div>
                                 </div>
 
@@ -267,10 +312,18 @@ export function OverviewPage() {
                                 </div>
                             </div>
                             <div className="mt-6 flex gap-3">
-                                <button className="px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md text-sm font-medium transition-colors">
+                                <button
+                                    onClick={connectClient}
+                                    disabled={actionBusy !== null}
+                                    className="px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                                >
                                     Connect Client
                                 </button>
-                                <button className="px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-md text-sm font-medium transition-colors">
+                                <button
+                                    onClick={generateNewToken}
+                                    disabled={actionBusy !== null}
+                                    className="px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-md text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                                >
                                     Generate New Token
                                 </button>
                             </div>
@@ -326,8 +379,8 @@ export function OverviewPage() {
                             onClick={() => {
                                 if (!confirm("Are you sure you want to clear the tool cache?")) return;
                                 axios.post(`${API_BASE_URL}/api/control/clear-cache`)
-                                    .then(res => alert(res.data.message || "Cache cleared!"))
-                                    .catch(err => alert("Failed to clear cache: " + err));
+                                    .then(res => toast.success("Cache cleared", { description: res.data.message || "Cache cleared." }))
+                                    .catch(err => toast.error("Failed to clear cache", { description: str(err) }));
                             }}
                         >
                             <span>Clear Cache</span>
@@ -338,8 +391,8 @@ export function OverviewPage() {
                             onClick={() => {
                                 if (!confirm("Are you sure you want to clear the system logs?")) return;
                                 axios.post(`${API_BASE_URL}/api/control/clear-logs`)
-                                    .then(res => alert(res.data.message || "Logs cleared!"))
-                                    .catch(err => alert("Failed to clear logs: " + err));
+                                    .then(res => toast.success("Logs cleared", { description: res.data.message || "Logs cleared." }))
+                                    .catch(err => toast.error("Failed to clear logs", { description: str(err) }));
                             }}
                         >
                             <span>Clear Logs</span>
@@ -363,8 +416,9 @@ export function OverviewPage() {
                                                 a.href = url;
                                                 a.download = data.filename || "limebot_persona.md";
                                                 a.click();
+                                                toast.success("Persona exported", { description: data.filename || "limebot_persona.md" });
                                             })
-                                            .catch(err => alert("Export failed: " + err));
+                                            .catch(err => toast.error("Export failed", { description: str(err) }));
                                     }}
                                     className="flex flex-col items-center justify-center gap-2 p-3 bg-primary/10 hover:bg-primary/20 text-primary rounded-lg border border-primary/20 transition-colors"
                                 >
@@ -395,10 +449,10 @@ export function OverviewPage() {
                                                     .then(res => {
                                                         const data = res.data;
                                                         if (data.error) throw new Error(data.error);
-                                                        alert("Success: " + data.message);
+                                                        toast.success("Persona imported", { description: data.message });
                                                         window.location.reload();
                                                     })
-                                                    .catch(err => alert("Import failed: " + err));
+                                                    .catch(err => toast.error("Import failed", { description: str(err) }));
                                             };
                                             reader.readAsText(file);
                                             e.target.value = ''; // Reset

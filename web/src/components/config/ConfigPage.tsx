@@ -24,6 +24,7 @@ interface ConfigState {
     XAI_API_KEY?: string;
     DEEPSEEK_API_KEY?: string;
     NVIDIA_API_KEY?: string;
+    DASHSCOPE_API_KEY?: string;
     DISCORD_TOKEN?: string;
     LLM_MODEL?: string;
     ALLOWED_PATHS?: string[];
@@ -71,6 +72,7 @@ export function ConfigPage() {
             if (model.provider === 'xai') return !!config.XAI_API_KEY;
             if (model.provider === 'deepseek') return !!config.DEEPSEEK_API_KEY;
             if (model.provider === 'nvidia') return !!config.NVIDIA_API_KEY;
+            if (model.provider === 'qwen') return !!config.DASHSCOPE_API_KEY;
             return true;
         });
     };
@@ -119,7 +121,13 @@ export function ConfigPage() {
         setConfig(prev => ({ ...prev, [key]: value }));
     };
 
-    if (loading) return <div className="p-8 text-muted-foreground">Loading settings...</div>;
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center h-full">
+                <RefreshCw className="w-8 h-8 animate-spin text-primary" />
+            </div>
+        );
+    }
 
     const filteredModels = getFilteredModels();
 
@@ -394,6 +402,17 @@ export function ConfigPage() {
                                             value={config.NVIDIA_API_KEY || ""}
                                             onChange={(e) => handleChange("NVIDIA_API_KEY", e.target.value)}
                                             placeholder="nvapi-..."
+                                        />
+                                    </div>
+
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="dashscope_key">Qwen (DashScope) API Key</Label>
+                                        <Input
+                                            id="dashscope_key"
+                                            type="password"
+                                            value={config.DASHSCOPE_API_KEY || ""}
+                                            onChange={(e) => handleChange("DASHSCOPE_API_KEY", e.target.value)}
+                                            placeholder="ds-..."
                                         />
                                     </div>
                                 </div>

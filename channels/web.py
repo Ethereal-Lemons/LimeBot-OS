@@ -477,18 +477,8 @@ class WebChannel(BaseChannel):
                     "provider": "xai",
                 },
                 {
-                    "id": "xai/grok-4.1-fast-reasoning",
-                    "name": "Grok 4.1 Fast (Reasoning)",
-                    "provider": "xai",
-                },
-                {
                     "id": "xai/grok-4-fast-reasoning",
                     "name": "Grok 4 Fast (Reasoning)",
-                    "provider": "xai",
-                },
-                {
-                    "id": "xai/grok-4.1-fast-non-reasoning",
-                    "name": "Grok 4.1 Fast",
                     "provider": "xai",
                 },
                 {
@@ -521,6 +511,21 @@ class WebChannel(BaseChannel):
                     "id": "deepseek/deepseek-reasoner",
                     "name": "DeepSeek R1",
                     "provider": "deepseek",
+                },
+                {
+                    "id": "qwen/qwen-plus",
+                    "name": "Qwen Plus",
+                    "provider": "qwen",
+                },
+                {
+                    "id": "qwen/qwen-max",
+                    "name": "Qwen Max",
+                    "provider": "qwen",
+                },
+                {
+                    "id": "qwen/qwen-flash",
+                    "name": "Qwen Flash",
+                    "provider": "qwen",
                 },
                 # ── NVIDIA NIM (static fallbacks — dynamic list fetched below) ─
                 {
@@ -601,6 +606,7 @@ class WebChannel(BaseChannel):
                 "anthropic": os.getenv("ANTHROPIC_API_KEY"),
                 "deepseek": os.getenv("DEEPSEEK_API_KEY"),
                 "openai": os.getenv("OPENAI_API_KEY"),
+                "qwen": os.getenv("DASHSCOPE_API_KEY"),
             }
 
             current_time = time.time()
@@ -642,6 +648,17 @@ class WebChannel(BaseChannel):
                     "anthropic",
                     fetch_anthropic_models,
                     api_keys["anthropic"],
+                )
+            if api_keys["qwen"]:
+                await update_provider_cache(
+                    "qwen",
+                    fetch_openai_compatible_models,
+                    api_keys["qwen"],
+                    os.getenv("LLM_BASE_URL")
+                    or os.getenv("DASHSCOPE_BASE_URL")
+                    or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "qwen",
+                    True,
                 )
 
             existing_ids = {m["id"] for m in models}
@@ -731,6 +748,7 @@ class WebChannel(BaseChannel):
                 "XAI_API_KEY",
                 "DEEPSEEK_API_KEY",
                 "NVIDIA_API_KEY",
+                "DASHSCOPE_API_KEY",
                 "LLM_BASE_URL",
                 "LLM_PROXY_URL",
             ]:
@@ -838,14 +856,20 @@ class WebChannel(BaseChannel):
         async def get_mcp_config():
             from core.mcp_client import CONFIG_PATH
             import json
+
             if not CONFIG_PATH.exists():
                 return {"mcpServers": {}}
             return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
         @self.app.post("/api/mcp/config", dependencies=[Depends(self.verify_auth)])
         async def update_mcp_config(data: dict):
-            from core.mcp_client import CONFIG_PATH, get_mcp_manager, validate_mcp_config
+            from core.mcp_client import (
+                CONFIG_PATH,
+                get_mcp_manager,
+                validate_mcp_config,
+            )
             import json
+
             try:
                 ok, err = validate_mcp_config(data)
                 if not ok:
@@ -862,6 +886,7 @@ class WebChannel(BaseChannel):
         @self.app.get("/api/mcp/status", dependencies=[Depends(self.verify_auth)])
         async def get_mcp_status():
             from core.mcp_client import get_mcp_manager
+
             manager = get_mcp_manager()
             return {"status": manager.get_status()}
 
@@ -1171,15 +1196,35 @@ class WebChannel(BaseChannel):
         )
         async def clear_cache():
             try:
-                if (
-                    hasattr(self, "agent")
-                    and self.agent
-                    and hasattr(self.agent, "tool_cache")
-                ):
-                    self.agent.tool_cache.clear()
-                    logger.info("Tool cache cleared via API.")
-                    return {"status": "success", "message": "Cache cleared."}
-                return {"status": "error", "message": "Cache not available."}
+                cleared = []
+                if hasattr(self, "_provider_models_cache"):
+                    self._provider_models_cache.clear()
+                    self._provider_models_last_update.clear()
+                    cleared.append("provider_models")
+
+                if hasattr(self, "agent") and self.agent:
+                    if hasattr(self.agent, "tool_cache"):
+                        self.agent.tool_cache.clear()
+                        cleared.append("tool_cache")
+                    if hasattr(self.agent, "_stable_prompt_cache"):
+                        self.agent._stable_prompt_cache.clear()
+                        cleared.append("stable_prompt_cache")
+                    if hasattr(self.agent, "vector_service") and self.agent.vector_service:
+                        if hasattr(self.agent.vector_service, "_emb_cache"):
+                            self.agent.vector_service._emb_cache.clear()
+                            cleared.append("embedding_cache")
+                        if hasattr(self.agent.vector_service, "_grep_cache"):
+                            self.agent.vector_service._grep_cache.clear()
+                            cleared.append("grep_cache")
+
+                if not cleared:
+                    return {"status": "error", "message": "No cache sources available."}
+
+                logger.info(f"Caches cleared via API: {', '.join(cleared)}")
+                return {
+                    "status": "success",
+                    "message": f"Cleared: {', '.join(cleared)}",
+                }
             except Exception as e:
                 logger.error(f"Error clearing cache: {e}")
                 return {"status": "error", "message": str(e)}

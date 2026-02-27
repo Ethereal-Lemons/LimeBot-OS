@@ -529,6 +529,60 @@
     --bg-image: url("data:image/svg+xml,%3Csvg width='50' height='50' viewBox='0 0 50 50' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23fbcfe8' fill-opacity='0.4' fill-rule='evenodd'%3E%3Cpath d='M25 25c-5 0-8-5-8-10s5-5 10-5 8 5 8 10-5 5-10 5z'/%3E%3C/g%3E%3C/svg%3E"), linear-gradient(135deg, #fff1f2 0%, #fce7f3 100%);
   }
 
+  [data-theme='sunset-mirage'] {
+    --primary: 18 92% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --accent: 334 90% 62%;
+    --accent-foreground: 0 0% 100%;
+
+    --ring: 18 92% 58%;
+
+    --foreground: 320 28% 16%;
+    --card-foreground: 320 28% 16%;
+    --popover-foreground: 320 28% 16%;
+    --muted-foreground: 325 16% 38%;
+
+    --background: 18 100% 98%;
+    --card: 0 0% 100% / 0.74;
+    --popover: 0 0% 100% / 0.86;
+
+    --border: 334 80% 86%;
+    --radius: 1rem;
+    --muted: 24 100% 95%;
+
+    --bg-image: radial-gradient(circle at 15% 18%, rgba(255, 208, 146, 0.85) 0%, rgba(255, 208, 146, 0) 40%),
+      radial-gradient(circle at 82% 12%, rgba(253, 164, 175, 0.8) 0%, rgba(253, 164, 175, 0) 38%),
+      linear-gradient(145deg, #fff7ed 0%, #ffe4e6 42%, #fdf2f8 100%);
+  }
+
+  [data-theme='emerald-depths'] {
+    --primary: 158 72% 42%;
+    --primary-foreground: 0 0% 100%;
+
+    --accent: 188 85% 44%;
+    --accent-foreground: 0 0% 100%;
+
+    --ring: 158 72% 42%;
+
+    --foreground: 170 38% 92%;
+    --card-foreground: 170 38% 92%;
+    --popover-foreground: 170 38% 92%;
+    --muted-foreground: 170 20% 68%;
+
+    --background: 180 30% 10%;
+    --card: 176 34% 14% / 0.7;
+    --popover: 176 34% 12% / 0.88;
+
+    --border: 168 45% 34%;
+    --radius: 0.85rem;
+    --muted: 174 26% 20%;
+
+    --bg-image: radial-gradient(circle at 18% 16%, rgba(16, 185, 129, 0.24) 0%, rgba(16, 185, 129, 0) 36%),
+      radial-gradient(circle at 82% 72%, rgba(6, 182, 212, 0.2) 0%, rgba(6, 182, 212, 0) 35%),
+      linear-gradient(170deg, #0b1f1c 0%, #08322e 48%, #062a34 100%);
+  }
+
   [data-theme='sakura'] .bg-card,
   [data-theme='sakura'] .bg-popover,
   [data-theme='sakura'] aside {
@@ -536,6 +590,36 @@
     box-shadow: 0 4px 20px rgba(251, 207, 232, 0.4), inset 0 0 40px rgba(255, 255, 255, 0.5);
     border: 1px solid rgba(251, 207, 232, 0.6);
     background: rgba(255, 255, 255, 0.7);
+  }
+
+  [data-theme='sunset-mirage'] .bg-card,
+  [data-theme='sunset-mirage'] .bg-popover,
+  [data-theme='sunset-mirage'] aside {
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 10px 28px rgba(251, 113, 133, 0.2), inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+    border: 1px solid rgba(251, 113, 133, 0.25);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.62));
+  }
+
+  [data-theme='sunset-mirage'] .bg-zinc-800 {
+    background: linear-gradient(120deg, hsl(18, 92%, 58%), hsl(334, 90%, 62%));
+    color: white;
+  }
+
+  [data-theme='emerald-depths'] .bg-card,
+  [data-theme='emerald-depths'] .bg-popover,
+  [data-theme='emerald-depths'] aside {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 12px 30px rgba(3, 13, 12, 0.45), inset 0 0 0 1px rgba(45, 212, 191, 0.14);
+    border: 1px solid rgba(45, 212, 191, 0.16);
+    background: linear-gradient(145deg, rgba(15, 42, 39, 0.76), rgba(8, 32, 30, 0.82));
+  }
+
+  [data-theme='emerald-depths'] .bg-zinc-800 {
+    background: linear-gradient(120deg, hsl(158, 72%, 42%), hsl(188, 85%, 44%));
+    color: white;
   }
 
   /* Override User Bubble for Sakura to match theme */
