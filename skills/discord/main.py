@@ -10,6 +10,8 @@ Usage:
     python main.py embed <channel_id> "<title>" "<description>" [color]
     python main.py file <channel_id> <file_path> ["caption"]
     python main.py list
+    python main.py leave <guild_id>
+    python main.py history <channel_id> [limit]
 """
 
 import io
@@ -141,6 +143,19 @@ def list_channels() -> dict:
     """List available Discord guilds and channels."""
     return _post("list", {})
 
+def leave_guild(guild_id: str) -> dict:
+    """Leave a Discord guild by ID."""
+    if not guild_id.isdigit():
+        raise ValueError(f"Invalid guild_id '{guild_id}': must be numeric.")
+    return _post("leave", {"guild_id": guild_id})
+
+def fetch_history(channel_id: str, limit: int = 20) -> dict:
+    """Fetch recent messages from a Discord text channel."""
+    _validate_channel_id(channel_id)
+    if limit < 1 or limit > 100:
+        raise ValueError("limit must be between 1 and 100.")
+    return _post("history", {"channel_id": channel_id, "limit": limit})
+
 
 def _safe_print(text: str) -> None:
     """Print, falling back to ASCII replacement if the terminal can't handle Unicode."""
@@ -168,6 +183,8 @@ Usage:
   python main.py embed <channel_id> "<title>" "<description>" [color]
   python main.py file  <channel_id> <file_path> ["caption"]
   python main.py list
+  python main.py leave <guild_id>
+  python main.py history <channel_id> [limit]
 """.strip()
 
 
@@ -212,6 +229,32 @@ def main() -> None:
             result = list_channels()
             _print_channels(result)
             sys.exit(0)
+        elif command == "leave":
+            if len(args) < 2:
+                print("ERROR: 'leave' requires <guild_id>", file=sys.stderr)
+                sys.exit(1)
+            result = leave_guild(args[1])
+
+        elif command == "history":
+            if len(args) < 2:
+                print("ERROR: 'history' requires <channel_id>", file=sys.stderr)
+                sys.exit(1)
+            limit = 20
+            if len(args) >= 3:
+                try:
+                    limit = int(args[2])
+                except ValueError:
+                    print("ERROR: 'limit' must be an integer", file=sys.stderr)
+                    sys.exit(1)
+            result = fetch_history(args[1], limit)
+            if "messages" in result:
+                _safe_print(f"Last {len(result['messages'])} message(s) from channel {result.get('channel_id')}:")
+                for msg in result["messages"]:
+                    author = msg.get("author", "?")
+                    content = msg.get("content", "")
+                    created = msg.get("created_at", "")
+                    _safe_print(f"- [{created}] {author}: {content}")
+                sys.exit(0)
 
         else:
             print(f"ERROR: Unknown command '{command}'", file=sys.stderr)

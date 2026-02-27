@@ -25,7 +25,7 @@ interface ResetCommand {
 type BridgeCommand = SendCommand | SendFileCommand | ResetCommand;
 
 interface BridgeMessage {
-  type: 'message' | 'status' | 'qr' | 'error' | 'sent' | 'fileSent' | 'reset_success';
+  type: 'message' | 'status' | 'qr' | 'error' | 'sent' | 'fileSent' | 'reset_success' | 'queued';
   [key: string]: unknown;
 }
 
@@ -34,6 +34,9 @@ export class BridgeServer {
   private wa: WhatsAppClient | null = null;
   private clients: Set<WebSocket> = new Set();
   private lastQR: string | null = null;
+  private pending: BridgeCommand[] = [];
+  private flushing = false;
+  private readonly maxQueue = 200;
 
   constructor(private port: number, private authDir: string) {}
 
@@ -53,6 +56,9 @@ export class BridgeServer {
       onStatus: (status, selfId) => {
         if (status === 'connected') this.lastQR = null;
         this.broadcast({ type: 'status', status, selfId });
+        if (status === 'connected') {
+          void this.flushQueue();
+        }
       },
     });
 
@@ -98,13 +104,31 @@ export class BridgeServer {
     }
     
     if (cmd.type === 'send') {
-      await this.wa.sendMessage(cmd.to, cmd.text);
-      return { type: 'sent', to: cmd.to };
+      if (!this.wa.isConnected()) {
+        this.enqueue(cmd);
+        return { type: 'queued', to: cmd.to };
+      }
+      try {
+        await this.wa.sendMessage(cmd.to, cmd.text);
+        return { type: 'sent', to: cmd.to };
+      } catch (error) {
+        this.enqueue(cmd);
+        return { type: 'queued', to: cmd.to, error: String(error) };
+      }
     }
     
     if (cmd.type === 'sendFile') {
-      await this.wa.sendFile(cmd.to, cmd.filePath, cmd.caption);
-      return { type: 'fileSent', to: cmd.to, filePath: cmd.filePath };
+      if (!this.wa.isConnected()) {
+        this.enqueue(cmd);
+        return { type: 'queued', to: cmd.to, filePath: cmd.filePath };
+      }
+      try {
+        await this.wa.sendFile(cmd.to, cmd.filePath, cmd.caption);
+        return { type: 'fileSent', to: cmd.to, filePath: cmd.filePath };
+      } catch (error) {
+        this.enqueue(cmd);
+        return { type: 'queued', to: cmd.to, filePath: cmd.filePath, error: String(error) };
+      }
     }
 
     if (cmd.type === 'reset') {
@@ -128,6 +152,49 @@ export class BridgeServer {
     }
     
     return { type: 'error', error: 'Unknown command type' };
+  }
+
+  private enqueue(cmd: BridgeCommand): void {
+    this.pending.push(cmd);
+    if (this.pending.length > this.maxQueue) {
+      this.pending.shift();
+    }
+  }
+
+  private async flushQueue(): Promise<void> {
+    if (this.flushing || !this.wa || !this.wa.isConnected()) return;
+    this.flushing = true;
+
+    try {
+      while (this.pending.length > 0 && this.wa.isConnected()) {
+        const cmd = this.pending.shift();
+        if (!cmd) break;
+
+        const maxAttempts = 3;
+        let attempt = 0;
+        let sent = false;
+
+        while (attempt < maxAttempts && !sent && this.wa.isConnected()) {
+          attempt += 1;
+          try {
+            if (cmd.type === 'send') {
+              await this.wa.sendMessage(cmd.to, cmd.text);
+            } else if (cmd.type === 'sendFile') {
+              await this.wa.sendFile(cmd.to, cmd.filePath, cmd.caption);
+            }
+            sent = true;
+          } catch (err) {
+            const delayMs = 500 * Math.pow(2, attempt);
+            await new Promise((r) => setTimeout(r, delayMs));
+            if (attempt >= maxAttempts) {
+              console.error('Failed to send queued command:', err);
+            }
+          }
+        }
+      }
+    } finally {
+      this.flushing = false;
+    }
   }
 
   private broadcast(msg: BridgeMessage): void {

@@ -39,6 +39,8 @@ class WhatsAppChannel(BaseChannel):
         self._ws = None
         self._connected = False
         self._self_id: str | None = None
+        self._recent_msg_ids: dict[str, float] = {}
+        self._recent_fingerprints: dict[str, float] = {}
 
     async def start(self) -> None:
         """Start the WhatsApp channel by connecting to the bridge."""
@@ -212,6 +214,10 @@ class WhatsAppChannel(BaseChannel):
             logger.debug(f"[WhatsApp] Unknown bridge message type: {msg_type!r}")
 
     async def _handle_incoming_message(self, data: dict) -> None:
+        if self._is_duplicate_message(data):
+            logger.debug("[WhatsApp] Duplicate message detected, skipping.")
+            return
+
         sender = data.get("sender", "")
         sender_alt = data.get("senderAlt")
         content = data.get("content", "")
@@ -257,6 +263,42 @@ class WhatsAppChannel(BaseChannel):
                 "verified_name": verified_name,
             },
         )
+
+    def _is_duplicate_message(self, data: dict) -> bool:
+        """Deduplicate inbound messages by id and short-window fingerprint."""
+        msg_id = data.get("id")
+        now = asyncio.get_running_loop().time()
+        ttl = 10.0
+
+        if msg_id:
+            last_seen = self._recent_msg_ids.get(msg_id)
+            if last_seen and now - last_seen < ttl:
+                return True
+            self._recent_msg_ids[msg_id] = now
+
+        sender = data.get("sender", "")
+        content = data.get("content", "")
+        ts = data.get("timestamp") or 0
+        fingerprint = f"{sender}|{content}|{ts}"
+        last_seen_fp = self._recent_fingerprints.get(fingerprint)
+        if last_seen_fp and now - last_seen_fp < ttl:
+            return True
+        self._recent_fingerprints[fingerprint] = now
+
+        # Cleanup old entries
+        cutoff = now - ttl
+        if len(self._recent_msg_ids) > 2000:
+            self._recent_msg_ids = {
+                k: v for k, v in self._recent_msg_ids.items() if v >= cutoff
+            }
+        if len(self._recent_fingerprints) > 2000:
+            self._recent_fingerprints = {
+                k: v
+                for k, v in self._recent_fingerprints.items()
+                if v >= cutoff
+            }
+
+        return False
 
     async def _handle_status(self, data: dict) -> None:
         status = data.get("status")

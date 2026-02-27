@@ -9,6 +9,8 @@ Supported actions:
   embed  — send a rich embed
   file   — send a file attachment
   list   — list guilds and text channels
+  leave  — leave a guild by ID
+  history — fetch recent messages from a channel
 """
 
 from __future__ import annotations
@@ -48,9 +50,13 @@ async def handle(
         return await _send_file(data, bus)
     elif action == "list":
         return await _list_channels(context)
+    elif action == "leave":
+        return await _leave_guild(data, context)
+    elif action == "history":
+        return await _fetch_history(data, context)
     else:
         return {
-            "error": f"Unknown action '{action}'. Supported: send, embed, file, list"
+            "error": f"Unknown action '{action}'. Supported: send, embed, file, list, leave, history"
         }
 
 
@@ -59,6 +65,18 @@ def _require(data: dict, *keys: str) -> str | None:
     for key in keys:
         if not data.get(key):
             return f"'{key}' is required"
+    return None
+
+
+def _validate_guild_id(guild_id: str) -> str | None:
+    if not str(guild_id).isdigit():
+        return f"Invalid guild_id '{guild_id}': must be numeric."
+    return None
+
+
+def _validate_channel_id(channel_id: str) -> str | None:
+    if not str(channel_id).isdigit():
+        return f"Invalid channel_id '{channel_id}': must be numeric."
     return None
 
 
@@ -223,3 +241,98 @@ async def _send_file(data: dict, bus) -> dict[str, Any]:
         "file": p.name,
         "size_kb": round(size / 1024, 1),
     }
+
+
+async def _leave_guild(data: dict, context: dict) -> dict[str, Any]:
+    """Leave a Discord guild by ID."""
+    if err := _require(data, "guild_id"):
+        return {"error": err}
+
+    guild_id = str(data["guild_id"])
+    if err := _validate_guild_id(guild_id):
+        return {"error": err}
+
+    client, err = _get_discord_client(context)
+    if err:
+        return {"error": err}
+
+    gid = int(guild_id)
+    guild = client.get_guild(gid)
+    if guild is None:
+        try:
+            guild = await client.fetch_guild(gid)
+        except Exception:
+            guild = None
+
+    if guild is None:
+        return {"error": f"Guild {guild_id} not found or not accessible."}
+
+    try:
+        name = guild.name
+        await guild.leave()
+        logger.info(f"[Discord API] Left guild {guild_id} ({name})")
+        return {"status": "left", "guild_id": guild_id, "name": name}
+    except Exception as e:
+        logger.error(f"[Discord API] Failed to leave guild {guild_id}: {e}")
+        return {"error": f"Failed to leave guild {guild_id}: {e}"}
+
+
+async def _fetch_history(data: dict, context: dict) -> dict[str, Any]:
+    """Fetch recent messages from a Discord text channel."""
+    if err := _require(data, "channel_id"):
+        return {"error": err}
+
+    channel_id = str(data["channel_id"])
+    if err := _validate_channel_id(channel_id):
+        return {"error": err}
+
+    limit = data.get("limit", 20)
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        return {"error": "limit must be an integer"}
+    limit = max(1, min(limit, 100))
+
+    client, err = _get_discord_client(context)
+    if err:
+        return {"error": err}
+
+    chan_id = int(channel_id)
+    channel = client.get_channel(chan_id)
+    if channel is None:
+        try:
+            channel = await client.fetch_channel(chan_id)
+        except Exception:
+            channel = None
+
+    if channel is None:
+        return {"error": f"Channel {channel_id} not found or not accessible."}
+
+    if not hasattr(channel, "history"):
+        return {"error": f"Channel {channel_id} does not support message history."}
+
+    messages: list[dict[str, Any]] = []
+    try:
+        async for msg in channel.history(limit=limit):
+            messages.append(
+                {
+                    "id": str(msg.id),
+                    "author": getattr(msg.author, "display_name", str(msg.author)),
+                    "author_id": str(getattr(msg.author, "id", "")),
+                    "content": msg.content or "",
+                    "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                    "attachments": [
+                        {
+                            "filename": a.filename,
+                            "url": a.url,
+                            "size": a.size,
+                        }
+                        for a in getattr(msg, "attachments", [])
+                    ],
+                }
+            )
+    except Exception as e:
+        logger.error(f"[Discord API] Failed to fetch history for channel {channel_id}: {e}")
+        return {"error": f"Failed to fetch history for channel {channel_id}: {e}"}
+
+    return {"channel_id": channel_id, "limit": limit, "messages": messages}

@@ -39,13 +39,37 @@ export class WhatsAppClient {
   private sock: any = null;
   private options: WhatsAppClientOptions;
   private reconnecting = false;
+  private connected = false;
+  private connecting = false;
+  private reconnectAttempts = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private connectPromise: Promise<void> | null = null;
   private lidToJid: Map<string, string> = new Map();
+  private recentMessageIds: Map<string, number> = new Map();
 
   constructor(options: WhatsAppClientOptions) {
     this.options = options;
   }
 
   async connect(): Promise<void> {
+    if (this.connectPromise) return this.connectPromise;
+    if (this.connecting) return;
+    this.connecting = true;
+
+    this.connectPromise = this._connectInternal()
+      .catch((err) => {
+        console.error('Failed to connect WhatsApp client:', err);
+        this.scheduleReconnect();
+      })
+      .finally(() => {
+        this.connecting = false;
+        this.connectPromise = null;
+      });
+
+    return this.connectPromise;
+  }
+
+  private async _connectInternal(): Promise<void> {
     const logger = pino({ level: 'silent' });
     const { state, saveCreds } = await useMultiFileAuthState(this.options.authDir);
     const { version } = await fetchLatestBaileysVersion();
@@ -116,20 +140,23 @@ export class WhatsAppClient {
         }
 
         this.options.onStatus('disconnected');
+        this.connected = false;
 
         if (shouldReconnect && !this.reconnecting) {
-          this.reconnecting = true;
-          console.log('Reconnecting in 5 seconds...');
-          setTimeout(() => {
-            this.reconnecting = false;
-            this.connect();
-          }, 5000);
+          this.scheduleReconnect();
         }
       } else if (connection === 'open') {
         console.log('✅ Connected to WhatsApp');
         // Extract self ID for self-message filtering
         const selfId = this.sock.user?.id?.split(':')[0] || this.sock.user?.id?.split('@')[0] || '';
         console.log(`Connected as: ${selfId}`);
+        this.connected = true;
+        this.reconnecting = false;
+        this.reconnectAttempts = 0;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
         this.options.onStatus('connected', selfId);
       }
     });
@@ -167,6 +194,10 @@ export class WhatsAppClient {
       if (type !== 'notify') return;
 
       for (const msg of messages) {
+        const msgId = msg.key?.id;
+        if (msgId && this.isDuplicateMessage(msgId)) {
+          continue;
+        }
         // Allow self-messages for testing (commented out fromMe check)
         // if (msg.key.fromMe) continue;
 
@@ -204,6 +235,49 @@ export class WhatsAppClient {
         });
       }
     });
+  }
+
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  private isDuplicateMessage(id: string): boolean {
+    const now = Date.now();
+    const existing = this.recentMessageIds.get(id);
+    if (existing) return true;
+
+    this.recentMessageIds.set(id, now);
+    // Basic TTL + size cap to avoid unbounded growth.
+    if (this.recentMessageIds.size > 1000) {
+      const cutoff = now - 5 * 60 * 1000;
+      for (const [key, ts] of this.recentMessageIds.entries()) {
+        if (ts < cutoff) {
+          this.recentMessageIds.delete(key);
+        }
+      }
+    }
+    return false;
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnecting) return;
+    this.reconnecting = true;
+
+    const baseDelayMs = 2000;
+    const maxDelayMs = 60000;
+    const attempt = Math.min(this.reconnectAttempts, 6);
+    const delay = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt));
+    const jitter = Math.floor(delay * (0.2 * Math.random()));
+    const totalDelay = delay + jitter;
+
+    this.reconnectAttempts += 1;
+
+    console.log(`Reconnecting in ${Math.round(totalDelay / 1000)} seconds...`);
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnecting = false;
+      this.connect();
+    }, totalDelay);
   }
 
   private extractMessageContent(msg: any): string | null {
@@ -323,5 +397,12 @@ export class WhatsAppClient {
       this.sock.end(undefined);
       this.sock = null;
     }
+    this.connected = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
+    this.reconnecting = false;
   }
 }

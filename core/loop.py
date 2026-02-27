@@ -101,6 +101,8 @@ class AgentLoop:
         self.tool_cache = ToolCache()
         self.pending_confirmations: Dict[str, Dict[str, Any]] = {}
         self.active_tasks: Dict[str, asyncio.Task] = {}
+        self._ack_tasks: Dict[str, asyncio.Task] = {}
+        self._ack_tokens: Dict[str, str] = {}
 
         self._history_dirty: Dict[str, bool] = {}
 
@@ -1761,6 +1763,8 @@ class AgentLoop:
                 )
             )
 
+            self._schedule_ack(msg, session_key)
+
             current_task = asyncio.current_task()
             if current_task:
                 self.active_tasks[session_key] = current_task
@@ -2177,6 +2181,7 @@ class AgentLoop:
                                 metadata=meta,
                             )
                         await self.bus.publish_outbound(outbound)
+                        self._cancel_ack(session_key)
 
                 except asyncio.CancelledError:
                     logger.warning(f"⚠ Task cancelled for {session_key}")
@@ -2194,8 +2199,8 @@ class AgentLoop:
                                 },
                             )
                         )
+                    self._cancel_ack(session_key)
                     raise
-
                 except Exception as e:
                     import traceback
 
@@ -2209,7 +2214,50 @@ class AgentLoop:
                             metadata={"is_error": True, "reply_to": msg.sender_id},
                         )
                     )
+                    self._cancel_ack(session_key)
 
         finally:
             await self._flush_history(session_key, force=True)
             self.active_tasks.pop(session_key, None)
+
+    def _schedule_ack(self, msg: InboundMessage, session_key: str) -> None:
+        """Send a short ack for Discord/WhatsApp if response takes a moment."""
+        if msg.channel not in {"discord", "whatsapp"}:
+            return
+        if msg.metadata.get("is_confirmation"):
+            return
+
+        token = uuid.uuid4().hex
+        self._ack_tokens[session_key] = token
+
+        async def _delayed_ack() -> None:
+            try:
+                await asyncio.sleep(0.6)
+                if self._ack_tokens.get(session_key) != token:
+                    return
+                task = self.active_tasks.get(session_key)
+                if task is None or task.done():
+                    return
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="Got it — working on it.",
+                        metadata={"reply_to": msg.sender_id, "is_ack": True},
+                    )
+                )
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.debug(f"[ACK] Failed to send ack: {e}")
+
+        existing = self._ack_tasks.pop(session_key, None)
+        if existing and not existing.done():
+            existing.cancel()
+        self._ack_tasks[session_key] = asyncio.create_task(_delayed_ack())
+
+    def _cancel_ack(self, session_key: str) -> None:
+        self._ack_tokens.pop(session_key, None)
+        task = self._ack_tasks.pop(session_key, None)
+        if task and not task.done():
+            task.cancel()
