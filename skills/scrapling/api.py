@@ -1,6 +1,16 @@
 import argparse
 import sys
-from scrapling import Fetcher, StealthyFetcher
+
+try:
+    from scrapling import Fetcher, StealthyFetcher
+except ImportError:
+    print(
+        "Error: scrapling dependencies are not installed.\n"
+        "Install them with:  pip install scrapling curl_cffi browserforge\n"
+        "Or run:  pip install -r skills/scrapling/requirements.txt",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 def main():
     parser = argparse.ArgumentParser(description="Scrape a webpage using Scrapling")
