@@ -360,7 +360,7 @@ export function ChatInterface({
     const handlePowerAction = async (action: 'restart' | 'shutdown') => {
         setPowerLoading(true);
         try {
-            const res = await axios.post(`http://localhost:8000/api/control/${action}`);
+            const res = await axios.post(`${API_BASE_URL}/api/control/${action}`);
             console.log(res.data);
             // Allow some time for the server to react before closing/resetting
             setTimeout(() => {
@@ -406,7 +406,7 @@ export function ChatInterface({
     const fetchSkills = async () => {
         setSkillsLoading(true);
         try {
-            const res = await axios.get('http://localhost:8000/api/skills');
+            const res = await axios.get(`${API_BASE_URL}/api/skills`);
             setSkills(res.data.skills);
         } catch (err) {
             console.error("Failed to fetch skills:", err);
@@ -423,7 +423,7 @@ export function ChatInterface({
         setSkills(prev => prev.map(s => s.id === skillId ? { ...s, active: !currentStatus } : s));
 
         try {
-            const res = await axios.post(`http://localhost:8000/api/skills/${skillId}/toggle`, { enable: !currentStatus });
+            const res = await axios.post(`${API_BASE_URL}/api/skills/${skillId}/toggle`, { enable: !currentStatus });
             console.log(res.data);
             if (res.data.status === "success") {
                 // Backend restarts automatically

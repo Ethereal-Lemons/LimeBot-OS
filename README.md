@@ -220,6 +220,8 @@ GEMINI_API_KEY=your_key_here
 # Channels (all optional)
 DISCORD_TOKEN=your_discord_bot_token
 ENABLE_WHATSAPP=false
+WEB_PORT=8000
+FRONTEND_PORT=5173
 
 # Security
 ALLOWED_PATHS=./persona,./logs,./temp

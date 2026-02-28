@@ -139,6 +139,67 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function readEnvValue(key) {
+    try {
+        const envPath = path.join(rootDir, '.env');
+        if (!fs.existsSync(envPath)) return null;
+        const lines = fs.readFileSync(envPath, 'utf-8').split('\n');
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('#')) continue;
+            const idx = line.indexOf('=');
+            if (idx === -1) continue;
+            const k = line.slice(0, idx).trim();
+            if (k !== key) continue;
+            let value = line.slice(idx + 1).trim();
+            if (
+                (value.startsWith('"') && value.endsWith('"')) ||
+                (value.startsWith("'") && value.endsWith("'"))
+            ) {
+                value = value.slice(1, -1);
+            }
+            return value;
+        }
+    } catch { }
+    return null;
+}
+
+function getConfiguredPort(key, fallback) {
+    const raw = process.env[key] ?? readEnvValue(key);
+    const parsed = Number.parseInt(String(raw ?? ''), 10);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) return fallback;
+    return parsed;
+}
+
+async function isPortAvailable(port) {
+    return new Promise((resolve) => {
+        const server = net.createServer();
+        const done = (ok) => {
+            try {
+                server.removeAllListeners();
+                if (server.listening) {
+                    server.close(() => resolve(ok));
+                    return;
+                }
+            } catch { }
+            resolve(ok);
+        };
+
+        server.once('error', () => done(false));
+        server.once('listening', () => done(true));
+        server.listen({ port, host: '0.0.0.0', exclusive: true });
+    });
+}
+
+async function findAvailablePort(startPort, maxChecks = 100, reservedPorts = new Set()) {
+    let port = startPort;
+    for (let i = 0; i < maxChecks; i++, port++) {
+        if (reservedPorts.has(port)) continue;
+        if (await isPortAvailable(port)) return port;
+    }
+    throw new Error(`Could not find available port near ${startPort} (checked ${maxChecks} ports).`);
+}
+
 function commandExists(cmd) {
     return new Promise((resolve) => {
         exec(process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`,
@@ -238,20 +299,8 @@ function buildChildEnv() {
 
 
 function isWhatsAppEnabled() {
-    try {
-        const envPath = path.join(rootDir, '.env');
-        if (!fs.existsSync(envPath)) return false;
-        for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
-            const trimmed = line.trim();
-            // FIX: skip comments explicitly before regex matching
-            if (trimmed.startsWith('#')) continue;
-            const m = trimmed.match(/^ENABLE_WHATSAPP\s*=\s*(true|false)/i);
-            if (m) return m[1].toLowerCase() === 'true';
-        }
-        return false;
-    } catch {
-        return false;
-    }
+    const raw = readEnvValue('ENABLE_WHATSAPP');
+    return String(raw || '').toLowerCase() === 'true';
 }
 
 
@@ -386,7 +435,9 @@ async function cmdDoctor(args = []) {
 
     console.log('');
     info('Checking ports...');
-    for (const [port, label] of [[8000, 'backend'], [3000, 'WhatsApp bridge'], [5173, 'frontend']]) {
+    const backendPort = getConfiguredPort('WEB_PORT', 8000);
+    const frontendPort = getConfiguredPort('FRONTEND_PORT', 5173);
+    for (const [port, label] of [[backendPort, 'backend'], [3000, 'WhatsApp bridge'], [frontendPort, 'frontend']]) {
         (await isPortReachable(port))
             ? warning(`Port ${port} is in use (${label} may already be running)`)
             : success(`Port ${port} is available`);
@@ -502,17 +553,19 @@ async function cmdSkill(args) {
 async function cmdStatus() {
     console.log(`${colors.lime}${colors.bright}\n  🍋 LimeBot Status${colors.reset}\n`);
 
+    const backendPort = getConfiguredPort('WEB_PORT', 8000);
+    const frontendPort = getConfiguredPort('FRONTEND_PORT', 5173);
     const [backendUp, bridgeUp, frontendUp] = await Promise.all([
-        isPortReachable(8000), isPortReachable(3000), isPortReachable(5173),
+        isPortReachable(backendPort), isPortReachable(3000), isPortReachable(frontendPort),
     ]);
 
-    backendUp ? success('Backend is running (port 8000)') : info('Backend is not running');
+    backendUp ? success(`Backend is running (port ${backendPort})`) : info('Backend is not running');
     bridgeUp ? success('WhatsApp bridge is running (port 3000)') : info('WhatsApp bridge is not running');
-    frontendUp ? success('Frontend is running (port 5173)') : info('Frontend is not running');
+    frontendUp ? success(`Frontend is running (port ${frontendPort})`) : info('Frontend is not running');
 
     console.log('');
     if (backendUp && frontendUp && bridgeUp) {
-        log(colors.green, `  LimeBot is fully operational! Open ${colors.cyan}http://localhost:5173${colors.reset}`);
+        log(colors.green, `  LimeBot is fully operational! Open ${colors.cyan}http://localhost:${frontendPort}${colors.reset}`);
     } else if (!backendUp && !frontendUp && !bridgeUp) {
         log(colors.gray, `  LimeBot is not running. Use ${colors.cyan}limebot start${colors.reset} to launch.`);
     } else {
@@ -558,11 +611,13 @@ async function cmdLogs(args) {
 async function cmdStop() {
     console.log(`${colors.lime}${colors.bright}\n  🍋 Stopping LimeBot${colors.reset}\n`);
 
+    const backendPort = getConfiguredPort('WEB_PORT', 8000);
+    const frontendPort = getConfiguredPort('FRONTEND_PORT', 5173);
 
     // 1. Stop primary services by port (standard behavior)
     const primaryPorts = [
-        [8000, 'backend'],
-        [5173, 'frontend'],
+        [backendPort, 'backend'],
+        [frontendPort, 'frontend'],
         [3000, 'WhatsApp bridge']
     ];
 
@@ -759,6 +814,28 @@ async function cmdStart(args) {
     const venvDir = path.join(rootDir, '.venv');
     const venvPython = venvPythonPath();
     const childEnv = buildChildEnv();
+    const configuredBackendPort = getConfiguredPort('WEB_PORT', 8000);
+    const configuredFrontendPort = getConfiguredPort('FRONTEND_PORT', 5173);
+    const backendPort = frontendOnly
+        ? configuredBackendPort
+        : await findAvailablePort(configuredBackendPort, 100);
+    const frontendReservedPorts = new Set([backendPort]);
+    const frontendPort = backendOnly
+        ? configuredFrontendPort
+        : await findAvailablePort(configuredFrontendPort, 100, frontendReservedPorts);
+
+    if (backendPort !== configuredBackendPort) {
+        warning(`Backend port ${configuredBackendPort} is busy. Using ${backendPort}.`);
+    }
+    if (frontendPort !== configuredFrontendPort) {
+        warning(`Frontend port ${configuredFrontendPort} is busy. Using ${frontendPort}.`);
+    }
+
+    childEnv.WEB_PORT = String(backendPort);
+    childEnv.PORT = String(backendPort);
+    childEnv.VITE_DEV_SERVER_PORT = String(frontendPort);
+    childEnv.VITE_BACKEND_URL = `http://127.0.0.1:${backendPort}`;
+    childEnv.VITE_BACKEND_WS_URL = `ws://127.0.0.1:${backendPort}`;
 
     // ── Dependency installation ──────────────────────────────────
 
@@ -824,14 +901,14 @@ async function cmdStart(args) {
             killProc(backendProc);
             backendProc = null;
 
-            info('Waiting for port 8000 to be released...');
+            info(`Waiting for port ${backendPort} to be released...`);
             for (let i = 0; i < 10; i++) {
-                if (!await isPortReachable(8000)) break;
+                if (!await isPortReachable(backendPort)) break;
                 await sleep(500);
             }
-            (await isPortReachable(8000))
-                ? warning('Port 8000 still in use — startup might fail.')
-                : success('Port 8000 is free.');
+            (await isPortReachable(backendPort))
+                ? warning(`Port ${backendPort} still in use — startup might fail.`)
+                : success(`Port ${backendPort} is free.`);
         }
 
         info('Starting backend...');
@@ -897,11 +974,11 @@ async function cmdStart(args) {
     // ── Wait for backend before starting frontend ─────────────────
     // Vite proxies /api and /ws immediately on startup. If the backend
     // isn't listening yet, every request gets ECONNREFUSED. We wait up
-    // to 30 s for port 8000 before spawning Vite so the proxy is warm.
+    // to 30 s for the backend port before spawning Vite so the proxy is warm.
     if (!frontendOnly && !backendOnly) {
         const spinner = new Spinner('Waiting for backend to be ready...');
         spinner.start();
-        const backendReady = await waitForServer(8000, 30);
+        const backendReady = await waitForServer(backendPort, 30);
         if (backendReady) {
             spinner.stop('Backend is ready.');
         } else {
@@ -919,8 +996,10 @@ async function cmdStart(args) {
 
     if (!backendOnly) {
         info('Waiting for UI to be ready...');
-        if (await waitForServer(5173)) {
-            const url = isConfigured ? 'http://localhost:5173' : 'http://localhost:5173/setup';
+        if (await waitForServer(frontendPort)) {
+            const url = isConfigured
+                ? `http://localhost:${frontendPort}`
+                : `http://localhost:${frontendPort}/setup`;
             success(`LimeBot is ready at ${url}`);
             openBrowser(url);
         } else {
@@ -928,8 +1007,8 @@ async function cmdStart(args) {
         }
     } else {
         info('Backend-only mode. Waiting for backend...');
-        (await waitForServer(8000))
-            ? success('Backend ready on port 8000')
+        (await waitForServer(backendPort))
+            ? success(`Backend ready on port ${backendPort}`)
             : error('Backend did not start in time. Check logs.');
     }
 

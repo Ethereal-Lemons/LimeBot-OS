@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import axios from "axios";
+import { API_BASE_URL } from "@/lib/api";
 import { Terminal, RefreshCw, Trash2, Search, ArrowDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -61,7 +62,7 @@ export function LogsPage() {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
     const fetchLogs = () => {
-        axios.get('http://localhost:8000/api/logs?lines=200')
+        axios.get(`${API_BASE_URL}/api/logs?lines=200`)
             .then(res => {
                 if (res.data.logs) {
                     const parsed = (res.data.logs as string[]).map(parseLogLine);
@@ -151,7 +152,7 @@ export function LogsPage() {
                         size="icon"
                         onClick={() => {
                             if (!confirm("Are you sure you want to clear the system logs?")) return;
-                            axios.post('http://localhost:8000/api/control/clear-logs')
+                            axios.post(`${API_BASE_URL}/api/control/clear-logs`)
                                 .then(() => setLogs([]))
                                 .catch(err => console.error("Failed to clear logs:", err));
                         }}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
+import { API_BASE_URL } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -57,7 +58,7 @@ export function PersonaPage() {
     const fetchPersona = async () => {
         try {
             setLoading(true);
-            const res = await axios.get("http://localhost:8000/api/persona");
+            const res = await axios.get(`${API_BASE_URL}/api/persona`);
             setPersona(res.data);
         } catch (err) {
             console.error("Failed to fetch persona:", err);
@@ -73,7 +74,7 @@ export function PersonaPage() {
     const handleSave = async () => {
         try {
             setSaving(true);
-            const res = await axios.put("http://localhost:8000/api/persona", persona);
+            const res = await axios.put(`${API_BASE_URL}/api/persona`, persona);
             if (res.data.status === "success") {
                 setMessage("Persona saved successfully!");
                 setTimeout(() => setMessage(""), 3000);

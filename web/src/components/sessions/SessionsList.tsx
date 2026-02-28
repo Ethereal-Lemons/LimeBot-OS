@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
+import { API_BASE_URL } from "@/lib/api";
 import {
     Activity,
     Bot,
@@ -60,7 +61,7 @@ export function InstancesList({ currentSessionId }: { currentSessionId?: string 
 
     const fetchInstances = () => {
         setLoading(true);
-        axios.get('http://localhost:8000/api/instances')
+        axios.get(`${API_BASE_URL}/api/instances`)
             .then(res => {
                 setInstances(res.data as Instance[]);
                 setLoading(false);
@@ -78,7 +79,7 @@ export function InstancesList({ currentSessionId }: { currentSessionId?: string 
     }, []);
 
     const handleDelete = (id: string) => {
-        axios.delete(`http://localhost:8000/api/instances/${id}`)
+        axios.delete(`${API_BASE_URL}/api/instances/${id}`)
             .then(() => {
                 setInstances(prev => prev.filter(i => i.id !== id));
                 setSelectedIds(prev => prev.filter(sid => sid !== id));
@@ -89,7 +90,7 @@ export function InstancesList({ currentSessionId }: { currentSessionId?: string 
     const handleDeleteBatch = (ids: string[]) => {
         if (ids.length === 0) return;
         setBatchDeleting(true);
-        axios.post(`http://localhost:8000/api/instances/delete-batch`, { ids })
+        axios.post(`${API_BASE_URL}/api/instances/delete-batch`, { ids })
             .then(() => {
                 setInstances(prev => prev.filter(i => !ids.includes(i.id)));
                 setSelectedIds(prev => prev.filter(sid => !ids.includes(sid)));
