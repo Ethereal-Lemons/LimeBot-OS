@@ -10,6 +10,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 const WIN_MAX_PATH_SAFE = 259;
+const WIN_VENV_PATH_PROBES = [
+    path.join('Lib', 'site-packages'),
+    path.join(
+        'Lib',
+        'site-packages',
+        'litellm',
+        'proxy',
+        'guardrails',
+        'guardrail_hooks',
+        'litellm_content_filter',
+        'guardrail_benchmarks',
+        'results',
+        'block_claims_prior_auth_gaming_-_contentfilter_(claims_prior_auth_gaming.yaml).json'
+    ),
+];
 let cachedVenvLayout = null;
 
 function hashPath(value) {
@@ -23,6 +38,16 @@ function hashPath(value) {
 
 function windowsSitePackagesPath(venvDir) {
     return path.join(path.resolve(venvDir), 'Lib', 'site-packages');
+}
+
+function windowsMaxProjectedPathLength(venvDir) {
+    const base = path.resolve(venvDir);
+    let maxLen = 0;
+    for (const rel of WIN_VENV_PATH_PROBES) {
+        const probeLen = path.join(base, rel).length;
+        if (probeLen > maxLen) maxLen = probeLen;
+    }
+    return maxLen;
 }
 
 function windowsFallbackVenvDir() {
@@ -50,26 +75,33 @@ function resolveVenvLayout() {
             usingFallback: false,
             projectedSitePackagesPath: null,
             defaultProjectedSitePackagesPath: null,
+            projectedMaxPathLength: null,
+            defaultProjectedMaxPathLength: null,
         };
         return cachedVenvLayout;
     }
 
     const projectedDefault = windowsSitePackagesPath(defaultVenvDir);
-    if (projectedDefault.length < WIN_MAX_PATH_SAFE) {
+    const projectedDefaultMax = windowsMaxProjectedPathLength(defaultVenvDir);
+    if (projectedDefaultMax < WIN_MAX_PATH_SAFE) {
         cachedVenvLayout = {
             venvDir: defaultVenvDir,
             usingFallback: false,
             projectedSitePackagesPath: projectedDefault,
             defaultProjectedSitePackagesPath: projectedDefault,
+            projectedMaxPathLength: projectedDefaultMax,
+            defaultProjectedMaxPathLength: projectedDefaultMax,
         };
         return cachedVenvLayout;
     }
 
     let fallbackDir = windowsFallbackVenvDir();
     let projectedFallback = windowsSitePackagesPath(fallbackDir);
-    if (projectedFallback.length >= WIN_MAX_PATH_SAFE) {
+    let projectedFallbackMax = windowsMaxProjectedPathLength(fallbackDir);
+    if (projectedFallbackMax >= WIN_MAX_PATH_SAFE) {
         fallbackDir = path.join(path.parse(rootDir).root || 'C:\\', 'lbv', hashPath(rootDir));
         projectedFallback = windowsSitePackagesPath(fallbackDir);
+        projectedFallbackMax = windowsMaxProjectedPathLength(fallbackDir);
     }
 
     cachedVenvLayout = {
@@ -77,6 +109,8 @@ function resolveVenvLayout() {
         usingFallback: true,
         projectedSitePackagesPath: projectedFallback,
         defaultProjectedSitePackagesPath: projectedDefault,
+        projectedMaxPathLength: projectedFallbackMax,
+        defaultProjectedMaxPathLength: projectedDefaultMax,
     };
     return cachedVenvLayout;
 }
@@ -908,7 +942,7 @@ async function cmdStart(args) {
         warning(`Frontend port ${configuredFrontendPort} is busy. Using ${frontendPort}.`);
     }
     if (venvLayout.usingFallback) {
-        warning(`Windows path safety: using venv at ${venvDir}`);
+        warning(`Windows path safety: using venv at ${venvDir} (projected max path ${venvLayout.projectedMaxPathLength}/${WIN_MAX_PATH_SAFE})`);
     }
 
     childEnv.WEB_PORT = String(backendPort);
