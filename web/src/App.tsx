@@ -330,22 +330,32 @@ function App() {
               .find(({ m }) => m.sender === 'bot' && m.type !== 'tool' && !m.confirmation)?.i ?? -1;
 
             if (lastBotIdx !== -1) {
-              const newMessages = [...prev];
-              newMessages[lastBotIdx] = {
-                ...newMessages[lastBotIdx],
+              const updatedMsg = {
+                ...prev[lastBotIdx],
                 content: data.content,
                 variant,
-                type: 'text'
+                type: 'text' as const
               };
+
+
+              const hasUserMessagesAfter = prev.slice(lastBotIdx + 1).some(m => m.sender === 'user');
+              if (hasUserMessagesAfter) {
+
+                const newMessages = prev.filter((_, i) => i !== lastBotIdx);
+                return [...newMessages, updatedMsg];
+              }
+
+              const newMessages = [...prev];
+              newMessages[lastBotIdx] = updatedMsg;
               return newMessages;
             }
 
 
             return [...prev, {
-              sender: 'bot',
+              sender: 'bot' as const,
               content: data.content,
               variant,
-              type: 'text'
+              type: 'text' as const
             }];
           });
 
