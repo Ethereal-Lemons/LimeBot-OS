@@ -9,6 +9,9 @@ import net from 'net';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
+const UPDATE_CHECK_TTL_MS = 1000 * 60 * 60 * 6;
+const UPDATE_CHECK_TIMEOUT_MS = 2500;
+const UPDATE_CHECK_CACHE_PATH = path.join(rootDir, 'data', 'cli-update-check.json');
 const WIN_MAX_PATH_SAFE = 259;
 const WIN_VENV_PATH_PROBES = [
     path.join('Lib', 'site-packages'),
@@ -248,6 +251,182 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function isTruthyEnv(value) {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function shortSha(sha) {
+    return typeof sha === 'string' ? sha.slice(0, 8) : '';
+}
+
+function readJsonSafe(filePath) {
+    try {
+        if (!fs.existsSync(filePath)) return null;
+        return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    } catch {
+        return null;
+    }
+}
+
+function writeJsonSafe(filePath, payload) {
+    try {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+    } catch { }
+}
+
+async function runGit(args, timeoutMs = UPDATE_CHECK_TIMEOUT_MS) {
+    return new Promise((resolve) => {
+        let child;
+        try {
+            child = spawn('git', args, {
+                cwd: rootDir,
+                shell: false,
+                stdio: ['ignore', 'pipe', 'pipe'],
+            });
+        } catch (err) {
+            resolve({
+                code: -1,
+                stdout: '',
+                stderr: err?.message || String(err),
+                timedOut: false,
+            });
+            return;
+        }
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
+        let timer = null;
+
+        const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            resolve(result);
+        };
+
+        if (timeoutMs > 0) {
+            timer = setTimeout(() => {
+                try { child.kill(); } catch { }
+                finish({ code: -1, stdout: stdout.trim(), stderr: stderr.trim(), timedOut: true });
+            }, timeoutMs);
+        }
+
+        child.stdout.on('data', (d) => { stdout += d.toString(); });
+        child.stderr.on('data', (d) => { stderr += d.toString(); });
+        child.on('error', (err) => finish({ code: -1, stdout: '', stderr: err.message, timedOut: false }));
+        child.on('close', (code) => finish({
+            code: code ?? -1,
+            stdout: stdout.trim(),
+            stderr: stderr.trim(),
+            timedOut: false,
+        }));
+    });
+}
+
+function readUpdateCheckCache() {
+    const cached = readJsonSafe(UPDATE_CHECK_CACHE_PATH);
+    if (!cached || typeof cached !== 'object') return null;
+    return cached;
+}
+
+function writeUpdateCheckCache(status) {
+    writeJsonSafe(UPDATE_CHECK_CACHE_PATH, status);
+}
+
+async function getLocalGitSnapshot() {
+    const inRepo = await runGit(['rev-parse', '--is-inside-work-tree']);
+    if (inRepo.code !== 0 || inRepo.stdout !== 'true') return null;
+
+    const head = await runGit(['rev-parse', 'HEAD']);
+    if (head.code !== 0 || !head.stdout) return null;
+
+    const branch = await runGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+    const branchName = branch.code === 0 ? branch.stdout.trim() : '';
+    if (!branchName || branchName === 'HEAD') return null;
+
+    const remote = await runGit(['config', '--get', `branch.${branchName}.remote`]);
+    const remoteName = (remote.code === 0 && remote.stdout) ? remote.stdout.trim() : 'origin';
+
+    const merge = await runGit(['config', '--get', `branch.${branchName}.merge`]);
+    const mergeRef = (merge.code === 0 && merge.stdout) ? merge.stdout.trim() : `refs/heads/${branchName}`;
+    const remoteBranch = mergeRef.startsWith('refs/heads/')
+        ? mergeRef.slice('refs/heads/'.length)
+        : mergeRef;
+
+    return {
+        localHead: head.stdout.toLowerCase(),
+        branchName,
+        remoteName,
+        remoteBranch,
+    };
+}
+
+async function getGitUpdateStatus() {
+    if (isTruthyEnv(process.env.LIMEBOT_DISABLE_UPDATE_CHECK)) return null;
+    if (!fs.existsSync(path.join(rootDir, '.git'))) return null;
+    if (!await commandExists('git')) return null;
+
+    const snapshot = await getLocalGitSnapshot();
+    if (!snapshot) return null;
+
+    const now = Date.now();
+    const cached = readUpdateCheckCache();
+    if (
+        cached &&
+        Number.isFinite(cached.checkedAt) &&
+        cached.localHead === snapshot.localHead &&
+        cached.branchName === snapshot.branchName &&
+        cached.remoteName === snapshot.remoteName &&
+        cached.remoteBranch === snapshot.remoteBranch &&
+        (now - cached.checkedAt) < UPDATE_CHECK_TTL_MS
+    ) {
+        return cached;
+    }
+
+    const fetch = await runGit(['fetch', '--quiet', snapshot.remoteName, snapshot.remoteBranch]);
+    if (fetch.code !== 0) return null;
+
+    const remoteHeadRes = await runGit(['rev-parse', 'FETCH_HEAD']);
+    if (remoteHeadRes.code !== 0 || !remoteHeadRes.stdout) return null;
+
+    const counts = await runGit(['rev-list', '--left-right', '--count', 'HEAD...FETCH_HEAD']);
+    if (counts.code !== 0 || !counts.stdout) return null;
+
+    const [aheadRaw, behindRaw] = counts.stdout.split(/\s+/);
+    const ahead = Number.parseInt(aheadRaw, 10);
+    const behind = Number.parseInt(behindRaw, 10);
+    if (!Number.isInteger(ahead) || !Number.isInteger(behind)) return null;
+
+    const status = {
+        checkedAt: now,
+        localHead: snapshot.localHead,
+        remoteHead: remoteHeadRes.stdout.toLowerCase(),
+        branchName: snapshot.branchName,
+        remoteName: snapshot.remoteName,
+        remoteBranch: snapshot.remoteBranch,
+        ahead,
+        behind,
+        hasUpdate: behind > 0,
+    };
+    writeUpdateCheckCache(status);
+    return status;
+}
+
+async function maybeShowGitUpdateNotice(command) {
+    const commandSet = new Set(['start', 'status', 'doctor', 'skill', 'install-browser']);
+    if (!commandSet.has(command)) return;
+
+    const status = await getGitUpdateStatus();
+    if (!status || !status.hasUpdate) return;
+
+    const commitWord = status.behind === 1 ? 'commit' : 'commits';
+    warning(`Update available: ${status.behind} ${commitWord} behind ${status.remoteName}/${status.remoteBranch}.`);
+    info(`Current ${shortSha(status.localHead)} -> latest ${shortSha(status.remoteHead)}.`);
+    info(`Run 'git pull --ff-only ${status.remoteName} ${status.remoteBranch}' to update.`);
+}
+
 function readEnvValue(key) {
     try {
         const envPath = path.join(rootDir, '.env');
@@ -311,8 +490,14 @@ async function findAvailablePort(startPort, maxChecks = 100, reservedPorts = new
 
 function commandExists(cmd) {
     return new Promise((resolve) => {
-        exec(process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`,
-            (err) => resolve(!err));
+        try {
+            exec(
+                process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`,
+                (err) => resolve(!err)
+            );
+        } catch {
+            resolve(false);
+        }
     });
 }
 
@@ -1163,6 +1348,7 @@ async function cmdStart(args) {
 async function main() {
     const args = process.argv.slice(2);
     const command = args[0]?.toLowerCase() || 'help';
+    await maybeShowGitUpdateNotice(command);
 
     switch (command) {
         case 'start': await cmdStart(args.slice(1)); break;

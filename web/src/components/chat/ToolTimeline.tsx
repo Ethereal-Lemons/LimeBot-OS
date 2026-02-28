@@ -93,13 +93,13 @@ export function ToolTimeline({ executions, botIdentity }: ToolTimelineProps) {
     };
 
     return (
-        <div className="flex w-full gap-4 max-w-[90%]">
+        <div className="flex w-full gap-4 max-w-[90%] min-w-0">
             <Avatar className="h-9 w-9 mt-1 shrink-0 border border-border shadow-sm">
                 <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
                 <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">Bot</AvatarFallback>
             </Avatar>
 
-            <div className="flex-1">
+            <div className="flex-1 min-w-0 overflow-hidden">
                 <div
                     className={cn(
                         "rounded-2xl rounded-tl-none border border-border bg-muted/70 px-4 py-3",
@@ -108,7 +108,7 @@ export function ToolTimeline({ executions, botIdentity }: ToolTimelineProps) {
                     onClick={() => setExpanded(!expanded)}
                 >
                     <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                        <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
                             <span>Tool Timeline</span>
                             <span className="h-1 w-1 rounded-full bg-muted-foreground/40" />
                             <span>{executions.length} steps</span>
@@ -128,8 +128,8 @@ export function ToolTimeline({ executions, botIdentity }: ToolTimelineProps) {
                                 : `${completed} completed successfully.`}
                     </div>
                     {currentAction && (
-                        <div className="mt-2 text-[11px] text-muted-foreground/80 truncate">
-                            Current action: <span className="font-mono">{currentAction}</span>
+                        <div className="mt-2 text-[11px] text-muted-foreground/80 truncate overflow-hidden">
+                            Current action: <span className="font-mono break-all">{currentAction}</span>
                         </div>
                     )}
                 </div>
