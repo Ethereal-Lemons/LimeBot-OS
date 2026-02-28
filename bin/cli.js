@@ -9,6 +9,81 @@ import net from 'net';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
+const WIN_MAX_PATH_SAFE = 259;
+let cachedVenvLayout = null;
+
+function hashPath(value) {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < value.length; i++) {
+        hash ^= value.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(36);
+}
+
+function windowsSitePackagesPath(venvDir) {
+    return path.join(path.resolve(venvDir), 'Lib', 'site-packages');
+}
+
+function windowsFallbackVenvDir() {
+    const projectId = hashPath(rootDir);
+    const localAppData = process.env.LOCALAPPDATA;
+    if (localAppData) {
+        return path.join(localAppData, 'LimeBot', 'venvs', projectId);
+    }
+
+    const userProfile = process.env.USERPROFILE;
+    if (userProfile) {
+        return path.join(userProfile, 'AppData', 'Local', 'LimeBot', 'venvs', projectId);
+    }
+
+    return path.join(path.parse(rootDir).root || 'C:\\', 'LimeBot', 'venvs', projectId);
+}
+
+function resolveVenvLayout() {
+    if (cachedVenvLayout) return cachedVenvLayout;
+
+    const defaultVenvDir = path.join(rootDir, '.venv');
+    if (process.platform !== 'win32') {
+        cachedVenvLayout = {
+            venvDir: defaultVenvDir,
+            usingFallback: false,
+            projectedSitePackagesPath: null,
+            defaultProjectedSitePackagesPath: null,
+        };
+        return cachedVenvLayout;
+    }
+
+    const projectedDefault = windowsSitePackagesPath(defaultVenvDir);
+    if (projectedDefault.length < WIN_MAX_PATH_SAFE) {
+        cachedVenvLayout = {
+            venvDir: defaultVenvDir,
+            usingFallback: false,
+            projectedSitePackagesPath: projectedDefault,
+            defaultProjectedSitePackagesPath: projectedDefault,
+        };
+        return cachedVenvLayout;
+    }
+
+    let fallbackDir = windowsFallbackVenvDir();
+    let projectedFallback = windowsSitePackagesPath(fallbackDir);
+    if (projectedFallback.length >= WIN_MAX_PATH_SAFE) {
+        fallbackDir = path.join(path.parse(rootDir).root || 'C:\\', 'lbv', hashPath(rootDir));
+        projectedFallback = windowsSitePackagesPath(fallbackDir);
+    }
+
+    cachedVenvLayout = {
+        venvDir: fallbackDir,
+        usingFallback: true,
+        projectedSitePackagesPath: projectedFallback,
+        defaultProjectedSitePackagesPath: projectedDefault,
+    };
+    return cachedVenvLayout;
+}
+
+function venvDirPath() {
+    return resolveVenvLayout().venvDir;
+}
 
 // ── Logger ────────────────────────────────────────────────────────
 
@@ -280,12 +355,12 @@ function venvPythonPath() {
     const isWin = process.platform === 'win32';
     const bin = isWin ? 'Scripts' : 'bin';
     const exe = isWin ? 'python.exe' : 'python';
-    return path.join(rootDir, '.venv', bin, exe);
+    return path.join(venvDirPath(), bin, exe);
 }
 
 
 function buildChildEnv() {
-    const venvDir = path.join(rootDir, '.venv');
+    const venvDir = venvDirPath();
     const childEnv = { ...process.env };
     if (fs.existsSync(venvDir)) {
         const isWin = process.platform === 'win32';
@@ -425,9 +500,10 @@ async function cmdDoctor(args = []) {
         ? success('.env file exists')
         : warning('.env file not found (run setup first)');
 
-    fs.existsSync(path.join(rootDir, '.venv'))
-        ? success('Python virtual environment exists')
-        : warning('Python virtual environment not created (will be created on first start)');
+    const venvLayout = resolveVenvLayout();
+    fs.existsSync(venvLayout.venvDir)
+        ? success(`Python virtual environment exists${venvLayout.usingFallback ? ` (${venvLayout.venvDir})` : ''}`)
+        : warning(`Python virtual environment not created (will be created on first start${venvLayout.usingFallback ? ` at ${venvLayout.venvDir}` : ''})`);
 
     fs.existsSync(path.join(rootDir, 'web', 'node_modules'))
         ? success('Frontend dependencies installed')
@@ -811,7 +887,8 @@ async function cmdStart(args) {
     const isConfigured = fs.existsSync(envFile);
     if (!isConfigured) warning('Initial configuration not found. Setup wizard will open.');
 
-    const venvDir = path.join(rootDir, '.venv');
+    const venvLayout = resolveVenvLayout();
+    const venvDir = venvLayout.venvDir;
     const venvPython = venvPythonPath();
     const childEnv = buildChildEnv();
     const configuredBackendPort = getConfiguredPort('WEB_PORT', 8000);
@@ -829,6 +906,9 @@ async function cmdStart(args) {
     }
     if (frontendPort !== configuredFrontendPort) {
         warning(`Frontend port ${configuredFrontendPort} is busy. Using ${frontendPort}.`);
+    }
+    if (venvLayout.usingFallback) {
+        warning(`Windows path safety: using venv at ${venvDir}`);
     }
 
     childEnv.WEB_PORT = String(backendPort);
@@ -865,7 +945,7 @@ async function cmdStart(args) {
                     return new Promise((resolve, reject) => {
                         const systemPython = getSystemPython();
                         systemPython.then(py => {
-                            const p = spawn(py, ['-m', 'venv', '.venv'], { cwd: rootDir, shell: true, stdio: 'pipe' });
+                            const p = spawn(py, ['-m', 'venv', venvDir], { cwd: rootDir, shell: true, stdio: 'pipe' });
                             p.on('close', (code) => code === 0 ? resolve() : reject(new Error(`venv creation failed (code ${code})`)));
                         });
                     });
