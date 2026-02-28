@@ -92,6 +92,11 @@ class WhatsAppChannel(BaseChannel):
         try:
             content = msg.content
             metadata = msg.metadata or {}
+            msg_type = metadata.get("type")
+
+            # Ignore transport-only control events for WhatsApp.
+            if msg_type in {"typing", "stop_typing"}:
+                return
 
             if "embed" in metadata:
                 embed = metadata["embed"]
@@ -121,7 +126,14 @@ class WhatsAppChannel(BaseChannel):
                     content = "\n\n".join(parts)
 
             if not content:
-                logger.warning("[WhatsApp] Attempted to send empty message, skipping.")
+                if msg_type:
+                    logger.debug(
+                        f"[WhatsApp] Ignoring empty control message type '{msg_type}'."
+                    )
+                else:
+                    logger.warning(
+                        "[WhatsApp] Attempted to send empty message, skipping."
+                    )
                 return
 
             payload = {"type": "send", "to": msg.chat_id, "text": content}

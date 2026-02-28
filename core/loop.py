@@ -101,12 +101,10 @@ class AgentLoop:
         self.tool_cache = ToolCache()
         self.pending_confirmations: Dict[str, Dict[str, Any]] = {}
         self.active_tasks: Dict[str, asyncio.Task] = {}
-        self._ack_tasks: Dict[str, asyncio.Task] = {}
-        self._ack_tokens: Dict[str, str] = {}
 
         self._history_dirty: Dict[str, bool] = {}
 
-        self._last_msg_hash: Dict[str, Optional[int]] = {}
+        self._last_msg_hash: Dict[str, Tuple[int, float]] = {}
 
         cfg = load_config()
         self.config = cfg
@@ -594,12 +592,6 @@ class AgentLoop:
                             )
                         )
                     raise
-
-    async def _clear_msg_hash(self, session_key: str, msg_hash: int) -> None:
-
-        await asyncio.sleep(2)
-        if self._last_msg_hash.get(session_key) == msg_hash:
-            self._last_msg_hash.pop(session_key, None)
 
     async def _trim_history(self, session_key: str, max_tokens: int = 12_000) -> None:
         if session_key not in self.history or len(self.history[session_key]) <= 1:
@@ -1685,20 +1677,23 @@ class AgentLoop:
             sender_id = msg.sender_id
 
             msg_hash = hash(msg.content) if msg.content else None
-            if msg_hash is not None and msg_hash == self._last_msg_hash.get(
-                session_key
-            ):
-                if (
-                    session_key in self.session_locks
-                    and self.session_locks[session_key].locked()
-                ):
-                    logger.warning(
-                        f"♻️ Message '{msg.content[:20]}...' skipped - session {session_key} is currently BUSY processing another task."
-                    )
-                else:
-                    logger.debug("♻️ Skipping identical duplicate message.")
-                return
-            self._last_msg_hash[session_key] = msg_hash
+            if msg_hash is not None:
+                now_ts = asyncio.get_running_loop().time()
+                last_seen = self._last_msg_hash.get(session_key)
+                if last_seen is not None:
+                    last_hash, last_ts = last_seen
+                    if msg_hash == last_hash and (now_ts - last_ts) <= 2.0:
+                        if (
+                            session_key in self.session_locks
+                            and self.session_locks[session_key].locked()
+                        ):
+                            logger.warning(
+                                f"♻️ Message '{msg.content[:20]}...' skipped - session {session_key} is currently BUSY processing another task."
+                            )
+                        else:
+                            logger.debug("♻️ Skipping identical duplicate message.")
+                        return
+                self._last_msg_hash[session_key] = (msg_hash, now_ts)
 
             # ── Confirmation intercept (WhatsApp / Discord) ──────────────────
             # The web UI resolves confirmations via a REST button click.
@@ -1762,8 +1757,6 @@ class AgentLoop:
                     metadata={"type": "typing"},
                 )
             )
-
-            self._schedule_ack(msg, session_key)
 
             current_task = asyncio.current_task()
             if current_task:
@@ -2181,7 +2174,6 @@ class AgentLoop:
                                 metadata=meta,
                             )
                         await self.bus.publish_outbound(outbound)
-                        self._cancel_ack(session_key)
 
                 except asyncio.CancelledError:
                     logger.warning(f"⚠ Task cancelled for {session_key}")
@@ -2199,7 +2191,6 @@ class AgentLoop:
                                 },
                             )
                         )
-                    self._cancel_ack(session_key)
                     raise
                 except Exception as e:
                     import traceback
@@ -2214,50 +2205,7 @@ class AgentLoop:
                             metadata={"is_error": True, "reply_to": msg.sender_id},
                         )
                     )
-                    self._cancel_ack(session_key)
 
         finally:
             await self._flush_history(session_key, force=True)
             self.active_tasks.pop(session_key, None)
-
-    def _schedule_ack(self, msg: InboundMessage, session_key: str) -> None:
-        """Send a short ack for Discord/WhatsApp if response takes a moment."""
-        if msg.channel not in {"discord", "whatsapp"}:
-            return
-        if msg.metadata.get("is_confirmation"):
-            return
-
-        token = uuid.uuid4().hex
-        self._ack_tokens[session_key] = token
-
-        async def _delayed_ack() -> None:
-            try:
-                await asyncio.sleep(0.6)
-                if self._ack_tokens.get(session_key) != token:
-                    return
-                task = self.active_tasks.get(session_key)
-                if task is None or task.done():
-                    return
-                await self.bus.publish_outbound(
-                    OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content="Got it — working on it.",
-                        metadata={"reply_to": msg.sender_id, "is_ack": True},
-                    )
-                )
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.debug(f"[ACK] Failed to send ack: {e}")
-
-        existing = self._ack_tasks.pop(session_key, None)
-        if existing and not existing.done():
-            existing.cancel()
-        self._ack_tasks[session_key] = asyncio.create_task(_delayed_ack())
-
-    def _cancel_ack(self, session_key: str) -> None:
-        self._ack_tokens.pop(session_key, None)
-        task = self._ack_tasks.pop(session_key, None)
-        if task and not task.done():
-            task.cancel()

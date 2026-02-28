@@ -93,6 +93,10 @@ class SkillRegistry:
                 elif hasattr(module, "SkillHandler"):
                     self._api_handlers[skill_name] = module.SkillHandler()
                     logger.debug(f"    API handler class loaded for: {skill_name}")
+        except SystemExit as e:
+            logger.error(
+                f"    API handler for {skill_name} exited during import (code={e.code}). Skipping."
+            )
         except Exception as e:
             logger.error(f"    Error loading API handler for {skill_name}: {e}")
 
