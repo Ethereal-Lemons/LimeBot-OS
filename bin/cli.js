@@ -1009,7 +1009,7 @@ async function cmdStart(args) {
     let bridgeProc = null;
 
     const startBackend = async () => {
-        // FIX: removed duplicate info('Starting backend...') line
+  
         if (backendProc) {
             info('Stopping existing backend...');
             killProc(backendProc);

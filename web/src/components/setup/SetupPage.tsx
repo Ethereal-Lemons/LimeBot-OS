@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Key, Bot, ShieldCheck, ArrowRight, CheckCircle2, RefreshCw, Trash, Plus } from 'lucide-react';
+import { Badge } from '../ui/badge';
 
 const FALLBACK_MODELS = [
     { id: 'gemini/gemini-2.0-flash', name: 'Gemini 2.0 Flash', provider: 'gemini' },
@@ -18,6 +19,9 @@ const FALLBACK_MODELS = [
     { id: 'anthropic/claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'anthropic' },
     { id: 'deepseek/deepseek-chat', name: 'DeepSeek V3', provider: 'deepseek' },
     { id: 'xai/grok-2-1212', name: 'Grok 2', provider: 'xai' },
+    { id: 'qwen/qwen-plus', name: 'Qwen Plus', provider: 'qwen' },
+    { id: 'qwen/qwen-max', name: 'Qwen Max', provider: 'qwen' },
+    { id: 'qwen/qwen-flash', name: 'Qwen Flash', provider: 'qwen' },
 ];
 
 export function SetupPage() {
@@ -156,6 +160,7 @@ export function SetupPage() {
                                         <SelectItem value="anthropic">Anthropic Claude</SelectItem>
                                         <SelectItem value="xai">xAI (Grok)</SelectItem>
                                         <SelectItem value="deepseek">DeepSeek</SelectItem>
+                                        <SelectItem value="qwen">Qwen (DashScope)</SelectItem>
                                         <SelectItem value="nvidia">NVIDIA</SelectItem>
                                     </SelectContent>
                                 </Select>
@@ -254,6 +259,19 @@ export function SetupPage() {
                                         />
                                     </div>
                                 )}
+                                {config.LLM_MODEL.startsWith('qwen') && (
+                                    <div className="space-y-2">
+                                        <Label htmlFor="dashscope_key">Qwen (DashScope) API Key</Label>
+                                        <Input
+                                            id="dashscope_key"
+                                            type="password"
+                                            placeholder="sk-..."
+                                            value={(config as any).DASHSCOPE_API_KEY || ''}
+                                            onChange={(e) => handleChange('DASHSCOPE_API_KEY', e.target.value)}
+                                            className="bg-background/50"
+                                        />
+                                    </div>
+                                )}
                                 {config.LLM_MODEL.startsWith('nvidia') && (
                                     <div className="space-y-2">
                                         <Label htmlFor="nvidia_key">NVIDIA API Key</Label>
@@ -280,7 +298,8 @@ export function SetupPage() {
                                     (config.LLM_MODEL.startsWith('openai') && !(config as any).OPENAI_API_KEY) ||
                                     (config.LLM_MODEL.startsWith('anthropic') && !(config as any).ANTHROPIC_API_KEY) ||
                                     (config.LLM_MODEL.startsWith('xai') && !(config as any).XAI_API_KEY) ||
-                                    (config.LLM_MODEL.startsWith('deepseek') && !(config as any).DEEPSEEK_API_KEY)
+                                    (config.LLM_MODEL.startsWith('deepseek') && !(config as any).DEEPSEEK_API_KEY) ||
+                                    (config.LLM_MODEL.startsWith('qwen') && !(config as any).DASHSCOPE_API_KEY)
                                 }
                             >
                                 Continue
@@ -440,6 +459,11 @@ export function SetupPage() {
 
                                 <div className="flex items-center justify-between">
                                     <div className="space-y-0.5">
+                                        <div className="flex items-center gap-2">
+                                            <Label htmlFor="dynamic_personality">Adaptive Persona</Label>
+                                            <Badge variant="outline" size="sm" className="text-[10px] uppercase tracking-wider opacity-70">Experimental</Badge>
+                                        </div>
+
                                         <Label htmlFor="dynamic_personality">Adaptive Persona</Label>
                                         <p className="text-[10px] text-muted-foreground">Bot adjusts trust and style based on interaction.</p>
                                     </div>

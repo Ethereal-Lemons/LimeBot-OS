@@ -69,6 +69,8 @@ def _parse_boot_content(raw: str) -> tuple[str, bool]:
     if lines and lines[0].strip().lower() == "@once":
         once = True
         lines = lines[1:]
+    # Strip comment-only lines so the default template is treated as empty
+    lines = [line for line in lines if not line.lstrip().startswith("#")]
     content = "\n".join(lines).strip()
     return content, once
 
@@ -84,7 +86,9 @@ def _channel_ready_status(channel) -> bool:
     return True
 
 
-async def _wait_for_channels_ready(channels: list, timeout: float = 15.0) -> dict[str, bool]:
+async def _wait_for_channels_ready(
+    channels: list, timeout: float = 15.0
+) -> dict[str, bool]:
     """Wait briefly for core channels to be ready; returns readiness map."""
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -99,6 +103,23 @@ async def _wait_for_channels_ready(channels: list, timeout: float = 15.0) -> dic
 
 async def _run_boot_hook(bus: MessageBus, channels: list, model: str) -> None:
     """If persona/BOOT.md exists, enqueue it as a high-priority startup task."""
+    if os.environ.get("LIMEBOT_SOFT_RESTART") == "1":
+        logger.info("[BOOT] Skipping BOOT.md due to soft restart.")
+        return
+
+    config = load_config()
+    is_local_llm = (
+        bool(config.llm.model)
+        and (
+            "ollama" in str(config.llm.model).lower()
+            or "local" in str(config.llm.model).lower()
+        )
+    ) or bool(getattr(config.llm, "base_url", None))
+
+    if not config.llm.api_key and not is_local_llm:
+        logger.info("[BOOT] Skipping BOOT.md during setup (no LLM API key configured).")
+        return
+
     if not BOOT_PATH.exists():
         return
 
@@ -189,6 +210,7 @@ async def main():
         session_manager=session_manager,
     )
     from core import prompt as prompt_module
+
     if prompt_module.is_setup_complete():
         asyncio.create_task(agent._warm_up_services())
 
