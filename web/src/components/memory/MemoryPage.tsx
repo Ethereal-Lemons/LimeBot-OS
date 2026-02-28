@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Brain, Trash2, KeyRound, Search, ArrowUpDown, RefreshCw } from "lucide-react";
+import { Brain, Trash2, KeyRound, Search, ArrowUpDown, RefreshCw, AlertTriangle } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -15,6 +15,9 @@ type SortOrder = "newest" | "oldest";
 export function MemoryPage() {
     const [memories, setMemories] = useState<any[]>([]);
     const [enabled, setEnabled] = useState<boolean | null>(null);
+    const [mode, setMode] = useState<"vector" | "grep_fallback">("vector");
+    const [readOnly, setReadOnly] = useState(false);
+    const [notice, setNotice] = useState("");
     const [loading, setLoading] = useState(true);
 
     const [searchQuery, setSearchQuery] = useState("");
@@ -26,9 +29,10 @@ export function MemoryPage() {
             setLoading(true);
             const res = await axios.get(`${API_BASE_URL}/api/memory`);
             setEnabled(res.data.enabled);
-            if (res.data.enabled) {
-                setMemories(res.data.memories || []);
-            }
+            setMode((res.data.mode || (res.data.enabled ? "vector" : "grep_fallback")) as "vector" | "grep_fallback");
+            setReadOnly(Boolean(res.data.read_only));
+            setNotice(res.data.notice || "");
+            setMemories(res.data.memories || []);
         } catch (err) {
             console.error("Failed to fetch memories:", err);
         } finally {
@@ -41,6 +45,10 @@ export function MemoryPage() {
     }, []);
 
     const handleDelete = async (id: string) => {
+        if (readOnly) {
+            alert("Using grep as fallback. Memory Explorer is read-only until vector memory is online.");
+            return;
+        }
         if (!confirm("Are you sure you want to delete this memory? The bot will permanently forget it.")) return;
 
         try {
@@ -83,6 +91,9 @@ export function MemoryPage() {
         return result;
     }, [memories, searchQuery, selectedCategory, sortOrder]);
 
+    const usingFallback = mode === "grep_fallback";
+    const canDelete = !readOnly && enabled === true;
+
     if (loading) {
         return (
             <div className="flex items-center justify-center h-full">
@@ -91,7 +102,7 @@ export function MemoryPage() {
         );
     }
 
-    if (enabled === false) {
+    if (enabled === false && memories.length === 0) {
         return (
             <div className="h-full p-8 flex items-center justify-center">
                 <Card className="max-w-md w-full border-yellow-500/30 bg-yellow-500/5">
@@ -105,6 +116,9 @@ export function MemoryPage() {
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="text-sm text-muted-foreground text-center space-y-4">
+                        <p className="text-yellow-400 font-semibold">
+                            {notice || "Using grep as fallback."}
+                        </p>
                         <p>
                             To unlock advanced Long-Term Memory capabilities, LimeBot requires an active <strong>Embedding Model</strong>.
                         </p>
@@ -126,16 +140,28 @@ export function MemoryPage() {
                         Memory Explorer
                     </h2>
                     <p className="text-muted-foreground text-sm">
-                        View and manage facts the bot has learned about you or your environment.
+                        {usingFallback
+                            ? "Using grep as fallback. Memory Explorer is read-only while vectors are offline."
+                            : "View and manage facts the bot has learned about you or your environment."}
                     </p>
                 </div>
                 <div className="bg-purple-500/10 text-purple-500 px-3 py-1 rounded-full text-xs font-bold font-mono">
                     {filteredMemories.length === memories.length
-                        ? `${memories.length} Facts Stored`
-                        : `${filteredMemories.length} of ${memories.length} Facts`
+                        ? `${memories.length} Entries`
+                        : `${filteredMemories.length} of ${memories.length} Entries`
                     }
                 </div>
             </div>
+
+            {usingFallback && (
+                <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-500 flex items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <div>
+                        <p className="font-semibold">{notice || "Using grep as fallback."}</p>
+                        <p className="text-yellow-500/80">Vector memory is offline, so this view is currently read-only.</p>
+                    </div>
+                </div>
+            )}
 
             {/* Filters */}
             {memories.length > 0 && (
@@ -181,8 +207,10 @@ export function MemoryPage() {
             ) : memories.length === 0 ? (
                 <div className="p-12 text-center text-muted-foreground border rounded-lg border-dashed">
                     <Brain className="w-12 h-12 mx-auto mb-4 opacity-20" />
-                    <p>No memories have been stored yet.</p>
-                    <p className="text-xs mt-2 opacity-50">Tell the bot something important to remember!</p>
+                    <p>{usingFallback ? "No grep fallback memories found yet." : "No memories have been stored yet."}</p>
+                    <p className="text-xs mt-2 opacity-50">
+                        {usingFallback ? "Try chatting more so journal entries can be recalled." : "Tell the bot something important to remember!"}
+                    </p>
                 </div>
             ) : (
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -193,15 +221,17 @@ export function MemoryPage() {
                                     <div className="bg-primary/20 text-primary uppercase tracking-widest text-[10px] font-bold px-2 py-0.5 rounded">
                                         {m.category || "General"}
                                     </div>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:bg-destructive/10"
-                                        onClick={() => handleDelete(m.id)}
-                                        title="Forget this memory"
-                                    >
-                                        <Trash2 className="h-3 w-3" />
-                                    </Button>
+                                    {canDelete && (
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:bg-destructive/10"
+                                            onClick={() => handleDelete(m.id)}
+                                            title="Forget this memory"
+                                        >
+                                            <Trash2 className="h-3 w-3" />
+                                        </Button>
+                                    )}
                                 </div>
                             </CardHeader>
                             <CardContent className="p-4 pt-0">
@@ -221,10 +251,15 @@ export function MemoryPage() {
                                         {m.text}
                                     </ReactMarkdown>
                                 </div>
-                                <div className="mt-4 flex items-center text-[10px] text-muted-foreground">
+                                <div className="mt-4 flex items-center justify-between text-[10px] text-muted-foreground">
                                     <span>
                                         Learned {m.timestamp ? formatDistanceToNow(new Date(m.timestamp), { addSuffix: true }) : "recently"}
                                     </span>
+                                    {m.source && (
+                                        <span className="opacity-70 truncate max-w-[40%]" title={m.source}>
+                                            {m.source}
+                                        </span>
+                                    )}
                                 </div>
                             </CardContent>
                         </Card>

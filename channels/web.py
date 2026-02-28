@@ -1026,14 +1026,81 @@ class WebChannel(BaseChannel):
 
             vector_service = get_vector_service()
             if not vector_service.is_enabled:
-                return {"enabled": False, "memories": []}
+                # Fallback mode: expose line-level memories from persona journals
+                # so users can still inspect long-term context without vectors.
+                from pathlib import Path
+                import hashlib
+
+                try:
+                    memory_dir = Path("persona/memory")
+                    if not memory_dir.exists():
+                        memory_dir = Path(__file__).parent.parent / "persona" / "memory"
+
+                    fallback_memories = []
+                    if memory_dir.exists():
+                        for file_path in sorted(memory_dir.glob("*.md"), reverse=True):
+                            try:
+                                content = file_path.read_text(encoding="utf-8")
+                            except Exception:
+                                continue
+
+                            for line_no, raw_line in enumerate(content.splitlines(), start=1):
+                                line = raw_line.strip()
+                                if not line or line.startswith("#"):
+                                    continue
+                                line = line.lstrip("- ").strip()
+                                if len(line) < 3:
+                                    continue
+
+                                mem_id = hashlib.sha1(
+                                    f"{file_path.name}:{line_no}:{line}".encode("utf-8")
+                                ).hexdigest()[:16]
+                                fallback_memories.append(
+                                    {
+                                        "id": mem_id,
+                                        "text": line,
+                                        "category": "Journal",
+                                        "timestamp": file_path.stem,
+                                        "path": file_path.name,
+                                        "source": file_path.name,
+                                    }
+                                )
+
+                    return {
+                        "enabled": False,
+                        "mode": "grep_fallback",
+                        "read_only": True,
+                        "notice": "Using grep as fallback.",
+                        "memories": fallback_memories[:500],
+                    }
+                except Exception as e:
+                    logger.error(f"Error reading fallback memory: {e}")
+                    return {
+                        "enabled": False,
+                        "mode": "grep_fallback",
+                        "read_only": True,
+                        "notice": "Using grep as fallback.",
+                        "error": str(e),
+                        "memories": [],
+                    }
 
             try:
                 memories = await vector_service.get_all(limit=100)
-                return {"enabled": True, "memories": memories}
+                return {
+                    "enabled": True,
+                    "mode": "vector",
+                    "read_only": False,
+                    "memories": memories,
+                }
             except Exception as e:
                 logger.error(f"Error reading memory: {e}")
-                return {"enabled": True, "error": str(e), "memories": []}
+                return {
+                    "enabled": True,
+                    "mode": "vector",
+                    "read_only": False,
+                    "error": str(e),
+                    "memories": [],
+                }
 
         @self.app.delete(
             "/api/memory/{entry_id}", dependencies=[Depends(self.verify_auth)]
@@ -1185,7 +1252,7 @@ class WebChannel(BaseChannel):
 
             async def _restart():
                 await asyncio.sleep(1)
-
+                os.environ["LIMEBOT_SOFT_RESTART"] = "1"
                 os.execl(os.sys.executable, os.sys.executable, *os.sys.argv)
 
             asyncio.create_task(_restart())
@@ -1209,7 +1276,10 @@ class WebChannel(BaseChannel):
                     if hasattr(self.agent, "_stable_prompt_cache"):
                         self.agent._stable_prompt_cache.clear()
                         cleared.append("stable_prompt_cache")
-                    if hasattr(self.agent, "vector_service") and self.agent.vector_service:
+                    if (
+                        hasattr(self.agent, "vector_service")
+                        and self.agent.vector_service
+                    ):
                         if hasattr(self.agent.vector_service, "_emb_cache"):
                             self.agent.vector_service._emb_cache.clear()
                             cleared.append("embedding_cache")
@@ -1682,5 +1752,6 @@ def _spawn_restart() -> None:
     import subprocess
     import sys
 
+    os.environ["LIMEBOT_SOFT_RESTART"] = "1"
     subprocess.Popen([sys.executable] + sys.argv)
     os._exit(0)
