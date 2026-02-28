@@ -1009,7 +1009,7 @@ async function cmdStart(args) {
     let bridgeProc = null;
 
     const startBackend = async () => {
-  
+        // FIX: removed duplicate info('Starting backend...') line
         if (backendProc) {
             info('Stopping existing backend...');
             killProc(backendProc);
@@ -1100,20 +1100,36 @@ async function cmdStart(args) {
         }
     }
 
+    let actualFrontendPort = frontendPort;
+
     if (!backendOnly) {
         info('Starting frontend dev server...');
         frontendProc = spawn('npm', ['run', 'dev'], {
-            cwd: path.join(rootDir, 'web'), shell: true, stdio: 'inherit', env: childEnv,
+            cwd: path.join(rootDir, 'web'), shell: true, stdio: 'pipe', env: childEnv,
         });
         frontendProc.on('error', (err) => error(`Frontend failed to start: ${err.message}`));
+
+
+        const portPattern = /localhost:(\d+)/;
+        for (const stream of [frontendProc.stdout, frontendProc.stderr]) {
+            if (!stream) continue;
+            stream.on('data', (data) => {
+                const text = data.toString();
+                process.stdout.write(text);
+                const match = text.match(portPattern);
+                if (match) actualFrontendPort = parseInt(match[1], 10);
+            });
+        }
     }
 
     if (!backendOnly) {
         info('Waiting for UI to be ready...');
-        if (await waitForServer(frontendPort)) {
+        // Wait briefly for Vite to print its port, then poll the detected port
+        await sleep(3000);
+        if (await waitForServer(actualFrontendPort)) {
             const url = isConfigured
-                ? `http://localhost:${frontendPort}`
-                : `http://localhost:${frontendPort}/setup`;
+                ? `http://localhost:${actualFrontendPort}`
+                : `http://localhost:${actualFrontendPort}/setup`;
             success(`LimeBot is ready at ${url}`);
             openBrowser(url);
         } else {
