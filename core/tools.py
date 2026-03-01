@@ -261,6 +261,8 @@ class Toolbox:
                 ("pip3 install ", f'"{_this_python}" -m pip install '),
                 ("pip uninstall ", f'"{_this_python}" -m pip uninstall '),
                 ("pip3 uninstall ", f'"{_this_python}" -m pip uninstall '),
+                ("python3 ", f'"{_this_python}" '),
+                ("python ", f'"{_this_python}" '),
             ]
             for _old, _new in _rewrites:
                 if command.startswith(_old) or command.startswith(_old.capitalize()):
