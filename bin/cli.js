@@ -1107,8 +1107,15 @@ async function cmdStart(args) {
     if (frontendPort !== configuredFrontendPort) {
         warning(`Frontend port ${configuredFrontendPort} is busy. Using ${frontendPort}.`);
     }
-    if (venvLayout.usingFallback) {
-        warning(`Windows path safety: using venv at ${venvDir} (projected max path ${venvLayout.projectedMaxPathLength}/${WIN_MAX_PATH_SAFE})`);
+    if (process.platform === 'win32' && venvLayout.projectedMaxPathLength >= WIN_MAX_PATH_SAFE) {
+        warning(`\n====== WINDOWS PATH LIMIT WARNING ======`);
+        warning(`Your project is located at a very long path (${venvLayout.projectedMaxPathLength}/${WIN_MAX_PATH_SAFE} chars max).`);
+        warning(`Installing Python packages may fail with "[Errno 2] No such file or directory".\n`);
+        info(`To fix this, choose ONE of the following:`);
+        info(`1. Move your project to a shorter path (e.g. C:\\Bots\\LimeBot-OS)`);
+        info(`2. Enable Long Paths in Windows by running this in an Administrator PowerShell:`);
+        console.log(`   ${colors.cyan}New-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force${colors.reset}`);
+        warning(`========================================\n`);
     }
 
     childEnv.WEB_PORT = String(backendPort);

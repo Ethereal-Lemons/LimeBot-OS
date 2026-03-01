@@ -309,8 +309,6 @@ print(json.dumps(missing))
         reqs_file = target_dir / "requirements.txt"
         if reqs_file.exists():
             logger.info("Installing Python dependencies...")
-            import os
-
             python_exe = sys.executable
 
             # If there's a local .venv, use it
@@ -320,41 +318,31 @@ print(json.dumps(missing))
                     python_exe = str(local_venv / "Scripts" / "python.exe")
                 else:
                     python_exe = str(local_venv / "bin" / "python")
-            # Otherwise see if we're in LimeBot-OS and there's an AppData venv
             elif sys.platform == "win32":
-
-                def hash_path(value: str) -> str:
-                    hash_val = 0x811C9DC5
-                    for char in value:
-                        hash_val ^= ord(char)
-                        # Equivalent to JS Math.imul(hash, 0x01000193)
-                        hash_val = (hash_val * 0x01000193) & 0xFFFFFFFF
-
-                    # Convert to unsigned 32-bit (JS `hash >>> 0`)
-                    hash_val = hash_val if hash_val >= 0 else (hash_val + 0x100000000)
-
-                    # Number to base36 exactly like JS toString(36)
-                    def to_base36(n: int) -> str:
-                        if n == 0:
-                            return "0"
-                        res = ""
-                        chars = "0123456789abcdefghijklmnopqrstuvwxyz"
-                        while n:
-                            n, i = divmod(n, 36)
-                            res = chars[i] + res
-                        return res
-
-                    return to_base36(hash_val)
-
-                bot_id = hash_path(str(Path.cwd().resolve()))
-                appdata_venv = (
-                    Path(os.path.expandvars(r"%LOCALAPPDATA%\LimeBot\venvs"))
-                    / bot_id
-                    / "Scripts"
-                    / "python.exe"
+                # Check if the projected path exceeds MAX_PATH (260)
+                projected_max = (
+                    len(str(Path.cwd().resolve() / ".venv" / "Lib" / "site-packages"))
+                    + 180
                 )
-                if appdata_venv.exists():
-                    python_exe = str(appdata_venv)
+                if projected_max >= 259:
+                    logger.warning("\n====== WINDOWS PATH LIMIT WARNING ======")
+                    logger.warning(
+                        f"Your project is located at a very long path ({projected_max}/259 chars max)."
+                    )
+                    logger.warning(
+                        "Installing Python packages may fail with '[Errno 2] No such file or directory'.\n"
+                    )
+                    logger.info("To fix this, choose ONE of the following:")
+                    logger.info(
+                        "1. Move your project to a shorter path (e.g. C:\\Bots\\LimeBot-OS)"
+                    )
+                    logger.info(
+                        "2. Enable Long Paths in Windows by running this in an Administrator PowerShell:"
+                    )
+                    logger.info(
+                        '   New-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force'
+                    )
+                    logger.warning("========================================\n")
 
             pip_result = subprocess.run(
                 [
