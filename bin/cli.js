@@ -86,37 +86,18 @@ function resolveVenvLayout() {
 
     const projectedDefault = windowsSitePackagesPath(defaultVenvDir);
     const projectedDefaultMax = windowsMaxProjectedPathLength(defaultVenvDir);
-    if (projectedDefaultMax < WIN_MAX_PATH_SAFE) {
-        cachedVenvLayout = {
-            venvDir: defaultVenvDir,
-            usingFallback: false,
-            projectedSitePackagesPath: projectedDefault,
-            defaultProjectedSitePackagesPath: projectedDefault,
-            projectedMaxPathLength: projectedDefaultMax,
-            defaultProjectedMaxPathLength: projectedDefaultMax,
-        };
-        return cachedVenvLayout;
-    }
-
-    let fallbackDir = windowsFallbackVenvDir();
-    let projectedFallback = windowsSitePackagesPath(fallbackDir);
-    let projectedFallbackMax = windowsMaxProjectedPathLength(fallbackDir);
-    if (projectedFallbackMax >= WIN_MAX_PATH_SAFE) {
-        fallbackDir = path.join(path.parse(rootDir).root || 'C:\\', 'lbv', hashPath(rootDir));
-        projectedFallback = windowsSitePackagesPath(fallbackDir);
-        projectedFallbackMax = windowsMaxProjectedPathLength(fallbackDir);
-    }
-
     cachedVenvLayout = {
-        venvDir: fallbackDir,
-        usingFallback: true,
-        projectedSitePackagesPath: projectedFallback,
+        venvDir: defaultVenvDir,
+        usingFallback: false,
+        projectedSitePackagesPath: projectedDefault,
         defaultProjectedSitePackagesPath: projectedDefault,
-        projectedMaxPathLength: projectedFallbackMax,
+        projectedMaxPathLength: projectedDefaultMax,
         defaultProjectedMaxPathLength: projectedDefaultMax,
     };
     return cachedVenvLayout;
 }
+
+
 
 function venvDirPath() {
     return resolveVenvLayout().venvDir;
@@ -1372,3 +1353,5 @@ main().catch(err => {
     error(`Fatal: ${err.message}`);
     process.exit(1);
 });
+
+

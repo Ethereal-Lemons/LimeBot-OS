@@ -183,14 +183,68 @@ class SkillInstaller:
         return sorted(set(deps))
 
     @staticmethod
+    def _get_python_exe() -> str:
+        """Get the target python executable using venv logic."""
+        python_exe = sys.executable
+        local_venv = Path(".venv")
+        if local_venv.exists() and local_venv.is_dir():
+            if sys.platform == "win32":
+                python_exe = str(local_venv / "Scripts" / "python.exe")
+            else:
+                python_exe = str(local_venv / "bin" / "python")
+        return python_exe
+
+    @staticmethod
     def _missing_python_deps(packages: list[str]) -> list[str]:
         missing: list[str] = []
-        for pkg in packages:
-            try:
-                importlib_metadata.version(pkg)
-            except importlib_metadata.PackageNotFoundError:
-                missing.append(pkg)
-        return missing
+        if not packages:
+            return missing
+
+        # If we are already running in the correct target python, importlib_metadata is faster
+        python_exe = SkillInstaller._get_python_exe()
+        if Path(sys.executable).resolve() == Path(python_exe).resolve():
+            for pkg in packages:
+                try:
+                    importlib_metadata.version(pkg)
+                except importlib_metadata.PackageNotFoundError:
+                    missing.append(pkg)
+            return missing
+
+        # Otherwise, ask the target python executable what it has installed
+        try:
+            import json
+
+            check_script = (
+                "import sys, json; "
+                "from importlib import metadata; "
+                "pkgs = sys.argv[1:]; "
+                "missing = [p for p in pkgs if not (lambda x: True if metadata.version(x) else False) "
+                "try: pass; except: True]; "
+                "print(json.dumps([p for p in pkgs if p not in [m.metadata('Name')['Name'] for d in metadata.distributions()]]))"
+            )
+
+            check_script = """
+import sys, json
+from importlib import metadata
+pkgs = sys.argv[1:]
+missing = []
+for p in pkgs:
+    try:
+        metadata.version(p)
+    except metadata.PackageNotFoundError:
+        missing.append(p)
+print(json.dumps(missing))
+"""
+            result = subprocess.run(
+                [python_exe, "-c", check_script] + packages,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return json.loads(result.stdout.strip())
+        except Exception as e:
+            logger.warning(f"Could not verify remote deps, assuming missing: {e}")
+            return packages
 
     @staticmethod
     def _missing_node_deps(skill_dir: Path, packages: list[str]) -> list[str]:
@@ -255,9 +309,56 @@ class SkillInstaller:
         reqs_file = target_dir / "requirements.txt"
         if reqs_file.exists():
             logger.info("Installing Python dependencies...")
+            import os
+
+            python_exe = sys.executable
+
+            # If there's a local .venv, use it
+            local_venv = Path(".venv")
+            if local_venv.exists() and local_venv.is_dir():
+                if sys.platform == "win32":
+                    python_exe = str(local_venv / "Scripts" / "python.exe")
+                else:
+                    python_exe = str(local_venv / "bin" / "python")
+            # Otherwise see if we're in LimeBot-OS and there's an AppData venv
+            elif sys.platform == "win32":
+
+                def hash_path(value: str) -> str:
+                    hash_val = 0x811C9DC5
+                    for char in value:
+                        hash_val ^= ord(char)
+                        # Equivalent to JS Math.imul(hash, 0x01000193)
+                        hash_val = (hash_val * 0x01000193) & 0xFFFFFFFF
+
+                    # Convert to unsigned 32-bit (JS `hash >>> 0`)
+                    hash_val = hash_val if hash_val >= 0 else (hash_val + 0x100000000)
+
+                    # Number to base36 exactly like JS toString(36)
+                    def to_base36(n: int) -> str:
+                        if n == 0:
+                            return "0"
+                        res = ""
+                        chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+                        while n:
+                            n, i = divmod(n, 36)
+                            res = chars[i] + res
+                        return res
+
+                    return to_base36(hash_val)
+
+                bot_id = hash_path(str(Path.cwd().resolve()))
+                appdata_venv = (
+                    Path(os.path.expandvars(r"%LOCALAPPDATA%\LimeBot\venvs"))
+                    / bot_id
+                    / "Scripts"
+                    / "python.exe"
+                )
+                if appdata_venv.exists():
+                    python_exe = str(appdata_venv)
+
             pip_result = subprocess.run(
                 [
-                    sys.executable,
+                    python_exe,
                     "-m",
                     "pip",
                     "install",
