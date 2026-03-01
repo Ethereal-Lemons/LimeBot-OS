@@ -1086,7 +1086,9 @@ class AgentLoop:
                     tool_timeout = getattr(self.config, "tool_timeout", 120.0)
                     if tool_timeout and tool_timeout > 0:
                         result = await asyncio.wait_for(
-                            self._execute_tool(function_name, function_args, session_key),
+                            self._execute_tool(
+                                function_name, function_args, session_key
+                            ),
                             timeout=tool_timeout,
                         )
                     else:
@@ -1099,7 +1101,9 @@ class AgentLoop:
                         if tool_timeout and tool_timeout > 0
                         else "configured limit"
                     )
-                    result = f"Error: Tool '{function_name}' timed out after {timeout_msg}."
+                    result = (
+                        f"Error: Tool '{function_name}' timed out after {timeout_msg}."
+                    )
                     logger.error(result)
 
                 self.metrics.record_tool_call(
@@ -2209,3 +2213,16 @@ class AgentLoop:
         finally:
             await self._flush_history(session_key, force=True)
             self.active_tasks.pop(session_key, None)
+            # Always notify frontend that processing is done
+            try:
+                if msg:
+                    await self.bus.publish_outbound(
+                        OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content="",
+                            metadata={"type": "stop_typing"},
+                        )
+                    )
+            except Exception:
+                pass

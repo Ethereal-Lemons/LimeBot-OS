@@ -902,7 +902,7 @@ export function ChatInterface({
                             onChange={(e) => onInputChange(e.target.value)}
                             onKeyDown={handleKeyPress}
                             onPaste={handlePaste}
-                            disabled={!isConnected || isTyping}
+                            disabled={!isConnected}
                             className="flex-1 min-h-[50px] max-h-[200px] border-0 bg-transparent py-4 px-4 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground text-sm resize-none"
                             rows={1}
                             onInput={(e: React.FormEvent<HTMLTextAreaElement>) => {
