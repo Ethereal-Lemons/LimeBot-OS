@@ -1,3 +1,4 @@
 scrapling
 curl_cffi
 browserforge
+patchright
