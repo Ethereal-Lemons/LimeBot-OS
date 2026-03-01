@@ -826,6 +826,66 @@ class AgentLoop:
         except Exception as e:
             return f"Error executing '{function_name}': {e}"
 
+    @staticmethod
+    def _extract_run_command_exit_code(result: Any) -> Optional[int]:
+        match = re.search(r"Exit Code:\s*(-?\d+)", str(result))
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
+
+    def _is_tool_result_error(self, function_name: str, result: Any) -> bool:
+        text = str(result or "")
+
+        if text.startswith("Error:") or text.startswith("Error executing"):
+            return True
+        if text.startswith("ACTION CANCELLED:") or text.startswith("ACTION BLOCKED:"):
+            return True
+        if "[TIMEOUT]" in text or "[STALL]" in text:
+            return True
+
+        if function_name == "run_command":
+            exit_code = self._extract_run_command_exit_code(text)
+            if exit_code not in (None, 0):
+                return True
+
+        return False
+
+    def _build_tool_fallback_reply(self, session_key: str, max_items: int = 2) -> str:
+        tool_rows: List[Tuple[str, str]] = []
+        for entry in reversed(self.history.get(session_key, [])):
+            if entry.get("role") != "tool":
+                continue
+            name = str(entry.get("name") or "tool")
+            content = str(entry.get("content") or "").strip()
+            tool_rows.append((name, content))
+            if len(tool_rows) >= max_items:
+                break
+
+        if not tool_rows:
+            return "I finished running the tool, but I don't have a follow-up response yet."
+
+        tool_rows.reverse()
+        failed_rows: List[Tuple[str, str]] = []
+        for name, content in tool_rows:
+            if not self._is_tool_result_error(name, content):
+                continue
+            first_line = next(
+                (ln.strip() for ln in content.splitlines() if ln.strip()),
+                "Tool execution failed.",
+            )
+            if len(first_line) > 180:
+                first_line = first_line[:180] + "..."
+            failed_rows.append((name, first_line))
+
+        if failed_rows:
+            lines = "\n".join([f"- `{name}`: {line}" for name, line in failed_rows])
+            return "I ran the requested tool(s), but they failed:\n" + lines
+
+        return "Tool execution finished, but I did not generate a follow-up message. Ask me to summarize the result and I will continue."
+
     async def _execute_tool_batch(
         self,
         tool_calls: list,
@@ -1181,6 +1241,11 @@ class AgentLoop:
                 any_blocked = True
 
             if not is_internal:
+                tool_status = (
+                    "error"
+                    if self._is_tool_result_error(function_name, result)
+                    else "completed"
+                )
                 try:
                     await self.bus.publish_outbound(
                         OutboundMessage(
@@ -1190,9 +1255,8 @@ class AgentLoop:
                             metadata={
                                 "type": "tool_execution",
                                 "tool": function_name,
-                                "status": "completed"
-                                if not str(result).startswith("Error:")
-                                else "error",
+                                "status": tool_status,
+
                                 "args": function_args,
                                 "result": str(result)[:TOOL_BROADCAST_MAX_CHARS],
                                 "tool_call_id": tc_id,
@@ -1605,7 +1669,7 @@ class AgentLoop:
                 )
             )
 
-        return full_content, tool_calls, usage
+        return full_content, tool_calls, usage, streamed_to_web
 
     def _get_memory_context(self) -> str:
         return prompt_module.get_memory_context()
@@ -1968,13 +2032,25 @@ class AgentLoop:
                         msg=msg,
                         stream=True,
                     )
-                    full_content, tool_calls, _ = await self._consume_stream(
+                    consume_result = await self._consume_stream(
                         stream,
                         msg,
                         session_key,
                     )
+                    if isinstance(consume_result, tuple) and len(consume_result) >= 4:
+                        (
+                            full_content,
+                            tool_calls,
+                            _,
+                            streamed_to_web,
+                        ) = consume_result[:4]
+                    else:
+                        full_content, tool_calls, _ = consume_result
+                        streamed_to_web = False
                     accumulated_content = full_content
                     iterations_limit_reached = False
+                    web_streamed_reply = bool(streamed_to_web)
+                    force_direct_reply = False
 
                     if full_content or tool_calls:
                         am: Dict = {"role": "assistant", "content": full_content or ""}
@@ -2030,15 +2106,27 @@ class AgentLoop:
                                     msg=msg,
                                     stream=True,
                                 )
-                                (
-                                    nxt_content,
-                                    nxt_tool_calls,
-                                    _,
-                                ) = await self._consume_stream(
+                                nxt_consume_result = await self._consume_stream(
                                     nxt_stream,
                                     msg,
                                     session_key,
                                     accumulated_content,
+                                )
+                                if (
+                                    isinstance(nxt_consume_result, tuple)
+                                    and len(nxt_consume_result) >= 4
+                                ):
+                                    (
+                                        nxt_content,
+                                        nxt_tool_calls,
+                                        _,
+                                        nxt_streamed_to_web,
+                                    ) = nxt_consume_result[:4]
+                                else:
+                                    nxt_content, nxt_tool_calls, _ = nxt_consume_result
+                                    nxt_streamed_to_web = False
+                                web_streamed_reply = (
+                                    web_streamed_reply or bool(nxt_streamed_to_web)
                                 )
 
                                 clean_next = nxt_content
@@ -2120,6 +2208,14 @@ class AgentLoop:
                     else:
                         raw_reply = full_content
 
+                    if tool_calls and not str(raw_reply or "").strip():
+                        raw_reply = self._build_tool_fallback_reply(session_key)
+                        force_direct_reply = True
+                        self.history[session_key].append(
+                            {"role": "assistant", "content": raw_reply}
+                        )
+                        self._mark_dirty(session_key)
+
                     tag_result = await process_tags(
                         raw_reply=raw_reply,
                         sender_id=sender_id,
@@ -2159,10 +2255,16 @@ class AgentLoop:
                         if iterations_limit_reached:
                             meta["is_warning"] = True
 
-                        if (
+                        suppress_web_final_reply = (
                             msg.channel == "web"
                             and tool_calls
                             and not iterations_limit_reached
+                            and web_streamed_reply
+                            and not force_direct_reply
+                        )
+
+                        if (
+                            suppress_web_final_reply
                         ):
                             outbound = OutboundMessage(
                                 channel=msg.channel,
@@ -2226,3 +2328,4 @@ class AgentLoop:
                     )
             except Exception:
                 pass
+

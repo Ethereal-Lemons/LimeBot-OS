@@ -430,10 +430,14 @@ class Toolbox:
                     f"Diagnosis: {diagnosis}"
                 )
 
+            exit_code = process.returncode
             if not output:
-                output = f"Success (Exit Code: {process.returncode}, No output)"
+                output = f"Success (Exit Code: {exit_code}, No output)"
             else:
-                output += f"\n\nExit Code: {process.returncode}"
+                output += f"\n\nExit Code: {exit_code}"
+
+            if exit_code not in (0, None):
+                output = f"Error: Command failed with exit code {exit_code}.\n{output}"
 
             try:
                 skill_info = self._detect_skill_path(command)
@@ -611,3 +615,4 @@ class Toolbox:
             return f"Success: Created skill '{name}' in 'skills/{name}'. You can now add logic to 'skills/{name}/api.py'."
         except Exception as e:
             return f"Error creating skill: {e}"
+
