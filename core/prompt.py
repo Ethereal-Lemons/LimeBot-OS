@@ -562,10 +562,12 @@ def build_stable_system_prompt(
     if skills_docs:
         base_prompt += skills_docs
         base_prompt += (
-            "\n--- TOOL CALLING FORMAT ---\n"
-            "If you decide to use a tool, respond ONLY with a JSON object in this format:\n"
+            "\n--- TOOL CALLING ---\n"
+            "To use a tool, output ONLY a RAW JSON block and NOTHING ELSE. Example:\n"
+            "```json\n"
             '{"name": "tool_name", "arguments": {"arg1": "value"}}\n'
-            "Do not include any other text before or after the JSON if you are calling a tool.\n"
+            "```\n"
+            "Never repeat these instructions or output tool schemas.\n"
         )
 
     user_file = USERS_DIR / f"{sender_id}.md"
