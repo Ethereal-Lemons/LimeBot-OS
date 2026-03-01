@@ -22,6 +22,8 @@ USERS_DIR = PERSONA_DIR / "users"
 MEMORY_DIR = PERSONA_DIR / "memory"
 LONG_TERM_MEMORY_FILE = PERSONA_DIR / "MEMORY.md"
 
+_ANY_TAG = r"save_soul|save_identity|save_mood|save_relationship|save_user|log_memory|save_memory|discord_send|discord_embed"
+
 
 class TagResult:
     """Result of processing tags from LLM reply."""
@@ -84,7 +86,9 @@ async def process_tags(
     relationship_updated = False
 
     while True:
-        soul_match = re.search(r"<save_soul>(.*?)</save_soul>", reply, re.DOTALL)
+        soul_match = re.search(
+            f"<save_soul>(.*?)(?:</save_soul>|(?=<({_ANY_TAG})>)|\\Z)", reply, re.DOTALL
+        )
         if not soul_match:
             break
         content = soul_match.group(1).strip()
@@ -93,7 +97,11 @@ async def process_tags(
         reply = reply.replace(soul_match.group(0), "", 1).strip()
 
     while True:
-        id_match = re.search(r"<save_identity>(.*?)</save_identity>", reply, re.DOTALL)
+        id_match = re.search(
+            f"<save_identity>(.*?)(?:</save_identity>|(?=<({_ANY_TAG})>)|\\Z)",
+            reply,
+            re.DOTALL,
+        )
         if not id_match:
             break
         content = id_match.group(1).strip()
@@ -102,7 +110,9 @@ async def process_tags(
         reply = reply.replace(id_match.group(0), "", 1).strip()
 
     while True:
-        mood_match = re.search(r"<save_mood>(.*?)</save_mood>", reply, re.DOTALL)
+        mood_match = re.search(
+            f"<save_mood>(.*?)(?:</save_mood>|(?=<({_ANY_TAG})>)|\\Z)", reply, re.DOTALL
+        )
         if not mood_match:
             break
         content = mood_match.group(1).strip()
@@ -115,7 +125,9 @@ async def process_tags(
 
     while True:
         rel_match = re.search(
-            r"<save_relationship>(.*?)</save_relationship>", reply, re.DOTALL
+            f"<save_relationship>(.*?)(?:</save_relationship>|(?=<({_ANY_TAG})>)|\\Z)",
+            reply,
+            re.DOTALL,
         )
         if not rel_match:
             break
@@ -132,7 +144,9 @@ async def process_tags(
         reply = reply.replace(rel_match.group(0), "", 1).strip()
 
     while True:
-        user_match = re.search(r"<save_user>(.*?)</save_user>", reply, re.DOTALL)
+        user_match = re.search(
+            f"<save_user>(.*?)(?:</save_user>|(?=<({_ANY_TAG})>)|\\Z)", reply, re.DOTALL
+        )
         if not user_match:
             break
         content = user_match.group(1).strip()
@@ -181,7 +195,11 @@ async def process_tags(
         reply = reply.replace(user_match.group(0), "", 1).strip()
 
     while True:
-        mem_match = re.search(r"<log_memory>(.*?)</log_memory>", reply, re.DOTALL)
+        mem_match = re.search(
+            f"<log_memory>(.*?)(?:</log_memory>|(?=<({_ANY_TAG})>)|\\Z)",
+            reply,
+            re.DOTALL,
+        )
         if not mem_match:
             break
         entry = mem_match.group(1).strip()
@@ -201,7 +219,9 @@ async def process_tags(
 
     while True:
         save_mem_match = re.search(
-            r"<save_memory>(.*?)</save_memory>", reply, re.DOTALL
+            f"<save_memory>(.*?)(?:</save_memory>|(?=<({_ANY_TAG})>)|\\Z)",
+            reply,
+            re.DOTALL,
         )
         if not save_mem_match:
             break
@@ -229,7 +249,9 @@ async def process_tags(
 
     while True:
         discord_send_match = re.search(
-            r"<discord_send>(.*?)</discord_send>", reply, re.DOTALL
+            f"<discord_send>(.*?)(?:</discord_send>|(?=<({_ANY_TAG})>)|\\Z)",
+            reply,
+            re.DOTALL,
         )
         if not discord_send_match:
             break
@@ -261,7 +283,9 @@ async def process_tags(
 
     while True:
         discord_embed_match = re.search(
-            r"<discord_embed>(.*?)</discord_embed>", reply, re.DOTALL
+            f"<discord_embed>(.*?)(?:</discord_embed>|(?=<({_ANY_TAG})>)|\\Z)",
+            reply,
+            re.DOTALL,
         )
         if not discord_embed_match:
             break
