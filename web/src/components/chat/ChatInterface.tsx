@@ -131,14 +131,14 @@ const MemoizedMessageItem = memo(({
                     {isBot ? (
                         <>
                             <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
-                        <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">Bot</AvatarFallback>
+                            <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">Bot</AvatarFallback>
                         </>
                     ) : (
                         <>
                             <AvatarImage src={undefined} />
-                        <AvatarFallback className="bg-secondary text-secondary-foreground">
-                            <User className="h-5 w-5" />
-                        </AvatarFallback>
+                            <AvatarFallback className="bg-secondary text-secondary-foreground">
+                                <User className="h-5 w-5" />
+                            </AvatarFallback>
                         </>
                     )}
                 </Avatar>
@@ -902,7 +902,7 @@ export function ChatInterface({
                             onChange={(e) => onInputChange(e.target.value)}
                             onKeyDown={handleKeyPress}
                             onPaste={handlePaste}
-                            disabled={!isConnected}
+                            disabled={!isConnected || isTyping}
                             className="flex-1 min-h-[50px] max-h-[200px] border-0 bg-transparent py-4 px-4 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground text-sm resize-none"
                             rows={1}
                             onInput={(e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -914,7 +914,7 @@ export function ChatInterface({
                         <div className="pb-2 pr-2">
                             <Button
                                 onClick={handleSend}
-                                disabled={!isConnected || (!inputValue.trim() && !selectedImage)}
+                                disabled={!isConnected || isTyping || (!inputValue.trim() && !selectedImage)}
                                 size="icon"
                                 className={cn(
                                     "h-9 w-9 rounded-lg transition-all duration-200",

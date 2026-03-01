@@ -494,7 +494,7 @@ function App() {
   const handleSendMessage = (contentOverride?: string | null, image?: string | null) => {
     const finalContent = contentOverride || inputValue.trim();
 
-    if ((!finalContent && !image) || !ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+    if ((!finalContent && !image) || !ws.current || ws.current.readyState !== WebSocket.OPEN || isTyping) return;
 
     setIsTyping(true); // Start typing on send
 
