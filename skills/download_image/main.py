@@ -6,41 +6,8 @@ Now ignores misleading Content-Type headers and sniffs actual file bytes.
 
 import os
 import sys
-import subprocess
-
-
-def _ensure_deps():
-    try:
-        import requests
-        from bs4 import BeautifulSoup
-
-        return True
-    except ImportError:
-        try:
-            subprocess.check_call(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "-q",
-                    "beautifulsoup4",
-                    "requests",
-                ],
-                stdout=subprocess.DEVNULL,
-            )
-            return True
-        except Exception:
-            return False
-
-
-try:
-    import requests
-    from bs4 import BeautifulSoup
-except ImportError:
-    requests = None
-    BeautifulSoup = None
-
+import requests
+from bs4 import BeautifulSoup
 from urllib.parse import urlparse, unquote
 import struct
 
@@ -217,19 +184,6 @@ if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python main.py <url> <filename>")
         sys.exit(1)
-
-    # Auto-install deps on first actual use
-    if requests is None:
-        print("Installing dependencies...", file=sys.stderr)
-        if _ensure_deps():
-            import requests
-            from bs4 import BeautifulSoup
-        else:
-            print(
-                "Error: Could not install dependencies (beautifulsoup4, requests).",
-                file=sys.stderr,
-            )
-            sys.exit(1)
 
     target_url = sys.argv[1]
     output_filename = sys.argv[2]

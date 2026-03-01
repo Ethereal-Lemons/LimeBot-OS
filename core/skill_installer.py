@@ -216,7 +216,9 @@ class SkillInstaller:
                 missing.append(binary)
         return missing
 
-    def _evaluate_skill_deps(self, skill_dir: Path, meta: dict) -> tuple[bool, dict, dict]:
+    def _evaluate_skill_deps(
+        self, skill_dir: Path, meta: dict
+    ) -> tuple[bool, dict, dict]:
         dep_map = self._normalize_deps(meta.get("dependencies") or {})
 
         reqs_file = skill_dir / "requirements.txt"
@@ -499,6 +501,87 @@ class SkillInstaller:
             self._save_config()
         return {"status": "success", "message": f"Skill '{skill_name}' disabled."}
 
+    def install_skill_deps(self, skill_name: str = None) -> dict:
+        """Install dependencies for a skill or all enabled skills."""
+        enabled: list = self.config.get("skills", {}).get("enabled", [])
+
+        if skill_name:
+            # Single skill
+            skill_dir = SKILLS_DIR / skill_name
+            if not skill_dir.exists():
+                # Check clawhub
+                skill_dir = CLAW_SKILLS_DIR / skill_name
+            if not skill_dir.exists():
+                return {
+                    "status": "error",
+                    "message": f"Skill '{skill_name}' not found.",
+                }
+
+            skill_md = skill_dir / "SKILL.md"
+            meta = self._read_metadata(skill_md)
+            deps_ok, missing, required = self._evaluate_skill_deps(skill_dir, meta)
+
+            if deps_ok:
+                return {
+                    "status": "success",
+                    "message": f"Skill '{skill_name}' has no missing dependencies.",
+                }
+
+            print(f"Installing deps for '{skill_name}'...")
+            logs = self._install_deps(skill_dir)
+
+            # Re-check
+            deps_ok, still_missing, _ = self._evaluate_skill_deps(skill_dir, meta)
+            return {
+                "status": "success" if deps_ok else "partial",
+                "skill": skill_name,
+                "logs": logs,
+                "still_missing": still_missing if not deps_ok else {},
+            }
+        else:
+            # All enabled skills
+            results = []
+            all_dirs = []
+
+            for name in enabled:
+                skill_dir = SKILLS_DIR / name
+                if not skill_dir.exists():
+                    skill_dir = CLAW_SKILLS_DIR / name
+                if skill_dir.exists():
+                    all_dirs.append((name, skill_dir))
+
+            if not all_dirs:
+                return {"status": "success", "message": "No enabled skills found."}
+
+            for name, skill_dir in all_dirs:
+                skill_md = skill_dir / "SKILL.md"
+                meta = self._read_metadata(skill_md)
+                deps_ok, missing, _ = self._evaluate_skill_deps(skill_dir, meta)
+
+                if deps_ok:
+                    results.append(
+                        {
+                            "skill": name,
+                            "status": "ok",
+                            "message": "All deps satisfied.",
+                        }
+                    )
+                    continue
+
+                print(f"Installing deps for '{name}'...")
+                logs = self._install_deps(skill_dir)
+                deps_ok, still_missing, _ = self._evaluate_skill_deps(skill_dir, meta)
+                results.append(
+                    {
+                        "skill": name,
+                        "status": "success" if deps_ok else "partial",
+                        "logs": logs,
+                        "still_missing": still_missing if not deps_ok else {},
+                    }
+                )
+
+            return {"status": "success", "results": results}
+
     def list_skills(self) -> dict:
         """List all skills with their source and status."""
         enabled: list = self.config.get("skills", {}).get("enabled", [])
@@ -524,7 +607,9 @@ class SkillInstaller:
                 entry = installed.get(name, {})
                 version = entry.get("version") or meta.get("version") or ""
                 repo = entry.get("repo", "")
-                deps_ok, missing_deps, required_deps = self._evaluate_skill_deps(folder, meta)
+                deps_ok, missing_deps, required_deps = self._evaluate_skill_deps(
+                    folder, meta
+                )
 
                 # Core skills might not be in 'installed' map if they come pre-packaged
                 source = entry.get("source", "limebot")
@@ -557,7 +642,9 @@ class SkillInstaller:
                 name = folder.name
 
                 is_enabled = name in enabled
-                deps_ok, missing_deps, required_deps = self._evaluate_skill_deps(folder, meta)
+                deps_ok, missing_deps, required_deps = self._evaluate_skill_deps(
+                    folder, meta
+                )
 
                 skills.append(
                     {
@@ -583,12 +670,15 @@ def main() -> None:
     """CLI entrypoint: python -m core.skill_installer <action> [args]"""
     if len(sys.argv) < 2:
         print(
-            "Usage: python -m core.skill_installer <install|uninstall|update|list> [args]\n\n"
+            "Usage: python -m core.skill_installer <command> [args]\n\n"
             "Commands:\n"
             "  install <repo_url> [--ref branch] [--name override]\n"
             "  uninstall <skill_name> [--force]\n"
             "  update <skill_name>\n"
-            "  list"
+            "  deps [skill_name]   Install dependencies (all enabled or one skill)\n"
+            "  list\n"
+            "  enable <skill_name>\n"
+            "  disable <skill_name>"
         )
         sys.exit(1)
 
@@ -642,6 +732,10 @@ def main() -> None:
             print("Error: provide a skill name")
             sys.exit(1)
         result = installer.disable(sys.argv[2])
+
+    elif action == "deps":
+        skill_name = sys.argv[2] if len(sys.argv) >= 3 else None
+        result = installer.install_skill_deps(skill_name)
 
     else:
         print(f"Unknown command: {action}")
