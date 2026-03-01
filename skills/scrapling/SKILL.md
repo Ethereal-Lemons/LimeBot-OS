@@ -6,6 +6,7 @@ dependencies:
     - scrapling
     - curl_cffi
     - browserforge
+    - patchright
   node: []
   binaries: []
 ---

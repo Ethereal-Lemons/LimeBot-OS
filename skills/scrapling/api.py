@@ -14,7 +14,7 @@ except ImportError as e:
 def _missing_deps_message() -> str:
     return (
         "Error: scrapling dependencies are not installed.\n"
-        "Install them with:  pip install scrapling curl_cffi browserforge\n"
+        "Install them with:  pip install scrapling curl_cffi browserforge patchright\n"
         "Or run:  pip install -r skills/scrapling/requirements.txt"
     )
 
@@ -35,11 +35,12 @@ def main() -> int:
 
     if _IMPORT_ERROR is not None:
         print(_missing_deps_message(), file=sys.stderr)
+        print(f"Details: {_IMPORT_ERROR}", file=sys.stderr)
         return 1
 
     try:
         if args.stealthy:
-            page = StealthyFetcher.get(args.url)
+            page = StealthyFetcher.fetch(args.url)
         else:
             page = Fetcher.get(args.url)
     except Exception as e:
