@@ -7,16 +7,19 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 interface ToolTimelineProps {
     executions: ToolExecution[];
     botIdentity?: { name: string; avatar: string | null };
+    onConfirmSideChannel?: (confId: string, approved: boolean, sessionWhitelist: boolean) => void;
 }
 
-export function ToolTimeline({ executions, botIdentity }: ToolTimelineProps) {
+export function ToolTimeline({ executions, botIdentity, onConfirmSideChannel }: ToolTimelineProps) {
     const [expanded, setExpanded] = useState(false);
     const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
 
     const hasRunning = executions.some((e) => e.status === "running");
     const hasError = executions.some((e) => e.status === "error");
+    const hasWaiting = executions.some((e) => e.status === "waiting_confirmation" || e.status === "pending_confirmation");
     const completed = executions.filter((e) => e.status === "completed").length;
     const runningExecution = executions.find((e) => e.status === "running");
+    const waitingExecution = executions.find((e) => e.status === "waiting_confirmation" || e.status === "pending_confirmation");
     const newestExecution = executions[executions.length - 1];
 
     useEffect(() => {
@@ -24,12 +27,18 @@ export function ToolTimeline({ executions, botIdentity }: ToolTimelineProps) {
             setSelectedToolId(null);
             return;
         }
+        // Auto-expand and auto-select when a tool needs confirmation
+        if (waitingExecution) {
+            setExpanded(true);
+            setSelectedToolId(waitingExecution.tool_call_id);
+            return;
+        }
         if (selectedToolId && executions.some((e) => e.tool_call_id === selectedToolId)) {
             return;
         }
         const preferred = runningExecution || newestExecution;
         setSelectedToolId(preferred?.tool_call_id || null);
-    }, [executions, selectedToolId, runningExecution, newestExecution]);
+    }, [executions, selectedToolId, runningExecution, waitingExecution, newestExecution]);
 
     const selectedExecution = useMemo(() => {
         if (!executions.length) return null;
@@ -121,11 +130,13 @@ export function ToolTimeline({ executions, botIdentity }: ToolTimelineProps) {
                         </div>
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground/80">
-                        {hasRunning
-                            ? "Executing tools…"
-                            : hasError
-                                ? "One or more tools failed."
-                                : `${completed} completed successfully.`}
+                        {hasWaiting
+                            ? "⚠️ Action requires confirmation."
+                            : hasRunning
+                                ? "Executing tools…"
+                                : hasError
+                                    ? "One or more tools failed."
+                                    : `${completed} completed successfully.`}
                     </div>
                     {currentAction && (
                         <div className="mt-2 text-[11px] text-muted-foreground/80 truncate overflow-hidden">
@@ -212,6 +223,40 @@ export function ToolTimeline({ executions, botIdentity }: ToolTimelineProps) {
                                             {selectedExecution.result}
                                         </div>
                                     </>
+                                )}
+
+                                {(selectedExecution.status === 'waiting_confirmation' || selectedExecution.status === 'pending_confirmation') && selectedExecution.conf_id && onConfirmSideChannel && (
+                                    <div className="flex gap-2 mt-3 pt-2 border-t border-primary/30">
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onConfirmSideChannel(selectedExecution.conf_id!, true, false);
+                                            }}
+                                            className="bg-primary/20 hover:bg-primary/30 text-primary px-3 py-1 rounded text-xs font-semibold"
+                                        >
+                                            Allow Once
+                                        </button>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onConfirmSideChannel(selectedExecution.conf_id!, true, true);
+                                            }}
+                                            className="bg-secondary hover:bg-secondary/80 text-secondary-foreground px-3 py-1 rounded text-xs font-semibold"
+                                            title="Allow all executions of this tool for the rest of this session"
+                                        >
+                                            Allow Session
+                                        </button>
+                                        <div className="flex-1" />
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onConfirmSideChannel(selectedExecution.conf_id!, false, false);
+                                            }}
+                                            className="bg-destructive/20 hover:bg-destructive/30 text-destructive px-3 py-1 rounded text-xs font-semibold"
+                                        >
+                                            Deny
+                                        </button>
+                                    </div>
                                 )}
                             </div>
                         )}

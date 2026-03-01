@@ -779,6 +779,7 @@ export function ChatInterface({
                                             key={item.key}
                                             executions={item.executions}
                                             botIdentity={botIdentity}
+                                            onConfirmSideChannel={handleToolConfirmSideChannel}
                                         />
                                     );
                                 }
