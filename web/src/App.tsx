@@ -250,7 +250,6 @@ function App() {
 
           // All retries exhausted or got a real error response
           console.error("Initialization failed:", err);
-          if (!err?.response) setForceSetup(true);
         }
       }
       setIsInitialized(true);

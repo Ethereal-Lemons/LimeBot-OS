@@ -893,26 +893,23 @@ class WebChannel(BaseChannel):
         @self.app.get("/api/setup/status")
         async def get_setup_status():
             try:
-                from pathlib import Path
+                from config import load_config
+                from core.llm_utils import get_api_key_for_model
 
-                env_file = Path(".env")
-                if not env_file.exists():
-                    return {
-                        "configured": False,
-                        "missing_keys": ["LLM_MODEL", "GEMINI_API_KEY"],
-                    }
+                cfg = load_config()
+                model = cfg.llm.model
+                api_key = get_api_key_for_model(model)
 
-                content = env_file.read_text(encoding="utf-8")
+                is_local = (
+                    model
+                    and ("ollama" in model or "local" in model)
+                ) or cfg.llm.base_url
 
-                defined_keys: set[str] = set()
-                for line in content.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        defined_keys.add(line.split("=", 1)[0].strip())
-
-                missing = [
-                    k for k in ["LLM_MODEL", "GEMINI_API_KEY"] if k not in defined_keys
-                ]
+                missing = []
+                if not model:
+                    missing.append("LLM_MODEL")
+                if not api_key and not is_local:
+                    missing.append("API_KEY")
 
                 return {"configured": len(missing) == 0, "missing_keys": missing}
             except Exception as e:
