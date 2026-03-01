@@ -72,7 +72,10 @@ class Toolbox:
             if not match:
                 return None
             name = match.group("name")
-            return {"name": name, "path": Path("skills") / "clawhub" / "installed" / name}
+            return {
+                "name": name,
+                "path": Path("skills") / "clawhub" / "installed" / name,
+            }
 
         return {"name": name, "path": Path("skills") / name}
 
@@ -116,6 +119,7 @@ class Toolbox:
         # Load MCP tools dynamically
         try:
             from core.mcp_client import get_mcp_manager
+
             mcp_tools = get_mcp_manager().get_tools()
             for mt in mcp_tools:
                 tools.append(mt)
@@ -247,6 +251,22 @@ class Toolbox:
             return "Error: Command or environment manipulation forbidden."
 
         try:
+            # Rewrite bare pip/python commands to use the running interpreter
+            # so packages always install into the correct venv.
+            import sys as _sys
+
+            _this_python = _sys.executable
+            _rewrites = [
+                ("pip install ", f'"{_this_python}" -m pip install '),
+                ("pip3 install ", f'"{_this_python}" -m pip install '),
+                ("pip uninstall ", f'"{_this_python}" -m pip uninstall '),
+                ("pip3 uninstall ", f'"{_this_python}" -m pip uninstall '),
+            ]
+            for _old, _new in _rewrites:
+                if command.startswith(_old) or command.startswith(_old.capitalize()):
+                    command = _new + command[len(_old) :]
+                    break
+
             await self.send_progress(f"💻 Running: {command}")
 
             import subprocess
