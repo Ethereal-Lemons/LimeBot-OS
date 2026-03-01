@@ -1,8 +1,32 @@
 import argparse
+import subprocess
 import sys
+
+
+def _auto_install():
+    """Try to install scrapling deps into the running Python."""
+    try:
+        subprocess.check_call(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-q",
+                "scrapling",
+                "curl_cffi",
+                "browserforge",
+            ],
+            stdout=subprocess.DEVNULL,
+        )
+        return True
+    except Exception:
+        return False
+
 
 try:
     from scrapling import Fetcher, StealthyFetcher
+
     _IMPORT_ERROR = None
 except ImportError as e:
     Fetcher = None
@@ -19,6 +43,8 @@ def _missing_deps_message() -> str:
 
 
 def main() -> int:
+    global Fetcher, StealthyFetcher, _IMPORT_ERROR
+
     parser = argparse.ArgumentParser(description="Scrape a webpage using Scrapling")
     parser.add_argument("url", help="URL to scrape")
     parser.add_argument("--selector", help="CSS selector to extract", default=None)
@@ -33,8 +59,18 @@ def main() -> int:
     args = parser.parse_args()
 
     if _IMPORT_ERROR is not None:
-        print(_missing_deps_message(), file=sys.stderr)
-        return 1
+        # Auto-install on first actual use
+        print("Installing scrapling dependencies...", file=sys.stderr)
+        if _auto_install():
+            try:
+                from scrapling import Fetcher, StealthyFetcher
+
+                _IMPORT_ERROR = None
+            except ImportError:
+                pass
+        if _IMPORT_ERROR is not None:
+            print(_missing_deps_message(), file=sys.stderr)
+            return 1
 
     try:
         if args.stealthy:
