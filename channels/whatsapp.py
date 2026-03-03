@@ -50,12 +50,17 @@ class WhatsAppChannel(BaseChannel):
         logger.info(f"Connecting to WhatsApp bridge at {bridge_url}...")
 
         self._running = True
+        max_retries = 60
+        retries = 0
+        backoff = 5
 
         while self._running:
             try:
                 async with websockets.connect(bridge_url) as ws:
                     self._ws = ws
                     self._connected = True
+                    retries = 0
+                    backoff = 5
                     logger.info("Connected to WhatsApp bridge")
 
                     async for message in ws:
@@ -69,11 +74,21 @@ class WhatsAppChannel(BaseChannel):
             except Exception as e:
                 self._connected = False
                 self._ws = None
-                logger.error(f"WhatsApp bridge connection error: {e}")
+                retries += 1
+
+                if retries >= max_retries:
+                    logger.error(
+                        f"WhatsApp bridge unreachable after {max_retries} attempts. Giving up."
+                    )
+                    break
 
                 if self._running:
-                    logger.info("Reconnecting in 5 seconds...")
-                    await asyncio.sleep(5)
+                    logger.error(f"WhatsApp bridge connection error: {e}")
+                    logger.info(
+                        f"Reconnecting in {backoff} seconds... (attempt {retries}/{max_retries})"
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 1.5, 60)
 
     async def stop(self) -> None:
         """Stop the WhatsApp channel."""
@@ -305,9 +320,7 @@ class WhatsAppChannel(BaseChannel):
             }
         if len(self._recent_fingerprints) > 2000:
             self._recent_fingerprints = {
-                k: v
-                for k, v in self._recent_fingerprints.items()
-                if v >= cutoff
+                k: v for k, v in self._recent_fingerprints.items() if v >= cutoff
             }
 
         return False

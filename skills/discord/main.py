@@ -16,6 +16,7 @@ Usage:
 
 import io
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -29,7 +30,42 @@ if sys.platform == "win32":
     except (AttributeError, io.UnsupportedOperation):
         pass
 
-BACKEND_URL = "http://127.0.0.1:8000/api/skill/discord"
+
+def _discover_backend_port() -> int:
+    """Discover the actual backend port (port file > env var > probe > default 8000)."""
+    from pathlib import Path
+    import socket
+
+    # 1. Check the port file written by the backend on startup
+    port_file = Path(__file__).resolve().parent.parent.parent / "data" / ".backend_port"
+    if port_file.exists():
+        try:
+            return int(port_file.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            pass
+
+    # 2. Check env var
+    env_port = os.environ.get("WEB_PORT")
+    if env_port:
+        return int(env_port)
+
+    # 3. Probe ports 8000-8009 for a responding LimeBot backend
+    base = 8000
+    for port in range(base, base + 10):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5) as s:
+                s.settimeout(0.5)
+                s.sendall(b"GET /api/setup/status HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+                resp = s.recv(512)
+                if resp and b"configured" in resp:
+                    return port
+        except (OSError, ConnectionRefusedError, TimeoutError, socket.timeout):
+            continue
+
+    return base
+
+
+BACKEND_URL = f"http://127.0.0.1:{_discover_backend_port()}/api/skill/discord"
 DEFAULT_COLOR = "#5865F2"
 REQUEST_TIMEOUT = 30
 
@@ -143,11 +179,13 @@ def list_channels() -> dict:
     """List available Discord guilds and channels."""
     return _post("list", {})
 
+
 def leave_guild(guild_id: str) -> dict:
     """Leave a Discord guild by ID."""
     if not guild_id.isdigit():
         raise ValueError(f"Invalid guild_id '{guild_id}': must be numeric.")
     return _post("leave", {"guild_id": guild_id})
+
 
 def fetch_history(channel_id: str, limit: int = 20) -> dict:
     """Fetch recent messages from a Discord text channel."""
@@ -248,7 +286,9 @@ def main() -> None:
                     sys.exit(1)
             result = fetch_history(args[1], limit)
             if "messages" in result:
-                _safe_print(f"Last {len(result['messages'])} message(s) from channel {result.get('channel_id')}:")
+                _safe_print(
+                    f"Last {len(result['messages'])} message(s) from channel {result.get('channel_id')}:"
+                )
                 for msg in result["messages"]:
                     author = msg.get("author", "?")
                     content = msg.get("content", "")

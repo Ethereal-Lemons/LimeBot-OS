@@ -901,8 +901,7 @@ class WebChannel(BaseChannel):
                 api_key = get_api_key_for_model(model)
 
                 is_local = (
-                    model
-                    and ("ollama" in model or "local" in model)
+                    model and ("ollama" in model or "local" in model)
                 ) or cfg.llm.base_url
 
                 missing = []
@@ -1041,7 +1040,9 @@ class WebChannel(BaseChannel):
                             except Exception:
                                 continue
 
-                            for line_no, raw_line in enumerate(content.splitlines(), start=1):
+                            for line_no, raw_line in enumerate(
+                                content.splitlines(), start=1
+                            ):
                                 line = raw_line.strip()
                                 if not line or line.startswith("#"):
                                     continue
@@ -1661,6 +1662,15 @@ class WebChannel(BaseChannel):
                 )
                 self.server = uvicorn.Server(config)
                 self.actual_port = current_port
+                # Write the actual port so skills can discover it
+                try:
+                    from pathlib import Path
+
+                    port_file = Path("data/.backend_port")
+                    port_file.parent.mkdir(parents=True, exist_ok=True)
+                    port_file.write_text(str(current_port), encoding="utf-8")
+                except Exception:
+                    pass
                 logger.info(f"Web channel starting on port {current_port}")
 
                 try:
