@@ -163,6 +163,20 @@ function App() {
     } else {
       document.documentElement.setAttribute('data-theme', theme);
     }
+
+    // Apply wallpaper overlay if set
+    try {
+      const wallpaper = localStorage.getItem('limebot-wallpaper');
+      if (wallpaper) {
+        const wp = JSON.parse(wallpaper);
+        if (wp.url) {
+          document.documentElement.style.setProperty(
+            '--bg-image',
+            `linear-gradient(rgba(0,0,0,${wp.overlay ?? 0.6}), rgba(0,0,0,${wp.overlay ?? 0.6})), url(${wp.url})`
+          );
+        }
+      }
+    } catch { /* ignore */ }
   };
 
   const applyThemeWithSchedule = (baseTheme: string) => {
@@ -317,7 +331,17 @@ function App() {
     ws.current.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+
+        // Show maintenance broadcasts (e.g. background reflection) as ghost activity
+        if (data.type === 'maintenance' || data.metadata?.is_maintenance) {
+          setActivity({ text: data.content || '✨ Background task complete' });
+          setTimeout(() => setActivity(null), 4000);
+          return;
+        }
+
         if (data.type === 'message' || data.type === 'full_content') {
+          // Ignore messages from other sessions (e.g. global broadcasts)
+          if (data.chat_id && data.chat_id !== sessionId) return;
           setIsTyping(false);
           let variant: 'default' | 'destructive' | 'warning' = 'default';
           if (data.metadata?.is_error) variant = 'destructive';
@@ -563,7 +587,7 @@ function App() {
         <div className="relative space-y-8 text-center animate-in fade-in zoom-in duration-700">
           <div className="inline-block relative">
             <div className="absolute inset-0 bg-primary/20 blur-3xl rounded-full scale-150 animate-pulse" />
-            <img src="/lime.png" alt="LimeBot" className="h-40 w-auto relative drop-shadow-2xl" />
+            <img src="/limeeThinking.png" alt="LimeBot" className="h-40 w-auto relative drop-shadow-2xl" />
           </div>
           <div className="space-y-3">
             <h1 className="text-4xl font-black tracking-tighter text-foreground drop-shadow-sm">

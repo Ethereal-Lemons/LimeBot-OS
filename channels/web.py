@@ -842,6 +842,18 @@ class WebChannel(BaseChannel):
                         final_lines.append(f"{key}={val}")
 
                 env_file.write_text("\n".join(final_lines), encoding="utf-8")
+
+                # Update os.environ so the child process inherits
+                # the correct values (load_dotenv uses override=False,
+                # so it won't re-read .env values that already exist
+                # in the inherited environment).
+                for key, val in new_env.items():
+                    os.environ[key] = str(val)
+
+                # Clear the cached config so it's rebuilt on next access
+                from config import reload_config
+                reload_config()
+
                 logger.info("Configuration saved. Restarting...")
                 asyncio.get_running_loop().call_later(1.0, _spawn_restart)
                 return {

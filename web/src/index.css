@@ -69,37 +69,109 @@
 
   [data-theme='purple'] {
     --primary: 262 83% 58%;
-    /* Purple 500 */
     --accent: 262 83% 58%;
     --ring: 262 83% 58%;
+    --background: 270 30% 6%;
+    --card: 270 25% 9% / 0.9;
+    --popover: 270 25% 9% / 0.95;
+    --secondary: 270 15% 18%;
+    --muted: 270 15% 16%;
+    --muted-foreground: 270 20% 60%;
+    --border: 270 20% 18%;
   }
 
   [data-theme='blue'] {
-    --primary: 221 83% 53%;
-    /* Blue 500 */
-    --accent: 221 83% 53%;
-    --ring: 221 83% 53%;
+    --primary: 217 91% 60%;
+    --accent: 217 91% 60%;
+    --ring: 217 91% 60%;
+    --background: 222 40% 5%;
+    --card: 222 35% 8% / 0.9;
+    --popover: 222 35% 8% / 0.95;
+    --secondary: 222 20% 17%;
+    --muted: 222 20% 15%;
+    --muted-foreground: 220 20% 58%;
+    --border: 222 20% 17%;
   }
 
   [data-theme='orange'] {
     --primary: 25 95% 53%;
-    /* Orange 500 */
     --accent: 25 95% 53%;
     --ring: 25 95% 53%;
+    --background: 20 30% 5%;
+    --card: 20 25% 8% / 0.9;
+    --popover: 20 25% 8% / 0.95;
+    --secondary: 20 18% 16%;
+    --muted: 20 18% 14%;
+    --muted-foreground: 25 18% 56%;
+    --border: 20 18% 16%;
   }
 
   [data-theme='red'] {
-    --primary: 0 84% 60%;
-    /* Red 500 */
-    --accent: 0 84% 60%;
-    --ring: 0 84% 60%;
+    --primary: 0 72% 51%;
+    --accent: 0 72% 51%;
+    --ring: 0 72% 51%;
+    --background: 0 30% 5%;
+    --card: 0 20% 8% / 0.9;
+    --popover: 0 20% 8% / 0.95;
+    --secondary: 0 12% 16%;
+    --muted: 0 12% 14%;
+    --muted-foreground: 0 15% 55%;
+    --border: 0 12% 16%;
   }
 
   [data-theme='pink'] {
     --primary: 330 81% 60%;
-    /* Pink 500 */
     --accent: 330 81% 60%;
     --ring: 330 81% 60%;
+    --background: 335 30% 5%;
+    --card: 335 25% 8% / 0.9;
+    --popover: 335 25% 8% / 0.95;
+    --secondary: 335 15% 16%;
+    --muted: 335 15% 14%;
+    --muted-foreground: 335 18% 56%;
+    --border: 335 14% 16%;
+  }
+
+  [data-theme='autumn-harvest'] {
+    --primary: 36 100% 50%;
+    --primary-foreground: 30 40% 8%;
+    --accent: 20 90% 48%;
+    --accent-foreground: 0 0% 100%;
+    --ring: 36 100% 50%;
+    --foreground: 35 20% 92%;
+    --card-foreground: 35 20% 92%;
+    --popover-foreground: 35 20% 92%;
+    --muted-foreground: 30 18% 58%;
+    --background: 25 35% 6%;
+    --card: 25 30% 9% / 0.85;
+    --popover: 25 30% 9% / 0.92;
+    --secondary: 25 20% 15%;
+    --muted: 25 20% 13%;
+    --border: 30 25% 16%;
+    --bg-image: radial-gradient(ellipse at 20% 80%, rgba(180, 83, 9, 0.15) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 20%, rgba(234, 88, 12, 0.1) 0%, transparent 50%),
+      linear-gradient(170deg, #1c1208 0%, #0f0a04 100%);
+  }
+
+  [data-theme='arctic-aurora'] {
+    --primary: 174 72% 56%;
+    --primary-foreground: 180 30% 6%;
+    --accent: 200 80% 62%;
+    --accent-foreground: 0 0% 100%;
+    --ring: 174 72% 56%;
+    --foreground: 180 15% 92%;
+    --card-foreground: 180 15% 92%;
+    --popover-foreground: 180 15% 92%;
+    --muted-foreground: 185 15% 58%;
+    --background: 200 35% 5%;
+    --card: 200 30% 8% / 0.85;
+    --popover: 200 30% 8% / 0.92;
+    --secondary: 200 20% 14%;
+    --muted: 200 20% 12%;
+    --border: 195 22% 15%;
+    --bg-image: radial-gradient(ellipse at 50% 0%, rgba(45, 212, 191, 0.12) 0%, transparent 50%),
+      radial-gradient(ellipse at 20% 60%, rgba(56, 189, 248, 0.08) 0%, transparent 40%),
+      linear-gradient(180deg, #050d14 0%, #0a1520 100%);
   }
 
   /* --- SPECIAL THEMES --- */
@@ -385,6 +457,109 @@
     color: white;
     /* Ensure text is white against dark espresso */
   }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     FULL OS THEMES — transform the entire UI, not just colors
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  [data-theme='windows-7'] {
+    --primary: 210 78% 50%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 210 60% 70%;
+    --accent-foreground: 210 50% 15%;
+    --ring: 210 78% 50%;
+    /* White text for desktop background, dark for inside glass panels */
+    --foreground: 0 0% 100%;
+    --card-foreground: 210 30% 15%;
+    --popover-foreground: 210 30% 15%;
+    --muted-foreground: 210 30% 80%;
+    --background: 213 58% 38%;
+    --card: 200 60% 95% / 0.55;
+    --popover: 200 40% 97% / 0.82;
+    --secondary: 210 30% 85%;
+    --muted: 210 25% 88%;
+    --border: 0 0% 100% / 0.45;
+    --input: 210 15% 96%;
+    --radius: 0.4rem;
+    --bg-image:
+      radial-gradient(ellipse at 50% 100%, rgba(0, 40, 110, 0.7) 0%, transparent 55%),
+      radial-gradient(ellipse at 50% -10%, rgba(100, 180, 255, 0.5) 0%, transparent 40%),
+      linear-gradient(180deg, #3a8fd4 0%, #2672b8 25%, #1b5a9e 55%, #0e3d75 100%);
+  }
+
+  [data-theme='windows-95'] {
+    --primary: 0 0% 50%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 0 0% 75%;
+    --accent-foreground: 0 0% 0%;
+    --ring: 240 100% 25%;
+    --foreground: 0 0% 0%;
+    --card-foreground: 0 0% 0%;
+    --popover-foreground: 0 0% 0%;
+    --muted-foreground: 0 0% 35%;
+    --background: 0 0% 75%;
+    --card: 0 0% 75%;
+    --popover: 0 0% 75%;
+    --secondary: 0 0% 83%;
+    --muted: 0 0% 83%;
+    --border: 0 0% 50%;
+    --input: 0 0% 100%;
+    --radius: 0px;
+    --bg-image: none;
+  }
+
+  [data-theme='evangelion'] {
+    --primary: 24 100% 50%;
+    /* NERV Orange */
+    --primary-foreground: 0 0% 100%;
+    --accent: 270 60% 50%;
+    /* EVA-01 Purple */
+    --accent-foreground: 0 0% 100%;
+    --ring: 24 100% 50%;
+    --foreground: 24 100% 85%;
+    --card-foreground: 24 80% 90%;
+    --popover-foreground: 24 80% 90%;
+    --muted-foreground: 24 40% 55%;
+    --background: 240 20% 6%;
+    --card: 240 15% 10% / 0.85;
+    --popover: 240 15% 10% / 0.92;
+    --secondary: 240 15% 14%;
+    --muted: 240 12% 13%;
+    --border: 24 100% 50% / 0.35;
+    --input: 240 15% 14%;
+    --radius: 0.15rem;
+    --bg-image:
+      repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(255, 102, 0, 0.04) 40px),
+      repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(255, 102, 0, 0.04) 40px),
+      radial-gradient(ellipse at 50% 50%, rgba(100, 0, 180, 0.12) 0%, transparent 60%),
+      linear-gradient(180deg, #0a0a14 0%, #0d0818 50%, #0a0612 100%);
+  }
+
+  [data-theme='ghibli-garden'] {
+    --primary: 142 40% 42%;
+    /* Sage Green */
+    --primary-foreground: 0 0% 100%;
+    --accent: 80 35% 55%;
+    /* Grass Green */
+    --accent-foreground: 80 50% 15%;
+    --ring: 142 40% 42%;
+    --foreground: 30 25% 22%;
+    --card-foreground: 30 25% 22%;
+    --popover-foreground: 30 25% 22%;
+    --muted-foreground: 30 15% 48%;
+    --background: 38 50% 95%;
+    /* Warm Cream */
+    --card: 38 40% 98%;
+    --popover: 38 40% 99%;
+    --secondary: 38 30% 92%;
+    --muted: 38 25% 91%;
+    --border: 30 20% 82%;
+    --input: 38 30% 96%;
+    --radius: 1rem;
+    --bg-image:
+      url("data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%2388a070' fill-opacity='0.06' fill-rule='evenodd'%3E%3Ccircle cx='10' cy='10' r='2'/%3E%3Ccircle cx='30' cy='30' r='2'/%3E%3C/g%3E%3C/svg%3E"),
+      linear-gradient(180deg, #fdf8f0 0%, #f5efe4 40%, #eee8d8 100%);
+  }
 }
 
 @layer base {
@@ -641,6 +816,24 @@
     color: hsl(330, 40%, 30%);
   }
 
+  [data-theme='autumn-harvest'] .bg-card,
+  [data-theme='autumn-harvest'] .bg-popover,
+  [data-theme='autumn-harvest'] aside {
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 8px 24px rgba(15, 10, 4, 0.5), inset 0 0 0 1px rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.1);
+  }
+
+  [data-theme='arctic-aurora'] .bg-card,
+  [data-theme='arctic-aurora'] .bg-popover,
+  [data-theme='arctic-aurora'] aside {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 8px 24px rgba(5, 13, 20, 0.5), inset 0 0 0 1px rgba(45, 212, 191, 0.08);
+    border: 1px solid rgba(45, 212, 191, 0.1);
+  }
+
   /* Custom Theme Glassmorphism */
   [data-custom-theme='true'] .bg-card,
   [data-custom-theme='true'] .bg-popover,
@@ -649,12 +842,503 @@
     background: rgba(var(--card), 0.8);
     /* Fallback */
   }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     FULL OS THEMES — UI Overrides
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /* ─── WINDOWS 7 AERO ─────────────────────────────────────────────────── */
+
+  [data-theme='windows-7'] * {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+
+  [data-theme='windows-7'] .bg-card,
+  [data-theme='windows-7'] .bg-popover,
+  [data-theme='windows-7'] aside {
+    backdrop-filter: blur(20px) saturate(1.6);
+    -webkit-backdrop-filter: blur(20px) saturate(1.6);
+    background: linear-gradient(180deg,
+        rgba(220, 235, 255, 0.88) 0%,
+        rgba(205, 225, 250, 0.82) 40%,
+        rgba(195, 218, 248, 0.85) 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.25),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.06),
+      0 6px 24px rgba(0, 20, 60, 0.35),
+      0 0 0 1px rgba(120, 170, 230, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    color: #1a1a1a;
+  }
+
+  /* Win7 glass reflection bar at top of cards */
+  [data-theme='windows-7'] .bg-card::before,
+  [data-theme='windows-7'] .bg-popover::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 40%;
+    background: linear-gradient(180deg,
+        rgba(255, 255, 255, 0.35) 0%,
+        rgba(255, 255, 255, 0.08) 100%);
+    pointer-events: none;
+    border-radius: inherit;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  /* Cards need position:relative for the ::before */
+  [data-theme='windows-7'] .bg-card,
+  [data-theme='windows-7'] .bg-popover {
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Win7 sidebar — translucent blue glass */
+  [data-theme='windows-7'] aside {
+    background: linear-gradient(180deg,
+        rgba(130, 175, 235, 0.72) 0%,
+        rgba(90, 145, 215, 0.60) 50%,
+        rgba(70, 125, 200, 0.65) 100%) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.3) !important;
+  }
+
+  /* Make ALL text inside cards near-black for readability */
+  [data-theme='windows-7'] .bg-card *,
+  [data-theme='windows-7'] .bg-popover * {
+    color: #111 !important;
+  }
+
+  /* Muted/description text: strong dark gray */
+  [data-theme='windows-7'] .bg-card .text-muted-foreground,
+  [data-theme='windows-7'] .bg-popover .text-muted-foreground {
+    color: #444 !important;
+  }
+
+ 
+  [data-theme='windows-7'] .font-mono.bg-\[\#111111\] *,
+  [data-theme='windows-7'] .font-mono.bg-\[\#111111\] {
+    color: unset !important;
+  }
+  [data-theme='windows-7'] .font-mono.bg-\[\#111111\] .text-zinc-200 { color: #e4e4e7 !important; }
+  [data-theme='windows-7'] .font-mono.bg-\[\#111111\] .text-zinc-400 { color: #a1a1aa !important; }
+  [data-theme='windows-7'] .font-mono.bg-\[\#111111\] .text-zinc-500 { color: #71717a !important; }
+  [data-theme='windows-7'] .font-mono.bg-\[\#111111\] .text-muted-foreground { color: #a1a1aa !important; }
+  [data-theme='windows-7'] .font-mono.bg-\[\#111111\] .text-blue-500 { color: #3b82f6 !important; }
+  [data-theme='windows-7'] .font-mono.bg-\[\#111111\] .text-yellow-500 { color: #eab308 !important; }
+  [data-theme='windows-7'] .font-mono.bg-\[\#111111\] .text-red-500 { color: #ef4444 !important; }
+
+  /* Input placeholder text */
+  [data-theme='windows-7'] .bg-card input::placeholder,
+  [data-theme='windows-7'] .bg-popover input::placeholder,
+  [data-theme='windows-7'] .bg-card textarea::placeholder,
+  [data-theme='windows-7'] .bg-popover textarea::placeholder {
+    color: #888 !important;
+  }
+
+  /* Sidebar text should stay white/light */
+  [data-theme='windows-7'] aside * {
+    color: white !important;
+  }
+
+  [data-theme='windows-7'] aside .text-muted-foreground {
+    color: rgba(255, 255, 255, 0.7) !important;
+  }
+
+  /* Win7 buttons */
+  [data-theme='windows-7'] button:not([class*="rounded-full"]) {
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    background: linear-gradient(180deg, #f0f0f0 0%, #e1e1e1 45%, #cfcfcf 50%, #dcdcdc 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    color: #222;
+  }
+
+  [data-theme='windows-7'] button[class*="bg-primary"] {
+    background: linear-gradient(180deg,
+        #4fade4 0%, #2b89d6 45%, #1a6ebe 50%, #2884d0 100%);
+    border: 1px solid rgba(0, 40, 100, 0.5);
+    color: white;
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 1px 3px rgba(0, 30, 80, 0.25);
+  }
+
+  /* Win7 inputs */
+  [data-theme='windows-7'] input,
+  [data-theme='windows-7'] textarea,
+  [data-theme='windows-7'] select {
+    background: white !important;
+    border: 1px solid #abadb3 !important;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12) !important;
+    color: #222 !important;
+  }
+
+  /* Win7 user bubble */
+  [data-theme='windows-7'] .bg-zinc-800 {
+    background: linear-gradient(180deg, #4fade4 0%, #1a6ebe 100%);
+    color: white;
+    border: 1px solid rgba(0, 40, 100, 0.3);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  }
+
+  /* Win7 scrollbar */
+  [data-theme='windows-7'] ::-webkit-scrollbar {
+    width: 14px;
+  }
+
+  [data-theme='windows-7'] ::-webkit-scrollbar-track {
+    background: #d0dff0;
+  }
+
+  [data-theme='windows-7'] ::-webkit-scrollbar-thumb {
+    background: linear-gradient(90deg, #c0cfe0 0%, #a8bdd4 50%, #c0cfe0 100%);
+    border: 1px solid #8ea8c4;
+    border-radius: 3px;
+  }
+
+  [data-theme='windows-7'] ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(90deg, #a8bdd4 0%, #90abd0 50%, #a8bdd4 100%);
+  }
+
+  /* ─── WINDOWS 95 ─────────────────────────────────────────────────────── */
+
+  [data-theme='windows-95'] * {
+    font-family: 'MS Sans Serif', 'Microsoft Sans Serif', 'Segoe UI', Tahoma, sans-serif;
+    text-shadow: none;
+    border-radius: 0 !important;
+  }
+
+  [data-theme='windows-95'] .bg-card,
+  [data-theme='windows-95'] .bg-popover {
+    background: #c0c0c0;
+    border: 2px outset #fff;
+    box-shadow: inset -1px -1px 0 #808080, inset 1px 1px 0 #ffffff;
+  }
+
+  /* Win95 sidebar */
+  [data-theme='windows-95'] aside {
+    background: #c0c0c0 !important;
+    border-right: 2px groove #888 !important;
+    box-shadow: inset -1px -1px 0 #808080, inset 1px 1px 0 #ffffff;
+  }
+
+  /* Win95 buttons */
+  [data-theme='windows-95'] button {
+    background: #c0c0c0 !important;
+    border: 2px outset #fff !important;
+    box-shadow: inset -1px -1px 0 #808080, inset 1px 1px 0 #dfdfdf;
+    color: black !important;
+    text-shadow: none;
+    padding: 2px 8px;
+    font-size: 12px;
+  }
+
+  [data-theme='windows-95'] button:active {
+    border-style: inset !important;
+    box-shadow: inset 1px 1px 0 #808080, inset -1px -1px 0 #dfdfdf;
+  }
+
+  [data-theme='windows-95'] button[class*="bg-primary"] {
+    background: #000080 !important;
+    color: white !important;
+    border: 2px outset #0000b0 !important;
+  }
+
+  /* Win95 inputs */
+  [data-theme='windows-95'] input,
+  [data-theme='windows-95'] textarea,
+  [data-theme='windows-95'] select {
+    background: white !important;
+    border: 2px inset #808080 !important;
+    box-shadow: inset 1px 1px 0 #404040, inset -1px -1px 0 #dfdfdf;
+    color: black !important;
+  }
+
+  /* Win95 user bubble */
+  [data-theme='windows-95'] .bg-zinc-800 {
+    background: #000080;
+    color: white;
+    border: 2px outset #0000b0;
+  }
+
+  /* Win95 scrollbar */
+  [data-theme='windows-95'] ::-webkit-scrollbar {
+    width: 16px;
+  }
+
+  [data-theme='windows-95'] ::-webkit-scrollbar-track {
+    background: repeating-conic-gradient(#c0c0c0 0% 25%, #a0a0a0 0% 50%) 50% / 2px 2px;
+  }
+
+  [data-theme='windows-95'] ::-webkit-scrollbar-thumb {
+    background: #c0c0c0;
+    border: 2px outset #fff;
+    box-shadow: inset -1px -1px 0 #808080, inset 1px 1px 0 #dfdfdf;
+  }
+
+  [data-theme='windows-95'] ::-webkit-scrollbar-button {
+    background: #c0c0c0;
+    border: 2px outset #fff;
+    display: block;
+    height: 16px;
+  }
+
+  /* Win95: Let theme color swatches keep their actual colors */
+  [data-theme='windows-95'] button.rounded-full {
+    background: unset !important;
+    border: 2px outset #fff !important;
+    box-shadow: none;
+  }
+
+  /* Win95 title bar accent for cards */
+  [data-theme='windows-95'] .flex.flex-col.space-y-1\.5.p-6::before,
+  [data-theme='windows-95'] .p-5.pb-4::before {
+    content: '';
+    display: block;
+    height: 18px;
+    margin: -6px -6px 8px -6px;
+    background: linear-gradient(90deg, #000080 0%, #1084d0 100%);
+  }
+
+  /* ─── EVANGELION / NERV HUD ──────────────────────────────────────────── */
+
+  [data-theme='evangelion'] * {
+    font-family: 'Consolas', 'Courier New', 'Fira Mono', monospace;
+  }
+
+  /* Scanline overlay on body */
+  [data-theme='evangelion'] body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background: repeating-linear-gradient(0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.08) 2px,
+        rgba(0, 0, 0, 0.08) 4px);
+  }
+
+  [data-theme='evangelion'] .bg-card,
+  [data-theme='evangelion'] .bg-popover {
+    background: rgba(10, 10, 24, 0.88);
+    border: 1px solid rgba(255, 102, 0, 0.35);
+    box-shadow:
+      inset 0 0 20px rgba(255, 102, 0, 0.06),
+      0 0 12px rgba(255, 102, 0, 0.1),
+      0 4px 20px rgba(0, 0, 0, 0.5);
+  }
+
+  /* NERV warning stripes on card headers */
+  [data-theme='evangelion'] .bg-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: repeating-linear-gradient(90deg,
+        #ff6600 0px,
+        #ff6600 8px,
+        transparent 8px,
+        transparent 12px);
+    z-index: 1;
+  }
+
+  [data-theme='evangelion'] .bg-card {
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Sidebar — NERV dark panel */
+  [data-theme='evangelion'] aside {
+    background: rgba(8, 6, 18, 0.95) !important;
+    border-right: 1px solid rgba(255, 102, 0, 0.3) !important;
+    box-shadow: inset -8px 0 20px rgba(255, 102, 0, 0.04);
+  }
+
+  /* Buttons — orange HUD style */
+  [data-theme='evangelion'] button:not([class*="rounded-full"]) {
+    border: 1px solid rgba(255, 102, 0, 0.4);
+    background: rgba(255, 102, 0, 0.08);
+    color: #ff8833;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  [data-theme='evangelion'] button:not([class*="rounded-full"]):hover {
+    background: rgba(255, 102, 0, 0.18);
+    box-shadow: 0 0 8px rgba(255, 102, 0, 0.25);
+  }
+
+  [data-theme='evangelion'] button[class*="bg-primary"] {
+    background: rgba(255, 102, 0, 0.85) !important;
+    border: 1px solid rgba(255, 102, 0, 0.9);
+    color: white !important;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 0 12px rgba(255, 102, 0, 0.35);
+  }
+
+  /* Inputs — dark inset with orange focus */
+  [data-theme='evangelion'] input,
+  [data-theme='evangelion'] textarea,
+  [data-theme='evangelion'] select {
+    background: rgba(5, 5, 15, 0.8) !important;
+    border: 1px solid rgba(255, 102, 0, 0.25) !important;
+    color: #ffaa66 !important;
+    font-family: 'Consolas', monospace;
+  }
+
+  [data-theme='evangelion'] input:focus,
+  [data-theme='evangelion'] textarea:focus {
+    border-color: rgba(255, 102, 0, 0.6) !important;
+    box-shadow: 0 0 8px rgba(255, 102, 0, 0.2) !important;
+  }
+
+  /* User bubble — EVA-01 purple */
+  [data-theme='evangelion'] .bg-zinc-800 {
+    background: linear-gradient(135deg, rgba(100, 0, 180, 0.8), rgba(60, 0, 120, 0.9));
+    color: #e8c0ff;
+    border: 1px solid rgba(150, 50, 255, 0.4);
+    box-shadow: 0 0 10px rgba(100, 0, 180, 0.3);
+  }
+
+  /* Scrollbar — NERV orange */
+  [data-theme='evangelion'] ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  [data-theme='evangelion'] ::-webkit-scrollbar-track {
+    background: rgba(10, 10, 20, 0.5);
+  }
+
+  [data-theme='evangelion'] ::-webkit-scrollbar-thumb {
+    background: rgba(255, 102, 0, 0.4);
+    border-radius: 0;
+  }
+
+  [data-theme='evangelion'] ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 102, 0, 0.65);
+  }
+
+  /* ─── GHIBLI GARDEN ──────────────────────────────────────────────────── */
+
+  [data-theme='ghibli-garden'] * {
+    font-family: 'Georgia', 'Palatino Linotype', 'Book Antiqua', serif;
+  }
+
+  [data-theme='ghibli-garden'] .bg-card,
+  [data-theme='ghibli-garden'] .bg-popover {
+    background: #fefcf7;
+    border: 1px solid rgba(90, 120, 70, 0.18);
+    box-shadow:
+      0 2px 12px rgba(120, 100, 60, 0.1),
+      0 6px 24px rgba(120, 100, 60, 0.06),
+      inset 0 0 40px rgba(200, 180, 140, 0.08);
+    border-radius: 1rem;
+  }
+
+  /* Sidebar — warm wood panel */
+  [data-theme='ghibli-garden'] aside {
+    background: linear-gradient(180deg, #f5efe4 0%, #ede5d6 50%, #e8dece 100%) !important;
+    border-right: 1px solid rgba(140, 120, 80, 0.2) !important;
+    box-shadow: 2px 0 10px rgba(120, 100, 60, 0.08);
+  }
+
+  [data-theme='ghibli-garden'] aside * {
+    color: hsl(30, 25%, 28%) !important;
+  }
+
+  [data-theme='ghibli-garden'] aside .text-muted-foreground {
+    color: hsl(30, 15%, 50%) !important;
+  }
+
+  /* Buttons — soft sage green */
+  [data-theme='ghibli-garden'] button:not([class*="rounded-full"]) {
+    background: #f0ebe2;
+    border: 1px solid rgba(120, 140, 90, 0.25);
+    color: hsl(30, 25%, 28%);
+    border-radius: 0.75rem;
+    font-weight: 500;
+  }
+
+  [data-theme='ghibli-garden'] button:not([class*="rounded-full"]):hover {
+    background: #e8e0d4;
+    border-color: rgba(100, 130, 70, 0.4);
+  }
+
+  [data-theme='ghibli-garden'] button[class*="bg-primary"] {
+    background: hsl(142, 40%, 42%) !important;
+    border: 1px solid hsl(142, 40%, 35%);
+    color: white !important;
+    border-radius: 0.75rem;
+    box-shadow: 0 2px 8px rgba(80, 120, 60, 0.2);
+  }
+
+  /* Inputs — cream with warm border */
+  [data-theme='ghibli-garden'] input,
+  [data-theme='ghibli-garden'] textarea,
+  [data-theme='ghibli-garden'] select {
+    background: #fffdf8 !important;
+    border: 1px solid rgba(160, 140, 100, 0.3) !important;
+    color: hsl(30, 25%, 22%) !important;
+    border-radius: 0.75rem;
+  }
+
+  /* User bubble — sage green */
+  [data-theme='ghibli-garden'] .bg-zinc-800 {
+    background: hsl(142, 35%, 45%);
+    color: white;
+    border: 1px solid hsl(142, 35%, 38%);
+    border-radius: 1rem;
+    box-shadow: 0 2px 8px rgba(80, 120, 60, 0.15);
+  }
+
+  /* Scrollbar — warm organic */
+  [data-theme='ghibli-garden'] ::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  [data-theme='ghibli-garden'] ::-webkit-scrollbar-track {
+    background: #f5efe4;
+  }
+
+  [data-theme='ghibli-garden'] ::-webkit-scrollbar-thumb {
+    background: rgba(160, 140, 100, 0.35);
+    border-radius: 4px;
+  }
+
+  [data-theme='ghibli-garden'] ::-webkit-scrollbar-thumb:hover {
+    background: rgba(140, 120, 80, 0.5);
+  }
+
+  /* Override dark elements for light theme readability */
+  [data-theme='ghibli-garden'] .bg-zinc-950\/50,
+  [data-theme='ghibli-garden'] .bg-black\/20 {
+    background-color: rgba(200, 180, 140, 0.15);
+    border-color: rgba(140, 120, 80, 0.15);
+  }
 }
 
 @keyframes lime-avatar-pulse {
-  0% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.35); }
-  70% { box-shadow: 0 0 0 10px hsl(var(--primary) / 0); }
-  100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0); }
+  0% {
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0.35);
+  }
+
+  70% {
+    box-shadow: 0 0 0 10px hsl(var(--primary) / 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0);
+  }
 }
 
 .lime-avatar-pulse {
