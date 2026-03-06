@@ -108,4 +108,6 @@ allowed_paths.txt
 skills/discord-voice/*
 skills/github/*
 skills/discord_bot_bridge/*
-
+skills/youtube_downloader/*
+bin/sync-to-limebot-os.local.ps1
+data/.backend_port

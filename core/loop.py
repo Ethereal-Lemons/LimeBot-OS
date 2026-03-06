@@ -14,6 +14,7 @@ from litellm import (
     InternalServerError,
     APIConnectionError,
     ServiceUnavailableError,
+    AuthenticationError,
 )
 from loguru import logger
 
@@ -64,6 +65,65 @@ _BROWSER_CACHEABLE = frozenset(
         "browser_list_media",
         "browser_get_page_text",
     }
+)
+
+_CASUAL_WORDS = frozenset(
+    {
+        "hi",
+        "hey",
+        "hello",
+        "yo",
+        "sup",
+        "ok",
+        "okay",
+        "k",
+        "yes",
+        "no",
+        "nope",
+        "yep",
+        "sure",
+        "thanks",
+        "thank you",
+        "lol",
+        "lmao",
+        "haha",
+        "nice",
+        "cool",
+        "good",
+        "great",
+        "bye",
+        "cya",
+        "ttyl",
+        "brb",
+    }
+)
+
+_APPROVE_WORDS = frozenset(
+    {"proceed", "yes", "approve", "confirm", "ok", "sure", "y", "go", "run", "do it"}
+)
+
+_DENY_WORDS = frozenset(
+    {"no", "cancel", "deny", "stop", "reject", "n", "abort", "nope"}
+)
+
+_SENSITIVE_TOOLS = frozenset(
+    {"delete_file", "run_command", "write_file", "cron_remove"}
+)
+
+_GHOST_TAG_RE = re.compile(
+    r"</?(?:save_user|save_soul|save_identity|save_memory"
+    r"|log_memory|save_mood|save_relationship"
+    r"|save_memory|discord_send|discord_embed)>",
+    re.IGNORECASE,
+)
+
+_GHOST_TAG_NAMES = (
+    "save_user",
+    "save_soul",
+    "save_memory",
+    "log_memory",
+    "save_mood",
+    "save_relationship",
 )
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
@@ -320,6 +380,123 @@ class AgentLoop:
         volatile = prompt_module.get_volatile_prompt_suffix(recalled_context)
         return stable + volatile
 
+    # ── Shared publishing helpers ────────────────────────────────────────
+
+    async def _publish(
+        self, msg: Optional[InboundMessage], content: str, metadata: dict
+    ) -> None:
+        """Publish an OutboundMessage to the originating channel (or 'web')."""
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=msg.channel if msg else "web",
+                chat_id=msg.chat_id if msg else "system",
+                content=content,
+                metadata=metadata,
+            )
+        )
+
+    async def _publish_both(
+        self, msg: Optional[InboundMessage], content: str, metadata: dict
+    ) -> None:
+        """Publish to the originating channel AND mirror to web if needed."""
+        await self._publish(msg, content, metadata)
+        if msg and msg.channel != "web":
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel="web",
+                    chat_id=msg.chat_id or "system",
+                    content=content,
+                    metadata=metadata,
+                )
+            )
+
+    # ── Confirmation embed builder ───────────────────────────────────────
+
+    @staticmethod
+    def _build_confirmation_embed(
+        function_name: str, function_args: dict, session_key: str
+    ) -> list:
+        """Build the embed fields list for a tool confirmation prompt."""
+        if function_name == "run_command":
+            return [
+                {
+                    "name": "Command",
+                    "value": f"```bash\n{function_args.get('command', '')}\n```",
+                    "inline": False,
+                },
+                {
+                    "name": "Working Directory",
+                    "value": f"`{function_args.get('cwd', 'default')}`",
+                    "inline": True,
+                },
+                {"name": "Agent", "value": f"`{session_key}`", "inline": True},
+            ]
+        if function_name == "delete_file":
+            return [
+                {
+                    "name": "Target File",
+                    "value": f"`{function_args.get('path', '')}`",
+                    "inline": False,
+                },
+                {"name": "Agent", "value": f"`{session_key}`", "inline": True},
+            ]
+        if function_name == "write_file":
+            raw = function_args.get("content", "")
+            preview = (raw[:100] + "...") if len(raw) > 100 else raw
+            return [
+                {
+                    "name": "Target File",
+                    "value": f"`{function_args.get('path', '')}`",
+                    "inline": False,
+                },
+                {
+                    "name": "Content Preview",
+                    "value": f"```\n{preview}\n```",
+                    "inline": False,
+                },
+                {"name": "Agent", "value": f"`{session_key}`", "inline": True},
+            ]
+        # Generic fallback
+        return [
+            {
+                "name": "Arguments",
+                "value": f"```json\n{json.dumps(function_args, indent=2)[:500]}\n```",
+                "inline": False,
+            },
+            {"name": "Agent", "value": f"`{session_key}`", "inline": True},
+        ]
+
+    # ── Stream result unpacker ───────────────────────────────────────────
+
+    @staticmethod
+    def _unpack_stream_result(result) -> tuple:
+        """Unpack _consume_stream result into (content, tool_calls, usage, streamed_to_web)."""
+        if isinstance(result, tuple) and len(result) >= 4:
+            return result[0], result[1], result[2], result[3]
+        content, tool_calls, usage = result
+        return content, tool_calls, usage, False
+
+    # ── Overlap deduplication ────────────────────────────────────────────
+
+    @staticmethod
+    def _dedup_overlap(accumulated: str, new_content: str) -> str:
+        """Return the portion of *new_content* that doesn't overlap with the
+        tail of *accumulated*.  Used after tool-call continuations where the
+        LLM may repeat previously-streamed text."""
+        acc_s, nxt_s = accumulated.strip(), new_content.strip()
+        if not (acc_s and nxt_s):
+            return new_content
+
+        max_overlap = min(len(acc_s), len(nxt_s), 100)
+        for length in range(max_overlap, 4, -1):
+            suffix = acc_s[-length:]
+            if nxt_s.lower().startswith(suffix.lower()):
+                match = re.search(re.escape(suffix), new_content, re.IGNORECASE)
+                if match:
+                    clean = new_content[match.start() + length :].lstrip()
+                    return clean if clean.strip() else ""
+        return new_content
+
     @staticmethod
     def _estimate_tokens(messages: List[Dict]) -> int:
         """
@@ -521,6 +698,7 @@ class AgentLoop:
 
         model, base_url, api_key, custom_llm_provider = self._provider
         tools = self._get_tool_definitions()
+        qwen_auth_failover_attempted: Set[str] = set()
 
         for attempt in range(max_retries):
             try:
@@ -537,6 +715,36 @@ class AgentLoop:
                 if stream:
                     kwargs["stream_options"] = {"include_usage": True}
                 return await acompletion(**kwargs)
+
+            except AuthenticationError as e:
+                # DashScope keys can be region-scoped. If auth fails on one endpoint,
+                # try other official compatible endpoints before failing.
+                current_base = (base_url or "").lower()
+                is_qwen = (self.model or "").startswith(
+                    "qwen/"
+                ) or "dashscope" in current_base
+                if is_qwen:
+                    qwen_auth_failover_attempted.add(current_base)
+                    fallback_bases = [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    ]
+                    next_base = next(
+                        (
+                            url
+                            for url in fallback_bases
+                            if url.lower() not in qwen_auth_failover_attempted
+                        ),
+                        None,
+                    )
+                    if next_base:
+                        base_url = next_base
+                        logger.warning(
+                            f"Qwen auth failed; retrying with alternate endpoint: {base_url}"
+                        )
+                        continue
+                raise
 
             except (
                 RateLimitError,
@@ -931,24 +1139,13 @@ class AgentLoop:
                     msg is not None and getattr(msg, "channel", "") == "whatsapp"
                 )
 
-                sensitive_tools = {
-                    "delete_file",
-                    "run_command",
-                    "write_file",
-                    "cron_remove",
-                }
-
-                if function_name in sensitive_tools:
+                if function_name in _SENSITIVE_TOOLS:
                     is_whitelisted = (
                         session_key in self.session_whitelists
                         and function_name in self.session_whitelists[session_key]
                     )
                     if is_whatsapp:
-                        # WhatsApp is usually autonomous, but user wants confirmation for these
-                        if function_name in {"delete_file"}:
-                            is_whitelisted = False
-                        else:
-                            is_whitelisted = True
+                        is_whitelisted = function_name != "delete_file"
                     elif getattr(self.config, "autonomous_mode", False) or is_internal:
                         is_whitelisted = True
 
@@ -962,126 +1159,39 @@ class AgentLoop:
                             "tool": function_name,
                         }
 
-                        embed_fields = []
-                        if function_name == "run_command":
-                            cmd = function_args.get("command", "")
-                            cwd = function_args.get("cwd", "default")
-                            embed_fields.extend(
-                                [
-                                    {
-                                        "name": "Command",
-                                        "value": f"```bash\n{cmd}\n```",
-                                        "inline": False,
-                                    },
-                                    {
-                                        "name": "Working Directory",
-                                        "value": f"`{cwd}`",
-                                        "inline": True,
-                                    },
-                                    {
-                                        "name": "Agent",
-                                        "value": f"`{session_key}`",
-                                        "inline": True,
-                                    },
-                                ]
-                            )
-                        elif function_name == "delete_file":
-                            path = function_args.get("path", "")
-                            embed_fields.extend(
-                                [
-                                    {
-                                        "name": "Target File",
-                                        "value": f"`{path}`",
-                                        "inline": False,
-                                    },
-                                    {
-                                        "name": "Agent",
-                                        "value": f"`{session_key}`",
-                                        "inline": True,
-                                    },
-                                ]
-                            )
-                        elif function_name == "write_file":
-                            path = function_args.get("path", "")
-                            content = function_args.get("content", "")
-                            preview = (
-                                (content[:100] + "...")
-                                if len(content) > 100
-                                else content
-                            )
-                            embed_fields.extend(
-                                [
-                                    {
-                                        "name": "Target File",
-                                        "value": f"`{path}`",
-                                        "inline": False,
-                                    },
-                                    {
-                                        "name": "Content Preview",
-                                        "value": f"```\n{preview}\n```",
-                                        "inline": False,
-                                    },
-                                    {
-                                        "name": "Agent",
-                                        "value": f"`{session_key}`",
-                                        "inline": True,
-                                    },
-                                ]
-                            )
-                        else:
-                            embed_fields.extend(
-                                [
-                                    {
-                                        "name": "Arguments",
-                                        "value": f"```json\n{json.dumps(function_args, indent=2)[:500]}\n```",
-                                        "inline": False,
-                                    },
-                                    {
-                                        "name": "Agent",
-                                        "value": f"`{session_key}`",
-                                        "inline": True,
-                                    },
-                                ]
-                            )
-
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                channel=msg.channel if msg else "web",
-                                chat_id=msg.chat_id if msg else "system",
-                                content=f"🛠️ Executing {function_name}..."
-                                if is_whatsapp
-                                else "⏳",
-                                metadata={
-                                    "type": "tool_execution",
-                                    "status": "waiting_confirmation",
-                                    "tool": function_name,
-                                    "args": function_args,
-                                    "tool_call_id": tc_id,
-                                    "conf_id": conf_id,
-                                    "embed": {
-                                        "title": "Exec Approval Required",
-                                        "description": "A command needs your approval.",
-                                        "color": "#F59E0B",
-                                        "fields": embed_fields,
-                                        "footer": f"Expires in 300s | ID: {conf_id}",
-                                    },
-                                },
-                            )
+                        embed_fields = self._build_confirmation_embed(
+                            function_name, function_args, session_key
                         )
+
+                        tool_content = (
+                            f"🛠️ Executing {function_name}..." if is_whatsapp else "⏳"
+                        )
+                        conf_meta = {
+                            "type": "tool_execution",
+                            "status": "waiting_confirmation",
+                            "tool": function_name,
+                            "args": function_args,
+                            "tool_call_id": tc_id,
+                            "conf_id": conf_id,
+                            "embed": {
+                                "title": "Exec Approval Required",
+                                "description": "A command needs your approval.",
+                                "color": "#F59E0B",
+                                "fields": embed_fields,
+                                "footer": f"Expires in 300s | ID: {conf_id}",
+                            },
+                        }
+                        await self._publish(msg, tool_content, conf_meta)
                         if msg and msg.channel != "web":
+                            web_meta = {
+                                k: v for k, v in conf_meta.items() if k != "embed"
+                            }
                             await self.bus.publish_outbound(
                                 OutboundMessage(
                                     channel="web",
                                     chat_id=msg.chat_id or "system",
                                     content="",
-                                    metadata={
-                                        "type": "tool_execution",
-                                        "status": "waiting_confirmation",
-                                        "tool": function_name,
-                                        "args": function_args,
-                                        "tool_call_id": tc_id,
-                                        "conf_id": conf_id,
-                                    },
+                                    metadata=web_meta,
                                 )
                             )
 
@@ -1108,37 +1218,17 @@ class AgentLoop:
                         finally:
                             self.pending_confirmations.pop(conf_id, None)
 
-                await self.bus.publish_outbound(
-                    OutboundMessage(
-                        channel=msg.channel if msg else "web",
-                        chat_id=msg.chat_id if msg else "system",
-                        content=f"🛠️ Executing {function_name}..."
-                        if is_whatsapp
-                        else "⏳",
-                        metadata={
-                            "type": "tool_execution",
-                            "status": "running",
-                            "tool": function_name,
-                            "args": function_args,
-                            "tool_call_id": tc_id,
-                        },
-                    )
+                tool_content = (
+                    f"🛠️ Executing {function_name}..." if is_whatsapp else "⏳"
                 )
-                if msg and msg.channel != "web":
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel="web",
-                            chat_id=msg.chat_id or "system",
-                            content="",
-                            metadata={
-                                "type": "tool_execution",
-                                "status": "running",
-                                "tool": function_name,
-                                "args": function_args,
-                                "tool_call_id": tc_id,
-                            },
-                        )
-                    )
+                run_meta = {
+                    "type": "tool_execution",
+                    "status": "running",
+                    "tool": function_name,
+                    "args": function_args,
+                    "tool_call_id": tc_id,
+                }
+                await self._publish_both(msg, tool_content, run_meta)
 
                 t0 = time.time()
                 try:
@@ -1199,37 +1289,15 @@ class AgentLoop:
                     pass
 
                 try:
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel=msg.channel if msg else "web",
-                            chat_id=msg.chat_id if msg else "system",
-                            content=fail_name,
-                            metadata={
-                                "type": "tool_execution",
-                                "tool": fail_name,
-                                "status": "error",
-                                "args": fail_args,
-                                "result": f"Execution failed or was cancelled: {type(outcome).__name__}",
-                                "tool_call_id": fail_tc_id,
-                            },
-                        )
-                    )
-                    if msg and msg.channel != "web":
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                channel="web",
-                                chat_id=msg.chat_id or "system",
-                                content=fail_name,
-                                metadata={
-                                    "type": "tool_execution",
-                                    "tool": fail_name,
-                                    "status": "error",
-                                    "args": fail_args,
-                                    "result": f"Execution failed or was cancelled: {type(outcome).__name__}",
-                                    "tool_call_id": fail_tc_id,
-                                },
-                            )
-                        )
+                    err_meta = {
+                        "type": "tool_execution",
+                        "tool": fail_name,
+                        "status": "error",
+                        "args": fail_args,
+                        "result": f"Execution failed or was cancelled: {type(outcome).__name__}",
+                        "tool_call_id": fail_tc_id,
+                    }
+                    await self._publish_both(msg, fail_name, err_meta)
                 except Exception:
                     pass
                 continue
@@ -1247,40 +1315,15 @@ class AgentLoop:
                     else "completed"
                 )
                 try:
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel=msg.channel if msg else "web",
-                            chat_id=msg.chat_id if msg else "system",
-                            content="",
-                            metadata={
-                                "type": "tool_execution",
-                                "tool": function_name,
-                                "status": tool_status,
-
-                                "args": function_args,
-                                "result": str(result)[:TOOL_BROADCAST_MAX_CHARS],
-                                "tool_call_id": tc_id,
-                            },
-                        )
-                    )
-                    if msg and msg.channel != "web":
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                channel="web",
-                                chat_id=msg.chat_id or "system",
-                                content="",
-                                metadata={
-                                    "type": "tool_execution",
-                                    "tool": function_name,
-                                    "status": "completed"
-                                    if not str(result).startswith("Error:")
-                                    else "error",
-                                    "args": function_args,
-                                    "result": str(result)[:TOOL_BROADCAST_MAX_CHARS],
-                                    "tool_call_id": tc_id,
-                                },
-                            )
-                        )
+                    done_meta = {
+                        "type": "tool_execution",
+                        "tool": function_name,
+                        "status": tool_status,
+                        "args": function_args,
+                        "result": str(result)[:TOOL_BROADCAST_MAX_CHARS],
+                        "tool_call_id": tc_id,
+                    }
+                    await self._publish_both(msg, "", done_meta)
                 except Exception:
                     pass
 
@@ -1495,14 +1538,7 @@ class AgentLoop:
                                 tag_content = display_buffer[: tag_end + 1]
                                 found_ghost = None
                                 if not tag_content.startswith("</"):
-                                    for g in [
-                                        "save_user",
-                                        "save_soul",
-                                        "save_memory",
-                                        "log_memory",
-                                        "save_mood",
-                                        "save_relationship",
-                                    ]:
+                                    for g in _GHOST_TAG_NAMES:
                                         if tag_content.startswith(f"<{g}"):
                                             found_ghost = g
                                             break
@@ -1607,15 +1643,32 @@ class AgentLoop:
             )
 
         if display_buffer and msg.channel == "web":
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content=display_buffer,
-                    metadata={"type": "chunk"},
+            # ── Scrub any ghost / orphan tags that survived streaming ──
+            if ghost_active:
+                # Stream ended mid-ghost — drop everything up to (and
+                # including) the closing tag, or the whole buffer if
+                # the closing tag never arrived.
+                closing = f"</{ghost_active}>"
+                close_idx = display_buffer.find(closing)
+                if close_idx != -1:
+                    display_buffer = display_buffer[close_idx + len(closing) :]
+                else:
+                    display_buffer = ""
+                ghost_active = None
+
+            # Strip any leftover opening or closing ghost tags.
+            display_buffer = _GHOST_TAG_RE.sub("", display_buffer).strip()
+
+            if display_buffer:
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=display_buffer,
+                        metadata={"type": "chunk"},
+                    )
                 )
-            )
-            streamed_to_web = True
+                streamed_to_web = True
             display_buffer = ""
 
         if not tool_calls and full_content:
@@ -1671,29 +1724,6 @@ class AgentLoop:
 
         return full_content, tool_calls, usage, streamed_to_web
 
-    def _get_memory_context(self) -> str:
-        return prompt_module.get_memory_context()
-
-    def _is_setup_complete(self) -> bool:
-        return prompt_module.is_setup_complete()
-
-    def _get_system_prompt(
-        self, sender_id: str, channel: str = "", chat_id: str = ""
-    ) -> str:
-        return self._build_full_system_prompt(sender_id, channel, chat_id)
-
-    def _validate_and_save_identity(self, content: str) -> bool:
-        return prompt_module.validate_and_save_identity(content)
-
-    def _validate_and_save_soul(self, content: str) -> bool:
-        return prompt_module.validate_and_save_soul(content)
-
-    def _validate_and_save_mood(self, content: str) -> bool:
-        return prompt_module.validate_and_save_mood(content)
-
-    def _validate_and_save_relationships(self, content: str) -> bool:
-        return prompt_module.validate_and_save_relationships(content)
-
     async def _process_message(self, msg: InboundMessage) -> None:
         session_key = msg.session_key
         try:
@@ -1716,10 +1746,10 @@ class AgentLoop:
                 await process_tags(
                     raw_reply=reply,
                     sender_id=msg.sender_id,
-                    validate_soul=self._validate_and_save_soul,
-                    validate_identity=self._validate_and_save_identity,
-                    validate_mood=self._validate_and_save_mood,
-                    validate_relationship=self._validate_and_save_relationships,
+                    validate_soul=prompt_module.validate_and_save_soul,
+                    validate_identity=prompt_module.validate_and_save_identity,
+                    validate_mood=prompt_module.validate_and_save_mood,
+                    validate_relationship=prompt_module.validate_and_save_relationships,
                     vector_service=self.vector_service,
                     bus=self.bus,
                     msg=msg,
@@ -1730,7 +1760,7 @@ class AgentLoop:
                         channel="web",
                         chat_id="global",
                         content="✨ Background reflection complete.",
-                        metadata={"is_maintenance": True},
+                        metadata={"type": "maintenance", "is_maintenance": True},
                     )
                 )
                 return
@@ -1776,28 +1806,11 @@ class AgentLoop:
                 ]
                 if pending_for_session:
                     normalized = content.strip().lower()
-                    _APPROVE = frozenset(
-                        {
-                            "proceed",
-                            "yes",
-                            "approve",
-                            "confirm",
-                            "ok",
-                            "sure",
-                            "y",
-                            "go",
-                            "run",
-                            "do it",
-                        }
+                    is_approve = normalized in _APPROVE_WORDS or any(
+                        normalized.startswith(k + " ") for k in _APPROVE_WORDS
                     )
-                    _DENY = frozenset(
-                        {"no", "cancel", "deny", "stop", "reject", "n", "abort", "nope"}
-                    )
-                    is_approve = normalized in _APPROVE or any(
-                        normalized.startswith(k + " ") for k in _APPROVE
-                    )
-                    is_deny = normalized in _DENY or any(
-                        normalized.startswith(k + " ") for k in _DENY
+                    is_deny = normalized in _DENY_WORDS or any(
+                        normalized.startswith(k + " ") for k in _DENY_WORDS
                     )
                     if is_approve or is_deny:
                         for conf_id, _ in pending_for_session:
@@ -1838,39 +1851,7 @@ class AgentLoop:
 
                     _RAG_TIMEOUT = 0.2
 
-                    # Fast-path: skip RAG for short/casual messages that
-                    # won't benefit from memory recall anyway.
-                    _CASUAL = frozenset(
-                        {
-                            "hi",
-                            "hey",
-                            "hello",
-                            "yo",
-                            "sup",
-                            "ok",
-                            "okay",
-                            "k",
-                            "yes",
-                            "no",
-                            "nope",
-                            "yep",
-                            "sure",
-                            "thanks",
-                            "thank you",
-                            "lol",
-                            "lmao",
-                            "haha",
-                            "nice",
-                            "cool",
-                            "good",
-                            "great",
-                            "bye",
-                            "cya",
-                            "ttyl",
-                            "brb",
-                        }
-                    )
-
+                    # Fast-path: skip RAG for short/casual messages.
                     async def _do_rag() -> str:
                         if not (
                             content
@@ -1879,7 +1860,7 @@ class AgentLoop:
                         ):
                             return ""
                         # Skip RAG for single casual words
-                        if content.strip().lower() in _CASUAL:
+                        if content.strip().lower() in _CASUAL_WORDS:
                             return ""
                         try:
                             results: list = []
@@ -1930,7 +1911,7 @@ class AgentLoop:
                         bool(content)
                         and len(content) > 10
                         and not content.startswith(("/", "@"))
-                        and content.strip().lower() not in _CASUAL
+                        and content.strip().lower() not in _CASUAL_WORDS
                     )
 
                     if _rag_needed:
@@ -2037,16 +2018,9 @@ class AgentLoop:
                         msg,
                         session_key,
                     )
-                    if isinstance(consume_result, tuple) and len(consume_result) >= 4:
-                        (
-                            full_content,
-                            tool_calls,
-                            _,
-                            streamed_to_web,
-                        ) = consume_result[:4]
-                    else:
-                        full_content, tool_calls, _ = consume_result
-                        streamed_to_web = False
+                    full_content, tool_calls, _, streamed_to_web = (
+                        self._unpack_stream_result(consume_result)
+                    )
                     accumulated_content = full_content
                     iterations_limit_reached = False
                     web_streamed_reply = bool(streamed_to_web)
@@ -2112,50 +2086,16 @@ class AgentLoop:
                                     session_key,
                                     accumulated_content,
                                 )
-                                if (
-                                    isinstance(nxt_consume_result, tuple)
-                                    and len(nxt_consume_result) >= 4
-                                ):
-                                    (
-                                        nxt_content,
-                                        nxt_tool_calls,
-                                        _,
-                                        nxt_streamed_to_web,
-                                    ) = nxt_consume_result[:4]
-                                else:
-                                    nxt_content, nxt_tool_calls, _ = nxt_consume_result
-                                    nxt_streamed_to_web = False
-                                web_streamed_reply = (
-                                    web_streamed_reply or bool(nxt_streamed_to_web)
+                                nxt_content, nxt_tool_calls, _, nxt_streamed_to_web = (
+                                    self._unpack_stream_result(nxt_consume_result)
+                                )
+                                web_streamed_reply = web_streamed_reply or bool(
+                                    nxt_streamed_to_web
                                 )
 
-                                clean_next = nxt_content
-                                acc_s, nxt_s = (
-                                    accumulated_content.strip(),
-                                    nxt_content.strip(),
+                                clean_next = self._dedup_overlap(
+                                    accumulated_content, nxt_content
                                 )
-
-                                if acc_s and nxt_s:
-                                    max_overlap = min(len(acc_s), len(nxt_s), 100)
-                                    found_overlap = False
-                                    for length in range(max_overlap, 4, -1):
-                                        suffix = acc_s[-length:]
-                                        if nxt_s.lower().startswith(suffix.lower()):
-                                            match = re.search(
-                                                re.escape(suffix),
-                                                nxt_content,
-                                                re.IGNORECASE,
-                                            )
-                                            if match:
-                                                idx = match.start()
-                                                clean_next = nxt_content[
-                                                    idx + length :
-                                                ].lstrip()
-                                                found_overlap = True
-                                                break
-
-                                    if not clean_next.strip() and found_overlap:
-                                        clean_next = ""
 
                                 if clean_next:
                                     sep = ""
@@ -2219,10 +2159,10 @@ class AgentLoop:
                     tag_result = await process_tags(
                         raw_reply=raw_reply,
                         sender_id=sender_id,
-                        validate_soul=self._validate_and_save_soul,
-                        validate_identity=self._validate_and_save_identity,
-                        validate_mood=self._validate_and_save_mood,
-                        validate_relationship=self._validate_and_save_relationships,
+                        validate_soul=prompt_module.validate_and_save_soul,
+                        validate_identity=prompt_module.validate_and_save_identity,
+                        validate_mood=prompt_module.validate_and_save_mood,
+                        validate_relationship=prompt_module.validate_and_save_relationships,
                         vector_service=self.vector_service,
                         bus=self.bus,
                         msg=msg,
@@ -2263,9 +2203,7 @@ class AgentLoop:
                             and not force_direct_reply
                         )
 
-                        if (
-                            suppress_web_final_reply
-                        ):
+                        if suppress_web_final_reply:
                             outbound = OutboundMessage(
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,
@@ -2328,4 +2266,3 @@ class AgentLoop:
                     )
             except Exception:
                 pass
-
