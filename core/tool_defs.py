@@ -17,12 +17,24 @@ from typing import Any, Dict, List
 BASE_TOOLS = [
     {
         "name": "read_file",
-        "description": "Read the contents of a file. Use this to examine code or text files.",
+        "description": "Read the contents of a file. Supports line ranges and bounded reads for large files.",
         "params": {
             "path": {
                 "type": "string",
                 "description": "Relative or absolute path to the file.",
-            }
+            },
+            "max_chars": {
+                "type": "integer",
+                "description": "Maximum characters to return (default 20000, max 200000).",
+            },
+            "start_line": {
+                "type": "integer",
+                "description": "Optional 1-based starting line number.",
+            },
+            "end_line": {
+                "type": "integer",
+                "description": "Optional 1-based ending line number (inclusive).",
+            },
         },
         "required": ["path"],
     },
@@ -54,11 +66,36 @@ BASE_TOOLS = [
     },
     {
         "name": "list_dir",
-        "description": "List files and subdirectories in a folder. Use this to explore the project or find existing skills in the 'skills/' folder.",
+        "description": "List files and subdirectories in a folder with pagination and sorting.",
         "params": {
             "path": {
                 "type": "string",
                 "description": "Path to the directory. Defaults to '.' (current directory).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum entries to return (default 200, max 1000).",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Pagination offset (default 0).",
+            },
+            "include_hidden": {
+                "type": "boolean",
+                "description": "Include dotfiles and hidden entries (default false).",
+            },
+            "sort_by": {
+                "type": "string",
+                "enum": ["name", "type", "mtime", "size", "none"],
+                "description": "Sort strategy (default name).",
+            },
+            "descending": {
+                "type": "boolean",
+                "description": "Sort descending when true (default false).",
+            },
+            "folders_first": {
+                "type": "boolean",
+                "description": "Show folders before files when applicable (default true).",
             }
         },
         "required": ["path"],

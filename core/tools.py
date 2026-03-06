@@ -205,8 +205,17 @@ class Toolbox:
                 out.append(f"- {path}")
         return "\n".join(out)
 
-    async def read_file(self, path: str) -> str:
-        """Read the contents of a file."""
+    async def read_file(
+        self,
+        path: str,
+        max_chars: int = 20_000,
+        start_line: int = None,
+        end_line: int = None,
+    ) -> str:
+        """
+        Read file contents with optional line-range slicing.
+        Uses bounded reads to avoid loading huge files into memory.
+        """
         if not self._is_path_allowed(path):
             return f"Error: Access denied to path '{path}'."
         p = Path(path).resolve()
@@ -215,14 +224,64 @@ class Toolbox:
         if not p.is_file():
             return f"Error: '{path}' is a directory."
         try:
-            content = await asyncio.to_thread(p.read_text, encoding="utf-8")
+            try:
+                max_chars = int(max_chars)
+            except Exception:
+                max_chars = 20_000
+            max_chars = max(200, min(max_chars, 200_000))
 
-            if len(content) > 20000:
-                return (
-                    content[:20000]
-                    + f"\n... (Truncated. Total length: {len(content)} chars)"
-                )
-            return content
+            has_range = start_line is not None or end_line is not None
+            if has_range:
+                if start_line is None:
+                    start_line = 1
+                try:
+                    start_line = int(start_line)
+                    end_line = int(end_line) if end_line is not None else None
+                except Exception:
+                    return "Error: start_line/end_line must be integers."
+
+                if start_line < 1:
+                    return "Error: start_line must be >= 1."
+                if end_line is not None and end_line < start_line:
+                    return "Error: end_line must be >= start_line."
+
+                def _read_line_range() -> str:
+                    collected: List[str] = []
+                    total = 0
+                    truncated = False
+
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        for idx, line in enumerate(f, start=1):
+                            if idx < start_line:
+                                continue
+                            if end_line is not None and idx > end_line:
+                                break
+
+                            if total + len(line) > max_chars:
+                                remaining = max_chars - total
+                                if remaining > 0:
+                                    collected.append(line[:remaining])
+                                truncated = True
+                                break
+
+                            collected.append(line)
+                            total += len(line)
+
+                    output = "".join(collected)
+                    if truncated:
+                        output += f"\n... (Truncated at {max_chars} chars)"
+                    return output
+
+                return await asyncio.to_thread(_read_line_range)
+
+            def _read_bounded() -> str:
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    chunk = f.read(max_chars + 1)
+                if len(chunk) > max_chars:
+                    return chunk[:max_chars] + f"\n... (Truncated at {max_chars} chars)"
+                return chunk
+
+            return await asyncio.to_thread(_read_bounded)
         except Exception as e:
             return f"Error reading file: {e}"
 
@@ -254,8 +313,20 @@ class Toolbox:
         except Exception as e:
             return f"Error deleting: {e}"
 
-    async def list_dir(self, path: str = ".") -> str:
-        """List files in a directory."""
+    async def list_dir(
+        self,
+        path: str = ".",
+        limit: int = 200,
+        offset: int = 0,
+        include_hidden: bool = False,
+        sort_by: str = "name",
+        descending: bool = False,
+        folders_first: bool = True,
+    ) -> str:
+        """
+        List files in a directory with pagination and configurable sorting.
+        Uses os.scandir/os.walk-style traversal semantics for lower overhead.
+        """
         if not self._is_path_allowed(path):
             return f"Error: Access denied to path '{path}'."
         p = Path(path).resolve()
@@ -264,11 +335,95 @@ class Toolbox:
         if not p.is_dir():
             return f"Error: Path '{path}' is not a directory."
         try:
-            items = []
-            for item in p.iterdir():
-                type_str = "DIR" if item.is_dir() else "FILE"
-                items.append(f"[{type_str}] {item.name}")
-            return "\n".join(sorted(items))
+            try:
+                limit = int(limit)
+            except Exception:
+                limit = 200
+            limit = max(1, min(limit, 1000))
+
+            try:
+                offset = int(offset)
+            except Exception:
+                offset = 0
+            offset = max(0, offset)
+
+            sort_by = (sort_by or "name").strip().lower()
+            if sort_by not in {"name", "type", "mtime", "size", "none"}:
+                return "Error: sort_by must be one of: name, type, mtime, size, none."
+
+            def _scan_dir() -> List[Dict[str, Any]]:
+                entries: List[Dict[str, Any]] = []
+                with os.scandir(p) as it:
+                    for entry in it:
+                        name = entry.name
+                        if not include_hidden and name.startswith("."):
+                            continue
+
+                        try:
+                            is_dir = entry.is_dir(follow_symlinks=False)
+                        except Exception:
+                            is_dir = False
+
+                        rec: Dict[str, Any] = {"name": name, "is_dir": is_dir}
+
+                        if sort_by in {"mtime", "size"}:
+                            try:
+                                st = entry.stat(follow_symlinks=False)
+                                rec["mtime"] = st.st_mtime
+                                rec["size"] = 0 if is_dir else st.st_size
+                            except Exception:
+                                rec["mtime"] = 0
+                                rec["size"] = 0
+
+                        entries.append(rec)
+                return entries
+
+            entries = await asyncio.to_thread(_scan_dir)
+
+            def _key_for(rec: Dict[str, Any]):
+                if sort_by == "mtime":
+                    return rec.get("mtime", 0)
+                if sort_by == "size":
+                    return rec.get("size", 0)
+                return rec["name"].lower()
+
+            if sort_by == "type":
+                entries.sort(
+                    key=lambda r: (0 if r["is_dir"] else 1, r["name"].lower()),
+                    reverse=descending,
+                )
+            elif sort_by != "none":
+                if folders_first:
+                    dirs = [r for r in entries if r["is_dir"]]
+                    files = [r for r in entries if not r["is_dir"]]
+                    dirs.sort(key=_key_for, reverse=descending)
+                    files.sort(key=_key_for, reverse=descending)
+                    entries = dirs + files
+                else:
+                    entries.sort(key=_key_for, reverse=descending)
+            elif folders_first:
+                dirs = [r for r in entries if r["is_dir"]]
+                files = [r for r in entries if not r["is_dir"]]
+                entries = dirs + files
+
+            total = len(entries)
+            page = entries[offset : offset + limit]
+
+            if not page:
+                return f"No entries in page (offset={offset}, total={total})."
+
+            start = offset + 1
+            end = offset + len(page)
+            header = f"Listing '{self._to_display_path(p)}' ({start}-{end} of {total})"
+            if end < total:
+                header += f" — more entries available (next offset: {end})"
+
+            lines = [header]
+            for rec in page:
+                type_str = "DIR" if rec["is_dir"] else "FILE"
+                lines.append(f"[{type_str}] {rec['name']}")
+
+            return "\n".join(lines)
         except Exception as e:
             return f"Error listing directory: {e}"
 
