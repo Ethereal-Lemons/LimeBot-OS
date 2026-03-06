@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, lazy, Suspense } from 'react';
 import axios from 'axios';
 import {
   AlertDialog,
@@ -13,37 +13,85 @@ import {
 import { API_BASE_URL, WS_BASE_URL } from "@/lib/api";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ChatInterface } from "@/components/chat/ChatInterface";
-import { InstancesList } from "@/components/sessions/SessionsList";
-import { ConfigPage } from "@/components/config/ConfigPage";
-import { ChannelsPage } from "@/components/channels/ChannelsPage";
-import { OverviewPage } from "@/components/overview/OverviewPage";
-import { LogsPage } from "@/components/logs/LogsPage";
-import { SkillsPage } from "@/components/skills/SkillsPage";
-import { AppearancePage } from "@/components/config/AppearancePage";
-import { SetupPage } from "@/components/setup/SetupPage";
-import { PersonaPage } from "@/components/persona/PersonaPage";
 import { AuthKeyModal } from "@/components/auth/AuthKeyModal";
-import { CronPage } from "@/components/cron/CronPage";
-import { MemoryPage } from "@/components/memory/MemoryPage";
-import { McpPage } from "./components/config/McpPage";
 import { injectCss, CSS_STORAGE_KEY } from "@/lib/css-injector";
+import {
+  applyFinalAssistantMessage,
+  applyStopTyping,
+  type ChatMessage,
+  upsertStreamDelta,
+} from "@/lib/chat-state";
 
 import { ToolExecution } from "@/components/chat/ToolCard";
 import { ConfirmationRequest } from "@/components/chat/ConfirmationCard";
 import { GhostActivity } from "@/components/chat/GhostActivity";
 import { Toaster } from "@/components/ui/sonner";
 
-type Message = {
-  sender: 'user' | 'bot';
-  type?: 'text' | 'tool' | 'confirmation';
-  content: string;
-  thinking?: string;
-  isStreaming?: boolean;
-  image?: string | null;
+type Message = ChatMessage & {
   toolExecution?: ToolExecution;
   confirmation?: ConfirmationRequest;
-  variant?: 'default' | 'destructive' | 'warning';
 };
+
+const InstancesList = lazy(() =>
+  import("@/components/sessions/SessionsList").then((module) => ({
+    default: module.InstancesList,
+  }))
+);
+const ConfigPage = lazy(() =>
+  import("@/components/config/ConfigPage").then((module) => ({
+    default: module.ConfigPage,
+  }))
+);
+const ChannelsPage = lazy(() =>
+  import("@/components/channels/ChannelsPage").then((module) => ({
+    default: module.ChannelsPage,
+  }))
+);
+const OverviewPage = lazy(() =>
+  import("@/components/overview/OverviewPage").then((module) => ({
+    default: module.OverviewPage,
+  }))
+);
+const LogsPage = lazy(() =>
+  import("@/components/logs/LogsPage").then((module) => ({
+    default: module.LogsPage,
+  }))
+);
+const SkillsPage = lazy(() =>
+  import("@/components/skills/SkillsPage").then((module) => ({
+    default: module.SkillsPage,
+  }))
+);
+const AppearancePage = lazy(() =>
+  import("@/components/config/AppearancePage").then((module) => ({
+    default: module.AppearancePage,
+  }))
+);
+const SetupPage = lazy(() =>
+  import("@/components/setup/SetupPage").then((module) => ({
+    default: module.SetupPage,
+  }))
+);
+const PersonaPage = lazy(() =>
+  import("@/components/persona/PersonaPage").then((module) => ({
+    default: module.PersonaPage,
+  }))
+);
+const CronPage = lazy(() =>
+  import("@/components/cron/CronPage").then((module) => ({
+    default: module.CronPage,
+  }))
+);
+const MemoryPage = lazy(() =>
+  import("@/components/memory/MemoryPage").then((module) => ({
+    default: module.MemoryPage,
+  }))
+);
+const McpPage = lazy(() =>
+  import("./components/config/McpPage").then((module) => ({
+    default: module.McpPage,
+  }))
+);
 
 type TimeThemeSettings = {
   enabled: boolean;
@@ -107,8 +155,16 @@ function App() {
   const ws = useRef<WebSocket | null>(null);
   const sessionIdRef = useRef(sessionId);
   const streamFlushTimerRef = useRef<number | null>(null);
-  const streamBufferRef = useRef<{ chatId: string | null; content: string; thinking: string }>({
+  const streamBufferRef = useRef<{
+    chatId: string | null;
+    messageId: string | null;
+    turnId: string | null;
+    content: string;
+    thinking: string;
+  }>({
     chatId: null,
+    messageId: null,
+    turnId: null,
     content: "",
     thinking: "",
   });
@@ -208,59 +264,55 @@ function App() {
     if (!pending.chatId) return;
 
     const bufferedChatId = pending.chatId;
+    const bufferedMessageId = pending.messageId;
+    const bufferedTurnId = pending.turnId;
     const bufferedContent = pending.content;
     const bufferedThinking = pending.thinking;
 
-    streamBufferRef.current = { chatId: null, content: "", thinking: "" };
+    streamBufferRef.current = {
+      chatId: null,
+      messageId: null,
+      turnId: null,
+      content: "",
+      thinking: "",
+    };
 
     if (bufferedChatId !== sessionIdRef.current) return;
     if (!bufferedContent && !bufferedThinking) return;
 
-    setMessages(prev => {
-      const lastMsg = prev[prev.length - 1];
-      if (lastMsg && lastMsg.sender === 'bot' && lastMsg.type !== 'tool' && !lastMsg.confirmation) {
-        const nextContent = `${lastMsg.content}${bufferedContent}`;
-        const nextThinking = bufferedThinking
-          ? `${lastMsg.thinking || ""}${bufferedThinking}`
-          : lastMsg.thinking;
-
-        if (nextContent === lastMsg.content && nextThinking === lastMsg.thinking && lastMsg.isStreaming) {
-          return prev;
-        }
-
-        const updated = [...prev];
-        updated[updated.length - 1] = {
-          ...lastMsg,
-          type: 'text',
-          content: nextContent,
-          thinking: nextThinking,
-          isStreaming: true,
-        };
-        return updated;
-      }
-
-      return [
-        ...prev,
-        {
-          sender: 'bot',
-          type: 'text',
-          content: bufferedContent,
-          thinking: bufferedThinking || undefined,
-          isStreaming: true,
-        }
-      ];
-    });
+    setMessages(prev =>
+      upsertStreamDelta(prev, {
+        messageId: bufferedMessageId,
+        turnId: bufferedTurnId,
+        contentDelta: bufferedContent,
+        thinkingDelta: bufferedThinking,
+      })
+    );
   };
 
-  const queueStreamDelta = (chatId: string | undefined, contentDelta = "", thinkingDelta = "") => {
+  const queueStreamDelta = (
+    chatId: string | undefined,
+    messageId: string | undefined,
+    turnId: string | undefined,
+    contentDelta = "",
+    thinkingDelta = ""
+  ) => {
     if (!chatId || chatId !== sessionIdRef.current) return;
 
-    if (streamBufferRef.current.chatId && streamBufferRef.current.chatId !== chatId) {
+    if (
+      streamBufferRef.current.chatId &&
+      (
+        streamBufferRef.current.chatId !== chatId ||
+        streamBufferRef.current.messageId !== (messageId || null)
+      )
+    ) {
       flushStreamBuffer();
     }
 
     if (!streamBufferRef.current.chatId) {
       streamBufferRef.current.chatId = chatId;
+      streamBufferRef.current.messageId = messageId || null;
+      streamBufferRef.current.turnId = turnId || null;
     }
     if (contentDelta) {
       streamBufferRef.current.content += contentDelta;
@@ -280,7 +332,13 @@ function App() {
   useEffect(() => {
     sessionIdRef.current = sessionId;
     clearStreamFlushTimer();
-    streamBufferRef.current = { chatId: null, content: "", thinking: "" };
+    streamBufferRef.current = {
+      chatId: null,
+      messageId: null,
+      turnId: null,
+      content: "",
+      thinking: "",
+    };
   }, [sessionId]);
 
   useEffect(() => {
@@ -375,7 +433,13 @@ function App() {
 
     return () => {
       clearStreamFlushTimer();
-      streamBufferRef.current = { chatId: null, content: "", thinking: "" };
+      streamBufferRef.current = {
+        chatId: null,
+        messageId: null,
+        turnId: null,
+        content: "",
+        thinking: "",
+      };
       ws.current?.close();
       axios.interceptors.response.eject(interceptor);
       window.clearInterval(themeTimer);
@@ -420,7 +484,13 @@ function App() {
       console.log('Disconnected from LimeBot');
       setIsConnected(false);
       clearStreamFlushTimer();
-      streamBufferRef.current = { chatId: null, content: "", thinking: "" };
+      streamBufferRef.current = {
+        chatId: null,
+        messageId: null,
+        turnId: null,
+        content: "",
+        thinking: "",
+      };
 
       setIsConnected(false);
 
@@ -435,6 +505,18 @@ function App() {
         const data = JSON.parse(event.data);
         const isMaintenanceEvent = data.type === 'maintenance' || data.metadata?.is_maintenance;
         const eventChatId: string | undefined = typeof data.chat_id === 'string' ? data.chat_id : undefined;
+        const eventTurnId: string | undefined =
+          typeof data.turn_id === 'string'
+            ? data.turn_id
+            : typeof data.metadata?.turn_id === 'string'
+              ? data.metadata.turn_id
+              : undefined;
+        const eventMessageId: string | undefined =
+          typeof data.message_id === 'string'
+            ? data.message_id
+            : typeof data.metadata?.message_id === 'string'
+              ? data.metadata.message_id
+              : undefined;
         const activeSessionId = sessionIdRef.current;
         const streamType = data.metadata?.type;
 
@@ -451,11 +533,11 @@ function App() {
         }
 
         if (streamType === 'chunk') {
-          queueStreamDelta(eventChatId, data.content || '', '');
+          queueStreamDelta(eventChatId, eventMessageId, eventTurnId, data.content || '', '');
           return;
         }
         if (streamType === 'thinking') {
-          queueStreamDelta(eventChatId, '', data.content || '');
+          queueStreamDelta(eventChatId, eventMessageId, eventTurnId, '', data.content || '');
           return;
         }
 
@@ -468,42 +550,14 @@ function App() {
           if (data.metadata?.is_error) variant = 'destructive';
           if (data.metadata?.is_warning) variant = 'warning';
 
-          setMessages(prev => {
-
-            const lastBotIdx = [...prev].map((m, i) => ({ m, i })).reverse()
-              .find(({ m }) => m.sender === 'bot' && m.type !== 'tool' && !m.confirmation)?.i ?? -1;
-
-            if (lastBotIdx !== -1) {
-              const updatedMsg = {
-                ...prev[lastBotIdx],
-                content: data.content,
-                variant,
-                type: 'text' as const,
-                isStreaming: false,
-              };
-
-
-              const hasUserMessagesAfter = prev.slice(lastBotIdx + 1).some(m => m.sender === 'user');
-              if (hasUserMessagesAfter) {
-
-                const newMessages = prev.filter((_, i) => i !== lastBotIdx);
-                return [...newMessages, updatedMsg];
-              }
-
-              const newMessages = [...prev];
-              newMessages[lastBotIdx] = updatedMsg;
-              return newMessages;
-            }
-
-
-            return [...prev, {
-              sender: 'bot' as const,
+          setMessages(prev =>
+            applyFinalAssistantMessage(prev, {
+              messageId: eventMessageId,
+              turnId: eventTurnId,
               content: data.content,
               variant,
-              type: 'text' as const,
-              isStreaming: false,
-            }];
-          });
+            })
+          );
 
           if (data.metadata && data.metadata.identity_updated) {
             refreshIdentity();
@@ -528,18 +582,7 @@ function App() {
         }
         else if (data.type === 'stop_typing' || data.metadata?.type === 'stop_typing') {
           setIsTyping(false);
-          setMessages(prev => {
-            for (let i = prev.length - 1; i >= 0; i--) {
-              const m = prev[i];
-              if (m.sender === 'bot' && m.type !== 'tool' && !m.confirmation) {
-                if (!m.isStreaming) return prev;
-                const updated = [...prev];
-                updated[i] = { ...m, isStreaming: false };
-                return updated;
-              }
-            }
-            return prev;
-          });
+          setMessages(prev => applyStopTyping(prev, { messageId: eventMessageId, turnId: eventTurnId }));
         }
         else if (data.type === 'typing' || data.metadata?.type === 'typing') {
           setIsTyping(true);
@@ -645,7 +688,13 @@ function App() {
   const handleNewChat = () => {
     flushStreamBuffer();
     clearStreamFlushTimer();
-    streamBufferRef.current = { chatId: null, content: "", thinking: "" };
+    streamBufferRef.current = {
+      chatId: null,
+      messageId: null,
+      turnId: null,
+      content: "",
+      thinking: "",
+    };
     // Generate new Session ID
     const newId = crypto.randomUUID();
     setSessionId(newId);
@@ -720,7 +769,11 @@ function App() {
   }
 
   if (forceSetup) {
-    return <SetupPage />;
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-background" />}>
+        <SetupPage />
+      </Suspense>
+    );
   }
 
   return (
@@ -756,48 +809,50 @@ function App() {
       </AlertDialog>
 
 
-      {
-        currentView === 'instances' ? (
-          <InstancesList currentSessionId={sessionId} />
-        ) : currentView === 'cron' ? (
-          <CronPage />
-        ) : currentView === 'memory' ? (
-          <MemoryPage />
-        ) : currentView === 'overview' ? (
-          <OverviewPage />
-        ) : currentView === 'channels' ? (
-          <ChannelsPage />
-        ) : currentView === 'logs' ? (
-          <LogsPage />
-        ) : currentView === 'skills' ? (
-          <SkillsPage />
-        ) : currentView === 'persona' ? (
-          <PersonaPage />
-        ) : currentView === 'appearance' ? (
-          <AppearancePage
-            onThemeChange={handleThemeChange}
-            onTimeThemeSettingsChange={handleTimeThemeSettingsChange}
-          />
-        ) : currentView === 'mcp' ? (
-          <McpPage />
-        ) : currentView === 'config' ? (
-          <ConfigPage />
-        ) : (
-          <ChatInterface
-            messages={messages}
-            inputValue={inputValue}
-            isConnected={isConnected}
-            isTyping={isTyping}
-            botIdentity={botIdentity}
-            activeChatId={sessionId}
-            autonomousMode={autonomousMode}
-            onInputChange={setInputValue}
-            onSendMessage={handleSendMessage}
-            onReconnect={connectWebSocket}
-            onNewChat={handleNewChat}
-          />
-        )
-      }
+      <Suspense fallback={<div className="h-full min-h-[40vh] bg-card/10 rounded-2xl border border-border/30" />}>
+        {
+          currentView === 'instances' ? (
+            <InstancesList currentSessionId={sessionId} />
+          ) : currentView === 'cron' ? (
+            <CronPage />
+          ) : currentView === 'memory' ? (
+            <MemoryPage />
+          ) : currentView === 'overview' ? (
+            <OverviewPage />
+          ) : currentView === 'channels' ? (
+            <ChannelsPage />
+          ) : currentView === 'logs' ? (
+            <LogsPage />
+          ) : currentView === 'skills' ? (
+            <SkillsPage />
+          ) : currentView === 'persona' ? (
+            <PersonaPage />
+          ) : currentView === 'appearance' ? (
+            <AppearancePage
+              onThemeChange={handleThemeChange}
+              onTimeThemeSettingsChange={handleTimeThemeSettingsChange}
+            />
+          ) : currentView === 'mcp' ? (
+            <McpPage />
+          ) : currentView === 'config' ? (
+            <ConfigPage />
+          ) : (
+            <ChatInterface
+              messages={messages}
+              inputValue={inputValue}
+              isConnected={isConnected}
+              isTyping={isTyping}
+              botIdentity={botIdentity}
+              activeChatId={sessionId}
+              autonomousMode={autonomousMode}
+              onInputChange={setInputValue}
+              onSendMessage={handleSendMessage}
+              onReconnect={connectWebSocket}
+              onNewChat={handleNewChat}
+            />
+          )
+        }
+      </Suspense>
 
       <GhostActivity activity={activity} />
       <Toaster position="top-right" />

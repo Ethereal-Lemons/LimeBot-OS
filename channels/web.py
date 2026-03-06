@@ -677,7 +677,10 @@ class WebChannel(BaseChannel):
 
         @self.app.get("/api/llm/health", dependencies=[Depends(self.verify_auth)])
         async def check_llm_health():
-            model = os.getenv("LLM_MODEL", "gemini/gemini-2.0-flash")
+            from config import load_config
+
+            cfg = load_config()
+            model = cfg.llm.model
             start = time.time()
             try:
                 from core.llm_utils import resolve_provider_config
@@ -1750,6 +1753,8 @@ class WebChannel(BaseChannel):
                 "content": msg.content,
                 "sender": "bot",
                 "chat_id": msg.chat_id,
+                "turn_id": metadata.get("turn_id"),
+                "message_id": metadata.get("message_id"),
                 "metadata": metadata,
             }
         )

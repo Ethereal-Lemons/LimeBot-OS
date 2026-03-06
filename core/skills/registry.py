@@ -3,6 +3,7 @@ Skill Registry - Manages loaded skills and injects into LLM context.
 """
 
 import os
+import re
 from typing import Dict, List, Any, Optional
 
 from loguru import logger
@@ -27,6 +28,7 @@ class SkillRegistry:
         self.loader = SkillLoader(skill_dirs)
         self.skills: Dict[str, Dict[str, Any]] = {}
         self._api_handlers: Dict[str, Any] = {}
+        self._skill_prompt_cache: Dict[str, str] = {}
 
     def discover_and_load(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -37,6 +39,9 @@ class SkillRegistry:
         """
         logger.info("Loading skills...")
         self.skills = self.loader.discover_skills()
+        self._skill_prompt_cache.clear()
+        if hasattr(self, "_cached_prompt_additions"):
+            delattr(self, "_cached_prompt_additions")
 
         for name, skill in self.skills.items():
             if skill.get("has_api"):
@@ -100,6 +105,82 @@ class SkillRegistry:
         except Exception as e:
             logger.error(f"    Error loading API handler for {skill_name}: {e}")
 
+    def _get_active_skills(self) -> Dict[str, Dict[str, Any]]:
+        return {k: v for k, v in self.skills.items() if v.get("active", True)}
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        stop_words = {
+            "the",
+            "and",
+            "for",
+            "with",
+            "from",
+            "that",
+            "this",
+            "into",
+            "your",
+            "have",
+            "will",
+            "when",
+            "using",
+            "use",
+            "via",
+            "all",
+            "new",
+            "get",
+        }
+        tokens = {
+            tok
+            for tok in re.findall(r"[a-z0-9_/-]+", (text or "").lower())
+            if len(tok) >= 3 and tok not in stop_words
+        }
+        expanded = set(tokens)
+        for token in tokens:
+            expanded.update(part for part in re.split(r"[_/-]+", token) if len(part) >= 3)
+        return expanded
+
+    def _skill_keywords(self, name: str, skill: Dict[str, Any]) -> set[str]:
+        metadata = skill.get("metadata") or {}
+        docs = "\n".join((skill.get("documentation") or "").splitlines()[:40])
+        keywords = self._tokenize(f"{name} {skill.get('description', '')} {docs}")
+        explicit = metadata.get("keywords", [])
+        if isinstance(explicit, list):
+            keywords.update(self._tokenize(" ".join(str(x) for x in explicit)))
+        elif explicit:
+            keywords.update(self._tokenize(str(explicit)))
+
+        # High-value manual hints for terse user requests.
+        hints = {
+            "browser": {"web", "website", "search", "browse", "page", "url"},
+            "discord": {"discord", "guild", "channel", "server", "embed"},
+            "download_image": {"image", "photo", "wallpaper", "download"},
+            "filesystem": {"file", "folder", "directory", "path", "read", "write"},
+            "github": {"github", "repo", "repository", "pull", "pr", "branch"},
+            "scrapling": {"scrape", "scraping", "selector", "html", "extract"},
+            "whatsapp": {"whatsapp", "jid", "media", "send"},
+        }
+        keywords.update(hints.get(name, set()))
+        return keywords
+
+    def _format_prompt_additions(self, skills: Dict[str, Dict[str, Any]]) -> str:
+        if not skills:
+            return ""
+
+        sections = ["\n## Available Skills\n"]
+        sections.append(
+            "These are skill manuals, not callable tool names. "
+            "Use the `run_command` tool to execute the shown commands.\n"
+        )
+
+        for name, skill in skills.items():
+            sections.append(f"### {name}")
+            sections.append(f"*{skill['description']}*\n")
+            sections.append(skill["documentation"])
+            sections.append("")
+
+        return "\n".join(sections)
+
     def get_system_prompt_additions(self) -> str:
         """
         Generate skill documentation to append to LLM system prompt.
@@ -111,23 +192,59 @@ class SkillRegistry:
         if hasattr(self, "_cached_prompt_additions"):
             return self._cached_prompt_additions
 
-        active_skills = {k: v for k, v in self.skills.items() if v.get("active", True)}
+        active_skills = self._get_active_skills()
 
         if not active_skills:
             self._cached_prompt_additions = ""
             return ""
 
-        sections = ["\n## Available Skills\n"]
-        sections.append("Use the `run_command` tool to execute skill commands.\n")
+        self._cached_prompt_additions = self._format_prompt_additions(active_skills)
+        return self._cached_prompt_additions
+
+    def get_relevant_prompt_additions(
+        self, user_text: str, max_skills: int = 3
+    ) -> str:
+        """
+        Return only the skills that are plausibly relevant to this user turn.
+        Falls back to no skill docs instead of dumping every enabled skill.
+        """
+        active_skills = self._get_active_skills()
+        if not active_skills:
+            return ""
+
+        text = (user_text or "").strip()
+        if not text:
+            return ""
+
+        cache_key = f"{text.lower()}::{max_skills}"
+        cached = self._skill_prompt_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        tokens = self._tokenize(text)
+        lowered = text.lower()
+        scored: list[tuple[int, str, Dict[str, Any]]] = []
 
         for name, skill in active_skills.items():
-            sections.append(f"### {name}")
-            sections.append(f"*{skill['description']}*\n")
-            sections.append(skill["documentation"])
-            sections.append("")
+            keywords = self._skill_keywords(name, skill)
+            score = len(tokens & keywords)
 
-        self._cached_prompt_additions = "\n".join(sections)
-        return self._cached_prompt_additions
+            explicit_name = name.lower() in lowered.replace("-", "_")
+            if explicit_name:
+                score += 50
+
+            if "http" in lowered or "www." in lowered:
+                if name in {"browser", "scrapling", "download_image"}:
+                    score += 3
+
+            if score > 0:
+                scored.append((score, name, skill))
+
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        selected = {name: skill for _, name, skill in scored[:max_skills]}
+        additions = self._format_prompt_additions(selected)
+        self._skill_prompt_cache[cache_key] = additions
+        return additions
 
     def get_skill_env(self, skill_name: str) -> Dict[str, str]:
         """

@@ -23,6 +23,24 @@ export default defineConfig(({ mode }) => {
         "@": path.resolve(__dirname, "./src"),
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes("node_modules")) return;
+            if (id.includes("react-markdown") || id.includes("remark-gfm") || id.includes("react-syntax-highlighter")) {
+              return "markdown-vendor";
+            }
+            if (id.includes("@radix-ui")) {
+              return "radix-vendor";
+            }
+            if (id.includes("react") || id.includes("scheduler")) {
+              return "react-vendor";
+            }
+          },
+        },
+      },
+    },
     server: {
       port: Number.isFinite(frontendPort) ? frontendPort : 5173,
       strictPort: false,

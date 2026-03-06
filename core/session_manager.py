@@ -1,6 +1,7 @@
 import json
 import time
 import os
+import re
 import shutil
 import asyncio
 from pathlib import Path
@@ -13,6 +14,39 @@ SESSION_DIR = PERSONA_DIR / "sessions"
 SESSION_FILE = SESSION_DIR / "sessions.json"
 LOGS_DIR = SESSION_DIR / "logs"
 SKILLS_DIR = Path("skills")
+_STRUCTURAL_RESIDUE_RE = re.compile(r"^[`{}\[\],:;\s]+$")
+
+
+def _sanitize_assistant_content(message: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], bool]:
+    """Drop malformed assistant residue while preserving valid tool-call entries."""
+    if message.get("role") != "assistant":
+        return message, False
+
+    content = message.get("content")
+    if not isinstance(content, str):
+        return message, False
+
+    stripped = content.strip()
+    if not stripped or not _STRUCTURAL_RESIDUE_RE.fullmatch(stripped):
+        return message, False
+
+    cleaned = dict(message)
+    cleaned["content"] = ""
+    if cleaned.get("tool_calls"):
+        return cleaned, True
+    return None, True
+
+
+def _sanitize_history_rows(rows: list[Dict[str, Any]]) -> tuple[list[Dict[str, Any]], int]:
+    cleaned_rows: list[Dict[str, Any]] = []
+    cleaned_count = 0
+    for row in rows or []:
+        cleaned_row, changed = _sanitize_assistant_content(row)
+        if changed:
+            cleaned_count += 1
+        if cleaned_row is not None:
+            cleaned_rows.append(cleaned_row)
+    return cleaned_rows, cleaned_count
 
 
 class SessionManager:
@@ -148,7 +182,8 @@ class SessionManager:
         history_dir.mkdir(parents=True, exist_ok=True)
         history_file = history_dir / f"{session_key}.json"
         try:
-            content = await asyncio.to_thread(json.dumps, history, default=str)
+            cleaned_history, _ = _sanitize_history_rows(history)
+            content = await asyncio.to_thread(json.dumps, cleaned_history, default=str)
             await asyncio.to_thread(history_file.write_text, content, encoding="utf-8")
         except Exception as e:
             logger.error(f"Error saving history for {session_key}: {e}")
@@ -161,10 +196,75 @@ class SessionManager:
                 content = await asyncio.to_thread(
                     history_file.read_text, encoding="utf-8"
                 )
-                return json.loads(content)
+                history = json.loads(content)
+                cleaned_history, cleaned_count = _sanitize_history_rows(history)
+                if cleaned_count:
+                    logger.info(
+                        f"Cleaned {cleaned_count} malformed history entr{'y' if cleaned_count == 1 else 'ies'} in {session_key}."
+                    )
+                    await self.save_history(session_key, cleaned_history)
+                return cleaned_history
             except Exception as e:
                 logger.debug(f"Could not load history for {session_key}: {e}")
         return []
+
+    def cleanup_history_artifacts(self) -> dict[str, int]:
+        """Sanitize persisted histories and chat logs to remove malformed assistant residue."""
+        history_dir = SESSION_DIR / "history"
+        cleaned_history_files = 0
+        cleaned_history_entries = 0
+        cleaned_log_files = 0
+        cleaned_log_entries = 0
+
+        if history_dir.exists():
+            for history_file in history_dir.glob("*.json"):
+                try:
+                    history = json.loads(history_file.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                cleaned_history, cleaned_count = _sanitize_history_rows(history)
+                if not cleaned_count:
+                    continue
+                history_file.write_text(
+                    json.dumps(cleaned_history, default=str), encoding="utf-8"
+                )
+                cleaned_history_files += 1
+                cleaned_history_entries += cleaned_count
+
+        if LOGS_DIR.exists():
+            for log_file in LOGS_DIR.glob("*.jsonl"):
+                rows = []
+                changed = 0
+                try:
+                    with log_file.open("r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                row = json.loads(line)
+                            except Exception:
+                                rows.append(line)
+                                continue
+                            cleaned_row, row_changed = _sanitize_assistant_content(row)
+                            if row_changed:
+                                changed += 1
+                            if cleaned_row is not None:
+                                rows.append(json.dumps(cleaned_row, default=str))
+                except Exception:
+                    continue
+                if not changed:
+                    continue
+                log_file.write_text("\n".join(rows) + "\n", encoding="utf-8")
+                cleaned_log_files += 1
+                cleaned_log_entries += changed
+
+        return {
+            "history_files": cleaned_history_files,
+            "history_entries": cleaned_history_entries,
+            "log_files": cleaned_log_files,
+            "log_entries": cleaned_log_entries,
+        }
 
     def delete_history(self, session_key: str):
         """Remove persisted history file for a session."""

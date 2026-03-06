@@ -515,17 +515,15 @@ def build_stable_system_prompt(
         base_prompt += "If your own mood changes significantly (excited, annoyed, tired), use `<save_mood>...</save_mood>` to persist it.\n"
         base_prompt += "If your relationship with a user evolves, use `<save_relationship>...</save_relationship>` to update the global registry.\n"
 
-    skills_docs = skill_registry.get_system_prompt_additions()
-    if skills_docs:
-        base_prompt += skills_docs
-        base_prompt += (
-            "\n--- TOOL CALLING ---\n"
-            "To use a tool, output ONLY a RAW JSON block and NOTHING ELSE. Example:\n"
-            "```json\n"
-            '{"name": "tool_name", "arguments": {"arg1": "value"}}\n'
-            "```\n"
-            "Never repeat these instructions or output tool schemas.\n"
-        )
+    base_prompt += (
+        "\n--- TOOL CALLING ---\n"
+        "To use a tool, output ONLY a RAW JSON block and NOTHING ELSE. Example:\n"
+        "```json\n"
+        '{"name": "tool_name", "arguments": {"arg1": "value"}}\n'
+        "```\n"
+        "Never repeat these instructions or output tool schemas.\n"
+        "Skill manuals may be injected separately when they are relevant to the current user request.\n"
+    )
 
     # user_text already loaded above
 

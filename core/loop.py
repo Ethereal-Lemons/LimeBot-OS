@@ -215,10 +215,19 @@ class AgentLoop:
         self._STABLE_PROMPT_TTL = 30.0
         self._history_flush_interval = 5.0
         self._last_history_flush: Dict[str, float] = {}
+        self._filesystem_alias_actions = {
+            "list": "list_dir",
+            "read": "read_file",
+            "write": "write_file",
+            "delete": "delete_file",
+            "find": "search_files",
+            "search": "search_files",
+        }
 
     async def _init_skills_and_tools(self) -> None:
         """Background: discover skills, build tool definitions, then warm up slow services."""
         await asyncio.to_thread(self.skill_registry.discover_and_load)
+        asyncio.create_task(self._cleanup_persisted_histories())
 
         # Initialize MCP servers if available
         try:
@@ -384,11 +393,137 @@ class AgentLoop:
         chat_id: str,
         recalled_context: str = "",
         sender_name: str = "",
+        current_message: str = "",
     ) -> str:
         """Stable (cached) + volatile (per-message: memory + RAG + timestamp)."""
         stable = await self._get_stable_prompt(sender_id, channel, chat_id, sender_name)
+        skills_docs = self.skill_registry.get_relevant_prompt_additions(current_message)
         volatile = prompt_module.get_volatile_prompt_suffix(recalled_context)
-        return stable + volatile
+        return stable + (skills_docs + "\n" if skills_docs else "") + volatile
+
+    async def _cleanup_persisted_histories(self) -> None:
+        """Best-effort cleanup of malformed assistant residue in persisted sessions."""
+        try:
+            summary = await asyncio.to_thread(
+                self.session_manager.cleanup_history_artifacts
+            )
+        except Exception as e:
+            logger.debug(f"History cleanup skipped: {e}")
+            return
+
+        cleaned_total = (
+            summary.get("history_entries", 0) + summary.get("log_entries", 0)
+        )
+        if not cleaned_total:
+            return
+
+        logger.info(
+            "🧹 Cleaned persisted malformed chat residue: "
+            f"{summary.get('history_entries', 0)} history entr"
+            f"{'y' if summary.get('history_entries', 0) == 1 else 'ies'}, "
+            f"{summary.get('log_entries', 0)} log entr"
+            f"{'y' if summary.get('log_entries', 0) == 1 else 'ies'}."
+        )
+        self.metrics.record_anomaly(
+            "system",
+            "history_cleanup",
+            detail=str(summary),
+            count=cleaned_total,
+        )
+
+    @staticmethod
+    def _with_trace_metadata(
+        metadata: Optional[Dict[str, Any]] = None,
+        turn_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload = dict(metadata or {})
+        if turn_id:
+            payload.setdefault("turn_id", turn_id)
+        if message_id:
+            payload.setdefault("message_id", message_id)
+        return payload
+
+    def _normalize_tool_alias(
+        self, function_name: str, function_args: dict, session_key: str
+    ) -> tuple[str, dict]:
+        """Normalize common alias tools back to canonical runtime tool names."""
+        normalized_name = function_name
+        normalized_args = dict(function_args or {})
+
+        if function_name != "filesystem":
+            return normalized_name, normalized_args
+
+        action = str(normalized_args.pop("action", "") or "").strip().lower()
+        if not action:
+            self.metrics.record_anomaly(
+                session_key, "filesystem_alias_missing_action", detail=str(function_args)
+            )
+            return function_name, function_args
+
+        mapped_name = self._filesystem_alias_actions.get(action)
+        if not mapped_name:
+            self.metrics.record_anomaly(
+                session_key,
+                "filesystem_alias_unsupported",
+                detail=f"action={action}",
+            )
+            return function_name, function_args
+
+        self.metrics.record_anomaly(
+            session_key,
+            "filesystem_alias_normalized",
+            detail=f"{action}->{mapped_name}",
+        )
+
+        if mapped_name == "list_dir":
+            normalized_args = {
+                "path": normalized_args.get("path", "."),
+                **{
+                    k: v
+                    for k, v in normalized_args.items()
+                    if k
+                    in {
+                        "limit",
+                        "offset",
+                        "include_hidden",
+                        "sort_by",
+                        "descending",
+                        "folders_first",
+                    }
+                },
+            }
+        elif mapped_name == "read_file":
+            normalized_args = {
+                "path": normalized_args.get("path", ""),
+                **{
+                    k: v
+                    for k, v in normalized_args.items()
+                    if k in {"max_chars", "start_line", "end_line"}
+                },
+            }
+        elif mapped_name == "write_file":
+            normalized_args = {
+                "path": normalized_args.get("path", ""),
+                "content": normalized_args.get("content", ""),
+            }
+        elif mapped_name == "delete_file":
+            normalized_args = {"path": normalized_args.get("path", "")}
+        elif mapped_name == "search_files":
+            normalized_args = {
+                "query": normalized_args.get("query")
+                or normalized_args.get("pattern")
+                or "",
+                "path": normalized_args.get("path", "."),
+                "mode": normalized_args.get("mode", "content"),
+                **{
+                    k: v
+                    for k, v in normalized_args.items()
+                    if k in {"file_glob", "case_sensitive", "max_results"}
+                },
+            }
+
+        return mapped_name, normalized_args
 
     # ── Shared publishing helpers ────────────────────────────────────────
 
@@ -726,6 +861,8 @@ class AgentLoop:
         max_retries: int = 3,
         stream: bool = False,
         include_tools: bool = True,
+        turn_id: Optional[str] = None,
+        message_id: Optional[str] = None,
     ) -> Any:
 
         model, base_url, api_key, custom_llm_provider = self._provider
@@ -810,7 +947,11 @@ class AgentLoop:
                             content=text,
                             channel=msg.channel,
                             chat_id=msg.chat_id,
-                            metadata={"reply_to": msg.sender_id, "is_warning": True},
+                            metadata=self._with_trace_metadata(
+                                {"reply_to": msg.sender_id, "is_warning": True},
+                                turn_id=turn_id,
+                                message_id=message_id,
+                            ),
                         )
                     )
 
@@ -829,7 +970,11 @@ class AgentLoop:
                                 content=content,
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,
-                                metadata={"reply_to": msg.sender_id, "is_error": True},
+                                metadata=self._with_trace_metadata(
+                                    {"reply_to": msg.sender_id, "is_error": True},
+                                    turn_id=turn_id,
+                                    message_id=message_id,
+                                ),
                             )
                         )
                     raise
@@ -1082,11 +1227,15 @@ class AgentLoop:
                 )
             else:
                 handler = self._tool_registry.get(function_name)
-                result = (
-                    await handler(**function_args)
-                    if handler
-                    else f"Error: Unknown tool '{function_name}'"
-                )
+                if handler:
+                    result = await handler(**function_args)
+                else:
+                    self.metrics.record_anomaly(
+                        session_key,
+                        "unknown_tool",
+                        detail=f"{function_name}({function_args})",
+                    )
+                    result = f"Error: Unknown tool '{function_name}'"
 
             is_read_only = function_name in _BROWSER_CACHEABLE or function_name in {
                 "read_file",
@@ -1176,6 +1325,8 @@ class AgentLoop:
         tool_calls: list,
         session_key: str,
         msg: Optional[InboundMessage],
+        turn_id: Optional[str] = None,
+        message_id: Optional[str] = None,
     ) -> bool:
         """Run all tools in parallel. Returns True if any was blocked."""
         any_blocked = False
@@ -1190,6 +1341,8 @@ class AgentLoop:
                     {
                         "tc_id": tc_id,
                         "chat_id": msg.chat_id if msg else "system",
+                        "turn_id": turn_id or "",
+                        "message_id": message_id or "",
                     }
                 )
 
@@ -1197,6 +1350,11 @@ class AgentLoop:
                 if raw_args == "{}{}":
                     logger.warning(
                         f"⚠ Malformed args for {function_name} — fixing to {{}}"
+                    )
+                    self.metrics.record_anomaly(
+                        session_key,
+                        "malformed_tool_args",
+                        detail=f"{function_name}:double_object",
                     )
                     raw_args = "{}"
                     tool_call["function"]["arguments"] = raw_args
@@ -1208,6 +1366,15 @@ class AgentLoop:
                     logger.error(
                         f"⚠ Invalid JSON args for '{function_name}'. Using {{}}."
                     )
+                    self.metrics.record_anomaly(
+                        session_key,
+                        "invalid_tool_args_json",
+                        detail=f"{function_name}:{raw_args[:120]}",
+                    )
+
+                function_name, function_args = self._normalize_tool_alias(
+                    function_name, function_args, session_key
+                )
 
                 logger.info(f"Executing: {function_name}({function_args})")
 
@@ -1250,6 +1417,8 @@ class AgentLoop:
                             "args": function_args,
                             "tool_call_id": tc_id,
                             "conf_id": conf_id,
+                            "turn_id": turn_id,
+                            "message_id": message_id,
                             "embed": {
                                 "title": "Exec Approval Required",
                                 "description": "A command needs your approval.",
@@ -1304,6 +1473,8 @@ class AgentLoop:
                     "tool": function_name,
                     "args": function_args,
                     "tool_call_id": tc_id,
+                    "turn_id": turn_id,
+                    "message_id": message_id,
                 }
                 await self._publish_both(msg, tool_content, run_meta)
 
@@ -1373,6 +1544,8 @@ class AgentLoop:
                         "args": fail_args,
                         "result": f"Execution failed or was cancelled: {type(outcome).__name__}",
                         "tool_call_id": fail_tc_id,
+                        "turn_id": turn_id,
+                        "message_id": message_id,
                     }
                     await self._publish_both(msg, fail_name, err_meta)
                 except Exception:
@@ -1399,6 +1572,8 @@ class AgentLoop:
                         "args": function_args,
                         "result": str(result)[:TOOL_BROADCAST_MAX_CHARS],
                         "tool_call_id": tc_id,
+                        "turn_id": turn_id,
+                        "message_id": message_id,
                     }
                     await self._publish_both(msg, "", done_meta)
                 except Exception:
@@ -1427,6 +1602,7 @@ class AgentLoop:
     async def send_tool_progress(
         self, tool_call_id: str, chat_id: str, content: str
     ) -> None:
+        ctx = tool_context.get() or {}
         await self.bus.publish_outbound(
             OutboundMessage(
                 channel="web",
@@ -1436,6 +1612,8 @@ class AgentLoop:
                     "type": "tool_execution",
                     "status": "progress",
                     "tool_call_id": tool_call_id,
+                    "turn_id": ctx.get("turn_id") or None,
+                    "message_id": ctx.get("message_id") or None,
                 },
             )
         )
@@ -1520,12 +1698,68 @@ class AgentLoop:
 
         return tool_calls
 
+    @staticmethod
+    def _trim_leading_structural_lines(content: str) -> str:
+        """Drop leading fence/bracket residue that sometimes leaks before tool calls."""
+        if not content:
+            return ""
+
+        lines = content.splitlines(keepends=True)
+        while lines:
+            stripped = lines[0].strip()
+            if not stripped:
+                lines.pop(0)
+                continue
+            if re.fullmatch(r"[`{}\[\],:;]+", stripped):
+                lines.pop(0)
+                continue
+            break
+        return "".join(lines)
+
+    def _sanitize_tool_call_content(self, content: str) -> str:
+        """Keep only meaningful prose when the model mixes text with tool syntax."""
+        if not content:
+            return ""
+
+        cleaned = content
+        cleaned = re.sub(
+            r"```(?:json)?\s*\{.*?\}\s*```",
+            "",
+            cleaned,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"<\|tool_call_begin\|>.*?<\|tool_call_end\|>",
+            "",
+            cleaned,
+            flags=re.DOTALL,
+        )
+        cleaned = re.sub(
+            r"(?::?functions\.\w+(?::\d+)?\s*\{[^}]*\})",
+            "",
+            cleaned,
+        )
+        cleaned = self._trim_leading_structural_lines(cleaned)
+        cleaned_lines = []
+        for line in cleaned.splitlines():
+            stripped = line.strip()
+            if stripped and re.fullmatch(r"[`{}\[\],:;]+", stripped):
+                continue
+            cleaned_lines.append(line)
+        cleaned = "\n".join(cleaned_lines).strip()
+
+        if not re.search(r"[A-Za-z0-9]", cleaned):
+            return ""
+        return cleaned
+
     async def _consume_stream(
         self,
         response_stream,
         msg: InboundMessage,
         session_key: str,
         previous_content: str = "",
+        turn_id: Optional[str] = None,
+        message_id: Optional[str] = None,
     ):
         full_content: str = ""
         tool_calls: list = []
@@ -1595,6 +1829,11 @@ class AgentLoop:
 
                     if msg.channel == "web" and not is_potential_json and to_stream:
                         display_buffer += to_stream
+                        display_buffer = self._trim_leading_structural_lines(
+                            display_buffer
+                        )
+                        if not display_buffer.strip():
+                            continue
 
                         now = time.monotonic()
                         should_flush = (
@@ -1611,7 +1850,11 @@ class AgentLoop:
                                             channel=msg.channel,
                                             chat_id=msg.chat_id,
                                             content=display_buffer,
-                                            metadata={"type": "chunk"},
+                                            metadata=self._with_trace_metadata(
+                                                {"type": "chunk"},
+                                                turn_id=turn_id,
+                                                message_id=message_id,
+                                            ),
                                         )
                                     )
                                     display_buffer = ""
@@ -1624,7 +1867,11 @@ class AgentLoop:
                                             channel=msg.channel,
                                             chat_id=msg.chat_id,
                                             content=display_buffer[:tag_start],
-                                            metadata={"type": "chunk"},
+                                            metadata=self._with_trace_metadata(
+                                                {"type": "chunk"},
+                                                turn_id=turn_id,
+                                                message_id=message_id,
+                                            ),
                                         )
                                     )
                                     streamed_to_web = True
@@ -1665,7 +1912,11 @@ class AgentLoop:
                                             channel=msg.channel,
                                             chat_id=msg.chat_id,
                                             content=tag_content,
-                                            metadata={"type": "chunk"},
+                                            metadata=self._with_trace_metadata(
+                                                {"type": "chunk"},
+                                                turn_id=turn_id,
+                                                message_id=message_id,
+                                            ),
                                         )
                                     )
                                     streamed_to_web = True
@@ -1698,7 +1949,11 @@ class AgentLoop:
                             channel=msg.channel,
                             chat_id=msg.chat_id,
                             content=thinking,
-                            metadata={"type": "thinking"},
+                            metadata=self._with_trace_metadata(
+                                {"type": "thinking"},
+                                turn_id=turn_id,
+                                message_id=message_id,
+                            ),
                         )
                     )
 
@@ -1728,7 +1983,11 @@ class AgentLoop:
                         channel=msg.channel,
                         chat_id=msg.chat_id,
                         content="",
-                        metadata={"type": "rate_limit_error", "details": str(e)},
+                        metadata=self._with_trace_metadata(
+                            {"type": "rate_limit_error", "details": str(e)},
+                            turn_id=turn_id,
+                            message_id=message_id,
+                        ),
                     )
                 )
             else:
@@ -1756,6 +2015,8 @@ class AgentLoop:
                     display_buffer = ""
                 ghost_active = None
 
+            display_buffer = self._trim_leading_structural_lines(display_buffer)
+
             # Strip any leftover opening or closing ghost tags.
             display_buffer = _GHOST_TAG_RE.sub("", display_buffer).strip()
 
@@ -1765,7 +2026,11 @@ class AgentLoop:
                         channel=msg.channel,
                         chat_id=msg.chat_id,
                         content=display_buffer,
-                        metadata={"type": "chunk"},
+                        metadata=self._with_trace_metadata(
+                            {"type": "chunk"},
+                            turn_id=turn_id,
+                            message_id=message_id,
+                        ),
                     )
                 )
                 streamed_to_web = True
@@ -1812,6 +2077,16 @@ class AgentLoop:
                 valid_tcs.append(tc)
         tool_calls = valid_tcs
 
+        if tool_calls and full_content:
+            pre_sanitize = full_content
+            full_content = self._sanitize_tool_call_content(full_content)
+            if pre_sanitize.strip() and pre_sanitize != full_content:
+                self.metrics.record_anomaly(
+                    session_key,
+                    "tool_call_residue_stripped",
+                    detail=pre_sanitize[:160],
+                )
+
         if (
             is_potential_json
             and not tool_calls
@@ -1824,7 +2099,11 @@ class AgentLoop:
                     channel=msg.channel,
                     chat_id=msg.chat_id,
                     content=full_content,
-                    metadata={"type": "full_content"},
+                    metadata=self._with_trace_metadata(
+                        {"type": "full_content"},
+                        turn_id=turn_id,
+                        message_id=message_id,
+                    ),
                 )
             )
 
@@ -1832,6 +2111,8 @@ class AgentLoop:
 
     async def _process_message(self, msg: InboundMessage) -> None:
         session_key = msg.session_key
+        turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        assistant_message_id = f"msg_{uuid.uuid4().hex[:12]}"
         try:
             content = msg.content or ""
             if content.startswith("[SCHEDULER] "):
@@ -1866,7 +2147,10 @@ class AgentLoop:
                         channel="web",
                         chat_id="global",
                         content="✨ Background reflection complete.",
-                        metadata={"type": "maintenance", "is_maintenance": True},
+                        metadata=self._with_trace_metadata(
+                            {"type": "maintenance", "is_maintenance": True},
+                            turn_id=turn_id,
+                        ),
                     )
                 )
                 return
@@ -1931,7 +2215,11 @@ class AgentLoop:
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,
                                 content=reply_text,
-                                metadata={"reply_to": msg.sender_id},
+                                metadata=self._with_trace_metadata(
+                                    {"reply_to": msg.sender_id},
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
+                                ),
                             )
                         )
                         return
@@ -1941,7 +2229,11 @@ class AgentLoop:
                     channel=msg.channel,
                     chat_id=msg.chat_id,
                     content="",
-                    metadata={"type": "typing"},
+                    metadata=self._with_trace_metadata(
+                        {"type": "typing"},
+                        turn_id=turn_id,
+                        message_id=assistant_message_id,
+                    ),
                 )
             )
 
@@ -2050,6 +2342,7 @@ class AgentLoop:
                         chat_id=msg.chat_id,
                         recalled_context=recalled_context,
                         sender_name=sender_name,
+                        current_message=content,
                     )
 
                     if session_key not in self.history:
@@ -2120,11 +2413,15 @@ class AgentLoop:
                         msg=msg,
                         stream=True,
                         include_tools=include_tools,
+                        turn_id=turn_id,
+                        message_id=assistant_message_id,
                     )
                     consume_result = await self._consume_stream(
                         stream,
                         msg,
                         session_key,
+                        turn_id=turn_id,
+                        message_id=assistant_message_id,
                     )
                     full_content, tool_calls, _, streamed_to_web = (
                         self._unpack_stream_result(consume_result)
@@ -2149,12 +2446,20 @@ class AgentLoop:
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,
                                 content="",
-                                metadata={"type": "stop_typing"},
+                                metadata=self._with_trace_metadata(
+                                    {"type": "stop_typing"},
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
+                                ),
                             )
                         )
 
                         is_blocked = await self._execute_tool_batch(
-                            tool_calls, session_key, msg
+                            tool_calls,
+                            session_key,
+                            msg,
+                            turn_id=turn_id,
+                            message_id=assistant_message_id,
                         )
 
                         if not is_blocked:
@@ -2168,6 +2473,11 @@ class AgentLoop:
                                     iterations_limit_reached = True
                                     logger.warning(
                                         f"⚠ Max iterations ({max_iterations}) reached."
+                                    )
+                                    self.metrics.record_anomaly(
+                                        session_key,
+                                        "tool_iteration_limit_reached",
+                                        detail=f"limit={max_iterations}",
                                     )
                                     raw_reply = (
                                         "⚠️ **Action Limit Reached**\n"
@@ -2188,12 +2498,16 @@ class AgentLoop:
                                     msg=msg,
                                     stream=True,
                                     include_tools=True,
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
                                 )
                                 nxt_consume_result = await self._consume_stream(
                                     nxt_stream,
                                     msg,
                                     session_key,
                                     accumulated_content,
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
                                 )
                                 nxt_content, nxt_tool_calls, _, nxt_streamed_to_web = (
                                     self._unpack_stream_result(nxt_consume_result)
@@ -2242,7 +2556,11 @@ class AgentLoop:
                                 self._mark_dirty(session_key)
 
                                 nxt_blocked = await self._execute_tool_batch(
-                                    nxt_tool_calls, session_key, msg
+                                    nxt_tool_calls,
+                                    session_key,
+                                    msg,
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
                                 )
 
                                 if iteration % _INTERIM_SAVE_EVERY == 0:
@@ -2321,6 +2639,11 @@ class AgentLoop:
                             meta["identity_updated"] = True
                         if iterations_limit_reached:
                             meta["is_warning"] = True
+                        meta = self._with_trace_metadata(
+                            meta,
+                            turn_id=turn_id,
+                            message_id=assistant_message_id,
+                        )
 
                         suppress_web_final_reply = (
                             msg.channel == "web"
@@ -2335,7 +2658,11 @@ class AgentLoop:
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,
                                 content="",
-                                metadata={"type": "stop_typing"},
+                                metadata=self._with_trace_metadata(
+                                    {"type": "stop_typing"},
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
+                                ),
                             )
                         else:
                             outbound = OutboundMessage(
@@ -2356,10 +2683,14 @@ class AgentLoop:
                                 channel=msg.channel if msg else "web",
                                 chat_id=msg.chat_id if msg else "system",
                                 content="",
-                                metadata={
-                                    "type": "cancellation",
-                                    "is_cancellation": True,
-                                },
+                                metadata=self._with_trace_metadata(
+                                    {
+                                        "type": "cancellation",
+                                        "is_cancellation": True,
+                                    },
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
+                                ),
                             )
                         )
                     raise
@@ -2373,7 +2704,11 @@ class AgentLoop:
                             channel=msg.channel,
                             chat_id=msg.chat_id,
                             content=f"🚫 **Internal error.**\n`{e}`",
-                            metadata={"is_error": True, "reply_to": msg.sender_id},
+                            metadata=self._with_trace_metadata(
+                                {"is_error": True, "reply_to": msg.sender_id},
+                                turn_id=turn_id,
+                                message_id=assistant_message_id,
+                            ),
                         )
                     )
 
@@ -2388,7 +2723,11 @@ class AgentLoop:
                             channel=msg.channel,
                             chat_id=msg.chat_id,
                             content="",
-                            metadata={"type": "stop_typing"},
+                            metadata=self._with_trace_metadata(
+                                {"type": "stop_typing"},
+                                turn_id=turn_id,
+                                message_id=assistant_message_id,
+                            ),
                         )
                     )
             except Exception:

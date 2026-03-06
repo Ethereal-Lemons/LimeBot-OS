@@ -29,6 +29,7 @@ class SessionMetrics:
     total_llm_time_s: float = 0.0
     total_tool_time_s: float = 0.0
     errors: int = 0
+    anomalies: Dict[str, int] = field(default_factory=dict)
     started_at: float = field(default_factory=time.time)
 
 
@@ -49,6 +50,7 @@ class MetricsCollector:
             cls._instance._global_llm_calls = 0
             cls._instance._global_tool_calls = 0
             cls._instance._global_errors = 0
+            cls._instance._global_anomalies: Dict[str, int] = {}
             cls._instance._boot_time = time.time()
         return cls._instance
 
@@ -114,6 +116,28 @@ class MetricsCollector:
             }
         )
 
+    def record_anomaly(
+        self, session_key: str, anomaly_type: str, detail: str = "", count: int = 1
+    ):
+        """Record a non-fatal anomaly for observability and later cleanup."""
+        with self._lock:
+            sm = self._get_session(session_key)
+            sm.anomalies[anomaly_type] = sm.anomalies.get(anomaly_type, 0) + count
+            self._global_anomalies[anomaly_type] = (
+                self._global_anomalies.get(anomaly_type, 0) + count
+            )
+
+        self._log_event(
+            {
+                "type": "anomaly",
+                "session": session_key,
+                "anomaly_type": anomaly_type,
+                "detail": detail[:500],
+                "count": count,
+                "ts": time.time(),
+            }
+        )
+
     @contextmanager
     def time_llm(self, session_key: str):
         """Context manager that times an LLM call. Caller sets tokens after."""
@@ -153,6 +177,7 @@ class MetricsCollector:
                     "llm_calls": self._global_llm_calls,
                     "tool_calls": self._global_tool_calls,
                     "errors": self._global_errors,
+                    "anomalies": dict(self._global_anomalies),
                 },
                 "sessions": {k: asdict(v) for k, v in self._sessions.items()},
             }

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test:chat-state": "tsc -p tsconfig.tests.json && node .test-dist/tests/chat-state.test.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },
