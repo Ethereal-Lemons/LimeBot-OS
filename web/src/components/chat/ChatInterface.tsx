@@ -85,11 +85,12 @@ const MemoizedCodeBlock = memo(({ language, value }: { language: string; value: 
                     )}
                 </button>
             </div>
-            <div className="max-h-[450px] overflow-y-auto custom-scrollbar">
+            <div className="max-h-[450px] overflow-x-auto overflow-y-auto custom-scrollbar">
                 <SyntaxHighlighter
                     style={vscDarkPlus}
                     language={language}
                     PreTag="div"
+                    wrapLongLines={true}
                     customStyle={{ margin: 0, padding: '1.25rem', background: '#09090b', fontSize: '13px', lineHeight: '1.6' }}
                 >
                     {value}
@@ -226,7 +227,7 @@ const MemoizedMessageItem = memo(({
                                             const match = /language-(\w+)/.exec(className || '');
 
                                             return !match ? (
-                                                <code className={cn("bg-muted/50 px-1.5 py-0.5 rounded font-mono text-[12px]", isUser ? "bg-black/30" : "bg-zinc-200/50 dark:bg-zinc-800/50")} {...props}>
+                                                <code className={cn("bg-muted/50 px-1.5 py-0.5 rounded font-mono text-[12px] break-all", isUser ? "bg-black/30" : "bg-zinc-200/50 dark:bg-zinc-800/50")} {...props}>
                                                     {children}
                                                 </code>
                                             ) : (
@@ -932,7 +933,7 @@ export function ChatInterface({
                 </div>
                 <div className="max-w-4xl mx-auto mt-2 flex justify-between px-1 text-[10px] font-medium text-muted-foreground">
                     <span>Secure Channel</span>
-                    <span>LimeBot v1.0.2</span>
+                    <span>LimeBot v1.0.4</span>
                 </div>
             </div>
         </div>

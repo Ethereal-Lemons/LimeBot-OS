@@ -168,7 +168,7 @@ export function LogsPage() {
             <div
                 ref={scrollContainerRef}
                 onScroll={handleScroll}
-                className="flex-1 overflow-y-auto p-4 md:p-6 bg-[#0c0c0c] font-mono text-xs md:text-sm selection:bg-primary/30"
+                className="flex-1 overflow-y-auto p-4 md:p-6 bg-[#111111] font-mono text-xs md:text-sm selection:bg-primary/30"
             >
                 {filteredLogs.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full text-muted-foreground/50 opacity-80">
@@ -181,13 +181,13 @@ export function LogsPage() {
                 ) : (
                     <div className="space-y-1.5">
                         {filteredLogs.map((log, i) => (
-                            <div key={i} className="group flex flex-col md:flex-row md:items-start gap-1 md:gap-3 hover:bg-white/[0.03] p-1.5 rounded-md transition-colors border border-transparent hover:border-white/5">
+                            <div key={i} className="group flex flex-col md:flex-row md:items-start gap-1 md:gap-3 hover:bg-white/[0.06] p-1.5 rounded-md transition-colors border border-transparent hover:border-white/10">
                                 <div className="flex items-center gap-2 md:gap-3 shrink-0">
-                                    <span className="text-white/20 select-none w-6 text-right text-[10px] hidden md:inline-block pt-0.5">
+                                    <span className="text-zinc-500 select-none w-6 text-right text-[10px] hidden md:inline-block pt-0.5">
                                         {i + 1}
                                     </span>
                                     {log.timestamp && (
-                                        <span className="text-white/40 text-[11px] md:text-xs pt-0.5 whitespace-nowrap">
+                                        <span className="text-zinc-400 text-[11px] md:text-xs pt-0.5 whitespace-nowrap">
                                             {log.timestamp.split(' ')[1] || log.timestamp}
                                         </span>
                                     )}
@@ -197,11 +197,11 @@ export function LogsPage() {
                                 </div>
                                 <div className="flex flex-col flex-1 min-w-0">
                                     {log.context && (
-                                        <span className="text-white/30 text-[10px] font-medium leading-none mb-1 hidden md:block">
+                                        <span className="text-zinc-400 text-[10px] font-medium leading-none mb-1 hidden md:block">
                                             [{log.context}]
                                         </span>
                                     )}
-                                    <span className="text-white/80 break-words whitespace-pre-wrap leading-relaxed">
+                                    <span className="text-zinc-200 break-words whitespace-pre-wrap leading-relaxed">
                                         {log.message}
                                     </span>
                                 </div>
