@@ -69,16 +69,39 @@ class BrowserManager:
 
             logger.info("Launching browser...")
             self._playwright = await async_playwright().start()
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ]
+            viewport = {"width": 1280, "height": 720}
 
-            self._context = await self._playwright.chromium.launch_persistent_context(
-                user_data_dir=str(self.USER_DATA_DIR),
-                headless=self.headless,
-                viewport={"width": 1280, "height": 720},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                ],
-            )
+            try:
+                # Preferred mode: persistent profile for cookies/sessions between calls.
+                self._context = await self._playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(self.USER_DATA_DIR),
+                    headless=self.headless,
+                    viewport=viewport,
+                    args=launch_args,
+                )
+            except Exception as persistent_error:
+                logger.warning(
+                    f"Persistent browser launch failed ({persistent_error}). "
+                    "Falling back to ephemeral context."
+                )
+                try:
+                    self._browser = await self._playwright.chromium.launch(
+                        headless=self.headless,
+                        args=launch_args,
+                    )
+                    self._context = await self._browser.new_context(viewport=viewport)
+                except Exception as fallback_error:
+                    await self._playwright.stop()
+                    self._playwright = None
+                    raise RuntimeError(
+                        "Failed to start browser in both persistent and ephemeral modes. "
+                        f"Persistent error: {persistent_error} | "
+                        f"Fallback error: {fallback_error}"
+                    ) from fallback_error
 
             self._context.on("page", self._handle_new_page)
 
@@ -113,11 +136,14 @@ class BrowserManager:
             self._context = None
             self._page = None
 
+        if self._browser:
+            await self._browser.close()
+            self._browser = None
+
         if self._playwright:
             await self._playwright.stop()
             self._playwright = None
 
-        self._browser = None
         self._element_map.clear()
         logger.info("Browser closed")
 

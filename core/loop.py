@@ -1012,6 +1012,7 @@ class AgentLoop:
             return str(result)
 
         except Exception as e:
+            logger.exception(f"Browser tool execution failed: {function_name} args={args}")
             return f"Error executing browser tool: {e}"
 
     async def _execute_tool(

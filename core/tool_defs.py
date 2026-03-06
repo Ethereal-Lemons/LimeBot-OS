@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 BASE_TOOLS = [
     {
         "name": "read_file",
-        "description": "Read the contents of a file. Supports line ranges and bounded reads for large files.",
+        "description": "Read the contents of a file. Supports line ranges and bounded reads for large files, including text extraction from .docx and .pdf files.",
         "params": {
             "path": {
                 "type": "string",

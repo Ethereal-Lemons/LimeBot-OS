@@ -86,18 +86,37 @@ function resolveVenvLayout() {
 
     const projectedDefault = windowsSitePackagesPath(defaultVenvDir);
     const projectedDefaultMax = windowsMaxProjectedPathLength(defaultVenvDir);
+    if (projectedDefaultMax < WIN_MAX_PATH_SAFE) {
+        cachedVenvLayout = {
+            venvDir: defaultVenvDir,
+            usingFallback: false,
+            projectedSitePackagesPath: projectedDefault,
+            defaultProjectedSitePackagesPath: projectedDefault,
+            projectedMaxPathLength: projectedDefaultMax,
+            defaultProjectedMaxPathLength: projectedDefaultMax,
+        };
+        return cachedVenvLayout;
+    }
+
+    let fallbackDir = windowsFallbackVenvDir();
+    let projectedFallback = windowsSitePackagesPath(fallbackDir);
+    let projectedFallbackMax = windowsMaxProjectedPathLength(fallbackDir);
+    if (projectedFallbackMax >= WIN_MAX_PATH_SAFE) {
+        fallbackDir = path.join(path.parse(rootDir).root || 'C:\\', 'lbv', hashPath(rootDir));
+        projectedFallback = windowsSitePackagesPath(fallbackDir);
+        projectedFallbackMax = windowsMaxProjectedPathLength(fallbackDir);
+    }
+
     cachedVenvLayout = {
-        venvDir: defaultVenvDir,
-        usingFallback: false,
-        projectedSitePackagesPath: projectedDefault,
+        venvDir: fallbackDir,
+        usingFallback: true,
+        projectedSitePackagesPath: projectedFallback,
         defaultProjectedSitePackagesPath: projectedDefault,
-        projectedMaxPathLength: projectedDefaultMax,
+        projectedMaxPathLength: projectedFallbackMax,
         defaultProjectedMaxPathLength: projectedDefaultMax,
     };
     return cachedVenvLayout;
 }
-
-
 
 function venvDirPath() {
     return resolveVenvLayout().venvDir;
@@ -950,7 +969,10 @@ async function cmdAutorun(args) {
         if (action === 'enable') {
             info(`Creating Windows Scheduled Task: ${taskName}`);
             try {
-                execSync(`schtasks /create /tn "${taskName}" /tr "${gatewayPath}" /sc onlogon /f`, { stdio: 'pipe' });
+                execSync(
+                    `schtasks /create /tn "${taskName}" /tr "${gatewayPath}" /sc onlogon /RL HIGHEST /f`,
+                    { stdio: 'pipe' }
+                );
                 success("Autorun enabled! LimeBot will start whenever you log in.");
             } catch (e) {
                 const errorLog = (e.stdout?.toString() || "") + (e.stderr?.toString() || "");
@@ -1107,15 +1129,8 @@ async function cmdStart(args) {
     if (frontendPort !== configuredFrontendPort) {
         warning(`Frontend port ${configuredFrontendPort} is busy. Using ${frontendPort}.`);
     }
-    if (process.platform === 'win32' && venvLayout.projectedMaxPathLength >= WIN_MAX_PATH_SAFE) {
-        warning(`\n====== WINDOWS PATH LIMIT WARNING ======`);
-        warning(`Your project is located at a very long path (${venvLayout.projectedMaxPathLength}/${WIN_MAX_PATH_SAFE} chars max).`);
-        warning(`Installing Python packages may fail with "[Errno 2] No such file or directory".\n`);
-        info(`To fix this, choose ONE of the following:`);
-        info(`1. Move your project to a shorter path (e.g. C:\\Bots\\LimeBot-OS)`);
-        info(`2. Enable Long Paths in Windows by running this in an Administrator PowerShell:`);
-        console.log(`   ${colors.cyan}New-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force${colors.reset}`);
-        warning(`========================================\n`);
+    if (venvLayout.usingFallback) {
+        warning(`Windows path safety: using venv at ${venvDir} (projected max path ${venvLayout.projectedMaxPathLength}/${WIN_MAX_PATH_SAFE})`);
     }
 
     childEnv.WEB_PORT = String(backendPort);
@@ -1360,5 +1375,3 @@ main().catch(err => {
     error(`Fatal: ${err.message}`);
     process.exit(1);
 });
-
-

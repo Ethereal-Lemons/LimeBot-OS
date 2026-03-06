@@ -384,6 +384,11 @@ class WebChannel(BaseChannel):
                     "provider": "gemini",
                 },
                 {
+                    "id": "gemini/gemini-3.1-flash-lite-preview",
+                    "name": "Gemini 3.1 Flash-Lite (Preview)",
+                    "provider": "gemini",
+                },
+                {
                     "id": "gemini/gemini-3-pro-preview",
                     "name": "Gemini 3 Pro (Preview)",
                     "provider": "gemini",
@@ -852,6 +857,7 @@ class WebChannel(BaseChannel):
 
                 # Clear the cached config so it's rebuilt on next access
                 from config import reload_config
+
                 reload_config()
 
                 logger.info("Configuration saved. Restarting...")

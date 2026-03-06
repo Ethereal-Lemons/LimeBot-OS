@@ -9,7 +9,7 @@ import os
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 from loguru import logger
 from datetime import datetime
 
@@ -203,6 +203,85 @@ class Toolbox:
 
         return json.dumps({"query": query, "matches": formatted_rows})
 
+    @staticmethod
+    def _slice_text_for_read(
+        text: str,
+        max_chars: int,
+        start_line: Optional[int] = None,
+        end_line: Optional[int] = None,
+    ) -> str:
+        """Apply optional line slicing + char truncation to extracted text."""
+        if start_line is not None or end_line is not None:
+            lines = text.splitlines(keepends=True)
+            start_idx = max((start_line or 1) - 1, 0)
+            end_idx = end_line if end_line is not None else len(lines)
+            text = "".join(lines[start_idx:end_idx])
+
+        if len(text) > max_chars:
+            return text[:max_chars] + f"\n... (Truncated at {max_chars} chars)"
+        return text
+
+    @staticmethod
+    def _extract_docx_text(path: Path) -> str:
+        """Extract paragraph and table text from a DOCX file."""
+        try:
+            from docx import Document
+        except Exception as e:
+            raise RuntimeError(
+                "DOCX support requires 'python-docx'. Install dependencies and retry."
+            ) from e
+
+        doc = Document(str(path))
+        chunks: List[str] = []
+
+        for paragraph in doc.paragraphs:
+            text = paragraph.text.strip()
+            if text:
+                chunks.append(text)
+
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    chunks.append(" | ".join(cells))
+
+        if chunks:
+            return "\n".join(chunks)
+        return "No extractable text found in DOCX."
+
+    @staticmethod
+    def _extract_pdf_text(path: Path) -> str:
+        """Extract text from each page of a PDF."""
+        try:
+            from pypdf import PdfReader
+        except Exception as e:
+            raise RuntimeError(
+                "PDF support requires 'pypdf'. Install dependencies and retry."
+            ) from e
+
+        reader = PdfReader(str(path))
+        if reader.is_encrypted:
+            try:
+                reader.decrypt("")
+            except Exception as e:
+                raise RuntimeError(
+                    "PDF is encrypted and cannot be read without a password."
+                ) from e
+
+        chunks: List[str] = []
+        for idx, page in enumerate(reader.pages, start=1):
+            try:
+                page_text = (page.extract_text() or "").strip()
+            except Exception as e:
+                logger.warning(f"Failed extracting text from PDF page {idx}: {e}")
+                continue
+            if page_text:
+                chunks.append(f"[Page {idx}]\n{page_text}")
+
+        if chunks:
+            return "\n\n".join(chunks)
+        return "No extractable text found in PDF."
+
     async def read_file(
         self,
         path: str,
@@ -243,6 +322,22 @@ class Toolbox:
                 if end_line is not None and end_line < start_line:
                     return "Error: end_line must be >= start_line."
 
+            if p.suffix.lower() in {".docx", ".pdf"}:
+                def _read_rich_document() -> str:
+                    if p.suffix.lower() == ".docx":
+                        extracted = Toolbox._extract_docx_text(p)
+                    else:
+                        extracted = Toolbox._extract_pdf_text(p)
+                    return Toolbox._slice_text_for_read(
+                        extracted,
+                        max_chars=max_chars,
+                        start_line=start_line,
+                        end_line=end_line,
+                    )
+
+                return await asyncio.to_thread(_read_rich_document)
+
+            if has_range:
                 def _read_line_range() -> str:
                     collected: List[str] = []
                     total = 0

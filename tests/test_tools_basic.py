@@ -135,3 +135,72 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
         # Expect a paged response and exactly two file rows in the selected window.
         file_rows = [ln for ln in str(result).splitlines() if ln.startswith("[FILE]")]
         self.assertEqual(len(file_rows), 2)
+
+    async def test_tool_call_read_file_docx(self):
+        try:
+            from docx import Document
+        except Exception:
+            raise unittest.SkipTest("Missing dependencies (python-docx).")
+
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+        bus = MessageBus()
+        agent = _TestAgentLoop(bus=bus)
+
+        tmp_dir = Path("temp")
+        tmp_dir.mkdir(exist_ok=True)
+        tmp_file = tmp_dir / "tool_docx_test.docx"
+
+        doc = Document()
+        doc.add_paragraph("Hello from DOCX reader")
+        doc.save(tmp_file)
+
+        try:
+            result = await agent._execute_tool(
+                "read_file", {"path": str(tmp_file)}, session_key="test:web"
+            )
+        finally:
+            tmp_file.unlink(missing_ok=True)
+
+        self.assertIn("Hello from DOCX reader", str(result))
+
+    async def test_tool_call_read_file_pdf(self):
+        try:
+            from pypdf import PdfWriter
+        except Exception:
+            raise unittest.SkipTest("Missing dependencies (pypdf).")
+
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+        bus = MessageBus()
+        agent = _TestAgentLoop(bus=bus)
+
+        tmp_dir = Path("temp")
+        tmp_dir.mkdir(exist_ok=True)
+        tmp_file = tmp_dir / "tool_pdf_test.pdf"
+
+        writer = PdfWriter()
+        writer.add_blank_page(width=300, height=300)
+        with tmp_file.open("wb") as f:
+            writer.write(f)
+
+        try:
+            result = await agent._execute_tool(
+                "read_file", {"path": str(tmp_file)}, session_key="test:web"
+            )
+        finally:
+            tmp_file.unlink(missing_ok=True)
+
+        self.assertIn("No extractable text found in PDF.", str(result))

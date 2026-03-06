@@ -1,9 +1,16 @@
 {
-  "llm": {},
+  "llm": {
+    "model": "gemini/gemini-3.1-flash-lite-preview"
+  },
   "skills": {
     "enabled": [
       "browser",
+      "download_image",
       "filesystem",
+      "discord",
+      "whatsapp",
+      "docx-creator",
+      "github",
       "scrapling"
     ],
     "installed": {}

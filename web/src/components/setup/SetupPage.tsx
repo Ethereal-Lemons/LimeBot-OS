@@ -11,6 +11,7 @@ import { Key, Bot, ShieldCheck, ArrowRight, CheckCircle2, RefreshCw, Trash, Plus
 import { Badge } from '../ui/badge';
 
 const FALLBACK_MODELS = [
+    { id: 'gemini/gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash-Lite (Preview)', provider: 'gemini' },
     { id: 'gemini/gemini-2.0-flash', name: 'Gemini 2.0 Flash', provider: 'gemini' },
     { id: 'gemini/gemini-1.5-flash', name: 'Gemini 1.5 Flash', provider: 'gemini' },
     { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'openai' },
@@ -107,7 +108,7 @@ export function SetupPage() {
                     <div className="space-y-6 animate-in fade-in duration-500">
                         <div className="text-center space-y-2">
                             <div className="inline-flex items-center justify-center mb-4">
-                                <img src="/lime.png" alt="LimeBot logo" className="h-32 w-auto animate-in zoom-in duration-700" />
+                                <img src="/limeBrain.png" alt="LimeBot logo" className="h-32 w-auto animate-in zoom-in duration-700" />
                             </div>
                             <h2 className="text-3xl font-bold tracking-tight">Welcome to LimeBot</h2>
                             <p className="text-muted-foreground text-lg max-w-md mx-auto">
