@@ -1,5 +1,4 @@
 import asyncio
-from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any
 from litellm import completion
@@ -8,10 +7,7 @@ from config import load_config
 from core.events import InboundMessage
 
 
-_BASE_DIR = Path(__file__).resolve().parent.parent
-PERSONA_DIR = _BASE_DIR / "persona"
-MEMORY_DIR = PERSONA_DIR / "memory"
-LONG_TERM_MEMORY_FILE = PERSONA_DIR / "MEMORY.md"
+from core.paths import MEMORY_DIR, LONG_TERM_MEMORY_FILE
 
 
 class ReflectiveService:
@@ -85,7 +81,11 @@ class ReflectiveService:
 
             logger.info("Generating reflected memory distillation...")
             response = await asyncio.to_thread(
-                completion, model=self.model, messages=prompt, base_url=cfg.llm.base_url, api_key=cfg.llm.api_key
+                completion,
+                model=self.model,
+                messages=prompt,
+                base_url=cfg.llm.base_url,
+                api_key=cfg.llm.api_key,
             )
 
             result_text = response.choices[0].message.content

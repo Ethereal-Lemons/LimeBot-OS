@@ -4,6 +4,8 @@ Provides safe, whitelisted, and confirmed interface for file/OS operations.
 """
 
 import asyncio
+import json
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -13,6 +15,34 @@ from datetime import datetime
 
 from core.tool_defs import build_tool_definitions
 from core.vectors import get_vector_service
+
+_SENSITIVE_NAMES = frozenset(
+    {
+        "limebot.json",
+        "package-lock.json",
+        "config.py",
+        "secrets.py",
+        ".env",
+        ".env.local",
+        ".env.production",
+    }
+)
+_SENSITIVE_EXTENSIONS = frozenset({".pem", ".key", ".p12", ".pfx"})
+_RG_EXCLUDE_GLOBS = (
+    "!.git/**",
+    "!node_modules/**",
+    "!__pycache__/**",
+    "!*.pyc",
+    "!.env*",
+    "!limebot.json",
+    "!config.py",
+    "!secrets.py",
+    "!package-lock.json",
+    "!*.pem",
+    "!*.key",
+    "!*.p12",
+    "!*.pfx",
+)
 
 
 class Toolbox:
@@ -133,20 +163,7 @@ class Toolbox:
         """Enforce whitelist and block sensitive files."""
         try:
             target_path = Path(path_str).resolve()
-
             name = target_path.name.lower()
-            _SENSITIVE_NAMES = frozenset(
-                {
-                    "limebot.json",
-                    "package-lock.json",
-                    "config.py",
-                    "secrets.py",
-                    ".env",
-                    ".env.local",
-                    ".env.production",
-                }
-            )
-            _SENSITIVE_EXTENSIONS = frozenset({".pem", ".key", ".p12", ".pfx"})
 
             if (
                 name in _SENSITIVE_NAMES
@@ -162,6 +179,31 @@ class Toolbox:
             return False
         except Exception:
             return False
+
+    @staticmethod
+    def _to_display_path(path: Path) -> str:
+        """Prefer project-relative paths in tool responses."""
+        try:
+            return str(path.resolve().relative_to(Path.cwd().resolve()))
+        except Exception:
+            return str(path.resolve())
+
+    def _format_search_results(self, rows: List[Dict[str, Any]], query: str) -> str:
+        if not rows:
+            return f"No matches found for '{query}'."
+
+        out = [f"Found {len(rows)} match(es) for '{query}':"]
+        for row in rows:
+            path = row.get("path", "unknown")
+            line = row.get("line")
+            text = (row.get("text") or "").replace("\t", " ").strip()
+            if len(text) > 220:
+                text = text[:220] + "..."
+            if line:
+                out.append(f"- {path}:{line}: {text}")
+            else:
+                out.append(f"- {path}")
+        return "\n".join(out)
 
     async def read_file(self, path: str) -> str:
         """Read the contents of a file."""
@@ -229,6 +271,231 @@ class Toolbox:
             return "\n".join(sorted(items))
         except Exception as e:
             return f"Error listing directory: {e}"
+
+    async def search_files(
+        self,
+        query: str,
+        path: str = ".",
+        file_glob: str = "*",
+        mode: str = "content",
+        case_sensitive: bool = False,
+        max_results: int = 40,
+    ) -> str:
+        """
+        Fast project search for file names or file content.
+        Uses ripgrep when available, with a safe Python fallback.
+        """
+        query = (query or "").strip()
+        if not query:
+            return "Error: 'query' is required."
+        if len(query) > 256:
+            return "Error: query is too long (max 256 chars)."
+
+        mode = (mode or "content").strip().lower()
+        if mode not in {"content", "name"}:
+            return "Error: mode must be either 'content' or 'name'."
+
+        try:
+            max_results = max(1, min(int(max_results), 200))
+        except Exception:
+            max_results = 40
+
+        if not self._is_path_allowed(path):
+            return f"Error: Access denied to path '{path}'."
+
+        root = Path(path).resolve()
+        if not root.exists():
+            return f"Error: Path '{path}' does not exist."
+
+        try:
+            if mode == "name":
+                rows = await asyncio.to_thread(
+                    self._search_file_names_sync,
+                    root,
+                    query,
+                    file_glob,
+                    case_sensitive,
+                    max_results,
+                )
+            else:
+                rows = await asyncio.to_thread(
+                    self._search_file_content_sync,
+                    root,
+                    query,
+                    file_glob,
+                    case_sensitive,
+                    max_results,
+                )
+            return self._format_search_results(rows, query)
+        except Exception as e:
+            return f"Error searching files: {e}"
+
+    def _search_file_names_sync(
+        self,
+        root: Path,
+        query: str,
+        file_glob: str,
+        case_sensitive: bool,
+        max_results: int,
+    ) -> List[Dict[str, Any]]:
+        """Sync helper for filename search."""
+        if not root.is_dir():
+            if root.is_file() and self._is_path_allowed(root):
+                name = root.name
+                hit = query in name if case_sensitive else query.lower() in name.lower()
+                if hit:
+                    return [{"path": self._to_display_path(root), "line": None, "text": ""}]
+            return []
+
+        q = query if case_sensitive else query.lower()
+        rows: List[Dict[str, Any]] = []
+
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                d for d in dirnames if d not in {".git", "node_modules", "__pycache__"}
+            ]
+            for filename in filenames:
+                if len(rows) >= max_results:
+                    break
+                file_path = Path(dirpath) / filename
+                if file_glob and file_glob != "*" and not file_path.match(file_glob):
+                    continue
+                if not self._is_path_allowed(file_path):
+                    continue
+                hay = filename if case_sensitive else filename.lower()
+                if q in hay:
+                    rows.append(
+                        {
+                            "path": self._to_display_path(file_path),
+                            "line": None,
+                            "text": "",
+                        }
+                    )
+            if len(rows) >= max_results:
+                break
+        return rows
+
+    def _search_file_content_sync(
+        self,
+        root: Path,
+        query: str,
+        file_glob: str,
+        case_sensitive: bool,
+        max_results: int,
+    ) -> List[Dict[str, Any]]:
+        """Sync helper for content search; prefers ripgrep for speed."""
+        rg_bin = shutil.which("rg")
+        if rg_bin:
+            try:
+                import subprocess
+
+                cmd = [
+                    rg_bin,
+                    "--json",
+                    "--line-number",
+                    "--color",
+                    "never",
+                    "--max-count",
+                    "3",
+                ]
+                if not case_sensitive:
+                    cmd.append("-i")
+                if file_glob and file_glob != "*":
+                    cmd.extend(["-g", file_glob])
+                for g in _RG_EXCLUDE_GLOBS:
+                    cmd.extend(["-g", g])
+                cmd.extend(["--", query, str(root)])
+
+                completed = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=20,
+                )
+
+                # ripgrep exit codes: 0=matches, 1=no matches, >1 error
+                if completed.returncode not in (0, 1):
+                    raise RuntimeError(completed.stderr.strip() or "ripgrep failed")
+
+                rows: List[Dict[str, Any]] = []
+                for line in completed.stdout.splitlines():
+                    if len(rows) >= max_results:
+                        break
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        continue
+                    if payload.get("type") != "match":
+                        continue
+                    data = payload.get("data", {})
+                    path_text = (
+                        data.get("path", {}).get("text")
+                        or data.get("path", {}).get("bytes")
+                        or ""
+                    )
+                    if not path_text:
+                        continue
+                    file_path = Path(path_text).resolve()
+                    if not self._is_path_allowed(file_path):
+                        continue
+
+                    row_text = (data.get("lines", {}).get("text") or "").rstrip("\n")
+                    rows.append(
+                        {
+                            "path": self._to_display_path(file_path),
+                            "line": data.get("line_number"),
+                            "text": row_text,
+                        }
+                    )
+                return rows
+            except Exception as e:
+                logger.debug(f"search_files ripgrep path failed; falling back: {e}")
+
+        # Fallback: Python scan
+        rows: List[Dict[str, Any]] = []
+        q = query if case_sensitive else query.lower()
+
+        if root.is_file():
+            candidates = [root]
+        else:
+            candidates = []
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if d not in {".git", "node_modules", "__pycache__"}
+                ]
+                for filename in filenames:
+                    p = Path(dirpath) / filename
+                    if file_glob and file_glob != "*" and not p.match(file_glob):
+                        continue
+                    candidates.append(p)
+
+        for file_path in candidates:
+            if len(rows) >= max_results:
+                break
+            try:
+                if not file_path.is_file() or not self._is_path_allowed(file_path):
+                    continue
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for idx, line in enumerate(f, start=1):
+                        hay = line if case_sensitive else line.lower()
+                        if q in hay:
+                            rows.append(
+                                {
+                                    "path": self._to_display_path(file_path),
+                                    "line": idx,
+                                    "text": line.rstrip("\n"),
+                                }
+                            )
+                            break
+                        if len(rows) >= max_results:
+                            break
+            except Exception:
+                continue
+        return rows
 
     async def run_command(self, command: str) -> str:
         """Execute a terminal command with real-time progress updates."""
@@ -615,4 +882,3 @@ class Toolbox:
             return f"Success: Created skill '{name}' in 'skills/{name}'. You can now add logic to 'skills/{name}/api.py'."
         except Exception as e:
             return f"Error creating skill: {e}"
-

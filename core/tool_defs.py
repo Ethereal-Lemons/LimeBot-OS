@@ -28,7 +28,7 @@ BASE_TOOLS = [
     },
     {
         "name": "write_file",
-        "description": "Write text content to a file. Overwrites existing content. Creates directories if needed.",
+        "description": "Write text content to a file. Overwrites existing content. Creates directories if needed. IMPORTANT: To create a new skill, use 'create_skill' instead.",
         "params": {
             "path": {
                 "type": "string",
@@ -54,7 +54,7 @@ BASE_TOOLS = [
     },
     {
         "name": "list_dir",
-        "description": "List files and subdirectories in a folder.",
+        "description": "List files and subdirectories in a folder. Use this to explore the project or find existing skills in the 'skills/' folder.",
         "params": {
             "path": {
                 "type": "string",
@@ -62,6 +62,38 @@ BASE_TOOLS = [
             }
         },
         "required": ["path"],
+    },
+    {
+        "name": "search_files",
+        "description": "Fast file search. Use mode='content' to find text inside files or mode='name' to find files by filename.",
+        "params": {
+            "query": {
+                "type": "string",
+                "description": "Search text to look for (required).",
+            },
+            "path": {
+                "type": "string",
+                "description": "Root path to search. Defaults to current project directory.",
+            },
+            "file_glob": {
+                "type": "string",
+                "description": "Optional filename glob filter (e.g. '*.py', '*.md').",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["content", "name"],
+                "description": "Search content lines or file names.",
+            },
+            "case_sensitive": {
+                "type": "boolean",
+                "description": "Set true for case-sensitive search. Default false.",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum matches to return (default 40, max 200).",
+            },
+        },
+        "required": ["query"],
     },
     {
         "name": "run_command",
@@ -144,6 +176,21 @@ BASE_TOOLS = [
             }
         },
         "required": ["job_id"],
+    },
+    {
+        "name": "create_skill",
+        "description": "Initialize a new LimeBot skill. Creates a folder in 'skills/' with a template SKILL.md. This prevents codebase pollution.",
+        "params": {
+            "name": {
+                "type": "string",
+                "description": "The name of the skill (e.g. 'weather_check'). Use snake_case.",
+            },
+            "description": {
+                "type": "string",
+                "description": "Brief summary of what the skill does.",
+            },
+        },
+        "required": ["name", "description"],
     },
 ]
 

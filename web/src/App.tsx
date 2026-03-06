@@ -38,6 +38,7 @@ type Message = {
   type?: 'text' | 'tool' | 'confirmation';
   content: string;
   thinking?: string;
+  isStreaming?: boolean;
   image?: string | null;
   toolExecution?: ToolExecution;
   confirmation?: ConfirmationRequest;
@@ -94,6 +95,7 @@ function resolveEffectiveTheme(baseTheme: string, settings: TimeThemeSettings): 
 }
 
 function App() {
+  const STREAM_FLUSH_INTERVAL_MS = 40;
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isConnected, setIsConnected] = useState(false);
@@ -103,6 +105,13 @@ function App() {
   const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const [showAuthModal, setShowAuthModal] = useState(false);
   const ws = useRef<WebSocket | null>(null);
+  const sessionIdRef = useRef(sessionId);
+  const streamFlushTimerRef = useRef<number | null>(null);
+  const streamBufferRef = useRef<{ chatId: string | null; content: string; thinking: string }>({
+    chatId: null,
+    content: "",
+    thinking: "",
+  });
 
   const [isTyping, setIsTyping] = useState(false);
 
@@ -184,6 +193,95 @@ function App() {
     const effectiveTheme = resolveEffectiveTheme(baseTheme, settings);
     applyThemeToDom(effectiveTheme);
   };
+
+  const clearStreamFlushTimer = () => {
+    if (streamFlushTimerRef.current !== null) {
+      window.clearTimeout(streamFlushTimerRef.current);
+      streamFlushTimerRef.current = null;
+    }
+  };
+
+  const flushStreamBuffer = () => {
+    clearStreamFlushTimer();
+
+    const pending = streamBufferRef.current;
+    if (!pending.chatId) return;
+
+    const bufferedChatId = pending.chatId;
+    const bufferedContent = pending.content;
+    const bufferedThinking = pending.thinking;
+
+    streamBufferRef.current = { chatId: null, content: "", thinking: "" };
+
+    if (bufferedChatId !== sessionIdRef.current) return;
+    if (!bufferedContent && !bufferedThinking) return;
+
+    setMessages(prev => {
+      const lastMsg = prev[prev.length - 1];
+      if (lastMsg && lastMsg.sender === 'bot' && lastMsg.type !== 'tool' && !lastMsg.confirmation) {
+        const nextContent = `${lastMsg.content}${bufferedContent}`;
+        const nextThinking = bufferedThinking
+          ? `${lastMsg.thinking || ""}${bufferedThinking}`
+          : lastMsg.thinking;
+
+        if (nextContent === lastMsg.content && nextThinking === lastMsg.thinking && lastMsg.isStreaming) {
+          return prev;
+        }
+
+        const updated = [...prev];
+        updated[updated.length - 1] = {
+          ...lastMsg,
+          type: 'text',
+          content: nextContent,
+          thinking: nextThinking,
+          isStreaming: true,
+        };
+        return updated;
+      }
+
+      return [
+        ...prev,
+        {
+          sender: 'bot',
+          type: 'text',
+          content: bufferedContent,
+          thinking: bufferedThinking || undefined,
+          isStreaming: true,
+        }
+      ];
+    });
+  };
+
+  const queueStreamDelta = (chatId: string | undefined, contentDelta = "", thinkingDelta = "") => {
+    if (!chatId || chatId !== sessionIdRef.current) return;
+
+    if (streamBufferRef.current.chatId && streamBufferRef.current.chatId !== chatId) {
+      flushStreamBuffer();
+    }
+
+    if (!streamBufferRef.current.chatId) {
+      streamBufferRef.current.chatId = chatId;
+    }
+    if (contentDelta) {
+      streamBufferRef.current.content += contentDelta;
+    }
+    if (thinkingDelta) {
+      streamBufferRef.current.thinking += thinkingDelta;
+    }
+
+    if (streamFlushTimerRef.current === null) {
+      streamFlushTimerRef.current = window.setTimeout(() => {
+        streamFlushTimerRef.current = null;
+        flushStreamBuffer();
+      }, STREAM_FLUSH_INTERVAL_MS);
+    }
+  };
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+    clearStreamFlushTimer();
+    streamBufferRef.current = { chatId: null, content: "", thinking: "" };
+  }, [sessionId]);
 
   useEffect(() => {
     document.documentElement.classList.add('dark');
@@ -276,6 +374,8 @@ function App() {
 
 
     return () => {
+      clearStreamFlushTimer();
+      streamBufferRef.current = { chatId: null, content: "", thinking: "" };
       ws.current?.close();
       axios.interceptors.response.eject(interceptor);
       window.clearInterval(themeTimer);
@@ -319,6 +419,8 @@ function App() {
     ws.current.onclose = () => {
       console.log('Disconnected from LimeBot');
       setIsConnected(false);
+      clearStreamFlushTimer();
+      streamBufferRef.current = { chatId: null, content: "", thinking: "" };
 
       setIsConnected(false);
 
@@ -331,17 +433,36 @@ function App() {
     ws.current.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        const isMaintenanceEvent = data.type === 'maintenance' || data.metadata?.is_maintenance;
+        const eventChatId: string | undefined = typeof data.chat_id === 'string' ? data.chat_id : undefined;
+        const activeSessionId = sessionIdRef.current;
+        const streamType = data.metadata?.type;
 
         // Show maintenance broadcasts (e.g. background reflection) as ghost activity
-        if (data.type === 'maintenance' || data.metadata?.is_maintenance) {
+        if (isMaintenanceEvent) {
           setActivity({ text: data.content || '✨ Background task complete' });
           setTimeout(() => setActivity(null), 4000);
           return;
         }
 
+        // Ignore all non-maintenance events that are not for the active session.
+        if (eventChatId !== activeSessionId) {
+          return;
+        }
+
+        if (streamType === 'chunk') {
+          queueStreamDelta(eventChatId, data.content || '', '');
+          return;
+        }
+        if (streamType === 'thinking') {
+          queueStreamDelta(eventChatId, '', data.content || '');
+          return;
+        }
+
+        // Flush any pending stream updates before applying non-stream events.
+        flushStreamBuffer();
+
         if (data.type === 'message' || data.type === 'full_content') {
-          // Ignore messages from other sessions (e.g. global broadcasts)
-          if (data.chat_id && data.chat_id !== sessionId) return;
           setIsTyping(false);
           let variant: 'default' | 'destructive' | 'warning' = 'default';
           if (data.metadata?.is_error) variant = 'destructive';
@@ -357,7 +478,8 @@ function App() {
                 ...prev[lastBotIdx],
                 content: data.content,
                 variant,
-                type: 'text' as const
+                type: 'text' as const,
+                isStreaming: false,
               };
 
 
@@ -378,7 +500,8 @@ function App() {
               sender: 'bot' as const,
               content: data.content,
               variant,
-              type: 'text' as const
+              type: 'text' as const,
+              isStreaming: false,
             }];
           });
 
@@ -405,35 +528,21 @@ function App() {
         }
         else if (data.type === 'stop_typing' || data.metadata?.type === 'stop_typing') {
           setIsTyping(false);
+          setMessages(prev => {
+            for (let i = prev.length - 1; i >= 0; i--) {
+              const m = prev[i];
+              if (m.sender === 'bot' && m.type !== 'tool' && !m.confirmation) {
+                if (!m.isStreaming) return prev;
+                const updated = [...prev];
+                updated[i] = { ...m, isStreaming: false };
+                return updated;
+              }
+            }
+            return prev;
+          });
         }
         else if (data.type === 'typing' || data.metadata?.type === 'typing') {
           setIsTyping(true);
-        }
-        else if (data.metadata?.type === 'chunk') {
-          // Handle streaming text chunk
-          setMessages(prev => {
-            const lastMsg = prev[prev.length - 1];
-            if (lastMsg && lastMsg.sender === 'bot' && lastMsg.type !== 'tool' && !lastMsg.confirmation) {
-              const newContent = lastMsg.content + data.content;
-              return prev.map((m, i) => i === prev.length - 1 ? { ...m, content: newContent } : m);
-            } else {
-              // Start new message
-              return [...prev, { sender: 'bot', content: data.content }];
-            }
-          });
-        }
-        else if (data.metadata?.type === 'thinking') {
-          // Handle thinking stream chunk
-          setMessages(prev => {
-            const lastMsg = prev[prev.length - 1];
-            if (lastMsg && lastMsg.sender === 'bot' && lastMsg.type !== 'tool' && !lastMsg.confirmation) {
-              const newThinking = (lastMsg.thinking || "") + data.content;
-              return prev.map((m, i) => i === prev.length - 1 ? { ...m, thinking: newThinking } : m);
-            } else {
-              // Start new message with thinking
-              return [...prev, { sender: 'bot', content: "", thinking: data.content }];
-            }
-          });
         }
         else if (data.type === 'rate_limit_error') {
           console.error("Rate Limit Error:", data.metadata?.details);
@@ -534,6 +643,9 @@ function App() {
   };
 
   const handleNewChat = () => {
+    flushStreamBuffer();
+    clearStreamFlushTimer();
+    streamBufferRef.current = { chatId: null, content: "", thinking: "" };
     // Generate new Session ID
     const newId = crypto.randomUUID();
     setSessionId(newId);

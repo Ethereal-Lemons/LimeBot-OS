@@ -38,6 +38,7 @@ TOOL_BROADCAST_MAX_CHARS = 500
 
 _TOOL_RESULT_LIMITS: Dict[str, int] = {
     "read_file": 8_000,
+    "search_files": 5_000,
     "memory_search": 3_000,
     "browser_extract": 5_000,
     "browser_get_page_text": 5_000,
@@ -110,6 +111,19 @@ _SENSITIVE_TOOLS = frozenset(
     {"delete_file", "run_command", "write_file", "cron_remove"}
 )
 
+_TOOL_INTENT_RE = re.compile(
+    r"\b("
+    r"read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|"
+    r"cron_add|cron_list|cron_remove|spawn_agent|"
+    r"browser_navigate|browser_click|browser_type|browser_snapshot|browser_scroll|"
+    r"browser_wait|browser_press_key|browser_go_back|browser_tabs|browser_switch_tab|"
+    r"browser_extract|browser_get_page_text|browser_list_media|google_search|"
+    r"ls|pwd|cat|grep|find|mkdir|rm|cp|mv|npm|pip|python|bash|powershell|terminal|"
+    r"command|directory|folder|path|cron|schedule|skill"
+    r")\b",
+    re.IGNORECASE,
+)
+
 _GHOST_TAG_RE = re.compile(
     r"</?(?:save_user|save_soul|save_identity|save_memory"
     r"|log_memory|save_mood|save_relationship"
@@ -126,12 +140,7 @@ _GHOST_TAG_NAMES = (
     "save_relationship",
 )
 
-_BASE_DIR = Path(__file__).resolve().parent.parent
-PERSONA_DIR = _BASE_DIR / "persona"
-USERS_DIR = PERSONA_DIR / "users"
-MEMORY_DIR = PERSONA_DIR / "memory"
-SOUL_FILE = PERSONA_DIR / "SOUL.md"
-IDENTITY_FILE = PERSONA_DIR / "IDENTITY.md"
+from core.paths import PERSONA_DIR, USERS_DIR, MEMORY_DIR, SOUL_FILE, IDENTITY_FILE
 
 
 class AgentLoop:
@@ -187,6 +196,7 @@ class AgentLoop:
             "write_file": self.toolbox.write_file,
             "delete_file": self.toolbox.delete_file,
             "list_dir": self.toolbox.list_dir,
+            "search_files": self.toolbox.search_files,
             "run_command": self.toolbox.run_command,
             "memory_search": self.toolbox.memory_search,
             "cron_add": self.toolbox.cron_add,
@@ -687,6 +697,27 @@ class AgentLoop:
             logger.error(f"Error in sub-agent '{sub_session_key}': {e}")
             return f"Error in sub-agent '{sub_session_key}': {e}"
 
+    @staticmethod
+    def _should_include_tools(content: str) -> bool:
+        """
+        Return True when the user message likely needs tool/function calling.
+        Keeps casual conversation turns lightweight by skipping tool schemas.
+        """
+        text = (content or "").strip()
+        if not text:
+            return False
+
+        lowered = text.lower()
+        if text.startswith(("/", "@")):
+            return True
+        if _TOOL_INTENT_RE.search(text):
+            return True
+        if any(token in lowered for token in ("./", "../", ".py", ".ts", ".md", ".json")):
+            return True
+        if any(token in text for token in ("\\", "/", "$", ">>", "->")) and len(text) > 12:
+            return True
+        return False
+
     async def _llm_call_with_retry(
         self,
         messages: List[Dict],
@@ -694,10 +725,11 @@ class AgentLoop:
         msg: Optional[InboundMessage],
         max_retries: int = 3,
         stream: bool = False,
+        include_tools: bool = True,
     ) -> Any:
 
         model, base_url, api_key, custom_llm_provider = self._provider
-        tools = self._get_tool_definitions()
+        tools = self._get_tool_definitions() if include_tools else []
         qwen_auth_failover_attempted: Set[str] = set()
 
         for attempt in range(max_retries):
@@ -705,13 +737,14 @@ class AgentLoop:
                 kwargs: Dict[str, Any] = dict(
                     model=model,
                     messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
                     stream=stream,
                     base_url=base_url,
                     api_key=api_key,
                     custom_llm_provider=custom_llm_provider,
                 )
+                if tools:
+                    kwargs["tools"] = tools
+                    kwargs["tool_choice"] = "auto"
                 if stream:
                     kwargs["stream_options"] = {"include_usage": True}
                 return await acompletion(**kwargs)
@@ -1057,10 +1090,20 @@ class AgentLoop:
             is_read_only = function_name in _BROWSER_CACHEABLE or function_name in {
                 "read_file",
                 "list_dir",
+                "search_files",
                 "memory_search",
             }
             if result and not str(result).startswith("Error:") and is_read_only:
                 self.tool_cache.set(function_name, function_args, result)
+
+            if function_name in {
+                "write_file",
+                "delete_file",
+                "create_skill",
+                "run_command",
+            } and result and not str(result).startswith("Error:"):
+                # File/system mutations can stale read/list/search caches.
+                self.tool_cache.clear()
 
             return result
 
@@ -2069,11 +2112,13 @@ class AgentLoop:
                     await self._trim_history(session_key)
                     asyncio.create_task(self._flush_history(session_key))
 
+                    include_tools = self._should_include_tools(content)
                     stream = await self._llm_call_with_retry(
                         messages=self.history[session_key],
                         session_key=session_key,
                         msg=msg,
                         stream=True,
+                        include_tools=include_tools,
                     )
                     consume_result = await self._consume_stream(
                         stream,
@@ -2141,6 +2186,7 @@ class AgentLoop:
                                     session_key=session_key,
                                     msg=msg,
                                     stream=True,
+                                    include_tools=True,
                                 )
                                 nxt_consume_result = await self._consume_stream(
                                     nxt_stream,

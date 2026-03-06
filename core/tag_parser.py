@@ -8,19 +8,14 @@ Handles: <save_soul>, <save_identity>, <save_user>, <log_memory>,
 import re
 import asyncio
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path  # noqa: used in save_user
 
 from loguru import logger
 
 
 from core.events import OutboundMessage
+from core.paths import PERSONA_DIR, USERS_DIR, MEMORY_DIR, LONG_TERM_MEMORY_FILE
 
-
-_BASE_DIR = Path(__file__).resolve().parent.parent
-PERSONA_DIR = _BASE_DIR / "persona"
-USERS_DIR = PERSONA_DIR / "users"
-MEMORY_DIR = PERSONA_DIR / "memory"
-LONG_TERM_MEMORY_FILE = PERSONA_DIR / "MEMORY.md"
 
 _ANY_TAG = r"save_soul|save_identity|save_mood|save_relationship|save_user|log_memory|save_memory|discord_send|discord_embed"
 
@@ -151,18 +146,11 @@ async def process_tags(
             break
         content = user_match.group(1).strip()
         try:
-            _FORBIDDEN = [
-                "--- SYSTEM INSTRUCTIONS ---",
-                "SYSTEM METADATA:",
-                "<save_soul>",
-                "<save_identity>",
-                "</save_soul>",
-                "</save_identity>",
-                "You are now fully initialized",
-            ]
+            from core.prompt import FORBIDDEN_FRAGMENTS
+
             injected = any(
                 frag in line.strip()
-                for frag in _FORBIDDEN
+                for frag in FORBIDDEN_FRAGMENTS
                 for line in content.splitlines()
             )
             if injected:

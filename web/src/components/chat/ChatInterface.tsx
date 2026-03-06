@@ -35,6 +35,7 @@ interface Message {
     type?: 'text' | 'tool' | 'confirmation';
     content: string;
     thinking?: string;
+    isStreaming?: boolean;
     image?: string | null;
     toolExecution?: ToolExecution;
     confirmation?: ConfirmationRequest;
@@ -208,54 +209,60 @@ const MemoizedMessageItem = memo(({
                             {msg.image && (
                                 <ChatImage src={msg.image} alt="Uploaded content" />
                             )}
-                            <div className="prose prose-sm dark:prose-invert max-w-none break-words leading-tight text-inherit">
-                                <ReactMarkdown
-                                    remarkPlugins={[remarkGfm]}
-                                    components={{
-                                        a: ({ node, ...props }) => (
-                                            <a
-                                                {...props}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="font-bold underline text-primary decoration-primary/30 hover:decoration-primary"
-                                            />
-                                        ),
-                                        p: ({ node, ...props }) => <p {...props} className="last:mb-1" />,
-                                        code: ({ node, className, children, ...props }: any) => {
-                                            const content = String(children || '').trim();
-                                            if (!content) return null;
-                                            const match = /language-(\w+)/.exec(className || '');
-
-                                            return !match ? (
-                                                <code className={cn("bg-muted/50 px-1.5 py-0.5 rounded font-mono text-[12px] break-all", isUser ? "bg-black/30" : "bg-zinc-200/50 dark:bg-zinc-800/50")} {...props}>
-                                                    {children}
-                                                </code>
-                                            ) : (
-                                                <MemoizedCodeBlock language={match[1]} value={content} />
-                                            );
-                                        },
-                                        table: ({ node, ...props }) => (
-                                            <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-card/30 backdrop-blur-sm shadow-sm">
-                                                <table className="w-full text-left text-[13px]" {...props} />
-                                            </div>
-                                        ),
-                                        thead: ({ node, ...props }) => <thead className="bg-muted/50 text-muted-foreground border-b border-border" {...props} />,
-                                        tbody: ({ node, ...props }) => <tbody className="divide-y divide-border/30" {...props} />,
-                                        tr: ({ node, ...props }) => <tr className="hover:bg-muted/20 transition-colors" {...props} />,
-                                        th: ({ node, ...props }) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...props} />,
-                                        td: ({ node, ...props }) => <td className="px-4 py-3 align-top" {...props} />,
-                                        h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-4 mb-2 border-b border-border/50 pb-1" {...props} />,
-                                        h2: ({ node, ...props }) => <h2 className="text-lg font-bold mt-3 mb-2" {...props} />,
-                                        h3: ({ node, ...props }) => <h3 className="text-md font-bold mt-2 mb-1" {...props} />,
-                                        blockquote: ({ node, ...props }) => (
-                                            <blockquote className="border-l-4 border-primary/30 pl-4 py-1 my-3 italic text-muted-foreground bg-primary/5 rounded-r" {...props} />
-                                        ),
-                                        img: ({ node, ...props }: any) => <ChatImage src={props.src || ''} alt={props.alt || ''} />,
-                                    }}
-                                >
+                            {msg.isStreaming ? (
+                                <div className="whitespace-pre-wrap break-words leading-tight text-inherit">
                                     {msg.content}
-                                </ReactMarkdown>
-                            </div>
+                                </div>
+                            ) : (
+                                <div className="prose prose-sm dark:prose-invert max-w-none break-words leading-tight text-inherit">
+                                    <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                        components={{
+                                            a: ({ node, ...props }) => (
+                                                <a
+                                                    {...props}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="font-bold underline text-primary decoration-primary/30 hover:decoration-primary"
+                                                />
+                                            ),
+                                            p: ({ node, ...props }) => <p {...props} className="last:mb-1" />,
+                                            code: ({ node, className, children, ...props }: any) => {
+                                                const content = String(children || '').trim();
+                                                if (!content) return null;
+                                                const match = /language-(\w+)/.exec(className || '');
+
+                                                return !match ? (
+                                                    <code className={cn("bg-muted/50 px-1.5 py-0.5 rounded font-mono text-[12px] break-all", isUser ? "bg-black/30" : "bg-zinc-200/50 dark:bg-zinc-800/50")} {...props}>
+                                                        {children}
+                                                    </code>
+                                                ) : (
+                                                    <MemoizedCodeBlock language={match[1]} value={content} />
+                                                );
+                                            },
+                                            table: ({ node, ...props }) => (
+                                                <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-card/30 backdrop-blur-sm shadow-sm">
+                                                    <table className="w-full text-left text-[13px]" {...props} />
+                                                </div>
+                                            ),
+                                            thead: ({ node, ...props }) => <thead className="bg-muted/50 text-muted-foreground border-b border-border" {...props} />,
+                                            tbody: ({ node, ...props }) => <tbody className="divide-y divide-border/30" {...props} />,
+                                            tr: ({ node, ...props }) => <tr className="hover:bg-muted/20 transition-colors" {...props} />,
+                                            th: ({ node, ...props }) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...props} />,
+                                            td: ({ node, ...props }) => <td className="px-4 py-3 align-top" {...props} />,
+                                            h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-4 mb-2 border-b border-border/50 pb-1" {...props} />,
+                                            h2: ({ node, ...props }) => <h2 className="text-lg font-bold mt-3 mb-2" {...props} />,
+                                            h3: ({ node, ...props }) => <h3 className="text-md font-bold mt-2 mb-1" {...props} />,
+                                            blockquote: ({ node, ...props }) => (
+                                                <blockquote className="border-l-4 border-primary/30 pl-4 py-1 my-3 italic text-muted-foreground bg-primary/5 rounded-r" {...props} />
+                                            ),
+                                            img: ({ node, ...props }: any) => <ChatImage src={props.src || ''} alt={props.alt || ''} />,
+                                        }}
+                                    >
+                                        {msg.content}
+                                    </ReactMarkdown>
+                                </div>
+                            )}
                         </div>
 
                         {isUser && (

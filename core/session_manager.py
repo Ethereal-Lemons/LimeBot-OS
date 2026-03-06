@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from loguru import logger
 
+from core.paths import PERSONA_DIR
 
-PERSONA_DIR = Path("persona")
 SESSION_DIR = PERSONA_DIR / "sessions"
 SESSION_FILE = SESSION_DIR / "sessions.json"
 LOGS_DIR = SESSION_DIR / "logs"

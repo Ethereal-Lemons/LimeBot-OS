@@ -17,6 +17,7 @@ class ToolCache:
         self.ttls = {
             "default": 300,
             "read_file": 3600,
+            "search_files": 120,
             "browser_extract": 300,
             "list_dir": 60,
             "memory_search": 60,
