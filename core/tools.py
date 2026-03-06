@@ -190,20 +190,18 @@ class Toolbox:
 
     def _format_search_results(self, rows: List[Dict[str, Any]], query: str) -> str:
         if not rows:
-            return f"No matches found for '{query}'."
+            return json.dumps({"query": query, "matches": []})
 
-        out = [f"Found {len(rows)} match(es) for '{query}':"]
+        formatted_rows = []
         for row in rows:
             path = row.get("path", "unknown")
             line = row.get("line")
             text = (row.get("text") or "").replace("\t", " ").strip()
             if len(text) > 220:
                 text = text[:220] + "..."
-            if line:
-                out.append(f"- {path}:{line}: {text}")
-            else:
-                out.append(f"- {path}")
-        return "\n".join(out)
+            formatted_rows.append({"path": path, "line": line, "text": text})
+
+        return json.dumps({"query": query, "matches": formatted_rows})
 
     async def read_file(
         self,
@@ -499,7 +497,9 @@ class Toolbox:
                 name = root.name
                 hit = query in name if case_sensitive else query.lower() in name.lower()
                 if hit:
-                    return [{"path": self._to_display_path(root), "line": None, "text": ""}]
+                    return [
+                        {"path": self._to_display_path(root), "line": None, "text": ""}
+                    ]
             return []
 
         q = query if case_sensitive else query.lower()
@@ -507,7 +507,22 @@ class Toolbox:
 
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [
-                d for d in dirnames if d not in {".git", "node_modules", "__pycache__"}
+                d
+                for d in dirnames
+                if d
+                not in {
+                    ".git",
+                    "node_modules",
+                    "__pycache__",
+                    ".venv",
+                    "venv",
+                    "env",
+                    ".mypy_cache",
+                    ".vercel",
+                    ".next",
+                    ".idea",
+                    ".vscode",
+                }
             ]
             for filename in filenames:
                 if len(rows) >= max_results:
@@ -620,7 +635,20 @@ class Toolbox:
                 dirnames[:] = [
                     d
                     for d in dirnames
-                    if d not in {".git", "node_modules", "__pycache__"}
+                    if d
+                    not in {
+                        ".git",
+                        "node_modules",
+                        "__pycache__",
+                        ".venv",
+                        "venv",
+                        "env",
+                        ".mypy_cache",
+                        ".vercel",
+                        ".next",
+                        ".idea",
+                        ".vscode",
+                    }
                 ]
                 for filename in filenames:
                     p = Path(dirpath) / filename
@@ -634,6 +662,14 @@ class Toolbox:
             try:
                 if not file_path.is_file() or not self._is_path_allowed(file_path):
                     continue
+
+                # Skip files larger than 5MB to prevent stalling
+                try:
+                    if file_path.stat().st_size > 5_000_000:
+                        continue
+                except Exception:
+                    pass
+
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     for idx, line in enumerate(f, start=1):
                         hay = line if case_sensitive else line.lower()
