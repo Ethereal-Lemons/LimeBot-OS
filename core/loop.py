@@ -990,6 +990,39 @@ class AgentLoop:
             logger.debug(f"⚡ Cache hit: {function_name}")
             return cached
 
+        # ── Intercept echo-as-memory ─────────────────────────────────
+
+        if function_name == "run_command":
+            cmd = function_args.get("command", "")
+            echo_match = re.match(r'^echo\s+["\'](.+?)["\']\s*$', cmd, re.DOTALL)
+            if echo_match:
+                entry = echo_match.group(1).strip()
+                if len(entry) > 10:
+                    from datetime import datetime
+
+                    memory_dir = Path("persona/memory")
+                    memory_dir.mkdir(parents=True, exist_ok=True)
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    mem_file = memory_dir / f"{today}.md"
+                    log_line = f"\n- **[{datetime.now().strftime('%H:%M')}]** {entry}"
+                    try:
+                        with open(mem_file, "a", encoding="utf-8") as f:
+                            f.write(log_line)
+
+                        if self.vector_service:
+                            try:
+                                asyncio.create_task(
+                                    self.vector_service.add_entry(
+                                        entry, category="journal"
+                                    )
+                                )
+                            except Exception:
+                                pass  # embeddings unsupported — grep fallback
+                        logger.info(f"📝 Redirected echo→log_memory: {entry[:80]}")
+                        return f"Memory saved: {entry}"
+                    except Exception as e:
+                        logger.error(f"Error in echo→log_memory redirect: {e}")
+
         try:
             if function_name.startswith("clawhub_"):
                 skill_slug = function_name[len("clawhub_") :]
@@ -1417,6 +1450,29 @@ class AgentLoop:
                 )
         except Exception:
             pass
+        if tool_calls:
+            return tool_calls
+
+        # ── Kimi K2 inline format: functions.tool_name:N{"arg":"val"} ──
+        try:
+            kimi_pattern = r"(?:^|\s)(?::?functions\.)(\w+)(?::\d+)?\s*(\{[^}]*\})"
+            for m in re.finditer(kimi_pattern, content, re.DOTALL):
+                try:
+                    args = json.loads(m.group(2))
+                except json.JSONDecodeError:
+                    continue
+                tool_calls.append(
+                    {
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "function",
+                        "function": {
+                            "name": m.group(1),
+                            "arguments": json.dumps(args),
+                        },
+                    }
+                )
+        except Exception:
+            pass
 
         return tool_calls
 
@@ -1680,6 +1736,12 @@ class AgentLoop:
                     "",
                     full_content,
                     flags=re.DOTALL,
+                ).strip()
+                # Also strip Kimi K2 inline tool syntax: functions.name:N{...}
+                clean_content = re.sub(
+                    r"(?::?functions\.\w+(?::\d+)?\s*\{[^}]*\})",
+                    "",
+                    clean_content,
                 ).strip()
                 if clean_content:
                     full_content = clean_content
@@ -2171,6 +2233,24 @@ class AgentLoop:
                     reply_to_user = tag_result.clean_reply
                     soul_updated = tag_result.soul_updated
                     identity_updated = tag_result.identity_updated
+
+                    # ── Self-repetition dedup ────────────────────────────
+                    # Some models (e.g. Kimi K2) repeat their entire
+                    # response within a single generation.  Detect and
+                    # strip the duplicate half by comparing paragraphs.
+                    if reply_to_user and len(reply_to_user) > 80:
+                        _paras = [
+                            p.strip()
+                            for p in re.split(r"\n\s*\n", reply_to_user)
+                            if p.strip()
+                        ]
+                        _n = len(_paras)
+                        if _n >= 4 and _n % 2 == 0:
+                            if _paras[: _n // 2] == _paras[_n // 2 :]:
+                                logger.info(
+                                    "✂ Self-repetition detected — trimming duplicate."
+                                )
+                                reply_to_user = "\n\n".join(_paras[: _n // 2])
 
                     if soul_updated or identity_updated:
                         self._invalidate_stable_prompt(sender_id)
