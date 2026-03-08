@@ -111,3 +111,13 @@ skills/discord_bot_bridge/*
 skills/youtube_downloader/*
 bin/sync-to-limebot-os.local.ps1
 data/.backend_port
+skills/discord_voice_note/*
+tests/test_discord_voice_note.py
+tests/test_discord_voice_note_skill.py
+tests/test_discord_file_delivery.py
+tests/test_tool_failure_handling.py
+skills/gworkspace_cli/*
+skills/gworkspace_cli/token.pickle
+skills/daily_briefing/*
+temp_tasks.json
+skills/linkedin_scout/*
