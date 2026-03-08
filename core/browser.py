@@ -1,11 +1,14 @@
 """
 Browser automation module using Playwright.
-Provides persistent Chrome session with accessibility tree navigation.
+Provides session-scoped Chrome sessions with accessibility tree navigation.
 Enhanced with human-like interactions to bypass bot detection.
 """
 
 import asyncio
+import hashlib
+import os
 import random
+import re
 import sys
 import time
 import urllib.parse
@@ -31,29 +34,225 @@ except ImportError:
     logger.warning("Playwright not installed. Browser features will be disabled.")
 
 
+_VALID_BROWSER_MODES = frozenset({"isolated", "shared", "system", "attach"})
+
+
+def _browser_settings(config: Any) -> Dict[str, str]:
+    browser = getattr(config, "browser", None)
+    mode = str(getattr(browser, "mode", "") or "isolated").strip().lower()
+    channel = str(getattr(browser, "channel", "") or "").strip().lower()
+    cdp_url = str(getattr(browser, "cdp_url", "") or "").strip()
+    user_data_dir = str(getattr(browser, "user_data_dir", "") or "").strip()
+    profile_directory = str(getattr(browser, "profile_directory", "") or "").strip()
+
+    if cdp_url:
+        mode = "attach"
+    elif mode not in _VALID_BROWSER_MODES:
+        mode = "isolated"
+
+    if mode == "attach" and not cdp_url:
+        cdp_url = "http://127.0.0.1:9222"
+
+    return {
+        "mode": mode,
+        "channel": channel,
+        "cdp_url": cdp_url,
+        "user_data_dir": user_data_dir,
+        "profile_directory": profile_directory,
+    }
+
+
+def _default_system_profile_candidates() -> List[tuple[str, Path]]:
+    if sys.platform == "win32":
+        local = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return [
+            ("chrome", local / "Google" / "Chrome" / "User Data"),
+            ("msedge", local / "Microsoft" / "Edge" / "User Data"),
+            ("chromium", local / "Chromium" / "User Data"),
+        ]
+
+    if sys.platform == "darwin":
+        support = Path.home() / "Library" / "Application Support"
+        return [
+            ("chrome", support / "Google" / "Chrome"),
+            ("msedge", support / "Microsoft Edge"),
+            ("chromium", support / "Chromium"),
+        ]
+
+    config_home = Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return [
+        ("chrome", config_home / "google-chrome"),
+        ("msedge", config_home / "microsoft-edge"),
+        ("chromium", config_home / "chromium"),
+    ]
+
+
+def _infer_channel_from_user_data_dir(path: Path) -> str:
+    target = str(path).lower()
+    for channel, candidate in _default_system_profile_candidates():
+        if str(candidate).lower() in target:
+            return channel
+    return ""
+
+
+def _browser_cache_key(session_key: str, config: Any = None) -> str:
+    settings = _browser_settings(config)
+    if settings["mode"] == "isolated":
+        return session_key
+
+    fingerprint = "|".join(
+        [
+            settings["mode"],
+            settings["channel"],
+            settings["cdp_url"],
+            settings["user_data_dir"],
+            settings["profile_directory"],
+        ]
+    )
+    digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:12]
+    return f"shared-browser-{digest}"
+
+
 class BrowserManager:
     """
     Manages a persistent Chrome browser instance for web automation.
     Uses accessibility tree for element identification.
     """
 
-    USER_DATA_DIR = Path.home() / ".limebot" / "browser" / "user-data"
-    SCREENSHOTS_DIR = Path.home() / ".limebot" / "browser" / "screenshots"
+    BASE_DIR = Path.home() / ".limebot" / "browser"
+    PROFILES_DIR = BASE_DIR / "profiles"
+    SCREENSHOTS_DIR = BASE_DIR / "screenshots"
 
     _LB_ATTR = "data-lb-id"
 
-    def __init__(self, headless: bool = False):
+    def __init__(
+        self,
+        session_key: str,
+        headless: bool = False,
+        config: Any = None,
+        manager_key: Optional[str] = None,
+    ):
+        self.session_key = session_key
         self.headless = headless
+        self.config = config
+        self.manager_key = manager_key or session_key
+        self.settings = _browser_settings(config)
+        self.mode = self.settings["mode"]
+        self.channel = self.settings["channel"]
+        self.cdp_url = self.settings["cdp_url"]
+        self.profile_directory = self.settings["profile_directory"]
         self._playwright = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._element_map: Dict[str, Any] = {}
+        self._attached_browser = False
+        self._action_lock = asyncio.Lock()
 
-        self.USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self.SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        storage_key = session_key if self.mode == "isolated" else self.manager_key
+        storage_name = self._storage_name(storage_key)
+        self.user_data_dir: Optional[Path] = None
+        self.screenshots_dir = self.SCREENSHOTS_DIR / storage_name
+
+        if self.mode in {"isolated", "shared"}:
+            self.user_data_dir = self.PROFILES_DIR / storage_name / "user-data"
+            self.user_data_dir.mkdir(parents=True, exist_ok=True)
+        elif self.mode == "system":
+            self.user_data_dir, detected_channel = self._resolve_system_profile()
+            if not self.channel and detected_channel:
+                self.channel = detected_channel
+
+        self.screenshots_dir.mkdir(parents=True, exist_ok=True)
 
         self._browser_lock = asyncio.Lock()
+
+    @staticmethod
+    def _storage_name(session_key: str) -> str:
+        """Build a stable filesystem-safe folder name for a browser session."""
+        normalized = (session_key or "default").strip()
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", normalized).strip("-") or "default"
+        digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
+        return f"{safe[:40]}-{digest}"
+
+    def _resolve_system_profile(self) -> tuple[Path, str]:
+        configured_dir = self.settings["user_data_dir"]
+        if configured_dir:
+            resolved = Path(configured_dir).expanduser()
+            if not resolved.exists():
+                raise RuntimeError(
+                    f"Configured browser profile directory does not exist: {resolved}"
+                )
+            return resolved, self.channel or _infer_channel_from_user_data_dir(resolved)
+
+        candidates = []
+        for candidate_channel, candidate_dir in _default_system_profile_candidates():
+            if self.channel and candidate_channel != self.channel:
+                continue
+            if candidate_dir.exists():
+                candidates.append((candidate_channel, candidate_dir))
+
+        if not candidates:
+            if self.channel:
+                raise RuntimeError(
+                    f"No browser profile found for channel '{self.channel}'. "
+                    "Set BROWSER_USER_DATA_DIR explicitly."
+                )
+            raise RuntimeError(
+                "No supported system browser profile was detected. "
+                "Set BROWSER_CHANNEL or BROWSER_USER_DATA_DIR explicitly."
+            )
+
+        candidates.sort(
+            key=lambda item: item[1].stat().st_mtime if item[1].exists() else 0,
+            reverse=True,
+        )
+        chosen_channel, chosen_dir = candidates[0]
+        logger.info(
+            f"Using system browser profile '{chosen_channel}' from {chosen_dir}"
+        )
+        return chosen_dir, chosen_channel
+
+    def _launch_args(self) -> List[str]:
+        args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+        ]
+        if self.profile_directory:
+            args.append(f"--profile-directory={self.profile_directory}")
+        return args
+
+    def _launch_kwargs(self, viewport: Dict[str, int]) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "headless": self.headless,
+            "viewport": viewport,
+            "args": self._launch_args(),
+        }
+        if self.channel:
+            kwargs["channel"] = self.channel
+        return kwargs
+
+    @staticmethod
+    def _is_profile_locked_error(error: Exception) -> bool:
+        text = str(error)
+        return any(
+            marker in text
+            for marker in (
+                "ProcessSingleton",
+                "profile directory is already in use",
+                "user data directory is already in use",
+                "SingletonLock",
+            )
+        )
+
+    def _format_system_profile_error(self, error: Exception) -> str:
+        base = f"Failed to open the system browser profile at {self.user_data_dir}."
+        if self._is_profile_locked_error(error):
+            return (
+                f"{base} That profile is already in use by your browser. "
+                "Close that browser first, or switch to BROWSER_MODE=attach "
+                "and point BROWSER_CDP_URL at a live Chrome/Edge debugging endpoint."
+            )
+        return f"{base} {error}"
 
     async def _ensure_browser(self) -> Page:
         """Ensure browser is running and return the active page."""
@@ -67,46 +266,76 @@ class BrowserManager:
                     return self._page
                 await self._do_close()
 
-            logger.info("Launching browser...")
+            logger.info(
+                f"Launching browser (mode={self.mode}, channel={self.channel or 'default'})..."
+            )
             self._playwright = await async_playwright().start()
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-            ]
             viewport = {"width": 1280, "height": 720}
 
-            try:
-                # Preferred mode: persistent profile for cookies/sessions between calls.
-                self._context = await self._playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(self.USER_DATA_DIR),
-                    headless=self.headless,
-                    viewport=viewport,
-                    args=launch_args,
-                )
-            except Exception as persistent_error:
-                logger.warning(
-                    f"Persistent browser launch failed ({persistent_error}). "
-                    "Falling back to ephemeral context."
-                )
+            if self.mode == "attach":
                 try:
-                    self._browser = await self._playwright.chromium.launch(
-                        headless=self.headless,
-                        args=launch_args,
+                    self._browser = await self._playwright.chromium.connect_over_cdp(
+                        self.cdp_url
                     )
-                    self._context = await self._browser.new_context(viewport=viewport)
-                except Exception as fallback_error:
+                    self._attached_browser = True
+                    if not self._browser.contexts:
+                        raise RuntimeError(
+                            "Attached browser did not expose a default context."
+                        )
+                    self._context = self._browser.contexts[0]
+                except Exception as attach_error:
                     await self._playwright.stop()
                     self._playwright = None
                     raise RuntimeError(
-                        "Failed to start browser in both persistent and ephemeral modes. "
-                        f"Persistent error: {persistent_error} | "
-                        f"Fallback error: {fallback_error}"
-                    ) from fallback_error
+                        "Failed to attach to an existing browser session. "
+                        f"Tried {self.cdp_url}. Launch Chrome or Edge with "
+                        "--remote-debugging-port=9222 or set BROWSER_CDP_URL explicitly. "
+                        f"Original error: {attach_error}"
+                    ) from attach_error
+            else:
+                try:
+                    if self.user_data_dir is None:
+                        raise RuntimeError(
+                            "Browser mode requires a user data directory, but none was resolved."
+                        )
+                    self._context = await self._playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(self.user_data_dir),
+                        **self._launch_kwargs(viewport),
+                    )
+                except Exception as persistent_error:
+                    if self.mode == "system":
+                        await self._playwright.stop()
+                        self._playwright = None
+                        raise RuntimeError(
+                            self._format_system_profile_error(persistent_error)
+                        ) from persistent_error
+
+                    logger.warning(
+                        f"Persistent browser launch failed ({persistent_error}). "
+                        "Falling back to ephemeral context."
+                    )
+                    try:
+                        self._browser = await self._playwright.chromium.launch(
+                            headless=self.headless,
+                            channel=self.channel or None,
+                            args=self._launch_args(),
+                        )
+                        self._context = await self._browser.new_context(
+                            viewport=viewport
+                        )
+                    except Exception as fallback_error:
+                        await self._playwright.stop()
+                        self._playwright = None
+                        raise RuntimeError(
+                            "Failed to start browser in both persistent and ephemeral modes. "
+                            f"Persistent error: {persistent_error} | "
+                            f"Fallback error: {fallback_error}"
+                        ) from fallback_error
 
             self._context.on("page", self._handle_new_page)
 
             self._page = (
-                self._context.pages[0]
+                self._context.pages[-1]
                 if self._context.pages
                 else await self._context.new_page()
             )
@@ -124,17 +353,190 @@ class BrowserManager:
         self._page = page
         self._element_map.clear()
 
+    @staticmethod
+    def _is_navigation_handoff_error(error: Exception) -> bool:
+        """Detect aborted navigations that often occur when a site opens a new tab."""
+        text = str(error)
+        return any(
+            marker in text
+            for marker in (
+                "net::ERR_ABORTED",
+                "NS_BINDING_ABORTED",
+            )
+        )
+
+    @staticmethod
+    def _urls_seem_related(requested_url: str, actual_url: str) -> bool:
+        if not requested_url or not actual_url:
+            return False
+
+        requested = urllib.parse.urlsplit(requested_url)
+        actual = urllib.parse.urlsplit(actual_url)
+        if requested.netloc.lower() != actual.netloc.lower():
+            return False
+
+        requested_path = requested.path.rstrip("/")
+        actual_path = actual.path.rstrip("/")
+        if requested_path == actual_path:
+            return True
+        return (
+            actual_path.startswith(requested_path)
+            or requested_path.startswith(actual_path)
+        )
+
+    async def _recover_navigation_handoff(
+        self, requested_url: str, existing_page_ids: set[int]
+    ) -> Optional[Page]:
+        """Follow a new tab/page when the original goto is aborted mid-handoff."""
+        if not self._context:
+            return None
+
+        deadline = time.monotonic() + 5.0
+        fallback: Optional[Page] = None
+
+        while time.monotonic() < deadline:
+            open_pages = [
+                candidate
+                for candidate in self._context.pages
+                if not candidate.is_closed()
+            ]
+
+            new_pages = [
+                candidate
+                for candidate in open_pages
+                if id(candidate) not in existing_page_ids
+            ]
+
+            for candidate in new_pages:
+                current_url = candidate.url or ""
+                if not current_url or current_url == "about:blank":
+                    continue
+                if self._urls_seem_related(requested_url, current_url):
+                    return candidate
+                if fallback is None:
+                    fallback = candidate
+
+            current = self._page
+            if current and not current.is_closed():
+                current_url = current.url or ""
+                if current_url and current_url != "about:blank":
+                    if self._urls_seem_related(requested_url, current_url):
+                        return current
+                    if id(current) not in existing_page_ids and fallback is None:
+                        fallback = current
+
+            await asyncio.sleep(0.1)
+
+        return fallback
+
+    @staticmethod
+    def _detect_page_warning(title: str, url: str, elements: str) -> Optional[str]:
+        """Classify common access walls so the model can react explicitly."""
+        title_text = (title or "").lower()
+        url_text = (url or "").lower()
+        elements_text = (elements or "").lower()
+        combined = "\n".join([title_text, elements_text])
+
+        if any(
+            marker in combined
+            for marker in (
+                "verifying your browser",
+                "verify you are human",
+                "checking your browser",
+                "captcha",
+            )
+        ):
+            return "Site is showing a browser verification page instead of the requested content."
+
+        if "x.com" in url_text or "twitter.com" in url_text:
+            if any(
+                marker in combined
+                for marker in (
+                    "iniciar sesión",
+                    "log in",
+                    "sign up",
+                    "sign in to x",
+                    "create account",
+                    "regístrate",
+                )
+            ):
+                return "X is showing the login wall instead of the post content."
+
+            if any(
+                marker in combined
+                for marker in (
+                    "something went wrong",
+                    "try reloading",
+                    "unusual activity",
+                    "suspicious activity",
+                    "verify you are human",
+                    "browser verification",
+                )
+            ):
+                return "X is showing an interstitial or anti-bot page instead of the post content."
+
+        return None
+
+    async def _finalize_navigation(
+        self, page: Page, on_progress=None, note: str = "", recovered: bool = False
+    ) -> Dict[str, Any]:
+        """Collect the final page state after a navigation or handoff."""
+        self._page = page
+
+        try:
+            await page.bring_to_front()
+        except Exception:
+            pass
+
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+
+        if on_progress:
+            await on_progress("⏳ Waiting for page to settle...")
+        await page.wait_for_timeout(2000)
+
+        if on_progress:
+            await on_progress("🛡️ Handling overlays...")
+        await self._handle_overlays()
+
+        title = await page.title()
+        current_url = page.url
+        if on_progress:
+            await on_progress("🌳 Building accessibility tree...")
+        a11y_tree = await self._build_accessibility_tree()
+
+        if on_progress:
+            await on_progress("✅ Navigation complete.")
+
+        result = {
+            "success": True,
+            "title": title,
+            "url": current_url,
+            "elements": a11y_tree,
+        }
+        warning = self._detect_page_warning(title, current_url, a11y_tree)
+        if note:
+            result["note"] = note
+        if warning:
+            result["warning"] = warning
+        if recovered:
+            result["recovered"] = True
+        return result
+
     async def close(self) -> None:
         """Close the browser instance."""
-        async with self._browser_lock:
-            await self._do_close()
+        async with self._action_lock:
+            async with self._browser_lock:
+                await self._do_close()
 
     async def _do_close(self) -> None:
         """Internal close — call only when lock is already held."""
-        if self._context:
+        if self._context and not self._attached_browser:
             await self._context.close()
-            self._context = None
-            self._page = None
+        self._context = None
+        self._page = None
 
         if self._browser:
             await self._browser.close()
@@ -144,36 +546,39 @@ class BrowserManager:
             await self._playwright.stop()
             self._playwright = None
 
+        self._attached_browser = False
         self._element_map.clear()
         logger.info("Browser closed")
 
     async def list_tabs(self) -> List[Dict[str, Any]]:
         """List all open tabs."""
-        if not self._context:
-            return []
-        tabs = []
-        for i, p in enumerate(self._context.pages):
-            try:
-                tabs.append(
-                    {
-                        "index": i,
-                        "title": await p.title(),
-                        "url": p.url,
-                        "active": p == self._page,
-                    }
-                )
-            except Exception:
-                continue
-        return tabs
+        async with self._action_lock:
+            if not self._context:
+                return []
+            tabs = []
+            for i, p in enumerate(self._context.pages):
+                try:
+                    tabs.append(
+                        {
+                            "index": i,
+                            "title": await p.title(),
+                            "url": p.url,
+                            "active": p == self._page,
+                        }
+                    )
+                except Exception:
+                    continue
+            return tabs
 
     async def switch_tab(self, index: int) -> bool:
         """Switch to a specific tab by index."""
-        if not self._context or index >= len(self._context.pages):
-            return False
-        self._page = self._context.pages[index]
-        await self._page.bring_to_front()
-        self._element_map.clear()
-        return True
+        async with self._action_lock:
+            if not self._context or index >= len(self._context.pages):
+                return False
+            self._page = self._context.pages[index]
+            await self._page.bring_to_front()
+            self._element_map.clear()
+            return True
 
     async def _handle_overlays(self) -> None:
         """Dismiss common cookie banners or overlays that may block interactions."""
@@ -336,173 +741,187 @@ class BrowserManager:
 
     async def navigate(self, url: str, on_progress=None) -> Dict[str, Any]:
         """Navigate to a URL and return a page snapshot."""
-        page = await self._ensure_browser()
+        async with self._action_lock:
+            page = await self._ensure_browser()
+            existing_page_ids = (
+                {id(candidate) for candidate in self._context.pages}
+                if self._context
+                else set()
+            )
 
-        try:
-            if on_progress:
-                await on_progress(f"🌍 Navigating to {url}...")
-            logger.info(f"Navigating to: {url}")
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            try:
+                if on_progress:
+                    await on_progress(f"🌍 Navigating to {url}...")
+                logger.info(f"Navigating to: {url}")
+                await asyncio.sleep(random.uniform(0.5, 1.5))
 
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            if on_progress:
-                await on_progress("⏳ Waiting for page to settle...")
-            await page.wait_for_timeout(2000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                return await self._finalize_navigation(page, on_progress=on_progress)
 
-            if on_progress:
-                await on_progress("🛡️ Handling overlays...")
-            await self._handle_overlays()
+            except Exception as e:
+                if self._is_navigation_handoff_error(e):
+                    recovered_page = await self._recover_navigation_handoff(
+                        url, existing_page_ids
+                    )
+                    if recovered_page is not None:
+                        logger.warning(
+                            "Recovered navigation after aborted goto by following "
+                            f"page handoff: {recovered_page.url}"
+                        )
+                        note = (
+                            "Recovered after the site opened the destination in a new tab."
+                        )
+                        return await self._finalize_navigation(
+                            recovered_page,
+                            on_progress=on_progress,
+                            note=note,
+                            recovered=True,
+                        )
 
-            title = await page.title()
-            current_url = page.url
-            if on_progress:
-                await on_progress("🌳 Building accessibility tree...")
-            a11y_tree = await self._build_accessibility_tree()
-
-            if on_progress:
-                await on_progress("✅ Navigation complete.")
-            return {
-                "success": True,
-                "title": title,
-                "url": current_url,
-                "elements": a11y_tree,
-            }
-
-        except Exception as e:
-            logger.error(f"Navigation failed: {e}")
-            return {"success": False, "error": str(e)}
+                logger.error(f"Navigation failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def click(self, element_id: str) -> Dict[str, Any]:
         """Click an element by its accessibility ID."""
-        if element_id not in self._element_map:
-            return {
-                "success": False,
-                "error": f"Element '{element_id}' not found. Run snapshot first.",
-            }
+        async with self._action_lock:
+            if element_id not in self._element_map:
+                return {
+                    "success": False,
+                    "error": f"Element '{element_id}' not found. Run snapshot first.",
+                }
 
-        try:
-            locator = self._element_map[element_id]
             try:
-                await locator.scroll_into_view_if_needed(timeout=2000)
-            except Exception:
-                pass
+                locator = self._element_map[element_id]
+                try:
+                    await locator.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
 
-            await asyncio.sleep(random.uniform(0.2, 0.5))
-            await locator.click()
-            await self._page.wait_for_timeout(1000)
-            await self._handle_overlays()
+                await asyncio.sleep(random.uniform(0.2, 0.5))
+                await locator.click()
+                await self._page.wait_for_timeout(1000)
+                await self._handle_overlays()
 
-            title = await self._page.title()
-            a11y_tree = await self._build_accessibility_tree()
+                title = await self._page.title()
+                a11y_tree = await self._build_accessibility_tree()
 
-            return {
-                "success": True,
-                "message": f"Clicked {element_id}",
-                "title": title,
-                "elements": a11y_tree,
-            }
+                return {
+                    "success": True,
+                    "message": f"Clicked {element_id}",
+                    "title": title,
+                    "elements": a11y_tree,
+                }
 
-        except Exception as e:
-            logger.error(f"Click failed: {e}")
-            return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.error(f"Click failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def type_text(self, element_id: str, text: str) -> Dict[str, Any]:
         """Type text into an element with human-like typing speed."""
-        if element_id not in self._element_map:
-            return {
-                "success": False,
-                "error": f"Element '{element_id}' not found. Run snapshot first.",
-            }
+        async with self._action_lock:
+            if element_id not in self._element_map:
+                return {
+                    "success": False,
+                    "error": f"Element '{element_id}' not found. Run snapshot first.",
+                }
 
-        try:
-            locator = self._element_map[element_id]
-            await locator.click(timeout=5000)
-            await asyncio.sleep(random.uniform(0.3, 0.7))
-            await self._page.keyboard.press("Control+A")
-            await self._page.keyboard.press("Backspace")
-            await locator.type(text, delay=random.randint(50, 150))
+            try:
+                locator = self._element_map[element_id]
+                await locator.click(timeout=5000)
+                await asyncio.sleep(random.uniform(0.3, 0.7))
+                await self._page.keyboard.press("Control+A")
+                await self._page.keyboard.press("Backspace")
+                await locator.type(text, delay=random.randint(50, 150))
 
-            return {"success": True, "message": f"Typed text into {element_id}"}
+                return {"success": True, "message": f"Typed text into {element_id}"}
 
-        except Exception as e:
-            logger.error(f"Type failed: {e}")
-            return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.error(f"Type failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def snapshot(self, take_screenshot: bool = True) -> Dict[str, Any]:
         """Get current page state including accessibility tree."""
-        page = await self._ensure_browser()
+        async with self._action_lock:
+            page = await self._ensure_browser()
 
-        try:
-            await self._handle_overlays()
+            try:
+                await self._handle_overlays()
 
-            title = await page.title()
-            current_url = page.url
-            a11y_tree = await self._build_accessibility_tree()
+                title = await page.title()
+                current_url = page.url
+                a11y_tree = await self._build_accessibility_tree()
 
-            result = {
-                "success": True,
-                "title": title,
-                "url": current_url,
-                "elements": a11y_tree,
-            }
+                result = {
+                    "success": True,
+                    "title": title,
+                    "url": current_url,
+                    "elements": a11y_tree,
+                }
+                warning = self._detect_page_warning(title, current_url, a11y_tree)
+                if warning:
+                    result["warning"] = warning
 
-            if take_screenshot:
-                screenshot_path = (
-                    self.SCREENSHOTS_DIR / f"snapshot_{time.time():.0f}.png"
-                )
-                await page.screenshot(path=str(screenshot_path))
-                result["screenshot"] = str(screenshot_path)
+                if take_screenshot:
+                    screenshot_path = (
+                        self.screenshots_dir / f"snapshot_{time.time():.0f}.png"
+                    )
+                    await page.screenshot(path=str(screenshot_path))
+                    result["screenshot"] = str(screenshot_path)
 
-            return result
+                return result
 
-        except Exception as e:
-            logger.error(f"Snapshot failed: {e}")
-            return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.error(f"Snapshot failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def scroll(
         self, direction: str = "down", amount: int = 500
     ) -> Dict[str, Any]:
         """Scroll the page up or down."""
+        async with self._action_lock:
+            if direction not in ("up", "down"):
+                return {
+                    "success": False,
+                    "error": f"Invalid direction '{direction}'. Use 'up' or 'down'.",
+                }
 
-        if direction not in ("up", "down"):
-            return {
-                "success": False,
-                "error": f"Invalid direction '{direction}'. Use 'up' or 'down'.",
-            }
+            page = await self._ensure_browser()
 
-        page = await self._ensure_browser()
+            try:
+                scroll_amount = amount if direction == "down" else -amount
 
-        try:
-            scroll_amount = amount if direction == "down" else -amount
+                await page.evaluate("(amt) => window.scrollBy(0, amt)", scroll_amount)
+                await page.wait_for_timeout(300)
 
-            await page.evaluate("(amt) => window.scrollBy(0, amt)", scroll_amount)
-            await page.wait_for_timeout(300)
+                a11y_tree = await self._build_accessibility_tree()
+                return {
+                    "success": True,
+                    "message": f"Scrolled {direction} by {amount}px",
+                    "elements": a11y_tree,
+                }
 
-            a11y_tree = await self._build_accessibility_tree()
-            return {
-                "success": True,
-                "message": f"Scrolled {direction} by {amount}px",
-                "elements": a11y_tree,
-            }
-
-        except Exception as e:
-            logger.error(f"Scroll failed: {e}")
-            return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.error(f"Scroll failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def wait(self, ms: int = 1000) -> Dict[str, Any]:
         """Wait for a specified time to let the page update."""
+        async with self._action_lock:
+            ms = max(100, min(ms, 30_000))
+            page = await self._ensure_browser()
 
-        ms = max(100, min(ms, 30_000))
-        page = await self._ensure_browser()
+            try:
+                await page.wait_for_timeout(ms)
+                a11y_tree = await self._build_accessibility_tree()
+                return {
+                    "success": True,
+                    "message": f"Waited {ms}ms",
+                    "elements": a11y_tree,
+                }
 
-        try:
-            await page.wait_for_timeout(ms)
-            a11y_tree = await self._build_accessibility_tree()
-            return {"success": True, "message": f"Waited {ms}ms", "elements": a11y_tree}
-
-        except Exception as e:
-            logger.error(f"Wait failed: {e}")
-            return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.error(f"Wait failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def extract(
         self, selector: str = "body", limit: int = 5000
@@ -513,243 +932,276 @@ class BrowserManager:
 
         FIX: merged extract() and extract_large() into one method with a limit parameter.
         """
-        page = await self._ensure_browser()
+        async with self._action_lock:
+            page = await self._ensure_browser()
 
-        try:
-            elem = await page.query_selector(selector)
+            try:
+                elem = await page.query_selector(selector)
 
-            if not elem:
-                for frame in page.frames:
-                    if frame == page.main_frame:
-                        continue
-                    try:
-                        elem = await frame.query_selector(selector)
-                        if elem:
-                            break
-                    except Exception:
-                        continue
+                if not elem:
+                    for frame in page.frames:
+                        if frame == page.main_frame:
+                            continue
+                        try:
+                            elem = await frame.query_selector(selector)
+                            if elem:
+                                break
+                        except Exception:
+                            continue
 
-            if not elem:
+                if not elem:
+                    return {
+                        "success": False,
+                        "error": f"Selector '{selector}' not found in any frame",
+                    }
+
+                text = await elem.inner_text()
+                original_length = len(text)
+                truncated = original_length > limit
+                if truncated:
+                    text = text[:limit] + f"\n... (truncated at {limit} chars)"
+
                 return {
-                    "success": False,
-                    "error": f"Selector '{selector}' not found in any frame",
+                    "success": True,
+                    "selector": selector,
+                    "text": text,
+                    "truncated": truncated,
+                    "original_length": original_length,
                 }
 
-            text = await elem.inner_text()
-            truncated = len(text) > limit
-            if truncated:
-                text = text[:limit] + f"\n... (truncated at {limit} chars)"
-
-            return {
-                "success": True,
-                "selector": selector,
-                "text": text,
-                "truncated": truncated,
-                "original_length": len(text),
-            }
-
-        except Exception as e:
-            logger.error(f"Extract failed: {e}")
-            return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.error(f"Extract failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def list_media(self, on_progress=None) -> Dict[str, Any]:
         """Extract a list of images from the current page."""
-        page = await self._ensure_browser()
-        url = page.url
+        async with self._action_lock:
+            page = await self._ensure_browser()
+            url = page.url
 
-        try:
-            if on_progress:
-                await on_progress("📸 Scanning page for media...")
-
-            if "google.com" in url and "tbm=isch" in url:
+            try:
                 if on_progress:
-                    await on_progress(
-                        "🔍 Detected Google Image results. Extracting thumbnails..."
-                    )
-                js_script = """
-                () => {
-                    const items = Array.from(document.querySelectorAll('div.isv-r, div.rg_bx'));
-                    return items.map(item => {
-                        const img   = item.querySelector('img');
-                        const title = item.querySelector('h3, .mVD9t');
-                        if (!img || !img.src) return null;
-                        return { src: img.src, alt: (title ? title.innerText : img.alt) || "Google Image Result",
-                                 width: img.width, height: img.height, visible: true };
-                    }).filter(Boolean);
-                }
-                """
-            else:
-                js_script = """
-                () => {
-                    return Array.from(document.querySelectorAll('img')).map(img => {
-                        const rect = img.getBoundingClientRect();
-                        return { src: img.src, alt: img.alt || img.title || "",
-                                 width: rect.width, height: rect.height,
-                                 visible: rect.width > 10 && rect.height > 10 };
-                    }).filter(img => img.src && img.src.startsWith('http'));
-                }
-                """
+                    await on_progress("📸 Scanning page for media...")
 
-            all_imgs = await page.evaluate(js_script)
+                if "google.com" in url and "tbm=isch" in url:
+                    if on_progress:
+                        await on_progress(
+                            "🔍 Detected Google Image results. Extracting thumbnails..."
+                        )
+                    js_script = """
+                    () => {
+                        const items = Array.from(document.querySelectorAll('div.isv-r, div.rg_bx'));
+                        return items.map(item => {
+                            const img   = item.querySelector('img');
+                            const title = item.querySelector('h3, .mVD9t');
+                            if (!img || !img.src) return null;
+                            return { src: img.src, alt: (title ? title.innerText : img.alt) || "Google Image Result",
+                                     width: img.width, height: img.height, visible: true };
+                        }).filter(Boolean);
+                    }
+                    """
+                else:
+                    js_script = """
+                    () => {
+                        return Array.from(document.querySelectorAll('img')).map(img => {
+                            const rect = img.getBoundingClientRect();
+                            return { src: img.src, alt: img.alt || img.title || "",
+                                     width: rect.width, height: rect.height,
+                                     visible: rect.width > 10 && rect.height > 10 };
+                        }).filter(img => img.src && img.src.startsWith('http'));
+                    }
+                    """
 
-            seen: set = set()
-            filtered = []
-            for img in all_imgs:
-                if img["src"] in seen:
-                    continue
-                if (
-                    img["width"] > 50 or img["height"] > 50 or len(img["alt"]) > 3
-                ) and img["visible"]:
-                    filtered.append(img)
-                    seen.add(img["src"])
+                all_imgs = await page.evaluate(js_script)
 
-            filtered = filtered[:20]
+                seen: set = set()
+                filtered = []
+                for img in all_imgs:
+                    if img["src"] in seen:
+                        continue
+                    if (
+                        img["width"] > 50 or img["height"] > 50 or len(img["alt"]) > 3
+                    ) and img["visible"]:
+                        filtered.append(img)
+                        seen.add(img["src"])
 
-            if not filtered:
+                filtered = filtered[:20]
+
+                if not filtered:
+                    return {
+                        "success": True,
+                        "count": 0,
+                        "media_summary": "No significant images found. Try scrolling or navigating deeper.",
+                    }
+
+                lines = [f"📸 Found {len(filtered)} images:\n"]
+                for i, img in enumerate(filtered, 1):
+                    desc = img["alt"].replace("\n", " ").strip() or f"Image {i}"
+                    lines.append(f"{i}. {desc}\n   URL: {img['src']}\n")
+
+                if on_progress:
+                    await on_progress(f"✅ {len(filtered)} images indexed.")
                 return {
                     "success": True,
-                    "count": 0,
-                    "media_summary": "No significant images found. Try scrolling or navigating deeper.",
+                    "count": len(filtered),
+                    "media_summary": "\n".join(lines),
                 }
 
-            lines = [f"📸 Found {len(filtered)} images:\n"]
-            for i, img in enumerate(filtered, 1):
-                desc = img["alt"].replace("\n", " ").strip() or f"Image {i}"
-                lines.append(f"{i}. {desc}\n   URL: {img['src']}\n")
-
-            if on_progress:
-                await on_progress(f"✅ {len(filtered)} images indexed.")
-            return {
-                "success": True,
-                "count": len(filtered),
-                "media_summary": "\n".join(lines),
-            }
-
-        except Exception as e:
-            logger.error(f"Media extraction failed: {e}")
-            return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.error(f"Media extraction failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def google_search(self, query: str, on_progress=None) -> Dict[str, Any]:
         """Search Google and return structured results."""
-        page = await self._ensure_browser()
+        async with self._action_lock:
+            page = await self._ensure_browser()
 
-        try:
-            if on_progress:
-                await on_progress(f"🔍 Searching Google for: {query}")
-            logger.info(f"Google search: {query}")
+            try:
+                if on_progress:
+                    await on_progress(f"🔍 Searching Google for: {query}")
+                logger.info(f"Google search: {query}")
 
-            encoded_query = urllib.parse.quote_plus(query)
-            await page.goto(f"https://www.google.com/search?q={encoded_query}")
-            await page.wait_for_timeout(1000)
+                encoded_query = urllib.parse.quote_plus(query)
+                await page.goto(f"https://www.google.com/search?q={encoded_query}")
+                await page.wait_for_timeout(1000)
 
-            if on_progress:
-                await on_progress("📄 Extracting top results...")
-            results = []
+                if on_progress:
+                    await on_progress("📄 Extracting top results...")
+                results = []
 
-            for container in (await page.query_selector_all("div.g"))[:5]:
-                title_elem = await container.query_selector("h3")
-                link_elem = await container.query_selector("a")
-                snippet_elem = await container.query_selector("div.VwiC3b")
+                for container in (await page.query_selector_all("div.g"))[:5]:
+                    title_elem = await container.query_selector("h3")
+                    link_elem = await container.query_selector("a")
+                    snippet_elem = await container.query_selector("div.VwiC3b")
 
-                if title_elem and link_elem:
-                    results.append(
-                        {
-                            "title": await title_elem.inner_text(),
-                            "url": await link_elem.get_attribute("href"),
-                            "snippet": await snippet_elem.inner_text()
-                            if snippet_elem
-                            else "",
+                    if title_elem and link_elem:
+                        results.append(
+                            {
+                                "title": await title_elem.inner_text(),
+                                "url": await link_elem.get_attribute("href"),
+                                "snippet": await snippet_elem.inner_text()
+                                if snippet_elem
+                                else "",
+                            }
+                        )
+
+                if not results:
+                    text = await page.inner_text("body")
+                    if "No results found" in text:
+                        return {
+                            "success": True,
+                            "results": [],
+                            "message": "No results found",
                         }
-                    )
 
-            if not results:
-                text = await page.inner_text("body")
-                if "No results found" in text:
-                    return {
-                        "success": True,
-                        "results": [],
-                        "message": "No results found",
-                    }
+                result_text = "".join(
+                    f"{i}. {r['title']}\n   URL: {r['url']}\n   {r['snippet']}\n\n"
+                    for i, r in enumerate(results, 1)
+                )
 
-            result_text = "".join(
-                f"{i}. {r['title']}\n   URL: {r['url']}\n   {r['snippet']}\n\n"
-                for i, r in enumerate(results, 1)
-            )
+                if on_progress:
+                    await on_progress("🌳 Building accessibility tree...")
+                a11y_tree = await self._build_accessibility_tree()
 
-            if on_progress:
-                await on_progress("🌳 Building accessibility tree...")
-            a11y_tree = await self._build_accessibility_tree()
+                if on_progress:
+                    await on_progress(f"✅ Found {len(results)} results.")
+                return {
+                    "success": True,
+                    "query": query,
+                    "results_summary": result_text
+                    or "Results found but could not be parsed.",
+                    "elements": a11y_tree,
+                }
 
-            if on_progress:
-                await on_progress(f"✅ Found {len(results)} results.")
-            return {
-                "success": True,
-                "query": query,
-                "results_summary": result_text
-                or "Results found but could not be parsed.",
-                "elements": a11y_tree,
-            }
-
-        except Exception as e:
-            logger.error(f"Google search failed: {e}")
-            return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.error(f"Google search failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def press_key(self, key: str) -> Dict[str, Any]:
         """Press a keyboard key (e.g. 'Enter', 'Escape', 'Tab')."""
-        page = await self._ensure_browser()
-        try:
-            await page.keyboard.press(key)
-            await page.wait_for_timeout(500)
-            a11y_tree = await self._build_accessibility_tree()
-            return {
-                "success": True,
-                "message": f"Pressed '{key}'",
-                "elements": a11y_tree,
-            }
-        except Exception as e:
-            logger.error(f"Key press failed: {e}")
-            return {"success": False, "error": str(e)}
+        async with self._action_lock:
+            page = await self._ensure_browser()
+            try:
+                await page.keyboard.press(key)
+                await page.wait_for_timeout(500)
+                a11y_tree = await self._build_accessibility_tree()
+                return {
+                    "success": True,
+                    "message": f"Pressed '{key}'",
+                    "elements": a11y_tree,
+                }
+            except Exception as e:
+                logger.error(f"Key press failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def go_back(self) -> Dict[str, Any]:
         """Navigate to the previous page in history."""
-        page = await self._ensure_browser()
-        try:
-            await page.go_back(wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(1000)
-            a11y_tree = await self._build_accessibility_tree()
-            return {
-                "success": True,
-                "title": await page.title(),
-                "url": page.url,
-                "elements": a11y_tree,
-            }
-        except Exception as e:
-            logger.error(f"go_back failed: {e}")
-            return {"success": False, "error": str(e)}
+        async with self._action_lock:
+            page = await self._ensure_browser()
+            try:
+                await page.go_back(wait_until="domcontentloaded", timeout=15000)
+                await page.wait_for_timeout(1000)
+                a11y_tree = await self._build_accessibility_tree()
+                return {
+                    "success": True,
+                    "title": await page.title(),
+                    "url": page.url,
+                    "elements": a11y_tree,
+                }
+            except Exception as e:
+                logger.error(f"go_back failed: {e}")
+                return {"success": False, "error": str(e)}
 
     async def get_page_text(self) -> Dict[str, Any]:
         """Return all visible text on the current page — useful for reading articles."""
         return await self.extract("body", limit=20_000)
 
 
-_browser_manager: Optional[BrowserManager] = None
+_browser_managers: Dict[str, BrowserManager] = {}
 
 _singleton_lock = asyncio.Lock()
 
 
-async def get_browser_manager(headless: bool = False) -> BrowserManager:
-    """Get or create the global BrowserManager instance."""
-    global _browser_manager
+async def get_browser_manager(
+    session_key: str = "default", headless: bool = False, config: Any = None
+) -> BrowserManager:
+    """Get or create the BrowserManager for a specific agent session."""
+    cache_key = _browser_cache_key(session_key, config)
     async with _singleton_lock:
-        if _browser_manager is None:
-            _browser_manager = BrowserManager(headless=headless)
-    return _browser_manager
+        manager = _browser_managers.get(cache_key)
+        if manager is None:
+            manager = BrowserManager(
+                session_key=session_key,
+                headless=headless,
+                config=config,
+                manager_key=cache_key,
+            )
+            _browser_managers[cache_key] = manager
+    return manager
 
 
-async def close_browser() -> None:
-    """Close and discard the global BrowserManager."""
-    global _browser_manager
+async def close_browser(session_key: Optional[str] = None, config: Any = None) -> None:
+    """Close one browser session, or all browser sessions when no key is given."""
+    managers: List[BrowserManager] = []
     async with _singleton_lock:
-        if _browser_manager:
-            await _browser_manager.close()
-            _browser_manager = None
+        if session_key is None:
+            managers = list(_browser_managers.values())
+            _browser_managers.clear()
+        else:
+            keys_to_close = []
+
+            direct_key = _browser_cache_key(session_key, config) if config else session_key
+            if direct_key in _browser_managers:
+                keys_to_close.append(direct_key)
+            else:
+                for key, manager in _browser_managers.items():
+                    if manager.session_key == session_key:
+                        keys_to_close.append(key)
+
+            for key in keys_to_close:
+                manager = _browser_managers.pop(key, None)
+                if manager:
+                    managers.append(manager)
+
+    for manager in managers:
+        await manager.close()
