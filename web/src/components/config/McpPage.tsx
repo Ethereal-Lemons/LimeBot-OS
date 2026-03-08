@@ -41,6 +41,7 @@ import {
     TabsTrigger,
 } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 interface McpServerConfig {
     command: string;
@@ -148,17 +149,20 @@ export function McpPage() {
             await axios.post(`${API_BASE_URL}/api/mcp/config`, config);
             setHasChanges(false);
             setTimeout(fetchData, 2000);
+            toast.success("MCP configuration saved");
         } catch (error) {
             console.error("Error saving MCP config:", error);
+            toast.error("Failed to save MCP configuration");
         } finally {
             setIsSaving(false);
         }
     };
 
     const addServer = () => {
-        if (!newServerName.trim()) return;
-        if (config.mcpServers[newServerName]) {
-            alert("A server with this name already exists.");
+        const serverName = newServerName.trim();
+        if (!serverName) return;
+        if (config.mcpServers[serverName]) {
+            toast.error("A server with this name already exists.");
             return;
         }
 
@@ -166,7 +170,7 @@ export function McpPage() {
             ...config,
             mcpServers: {
                 ...config.mcpServers,
-                [newServerName]: {
+                [serverName]: {
                     command: "python",
                     args: [],
                     env: {}
@@ -176,6 +180,7 @@ export function McpPage() {
         setNewServerName("");
         setIsAddDialogOpen(false);
         setHasChanges(true);
+        toast.success("Server added to MCP configuration");
     };
 
     const updateServer = (name: string, fields: Partial<McpServerConfig>) => {
