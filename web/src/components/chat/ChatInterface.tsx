@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
-import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, Check, Copy } from "lucide-react";
+import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, Check, Copy, ArrowDown } from "lucide-react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -56,6 +56,27 @@ interface ChatInterfaceProps {
     autonomousMode?: boolean;
 }
 
+function ChatImage({ src, alt }: { src: string, alt: string }) {
+    const [error, setError] = useState(false);
+
+    if (error) return null;
+
+    return (
+        <img
+            src={src}
+            alt={alt}
+            className="max-w-full rounded-lg mb-2 max-h-64 object-cover"
+            onError={() => setError(true)}
+        />
+    );
+}
+
+const normalizeStreamingMarkdown = (content: string) => {
+    const value = content || "";
+    const fenceCount = (value.match(/```/g) || []).length;
+    return fenceCount % 2 === 1 ? `${value}\n\`\`\`` : value;
+};
+
 const MemoizedCodeBlock = memo(({ language, value }: { language: string; value: string }) => {
     const [copied, setCopied] = useState(false);
 
@@ -100,6 +121,96 @@ const MemoizedCodeBlock = memo(({ language, value }: { language: string; value: 
         </div>
     );
 });
+
+const MarkdownMessage = memo(({
+    content,
+    isUser,
+    isStreaming,
+}: {
+    content: string;
+    isUser: boolean;
+    isStreaming?: boolean;
+}) => {
+    if (!content) return null;
+
+    const renderedContent = isStreaming ? normalizeStreamingMarkdown(content) : content;
+
+    return (
+        <div className={cn(
+            "prose prose-sm dark:prose-invert max-w-none break-words leading-tight text-inherit",
+            isStreaming && "streaming-markdown"
+        )}>
+            <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                    a: ({ node, ...props }) => (
+                        <a
+                            {...props}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-bold underline text-primary decoration-primary/30 hover:decoration-primary"
+                        />
+                    ),
+                    p: ({ node, ...props }) => <p {...props} className="last:mb-1" />,
+                    code: ({ node, className, children, ...props }: any) => {
+                        const codeContent = String(children || '').trim();
+                        if (!codeContent) return null;
+                        const match = /language-(\w+)/.exec(className || '');
+
+                        return !match ? (
+                            <code
+                                className={cn(
+                                    "bg-muted/50 px-1.5 py-0.5 rounded font-mono text-[12px] break-all",
+                                    isUser ? "bg-black/30" : "bg-zinc-200/50 dark:bg-zinc-800/50"
+                                )}
+                                {...props}
+                            >
+                                {children}
+                            </code>
+                        ) : (
+                            <MemoizedCodeBlock language={match[1]} value={codeContent} />
+                        );
+                    },
+                    table: ({ node, ...props }) => (
+                        <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-card/30 backdrop-blur-sm shadow-sm">
+                            <table className="w-full text-left text-[13px]" {...props} />
+                        </div>
+                    ),
+                    thead: ({ node, ...props }) => <thead className="bg-muted/50 text-muted-foreground border-b border-border" {...props} />,
+                    tbody: ({ node, ...props }) => <tbody className="divide-y divide-border/30" {...props} />,
+                    tr: ({ node, ...props }) => <tr className="hover:bg-muted/20 transition-colors" {...props} />,
+                    th: ({ node, ...props }) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...props} />,
+                    td: ({ node, ...props }) => <td className="px-4 py-3 align-top" {...props} />,
+                    h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-4 mb-2 border-b border-border/50 pb-1" {...props} />,
+                    h2: ({ node, ...props }) => <h2 className="text-lg font-bold mt-3 mb-2" {...props} />,
+                    h3: ({ node, ...props }) => <h3 className="text-md font-bold mt-2 mb-1" {...props} />,
+                    blockquote: ({ node, ...props }) => (
+                        <blockquote className="border-l-4 border-primary/30 pl-4 py-1 my-3 italic text-muted-foreground bg-primary/5 rounded-r" {...props} />
+                    ),
+                    img: ({ node, ...props }: any) => <ChatImage src={props.src || ''} alt={props.alt || ''} />,
+                }}
+            >
+                {renderedContent}
+            </ReactMarkdown>
+            {isStreaming && (
+                <span
+                    aria-hidden="true"
+                    className="ml-1 inline-block h-4 w-1.5 rounded-full bg-current/35 align-middle animate-pulse"
+                />
+            )}
+        </div>
+    );
+});
+
+const UnreadSeparator = ({ count }: { count: number }) => (
+    <div className="flex items-center gap-3 py-1">
+        <div className="h-px flex-1 bg-primary/20" />
+        <div className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-primary shadow-sm">
+            {count <= 1 ? "New Message" : `${count} New Messages`}
+        </div>
+        <div className="h-px flex-1 bg-primary/20" />
+    </div>
+);
 
 const MemoizedMessageItem = memo(({
     msg,
@@ -191,7 +302,7 @@ const MemoizedMessageItem = memo(({
                     </Alert>
                 ) : (
                     <div className={cn(
-                        "relative group px-3.5 py-2 text-[14px] leading-tight transition-all duration-300",
+                        "relative group px-3.5 py-2 text-[14px] leading-tight transition-all duration-300 max-w-full overflow-hidden",
                         isUser
                             ? "bg-zinc-800 text-white rounded-2xl rounded-tr-none shadow-sm hover:bg-zinc-700/90 hover:shadow-md"
                             : "bg-muted/80 backdrop-blur-sm text-foreground rounded-2xl rounded-tl-none border shadow-sm hover:bg-muted/90 hover:border-primary/30 hover:shadow-md"
@@ -205,64 +316,15 @@ const MemoizedMessageItem = memo(({
                             />
                         )}
 
-                        <div className="whitespace-pre-wrap break-words">
+                        <div className="whitespace-pre-wrap break-words max-w-full overflow-x-auto">
                             {msg.image && (
                                 <ChatImage src={msg.image} alt="Uploaded content" />
                             )}
-                            {msg.isStreaming ? (
-                                <div className="whitespace-pre-wrap break-words leading-tight text-inherit">
-                                    {msg.content}
-                                </div>
-                            ) : (
-                                <div className="prose prose-sm dark:prose-invert max-w-none break-words leading-tight text-inherit">
-                                    <ReactMarkdown
-                                        remarkPlugins={[remarkGfm]}
-                                        components={{
-                                            a: ({ node, ...props }) => (
-                                                <a
-                                                    {...props}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="font-bold underline text-primary decoration-primary/30 hover:decoration-primary"
-                                                />
-                                            ),
-                                            p: ({ node, ...props }) => <p {...props} className="last:mb-1" />,
-                                            code: ({ node, className, children, ...props }: any) => {
-                                                const content = String(children || '').trim();
-                                                if (!content) return null;
-                                                const match = /language-(\w+)/.exec(className || '');
-
-                                                return !match ? (
-                                                    <code className={cn("bg-muted/50 px-1.5 py-0.5 rounded font-mono text-[12px] break-all", isUser ? "bg-black/30" : "bg-zinc-200/50 dark:bg-zinc-800/50")} {...props}>
-                                                        {children}
-                                                    </code>
-                                                ) : (
-                                                    <MemoizedCodeBlock language={match[1]} value={content} />
-                                                );
-                                            },
-                                            table: ({ node, ...props }) => (
-                                                <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-card/30 backdrop-blur-sm shadow-sm">
-                                                    <table className="w-full text-left text-[13px]" {...props} />
-                                                </div>
-                                            ),
-                                            thead: ({ node, ...props }) => <thead className="bg-muted/50 text-muted-foreground border-b border-border" {...props} />,
-                                            tbody: ({ node, ...props }) => <tbody className="divide-y divide-border/30" {...props} />,
-                                            tr: ({ node, ...props }) => <tr className="hover:bg-muted/20 transition-colors" {...props} />,
-                                            th: ({ node, ...props }) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...props} />,
-                                            td: ({ node, ...props }) => <td className="px-4 py-3 align-top" {...props} />,
-                                            h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-4 mb-2 border-b border-border/50 pb-1" {...props} />,
-                                            h2: ({ node, ...props }) => <h2 className="text-lg font-bold mt-3 mb-2" {...props} />,
-                                            h3: ({ node, ...props }) => <h3 className="text-md font-bold mt-2 mb-1" {...props} />,
-                                            blockquote: ({ node, ...props }) => (
-                                                <blockquote className="border-l-4 border-primary/30 pl-4 py-1 my-3 italic text-muted-foreground bg-primary/5 rounded-r" {...props} />
-                                            ),
-                                            img: ({ node, ...props }: any) => <ChatImage src={props.src || ''} alt={props.alt || ''} />,
-                                        }}
-                                    >
-                                        {msg.content}
-                                    </ReactMarkdown>
-                                </div>
-                            )}
+                            <MarkdownMessage
+                                content={msg.content}
+                                isUser={isUser}
+                                isStreaming={msg.isStreaming}
+                            />
                         </div>
 
                         {isUser && (
@@ -271,9 +333,10 @@ const MemoizedMessageItem = memo(({
                             </div>
                         )}
                     </div>
-                )}
-            </div>
-        </div>
+                )
+                }
+            </div >
+        </div >
     );
 });
 
@@ -289,13 +352,56 @@ export function ChatInterface({
     activeChatId,
     autonomousMode,
 }: ChatInterfaceProps) {
+    const scrollAreaRef = useRef<HTMLDivElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [selectedImage, setSelectedImage] = useState<string | null>(null);
     const [visibleCount, setVisibleCount] = useState(10);
+    const [isAtBottom, setIsAtBottom] = useState(true);
+    const [unreadAnchorIndex, setUnreadAnchorIndex] = useState<number | null>(null);
+    const [unreadCount, setUnreadCount] = useState(0);
     const lastScrollHeightRef = useRef(0);
     const isLoadingHistoryRef = useRef(false);
     const isAtBottomRef = useRef(true);
+    const prevMessageCountRef = useRef(messages.length);
+
+    const getScrollViewport = () =>
+        scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLDivElement | null;
+
+    const clearUnread = () => {
+        setUnreadAnchorIndex(null);
+        setUnreadCount(0);
+    };
+
+    const syncBottomState = (forceClearUnread = false) => {
+        const viewport = getScrollViewport();
+        if (!viewport) return;
+
+        const atBottom = viewport.scrollHeight - (viewport.scrollTop + viewport.clientHeight) <= 96;
+        isAtBottomRef.current = atBottom;
+        setIsAtBottom(atBottom);
+
+        if (atBottom || forceClearUnread) {
+            clearUnread();
+        }
+    };
+
+    const scrollToLatest = (behavior: ScrollBehavior = 'smooth') => {
+        const viewport = getScrollViewport();
+        if (viewport) {
+            viewport.scrollTo({ top: viewport.scrollHeight, behavior });
+        } else if (scrollRef.current) {
+            scrollRef.current.scrollIntoView({ behavior });
+        }
+        isAtBottomRef.current = true;
+        setIsAtBottom(true);
+        clearUnread();
+
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => syncBottomState(true));
+        });
+    };
 
 
     useEffect(() => {
@@ -303,9 +409,46 @@ export function ChatInterface({
         const lastMsg = messages[messages.length - 1];
         const shouldStick = isAtBottomRef.current || lastMsg?.sender === 'user';
         if (shouldStick) {
-            scrollRef.current.scrollIntoView({ behavior: 'smooth' });
+            scrollToLatest(lastMsg?.sender === 'user' ? 'smooth' : 'auto');
+            return;
         }
+        requestAnimationFrame(() => syncBottomState(false));
     }, [messages, selectedImage]);
+
+    useEffect(() => {
+        const previousCount = prevMessageCountRef.current;
+        const nextCount = messages.length;
+
+        if (nextCount < previousCount) {
+            clearUnread();
+        } else if (nextCount > previousCount && !isAtBottomRef.current) {
+            setUnreadAnchorIndex((current) => current ?? previousCount);
+        }
+
+        prevMessageCountRef.current = nextCount;
+    }, [messages.length]);
+
+    useEffect(() => {
+        if (unreadAnchorIndex === null) {
+            if (unreadCount !== 0) {
+                setUnreadCount(0);
+            }
+            return;
+        }
+
+        const nextUnreadCount = Math.max(messages.length - unreadAnchorIndex, 0);
+        if (nextUnreadCount !== unreadCount) {
+            setUnreadCount(nextUnreadCount);
+        }
+    }, [messages.length, unreadAnchorIndex, unreadCount]);
+
+    useEffect(() => {
+        setVisibleCount(10);
+        setIsAtBottom(true);
+        isAtBottomRef.current = true;
+        clearUnread();
+        prevMessageCountRef.current = messages.length;
+    }, [activeChatId]);
 
     const hasThinking = [...messages].reverse().some(
         (m) => m.sender === 'bot' && !!m.thinking
@@ -328,9 +471,9 @@ export function ChatInterface({
         if (inputValue.trim() || selectedImage) {
             onSendMessage(null, selectedImage);
             setSelectedImage(null);
-            // Reset height of textarea (hacky but works for simple auto-grow)
-            const textarea = document.querySelector('textarea');
-            if (textarea) textarea.style.height = 'auto';
+            if (textareaRef.current) {
+                textareaRef.current.style.height = 'auto';
+            }
         }
     };
 
@@ -389,7 +532,14 @@ export function ChatInterface({
         const viewport = e.currentTarget;
         const atBottom = viewport.scrollHeight - (viewport.scrollTop + viewport.clientHeight) < 80;
         isAtBottomRef.current = atBottom;
-        if (viewport.scrollTop === 0 && messages.length > visibleCount) {
+        if (atBottom) {
+            setIsAtBottom(true);
+            clearUnread();
+        } else if (isAtBottom) {
+            setIsAtBottom(false);
+        }
+
+        if (viewport.scrollTop <= 40 && messages.length > visibleCount) {
             isLoadingHistoryRef.current = true;
             lastScrollHeightRef.current = viewport.scrollHeight;
             setVisibleCount(prev => Math.min(messages.length, prev + 10));
@@ -398,7 +548,7 @@ export function ChatInterface({
 
     useLayoutEffect(() => {
         if (isLoadingHistoryRef.current) {
-            const viewport = document.querySelector('[data-radix-scroll-area-viewport]') as HTMLDivElement;
+            const viewport = getScrollViewport();
             if (viewport) {
                 viewport.scrollTop = viewport.scrollHeight - lastScrollHeightRef.current;
             }
@@ -706,7 +856,7 @@ export function ChatInterface({
 
             {/* Chat Messages */}
             <div className="flex-1 overflow-hidden relative">
-                <ScrollArea className="h-full p-4 md:p-8" onScroll={handleScroll}>
+                <ScrollArea ref={scrollAreaRef} className="h-full p-4 md:p-8" onScroll={handleScroll}>
                     <div className="flex flex-col gap-8 max-w-4xl mx-auto pb-4">
                         {messages.length === 0 && (
                             <div className="flex flex-col items-center justify-center min-h-[50vh] text-center space-y-4">
@@ -727,10 +877,11 @@ export function ChatInterface({
                             </div>
                         )}
                         {(() => {
-                            const visible = messages.slice(-visibleCount);
+                            const visibleStart = Math.max(0, messages.length - visibleCount);
+                            const visible = messages.slice(visibleStart);
                             const items: Array<
-                                | { kind: 'message'; msg: Message; showAvatar: boolean; showHeader: boolean; key: string }
-                                | { kind: 'tool_timeline'; executions: ToolExecution[]; key: string }
+                                | { kind: 'message'; msg: Message; showAvatar: boolean; showHeader: boolean; key: string; absoluteIndex: number }
+                                | { kind: 'tool_timeline'; executions: ToolExecution[]; key: string; absoluteIndex: number }
                             > = [];
 
                             for (let i = 0; i < visible.length; i++) {
@@ -748,6 +899,7 @@ export function ChatInterface({
                                             kind: 'tool_timeline',
                                             executions: toolGroup,
                                             key: `${activeChatId}-tools-${start}`,
+                                            absoluteIndex: visibleStart + start,
                                         });
                                     } else {
                                         for (let j = 0; j < toolGroup.length; j++) {
@@ -758,6 +910,7 @@ export function ChatInterface({
                                                 showAvatar: j === 0,
                                                 showHeader: j === 0,
                                                 key: `${activeChatId}-${start + j}`,
+                                                absoluteIndex: visibleStart + start + j,
                                             });
                                         }
                                     }
@@ -777,33 +930,43 @@ export function ChatInterface({
                                     showAvatar,
                                     showHeader,
                                     key: `${activeChatId}-${i}`,
+                                    absoluteIndex: visibleStart + i,
                                 });
                             }
 
-                            return items.map((item) => {
-                                if (item.kind === 'tool_timeline') {
-                                    return (
-                                        <ToolTimeline
-                                            key={item.key}
-                                            executions={item.executions}
-                                            botIdentity={botIdentity}
-                                            onConfirmSideChannel={handleToolConfirmSideChannel}
-                                        />
-                                    );
-                                }
+                            const unreadMarkerOutsideVisible =
+                                unreadAnchorIndex !== null && unreadAnchorIndex < visibleStart;
 
-                                return (
-                                    <MemoizedMessageItem
-                                        key={item.key}
-                                        msg={item.msg}
-                                        botIdentity={botIdentity}
-                                        handleToolConfirmSideChannel={handleToolConfirmSideChannel}
-                                        onSendMessage={onSendMessage}
-                                        showAvatar={item.showAvatar}
-                                        showHeader={item.showHeader}
-                                    />
-                                );
-                            });
+                            return (
+                                <>
+                                    {unreadMarkerOutsideVisible && unreadCount > 0 && (
+                                        <UnreadSeparator count={unreadCount} />
+                                    )}
+                                    {items.map((item) => (
+                                        <div key={item.key} className="contents">
+                                            {item.absoluteIndex === unreadAnchorIndex && unreadCount > 0 && (
+                                                <UnreadSeparator count={unreadCount} />
+                                            )}
+                                            {item.kind === 'tool_timeline' ? (
+                                                <ToolTimeline
+                                                    executions={item.executions}
+                                                    botIdentity={botIdentity}
+                                                    onConfirmSideChannel={handleToolConfirmSideChannel}
+                                                />
+                                            ) : (
+                                                <MemoizedMessageItem
+                                                    msg={item.msg}
+                                                    botIdentity={botIdentity}
+                                                    handleToolConfirmSideChannel={handleToolConfirmSideChannel}
+                                                    onSendMessage={onSendMessage}
+                                                    showAvatar={item.showAvatar}
+                                                    showHeader={item.showHeader}
+                                                />
+                                            )}
+                                        </div>
+                                    ))}
+                                </>
+                            );
                         })()}
                     </div>
 
@@ -841,6 +1004,25 @@ export function ChatInterface({
                     )}
                     <div ref={scrollRef} />
                 </ScrollArea>
+
+                {!isAtBottom && messages.length > 0 && (
+                    <div className="pointer-events-none absolute bottom-5 right-5 z-20 flex flex-col items-end gap-2">
+                        {unreadCount > 0 && (
+                            <div className="pointer-events-auto rounded-full border border-primary/20 bg-background/95 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-primary shadow-lg backdrop-blur">
+                                {unreadCount <= 1 ? "1 New Message" : `${unreadCount} New Messages`}
+                            </div>
+                        )}
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => scrollToLatest('smooth')}
+                            className="pointer-events-auto h-9 rounded-full border-primary/20 bg-background/95 pl-3 pr-3 shadow-lg backdrop-blur hover:bg-background"
+                        >
+                            <ArrowDown className="mr-1.5 h-4 w-4" />
+                            Jump to latest
+                        </Button>
+                    </div>
+                )}
             </div>
 
             {/* Input Area */}
@@ -906,6 +1088,7 @@ export function ChatInterface({
                         )}
 
                         <Textarea
+                            ref={textareaRef}
                             placeholder="Type a message (or paste an image)..."
                             value={inputValue}
                             onChange={(e) => onInputChange(e.target.value)}
@@ -944,20 +1127,5 @@ export function ChatInterface({
                 </div>
             </div>
         </div>
-    );
-}
-
-function ChatImage({ src, alt }: { src: string, alt: string }) {
-    const [error, setError] = useState(false);
-
-    if (error) return null;
-
-    return (
-        <img
-            src={src}
-            alt={alt}
-            className="max-w-full rounded-lg mb-2 max-h-64 object-cover"
-            onError={() => setError(true)}
-        />
     );
 }
