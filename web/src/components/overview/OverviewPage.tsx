@@ -5,6 +5,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Activity, Zap, Globe, Cpu, RefreshCw, Power, RotateCcw, Download, Upload, User, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface Stats {
     uptime: number;
@@ -24,6 +34,14 @@ interface LLMHealth {
     error?: string;
 }
 
+interface ConfirmActionState {
+    title: string;
+    description: string;
+    actionLabel: string;
+    tone?: "default" | "destructive";
+    onConfirm: () => void | Promise<void>;
+}
+
 export function OverviewPage() {
     const [identity, setIdentity] = useState<{ name: string, avatar: string | null } | null>(null);
     const [stats, setStats] = useState<Stats | null>(null);
@@ -32,6 +50,7 @@ export function OverviewPage() {
     const [loading, setLoading] = useState(true);
     const [checkingLLM, setCheckingLLM] = useState(false);
     const [actionBusy, setActionBusy] = useState<null | "connect" | "token">(null);
+    const [confirmAction, setConfirmAction] = useState<ConfirmActionState | null>(null);
 
     const fetchIdentity = () => {
         axios.get(`${API_BASE_URL}/api/identity`)
@@ -76,10 +95,31 @@ export function OverviewPage() {
             .catch(() => setGatewayToken(""));
     };
 
+    const openConfirm = (action: ConfirmActionState) => setConfirmAction(action);
+
+    const runConfirmAction = async () => {
+        if (!confirmAction) return;
+        const action = confirmAction;
+        setConfirmAction(null);
+        await action.onConfirm();
+    };
+
     const restartBackend = () => {
-        if (!confirm("Are you sure you want to restart the backend?")) return;
-        axios.post(`${API_BASE_URL}/api/control/restart`)
-            .catch(err => console.error(err));
+        openConfirm({
+            title: "Restart backend?",
+            description: "This will restart the backend service and briefly interrupt live sessions.",
+            actionLabel: "Restart backend",
+            tone: "destructive",
+            onConfirm: async () => {
+                try {
+                    await axios.post(`${API_BASE_URL}/api/control/restart`);
+                    toast.success("Backend restart requested");
+                } catch (err) {
+                    console.error(err);
+                    toast.error("Failed to restart backend", { description: str(err) });
+                }
+            },
+        });
     };
 
     const connectClient = async () => {
@@ -99,18 +139,42 @@ export function OverviewPage() {
     };
 
     const generateNewToken = async () => {
-        if (!confirm("Generate a new APP_API_KEY? Existing clients will be disconnected after restart.")) return;
-        setActionBusy("token");
-        const newToken = crypto.randomUUID();
-        axios.post(`${API_BASE_URL}/api/config`, { env: { APP_API_KEY: newToken } })
-            .then(() => {
-                localStorage.setItem("limebot_api_key", newToken);
-                axios.defaults.headers.common["X-API-Key"] = newToken;
-                setGatewayToken(newToken);
-                toast.success("Token generated", { description: "APP_API_KEY updated. Backend is restarting." });
+        openConfirm({
+            title: "Generate new gateway token?",
+            description: "Existing clients will be disconnected after the backend restarts with the new APP_API_KEY.",
+            actionLabel: "Generate token",
+            tone: "destructive",
+            onConfirm: async () => {
+                setActionBusy("token");
+                const newToken = crypto.randomUUID();
+                axios.post(`${API_BASE_URL}/api/config`, { env: { APP_API_KEY: newToken } })
+                    .then(() => {
+                        localStorage.setItem("limebot_api_key", newToken);
+                        axios.defaults.headers.common["X-API-Key"] = newToken;
+                        setGatewayToken(newToken);
+                        toast.success("Token generated", { description: "APP_API_KEY updated. Backend is restarting." });
+                    })
+                    .catch(err => toast.error("Failed to generate token", { description: str(err) }))
+                    .finally(() => setActionBusy(null));
+            },
+        });
+    };
+
+    const importPersonaFile = (file: File) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            axios.post(`${API_BASE_URL}/api/persona/import`, {
+                content: event.target?.result
             })
-            .catch(err => toast.error("Failed to generate token", { description: str(err) }))
-            .finally(() => setActionBusy(null));
+                .then(res => {
+                    const data = res.data;
+                    if (data.error) throw new Error(data.error);
+                    toast.success("Persona imported", { description: data.message });
+                    window.location.reload();
+                })
+                .catch(err => toast.error("Import failed", { description: str(err) }));
+        };
+        reader.readAsText(file);
     };
 
     useEffect(() => {
@@ -148,26 +212,28 @@ export function OverviewPage() {
     }
 
     return (
-        <div className="h-full overflow-y-auto p-8 space-y-6 bg-black/20">
-            {/* Header Area */}
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                <div>
-                    <h2 className="text-3xl font-bold tracking-tight text-foreground">System Overview</h2>
-                    <p className="text-muted-foreground mt-1">Real-time telemetry and control dashboard.</p>
+        <div className="h-full overflow-y-auto bg-black/20">
+            <div className="space-y-6 p-8">
+                <div className="sticky top-0 z-20 -mx-8 mb-6 border-b border-border/60 bg-background/82 px-8 py-4 backdrop-blur-md">
+                    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                        <div>
+                            <h2 className="text-3xl font-bold tracking-tight text-foreground">System Overview</h2>
+                            <p className="text-muted-foreground mt-1">Real-time telemetry and control dashboard.</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => { fetchStats(); checkLLM(); fetchIdentity(); fetchGatewayConfig(); }}
+                                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground bg-card hover:bg-muted border border-border rounded-full transition-all"
+                            >
+                                <RefreshCw className={cn("w-3.5 h-3.5", (loading || checkingLLM) && "animate-spin")} />
+                                Refresh Data
+                            </button>
+                        </div>
+                    </div>
                 </div>
-                <div className="flex items-center gap-2">
-                    <button
-                        onClick={() => { fetchStats(); checkLLM(); fetchIdentity(); fetchGatewayConfig(); }}
-                        className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground bg-card hover:bg-muted border border-border rounded-full transition-all"
-                    >
-                        <RefreshCw className={cn("w-3.5 h-3.5", (loading || checkingLLM) && "animate-spin")} />
-                        Refresh Data
-                    </button>
-                </div>
-            </div>
 
-            {/* Persona Banner */}
-            <div className="bg-card/40 border border-white/5 rounded-2xl p-6 flex items-center gap-6 backdrop-blur-sm overflow-hidden relative">
+                {/* Persona Banner */}
+                <div className="bg-card/40 border border-white/5 rounded-2xl p-6 flex items-center gap-6 backdrop-blur-sm overflow-hidden relative">
                 <div className="absolute top-0 right-0 p-8 opacity-5">
                     <User className="w-32 h-32" />
                 </div>
@@ -191,8 +257,8 @@ export function OverviewPage() {
                 </div>
             </div>
 
-            {/* Key Metrics Row */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Key Metrics Row */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {/* System Health */}
                 <div className="relative overflow-hidden rounded-xl border border-primary/20 bg-gradient-to-br from-primary/10 to-transparent p-6 shadow-2xl shadow-primary/5">
                     <div className="absolute top-0 right-0 p-4 opacity-20">
@@ -264,8 +330,8 @@ export function OverviewPage() {
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                <div className="lg:col-span-2 space-y-6">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div className="lg:col-span-2 space-y-6">
                     <Card className="border-muted bg-card/50">
                         <CardHeader>
                             <CardTitle className="flex items-center gap-2">
@@ -377,10 +443,17 @@ export function OverviewPage() {
                         <button
                             className="w-full flex items-center justify-between px-4 py-3 bg-muted/50 hover:bg-muted text-foreground rounded-lg transition-colors text-sm font-medium border border-border"
                             onClick={() => {
-                                if (!confirm("Are you sure you want to clear the tool cache?")) return;
-                                axios.post(`${API_BASE_URL}/api/control/clear-cache`)
-                                    .then(res => toast.success("Cache cleared", { description: res.data.message || "Cache cleared." }))
-                                    .catch(err => toast.error("Failed to clear cache", { description: str(err) }));
+                                openConfirm({
+                                    title: "Clear tool cache?",
+                                    description: "Cached tool results will be removed for all active sessions.",
+                                    actionLabel: "Clear cache",
+                                    tone: "destructive",
+                                    onConfirm: async () => {
+                                        axios.post(`${API_BASE_URL}/api/control/clear-cache`)
+                                            .then(res => toast.success("Cache cleared", { description: res.data.message || "Cache cleared." }))
+                                            .catch(err => toast.error("Failed to clear cache", { description: str(err) }));
+                                    },
+                                });
                             }}
                         >
                             <span>Clear Cache</span>
@@ -389,10 +462,17 @@ export function OverviewPage() {
                         <button
                             className="w-full flex items-center justify-between px-4 py-3 bg-muted/50 hover:bg-muted text-foreground rounded-lg transition-colors text-sm font-medium border border-border"
                             onClick={() => {
-                                if (!confirm("Are you sure you want to clear the system logs?")) return;
-                                axios.post(`${API_BASE_URL}/api/control/clear-logs`)
-                                    .then(res => toast.success("Logs cleared", { description: res.data.message || "Logs cleared." }))
-                                    .catch(err => toast.error("Failed to clear logs", { description: str(err) }));
+                                openConfirm({
+                                    title: "Clear system logs?",
+                                    description: "This removes the current log buffer from the dashboard.",
+                                    actionLabel: "Clear logs",
+                                    tone: "destructive",
+                                    onConfirm: async () => {
+                                        axios.post(`${API_BASE_URL}/api/control/clear-logs`)
+                                            .then(res => toast.success("Logs cleared", { description: res.data.message || "Logs cleared." }))
+                                            .catch(err => toast.error("Failed to clear logs", { description: str(err) }));
+                                    },
+                                });
                             }}
                         >
                             <span>Clear Logs</span>
@@ -436,25 +516,13 @@ export function OverviewPage() {
                                             const file = e.target.files?.[0];
                                             if (!file) return;
 
-                                            if (!confirm("This will OVERWRITE the current persona (Identity & Soul). A backup will be created. Continue?")) {
-                                                e.target.value = '';
-                                                return;
-                                            }
-
-                                            const reader = new FileReader();
-                                            reader.onload = (event) => {
-                                                axios.post(`${API_BASE_URL}/api/persona/import`, {
-                                                    content: event.target?.result
-                                                })
-                                                    .then(res => {
-                                                        const data = res.data;
-                                                        if (data.error) throw new Error(data.error);
-                                                        toast.success("Persona imported", { description: data.message });
-                                                        window.location.reload();
-                                                    })
-                                                    .catch(err => toast.error("Import failed", { description: str(err) }));
-                                            };
-                                            reader.readAsText(file);
+                                            openConfirm({
+                                                title: "Import persona backup?",
+                                                description: "This will overwrite the current Identity and Soul files. A backup will be created automatically.",
+                                                actionLabel: "Import persona",
+                                                tone: "destructive",
+                                                onConfirm: async () => importPersonaFile(file),
+                                            });
                                             e.target.value = ''; // Reset
                                         }}
                                     />
@@ -480,9 +548,28 @@ export function OverviewPage() {
                             </li>
                         </ul>
                     </div>
+                    </div>
                 </div>
             </div>
-        </div >
+
+            <AlertDialog open={confirmAction !== null} onOpenChange={(open) => !open && setConfirmAction(null)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>{confirmAction?.title}</AlertDialogTitle>
+                        <AlertDialogDescription>{confirmAction?.description}</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={runConfirmAction}
+                            className={cn(confirmAction?.tone === "destructive" && "bg-red-600 hover:bg-red-700 text-white")}
+                        >
+                            {confirmAction?.actionLabel || "Confirm"}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+        </div>
     );
 }
 
