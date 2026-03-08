@@ -57,16 +57,8 @@ AUTORAG_MIN_SCORE = 0.65
 _INTERIM_SAVE_EVERY = 5
 
 
-_BROWSER_CACHEABLE = frozenset(
-    {
-        "google_search",
-        "browser_extract",
-        "browser_extract_large",
-        "browser_snapshot",
-        "browser_list_media",
-        "browser_get_page_text",
-    }
-)
+# Browser tools operate on mutable, session-local state, so tool-level caching is unsafe.
+_BROWSER_CACHEABLE = frozenset()
 
 _CASUAL_WORDS = frozenset(
     {
@@ -139,6 +131,8 @@ _GHOST_TAG_NAMES = (
     "save_mood",
     "save_relationship",
 )
+
+_TAG_COMPAT_TOOLS = frozenset({"save_memory", "log_memory"})
 
 from core.paths import PERSONA_DIR, USERS_DIR, MEMORY_DIR, SOUL_FILE, IDENTITY_FILE
 
@@ -1082,10 +1076,12 @@ class AgentLoop:
         self._mark_dirty(session_key)
 
     async def _execute_browser_tool(
-        self, function_name: str, args: Dict[str, Any]
+        self, function_name: str, args: Dict[str, Any], session_key: str
     ) -> Any:
         try:
-            browser = await get_browser_manager()
+            browser = await get_browser_manager(
+                session_key=session_key, config=self.config
+            )
             on_progress = self.toolbox.send_progress
 
             dispatch: Dict[str, Any] = {
@@ -1136,6 +1132,8 @@ class AgentLoop:
                         ("results_summary", "**Results:**"),
                         ("title", "**Page:**"),
                         ("url", "**URL:**"),
+                        ("note", "**Note:**"),
+                        ("warning", "**Warning:**"),
                         ("message", None),
                         ("elements", "**Elements:**"),
                         ("media_summary", None),
@@ -1159,6 +1157,38 @@ class AgentLoop:
         except Exception as e:
             logger.exception(f"Browser tool execution failed: {function_name} args={args}")
             return f"Error executing browser tool: {e}"
+
+    async def _execute_tag_compat_tool(
+        self, function_name: str, function_args: Dict[str, Any]
+    ) -> str:
+        content = str(
+            function_args.get("content")
+            or function_args.get("entry")
+            or function_args.get("text")
+            or ""
+        ).strip()
+        if not content:
+            return f"Error: '{function_name}' requires 'content'"
+
+        raw_reply = f"<{function_name}>{content}</{function_name}>"
+        await process_tags(
+            raw_reply=raw_reply,
+            sender_id="tool-compat",
+            validate_soul=prompt_module.validate_and_save_soul,
+            validate_identity=prompt_module.validate_and_save_identity,
+            validate_mood=prompt_module.validate_and_save_mood,
+            validate_relationship=prompt_module.validate_and_save_relationships,
+            vector_service=self.vector_service,
+            bus=self.bus,
+            msg=None,
+            config=self.config,
+        )
+
+        if function_name == "save_memory":
+            return "Long-term memory saved."
+        if function_name == "log_memory":
+            return "Memory logged."
+        return "Tag action completed."
 
     async def _execute_tool(
         self, function_name: str, function_args: dict, session_key: str
@@ -1218,11 +1248,17 @@ class AgentLoop:
             elif (
                 function_name.startswith("browser_") or function_name == "google_search"
             ):
-                result = await self._execute_browser_tool(function_name, function_args)
+                result = await self._execute_browser_tool(
+                    function_name, function_args, session_key
+                )
             elif function_name.startswith("mcp_"):
                 from core.mcp_client import get_mcp_manager
 
                 result = await get_mcp_manager().execute_tool(
+                    function_name, function_args
+                )
+            elif function_name in _TAG_COMPAT_TOOLS:
+                result = await self._execute_tag_compat_tool(
                     function_name, function_args
                 )
             else:
@@ -1318,7 +1354,11 @@ class AgentLoop:
             lines = "\n".join([f"- `{name}`: {line}" for name, line in failed_rows])
             return "I ran the requested tool(s), but they failed:\n" + lines
 
-        return "Tool execution finished, but I did not generate a follow-up message. Ask me to summarize the result and I will continue."
+        recent_tools = ", ".join(f"`{name}`" for name, _ in tool_rows)
+        return (
+            "I finished the requested tool step(s) successfully, but I did not produce "
+            f"a natural-language wrap-up. Recent steps: {recent_tools}."
+        )
 
     async def _execute_tool_batch(
         self,
@@ -2430,6 +2470,8 @@ class AgentLoop:
                     iterations_limit_reached = False
                     web_streamed_reply = bool(streamed_to_web)
                     force_direct_reply = False
+                    any_tool_calls_in_turn = bool(tool_calls)
+                    fallback_inserted = False
 
                     if full_content or tool_calls:
                         am: Dict = {"role": "assistant", "content": full_content or ""}
@@ -2578,6 +2620,7 @@ class AgentLoop:
                     if tool_calls and not str(raw_reply or "").strip():
                         raw_reply = self._build_tool_fallback_reply(session_key)
                         force_direct_reply = True
+                        fallback_inserted = True
                         self.history[session_key].append(
                             {"role": "assistant", "content": raw_reply}
                         )
@@ -2598,6 +2641,25 @@ class AgentLoop:
                     reply_to_user = tag_result.clean_reply
                     soul_updated = tag_result.soul_updated
                     identity_updated = tag_result.identity_updated
+
+                    placeholder_replies = {
+                        "(System updated configuration/memory files.)",
+                        "(Persona configuration updated.)",
+                    }
+                    if any_tool_calls_in_turn and (
+                        not str(reply_to_user or "").strip()
+                        or reply_to_user in placeholder_replies
+                    ):
+                        fallback_reply = self._build_tool_fallback_reply(session_key)
+                        reply_to_user = fallback_reply
+                        raw_reply = fallback_reply
+                        force_direct_reply = True
+                        if not fallback_inserted:
+                            self.history[session_key].append(
+                                {"role": "assistant", "content": fallback_reply}
+                            )
+                            self._mark_dirty(session_key)
+                            fallback_inserted = True
 
                     # ── Self-repetition dedup ────────────────────────────
                     # Some models (e.g. Kimi K2) repeat their entire
