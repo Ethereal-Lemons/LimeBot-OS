@@ -33,6 +33,11 @@ interface ConfigState {
     MAX_ITERATIONS?: string;
     WEB_PORT?: string;
     LLM_PROXY_URL?: string;
+    BROWSER_MODE?: string;
+    BROWSER_CHANNEL?: string;
+    BROWSER_CDP_URL?: string;
+    BROWSER_USER_DATA_DIR?: string;
+    BROWSER_PROFILE_DIRECTORY?: string;
     [key: string]: any;
 }
 
@@ -544,6 +549,96 @@ export function ConfigPage() {
                                             onCheckedChange={(checked) => handleChange('ALLOW_UNSAFE_COMMANDS', checked ? 'true' : 'false')}
                                         />
                                     </div>
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2">
+                                    <Globe className="h-5 w-5" />
+                                    Browser Session
+                                </CardTitle>
+                                <CardDescription>
+                                    Control whether the browser tool uses isolated LimeBot profiles, a shared LimeBot profile, your system browser profile, or a live browser session over CDP.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <div className="grid gap-2">
+                                    <Label htmlFor="browser_mode">Browser Mode</Label>
+                                    <Select
+                                        value={config.BROWSER_MODE || "isolated"}
+                                        onValueChange={(value) => handleChange("BROWSER_MODE", value)}
+                                    >
+                                        <SelectTrigger id="browser_mode">
+                                            <SelectValue placeholder="Select browser mode" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="isolated">isolated</SelectItem>
+                                            <SelectItem value="shared">shared</SelectItem>
+                                            <SelectItem value="system">system</SelectItem>
+                                            <SelectItem value="attach">attach</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <p className="text-[10px] text-muted-foreground">
+                                        `isolated` keeps one browser profile per chat. `shared` reuses one LimeBot profile. `system` launches against your real Chrome/Edge profile. `attach` connects to an already-running browser with remote debugging enabled.
+                                    </p>
+                                </div>
+
+                                <div className="grid gap-2">
+                                    <Label htmlFor="browser_channel">Browser Channel</Label>
+                                    <Input
+                                        id="browser_channel"
+                                        value={config.BROWSER_CHANNEL || ""}
+                                        onChange={(e) => handleChange("BROWSER_CHANNEL", e.target.value)}
+                                        placeholder="chrome, msedge, or chromium"
+                                        className="font-mono text-sm"
+                                    />
+                                    <p className="text-[10px] text-muted-foreground">
+                                        Optional. Recommended for `system` mode so LimeBot opens the same browser family as your real profile.
+                                    </p>
+                                </div>
+
+                                <div className="grid gap-2">
+                                    <Label htmlFor="browser_cdp_url">CDP URL</Label>
+                                    <Input
+                                        id="browser_cdp_url"
+                                        value={config.BROWSER_CDP_URL || ""}
+                                        onChange={(e) => handleChange("BROWSER_CDP_URL", e.target.value)}
+                                        placeholder="http://127.0.0.1:9222"
+                                        className="font-mono text-sm"
+                                    />
+                                    <p className="text-[10px] text-muted-foreground">
+                                        Used by `attach` mode. Start Chrome or Edge with `--remote-debugging-port=9222` to reuse the live logged-in session.
+                                    </p>
+                                </div>
+
+                                <div className="grid gap-2">
+                                    <Label htmlFor="browser_user_data_dir">Browser User Data Dir</Label>
+                                    <Input
+                                        id="browser_user_data_dir"
+                                        value={config.BROWSER_USER_DATA_DIR || ""}
+                                        onChange={(e) => handleChange("BROWSER_USER_DATA_DIR", e.target.value)}
+                                        placeholder="C:\\Users\\you\\AppData\\Local\\Google\\Chrome\\User Data"
+                                        className="font-mono text-sm"
+                                    />
+                                    <p className="text-[10px] text-muted-foreground">
+                                        Optional override for `system` mode. Leave empty to auto-detect a local Chrome/Edge/Chromium profile.
+                                    </p>
+                                </div>
+
+                                <div className="grid gap-2">
+                                    <Label htmlFor="browser_profile_directory">Profile Directory</Label>
+                                    <Input
+                                        id="browser_profile_directory"
+                                        value={config.BROWSER_PROFILE_DIRECTORY || ""}
+                                        onChange={(e) => handleChange("BROWSER_PROFILE_DIRECTORY", e.target.value)}
+                                        placeholder="Default or Profile 1"
+                                        className="font-mono text-sm"
+                                    />
+                                    <p className="text-[10px] text-muted-foreground">
+                                        Optional sub-profile inside the browser user data directory. Useful when your login lives in a non-default Chrome/Edge profile.
+                                    </p>
                                 </div>
                             </CardContent>
                         </Card>
