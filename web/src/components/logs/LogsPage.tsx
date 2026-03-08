@@ -5,6 +5,17 @@ import { Terminal, RefreshCw, Trash2, Search, ArrowDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 
 interface ParsedLog {
     raw: string;
@@ -56,6 +67,7 @@ export function LogsPage() {
     const [loading, setLoading] = useState(true);
     const [autoScroll, setAutoScroll] = useState(true);
     const [filter, setFilter] = useState("");
+    const [clearDialogOpen, setClearDialogOpen] = useState(false);
 
     // Auto-scroll ref
     const bottomRef = useRef<HTMLDivElement>(null);
@@ -120,6 +132,19 @@ export function LogsPage() {
         }
     };
 
+    const clearLogs = async () => {
+        try {
+            await axios.post(`${API_BASE_URL}/api/control/clear-logs`);
+            setLogs([]);
+            toast.success("System logs cleared");
+        } catch (err) {
+            console.error("Failed to clear logs:", err);
+            toast.error("Failed to clear system logs");
+        } finally {
+            setClearDialogOpen(false);
+        }
+    };
+
     return (
         <div className="flex flex-col h-full bg-background rounded-2xl overflow-hidden shadow-2xl relative">
             {/* Toolbar */}
@@ -150,12 +175,7 @@ export function LogsPage() {
                     <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => {
-                            if (!confirm("Are you sure you want to clear the system logs?")) return;
-                            axios.post(`${API_BASE_URL}/api/control/clear-logs`)
-                                .then(() => setLogs([]))
-                                .catch(err => console.error("Failed to clear logs:", err));
-                        }}
+                        onClick={() => setClearDialogOpen(true)}
                         className="text-muted-foreground hover:text-red-400 hover:bg-red-500/10"
                         title="Clear logs"
                     >
@@ -228,6 +248,23 @@ export function LogsPage() {
                     </Button>
                 </div>
             )}
+
+            <AlertDialog open={clearDialogOpen} onOpenChange={setClearDialogOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Clear system logs?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            This removes the current log output from the dashboard until new events arrive.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={clearLogs} className="bg-red-600 hover:bg-red-700 text-white">
+                            Clear logs
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 }
