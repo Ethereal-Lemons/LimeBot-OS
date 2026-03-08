@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="web/public/lime.png" width="128" alt="LimeBot Logo" />
+  <img src="web/public/limeLogo.png" width="128" alt="LimeBot Logo" />
 </div>
 
 # 🍋 LimeBot
@@ -104,6 +104,7 @@ LimeBot uses [LiteLLM](https://github.com/BerriAI/litellm) — any model it supp
 | **Anthropic** | `anthropic/claude-3-5-sonnet-20241022` |
 | **xAI** | `xai/grok-2` |
 | **DeepSeek** | `deepseek/deepseek-chat` |
+| **Qwen (DashScope)** | `qwen/qwen-max` |
 | **NVIDIA Reference** | `nvidia/meta/llama-3.1-405b-instruct` |
 Switch models live from the web dashboard without restarting.
 
@@ -213,51 +214,26 @@ docker-compose up --build
 Copy `.env.example` to `.env`:
 
 ```env
-# --- LLM Configuration ---
+# Core
 LLM_MODEL=gemini/gemini-2.0-flash
 GEMINI_API_KEY=your_key_here
-# OPENAI_API_KEY=your_key_here
-# ANTHROPIC_API_KEY=your_key_here
-# XAI_API_KEY=your_key_here
-# DEEPSEEK_API_KEY=your_key_here
-# DASHSCOPE_API_KEY=your_key_here       # Qwen models
-# NVIDIA_API_KEY=your_key_here
-# LLM_BASE_URL=http://localhost:11434    # For local/Ollama models
-# LLM_PROXY_URL=http://localhost:8080/v1 # Route all traffic through a gateway
+DASHSCOPE_API_KEY=your_dashscope_key_here
+# Optional for Qwen region routing:
+# LLM_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
-# --- Channels (all optional) ---
-ENABLE_DISCORD=true
+# Channels (all optional)
 DISCORD_TOKEN=your_discord_bot_token
-# DISCORD_ALLOW_FROM=user_id_1,user_id_2
-# DISCORD_ALLOW_CHANNELS=channel_id_1,channel_id_2
-# DISCORD_ACTIVITY_TYPE=playing
-# DISCORD_ACTIVITY_TEXT=LimeBot
-# DISCORD_STATUS=online
-
 ENABLE_WHATSAPP=false
-# WHATSAPP_BRIDGE_URL=ws://localhost:3000
-# WHATSAPP_ALLOW_FROM=phone_1,phone_2
-
 WEB_PORT=8000
+FRONTEND_PORT=5173
 
-# --- Security ---
-# ALLOWED_PATHS=./persona,./logs        # Also configurable via allowed_paths.txt
-# APP_API_KEY=optional_dashboard_password
+# Security
+ALLOWED_PATHS=./persona,./logs,./temp
+APP_API_KEY=optional_dashboard_password
 
-# --- Features ---
-ENABLE_DYNAMIC_PERSONALITY=false         # Per-user affinity, mood tracking, proactive greetings
-# AUTONOMOUS_MODE=false                  # Bypass all confirmation prompts
-# ALLOW_UNSAFE_COMMANDS=false
-
-# --- Limits & Timeouts ---
-# MAX_ITERATIONS=30
-# COMMAND_TIMEOUT=300
-# TOOL_TIMEOUT=120
-# STALL_TIMEOUT=30
-
-# --- Other ---
-# GITHUB_TOKEN=your_github_token_here    # For skill installer (private repos)
-# PERSONALITY_WHITELIST=user1,user2       # Users with dynamic personality access
+# Features
+ENABLE_DYNAMIC_PERSONALITY=false   # per-user affinity, mood tracking, proactive greetings
+LLM_PROXY_URL=http://localhost:8080/v1 # Optional: Route all traffic through a gateway
 ```
 
 Everything can also be changed live from the **Config** tab in the web dashboard — changes write `.env` and trigger a clean restart.
