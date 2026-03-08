@@ -145,145 +145,144 @@ export function InstancesList({ currentSessionId }: { currentSessionId?: string 
     return (
         <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">
             <div className="max-w-6xl mx-auto space-y-6">
-                <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <div>
-                        <h1 className="text-2xl font-bold flex items-center gap-2">
-                            <Terminal className="h-6 w-6 text-primary" />
-                            Instances Dashboard
-                        </h1>
-                        <p className="text-muted-foreground mt-1">
-                            Manage active agent contexts, skills, and memory.
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <Button variant="outline" size="sm" onClick={fetchInstances} disabled={loading} className="w-full md:w-auto">
-                            Refresh
-                        </Button>
-                    </div>
-                </header>
-
-                <div className="flex flex-col space-y-4">
-                    {/* Controls Row */}
-                    <div className="flex flex-col md:flex-row gap-4">
-                        <div className="relative flex-1">
-                            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                            <Input
-                                placeholder="Search instances..."
-                                className="pl-9"
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                            />
+                <div className="sticky top-0 z-20 -mx-2 rounded-2xl border border-border/50 bg-background/82 px-2 py-4 backdrop-blur-md">
+                    <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div>
+                            <h1 className="text-2xl font-bold flex items-center gap-2">
+                                <Terminal className="h-6 w-6 text-primary" />
+                                Instances Dashboard
+                            </h1>
+                            <p className="text-muted-foreground mt-1">
+                                Manage active agent contexts, skills, and memory.
+                            </p>
                         </div>
-                        <Select value={sortOrder} onValueChange={(v: any) => setSortOrder(v)}>
-                            <SelectTrigger className="w-full md:w-[180px]">
-                                <SelectValue placeholder="Sort by" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="recent">Most Recent</SelectItem>
-                                <SelectItem value="oldest">Oldest Active</SelectItem>
-                            </SelectContent>
-                        </Select>
-                    </div>
+                        <div className="flex items-center gap-2">
+                            <Button variant="outline" size="sm" onClick={fetchInstances} disabled={loading} className="w-full md:w-auto">
+                                Refresh
+                            </Button>
+                        </div>
+                    </header>
 
-                    {/* Bulk Selection Toolbar */}
-                    {(instances.length > 0 || filteredInstances.length > 0) && (
-                        <div className="flex flex-wrap items-center gap-3 p-3 bg-muted/40 border border-dashed rounded-lg animate-in fade-in slide-in-from-top-2 duration-200">
-                            <div className="flex items-center gap-2 pr-4 border-r border-border/50">
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={handleSelectAll}
-                                    className="text-xs h-8 px-2"
-                                >
-                                    {filteredInstances.length > 0 && filteredInstances.every(id => selectedIds.includes(id.id)) ? 'Deselect Page' : 'Select Page'}
-                                </Button>
-                                {selectedIds.length > 0 && (
+                    <div className="mt-4 flex flex-col space-y-4">
+                        <div className="flex flex-col md:flex-row gap-4">
+                            <div className="relative flex-1">
+                                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                                <Input
+                                    placeholder="Search instances..."
+                                    className="pl-9"
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                />
+                            </div>
+                            <Select value={sortOrder} onValueChange={(v: any) => setSortOrder(v)}>
+                                <SelectTrigger className="w-full md:w-[180px]">
+                                    <SelectValue placeholder="Sort by" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="recent">Most Recent</SelectItem>
+                                    <SelectItem value="oldest">Oldest Active</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+
+                        {(instances.length > 0 || filteredInstances.length > 0) && (
+                            <div className="flex flex-wrap items-center gap-3 p-3 bg-muted/40 border border-dashed rounded-lg animate-in fade-in slide-in-from-top-2 duration-200">
+                                <div className="flex items-center gap-2 pr-4 border-r border-border/50">
                                     <Button
                                         variant="ghost"
                                         size="sm"
-                                        onClick={() => setSelectedIds([])}
-                                        className="text-xs h-8 px-2 text-muted-foreground"
+                                        onClick={handleSelectAll}
+                                        className="text-xs h-8 px-2"
                                     >
-                                        Clear ({selectedIds.length})
+                                        {filteredInstances.length > 0 && filteredInstances.every(id => selectedIds.includes(id.id)) ? 'Deselect Page' : 'Select Page'}
                                     </Button>
+                                    {selectedIds.length > 0 && (
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => setSelectedIds([])}
+                                            className="text-xs h-8 px-2 text-muted-foreground"
+                                        >
+                                            Clear ({selectedIds.length})
+                                        </Button>
+                                    )}
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                    {/* Bulk Delete Selected */}
+                                    <AlertDialog>
+                                        <AlertDialogTrigger asChild>
+                                            <Button
+                                                variant="destructive"
+                                                size="sm"
+                                                disabled={selectedIds.length === 0 || batchDeleting}
+                                                className="h-8 gap-2"
+                                            >
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                                Delete Selected
+                                            </Button>
+                                        </AlertDialogTrigger>
+                                        <AlertDialogContent>
+                                            <AlertDialogHeader>
+                                                <AlertDialogTitle>Delete {selectedIds.length} instances?</AlertDialogTitle>
+                                                <AlertDialogDescription>
+                                                    This will permanently delete {selectedIds.length} session contexts and their logs.
+                                                    This action cannot be undone.
+                                                </AlertDialogDescription>
+                                            </AlertDialogHeader>
+                                            <AlertDialogFooter>
+                                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                                <AlertDialogAction
+                                                    onClick={() => handleDeleteBatch(selectedIds)}
+                                                    className="bg-red-600 hover:bg-red-700 text-white"
+                                                >
+                                                    Delete All selected
+                                                </AlertDialogAction>
+                                            </AlertDialogFooter>
+                                        </AlertDialogContent>
+                                    </AlertDialog>
+
+                                    {/* WIPER: Wipe All */}
+                                    <AlertDialog>
+                                        <AlertDialogTrigger asChild>
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                disabled={instances.length === 0 || batchDeleting}
+                                                className="h-8 text-red-500 border-red-500/20 hover:bg-red-500/10 gap-2"
+                                            >
+                                                <Zap className="h-3.5 w-3.5" />
+                                                Wipe All
+                                            </Button>
+                                        </AlertDialogTrigger>
+                                        <AlertDialogContent>
+                                            <AlertDialogHeader>
+                                                <AlertDialogTitle className="text-red-500">Wipe All Instances?</AlertDialogTitle>
+                                                <AlertDialogDescription>
+                                                    Are you absolutely sure? This will delete <span className="font-bold text-foreground">{instances.length}</span> instances.
+                                                    Everything will be cleared.
+                                                </AlertDialogDescription>
+                                            </AlertDialogHeader>
+                                            <AlertDialogFooter>
+                                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                                <AlertDialogAction
+                                                    onClick={() => handleDeleteBatch(instances.map(i => i.id))}
+                                                    className="bg-red-600 hover:bg-red-700 text-white"
+                                                >
+                                                    Yes, Wipe Everything
+                                                </AlertDialogAction>
+                                            </AlertDialogFooter>
+                                        </AlertDialogContent>
+                                    </AlertDialog>
+                                </div>
+                                {selectedIds.length > 0 && (
+                                    <div className="ml-auto text-[11px] font-medium text-muted-foreground uppercase tracking-wider px-2 py-1 bg-background/50 rounded border border-border">
+                                        {selectedIds.length} Selected
+                                    </div>
                                 )}
                             </div>
-
-                            <div className="flex flex-wrap items-center gap-2">
-                                {/* Bulk Delete Selected */}
-                                <AlertDialog>
-                                    <AlertDialogTrigger asChild>
-                                        <Button
-                                            variant="destructive"
-                                            size="sm"
-                                            disabled={selectedIds.length === 0 || batchDeleting}
-                                            className="h-8 gap-2"
-                                        >
-                                            <Trash2 className="h-3.5 w-3.5" />
-                                            Delete Selected
-                                        </Button>
-                                    </AlertDialogTrigger>
-                                    <AlertDialogContent>
-                                        <AlertDialogHeader>
-                                            <AlertDialogTitle>Delete {selectedIds.length} instances?</AlertDialogTitle>
-                                            <AlertDialogDescription>
-                                                This will permanently delete {selectedIds.length} session contexts and their logs.
-                                                This action cannot be undone.
-                                            </AlertDialogDescription>
-                                        </AlertDialogHeader>
-                                        <AlertDialogFooter>
-                                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                            <AlertDialogAction
-                                                onClick={() => handleDeleteBatch(selectedIds)}
-                                                className="bg-red-600 hover:bg-red-700 text-white"
-                                            >
-                                                Delete All selected
-                                            </AlertDialogAction>
-                                        </AlertDialogFooter>
-                                    </AlertDialogContent>
-                                </AlertDialog>
-
-                                {/* WIPER: Wipe All */}
-                                <AlertDialog>
-                                    <AlertDialogTrigger asChild>
-                                        <Button
-                                            variant="outline"
-                                            size="sm"
-                                            disabled={instances.length === 0 || batchDeleting}
-                                            className="h-8 text-red-500 border-red-500/20 hover:bg-red-500/10 gap-2"
-                                        >
-                                            <Zap className="h-3.5 w-3.5" />
-                                            Wipe All
-                                        </Button>
-                                    </AlertDialogTrigger>
-                                    <AlertDialogContent>
-                                        <AlertDialogHeader>
-                                            <AlertDialogTitle className="text-red-500">Wipe All Instances?</AlertDialogTitle>
-                                            <AlertDialogDescription>
-                                                Are you absolutely sure? This will delete <span className="font-bold text-foreground">{instances.length}</span> instances.
-                                                Everything will be cleared.
-                                            </AlertDialogDescription>
-                                        </AlertDialogHeader>
-                                        <AlertDialogFooter>
-                                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                            <AlertDialogAction
-                                                onClick={() => handleDeleteBatch(instances.map(i => i.id))}
-                                                className="bg-red-600 hover:bg-red-700 text-white"
-                                            >
-                                                Yes, Wipe Everything
-                                            </AlertDialogAction>
-                                        </AlertDialogFooter>
-                                    </AlertDialogContent>
-                                </AlertDialog>
-                            </div>
-
-                            {selectedIds.length > 0 && (
-                                <div className="ml-auto text-[11px] font-medium text-muted-foreground uppercase tracking-wider px-2 py-1 bg-background/50 rounded border border-border">
-                                    {selectedIds.length} Selected
-                                </div>
-                            )}
-                        </div>
-                    )}
+                        )}
+                    </div>
                 </div>
 
                 <div className="grid gap-4">
