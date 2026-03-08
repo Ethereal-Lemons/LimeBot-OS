@@ -62,6 +62,7 @@ class VectorService:
         self.table = None
         self.table_name = "memories"
         self._init_lock = asyncio.Lock()
+        self._initialized = False
         self._disabled = False
         self._failed = False
         self._config = None
@@ -78,22 +79,29 @@ class VectorService:
 
     async def _ensure_init(self):
         """Initialize connection to LanceDB."""
-        if self.table:
+        if self._initialized:
             return
 
         async with self._init_lock:
-            if self.table:
+            if self._initialized:
                 return
 
             try:
                 import lancedb
 
                 self.db = await asyncio.to_thread(lancedb.connect, self.db_path)
+                table_names = await asyncio.to_thread(self.db.table_names)
 
-                if self.table_name in self.db.table_names():
-                    self.table = self.db.open_table(self.table_name)
+                if self.table_name in table_names:
+                    self.table = await asyncio.to_thread(
+                        self.db.open_table, self.table_name
+                    )
                 else:
-                    logger.info(f"Creating new vector table: {self.table_name}")
+                    logger.debug(
+                        f"Vector table '{self.table_name}' not found yet; "
+                        "it will be created on first memory write."
+                    )
+                self._initialized = True
 
             except Exception as e:
                 logger.error(f"Failed to initialize LanceDB: {e}")
@@ -238,8 +246,6 @@ class VectorService:
                 )
             ):
                 if not self._disabled:
-                    from loguru import logger
-
                     logger.warning(
                         f"Embedding failed (Credentials/Model): {msg}. "
                         "Disabling vector search for this session."
@@ -284,20 +290,15 @@ class VectorService:
                 self.table = await asyncio.to_thread(
                     self.db.create_table, self.table_name, data=data
                 )
-
-            from loguru import logger
+                self._initialized = True
 
             logger.info(f"Added entry to vector memory: {text[:50]}...")
         except Exception as e:
-            from loguru import logger
-
             logger.error(f"Failed to add vector entry: {e}")
 
     async def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Search for similar text entries. Falls back to keyword search if vectors disabled."""
         if not self.is_enabled:
-            from loguru import logger
-
             logger.info("Semantic search disabled, using keyword fallback.")
             return await self.search_grep(query, limit)
 
@@ -309,8 +310,6 @@ class VectorService:
         try:
             vector = await self._get_embedding(query)
             if vector is None:
-                from loguru import logger
-
                 logger.warning("Embedding failed for query, using keyword fallback.")
                 return await self.search_grep(query, limit)
 
@@ -366,8 +365,6 @@ class VectorService:
             results = await asyncio.to_thread(lambda: self.table.to_arrow().to_pylist())
             return results[:limit]
         except Exception as e:
-            from loguru import logger
-
             logger.error(f"Failed to get all vector entries: {e}")
             return []
 
@@ -380,8 +377,6 @@ class VectorService:
             await asyncio.to_thread(self.table.delete, f"id = '{entry_id}'")
             return True
         except Exception as e:
-            from loguru import logger
-
             logger.error(f"Failed to delete vector entry {entry_id}: {e}")
             return False
 
@@ -442,8 +437,6 @@ class VectorService:
             self._grep_cache[cache_key] = {"results": final, "ts": _time.monotonic()}
             return final
         except Exception as e:
-            from loguru import logger
-
             logger.error(f"Grep search failed: {e}")
             return []
 
@@ -481,16 +474,12 @@ def get_vector_service(config=None) -> VectorService:
 
     if _instance is not None:
         if config and _instance.model != model:
-            from loguru import logger
-
             logger.info(f"Re-initializing Vector service with new model: {model}")
             _instance = None
         else:
             return _instance
 
     if _instance is None:
-        from loguru import logger
-
         logger.info(f"Vector service using embedding model: {model}")
         _instance = VectorService(model=model)
         if config:

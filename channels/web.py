@@ -1044,6 +1044,25 @@ class WebChannel(BaseChannel):
                 logger.error(f"Error reading logs: {e}")
                 return {"logs": [f"Error reading logs: {e}"]}
 
+        @self.app.get("/api/memory/status", dependencies=[Depends(self.verify_auth)])
+        async def get_memory_status():
+            from core.vectors import get_vector_service
+
+            vector_service = get_vector_service()
+            if not vector_service.is_enabled:
+                return {
+                    "enabled": False,
+                    "mode": "grep_fallback",
+                    "read_only": True,
+                    "notice": "Using grep as fallback.",
+                }
+
+            return {
+                "enabled": True,
+                "mode": "vector",
+                "read_only": False,
+            }
+
         @self.app.get("/api/memory", dependencies=[Depends(self.verify_auth)])
         async def get_memory():
             from core.vectors import get_vector_service
