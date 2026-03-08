@@ -69,3 +69,53 @@ class TestMemoryTags(unittest.IsolatedAsyncioTestCase):
             "Long term memory snapshot.",
             LONG_TERM_MEMORY_FILE.read_text(encoding="utf-8"),
         )
+
+    async def test_save_memory_tool_call_is_routed_through_tag_parser(self):
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+        agent = _TestAgentLoop(bus=MessageBus())
+        agent.vector_service = None
+
+        result = await agent._execute_tool(
+            "save_memory",
+            {"content": "Compat long-term memory snapshot."},
+            session_key="web:test",
+        )
+
+        self.assertEqual(result, "Long-term memory saved.")
+        self.assertTrue(LONG_TERM_MEMORY_FILE.exists())
+        self.assertIn(
+            "Compat long-term memory snapshot.",
+            LONG_TERM_MEMORY_FILE.read_text(encoding="utf-8"),
+        )
+
+    async def test_log_memory_tool_call_is_routed_through_tag_parser(self):
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+        agent = _TestAgentLoop(bus=MessageBus())
+        agent.vector_service = None
+
+        result = await agent._execute_tool(
+            "log_memory",
+            {"content": "Compat episodic memory entry."},
+            session_key="web:test",
+        )
+
+        self.assertEqual(result, "Memory logged.")
+        self.assertTrue(self.today_file.exists())
+        self.assertIn(
+            "Compat episodic memory entry.",
+            self.today_file.read_text(encoding="utf-8"),
+        )
