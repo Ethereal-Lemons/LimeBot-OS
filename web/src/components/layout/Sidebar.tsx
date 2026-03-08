@@ -9,19 +9,37 @@ import {
     Palette,
     User2,
     Brain,
-    Cpu
+    Cpu,
+    ActivitySquare,
+    Bot,
+    ShieldCheck,
+    Wifi,
+    WifiOff
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { useEffect, useState } from "react";
+import axios from "axios";
+import { API_BASE_URL } from "@/lib/api";
 
 interface SidebarProps {
     className?: string;
     botIdentity?: { name: string; avatar: string | null };
     activeView?: string;
     onNavigate?: (view: string) => void;
+    runtimeStatus?: {
+        isConnected: boolean;
+        autonomousMode: boolean;
+        pendingApprovals: number;
+        activityText: string | null;
+    };
 }
 
-export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigate }: SidebarProps) {
+export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigate, runtimeStatus }: SidebarProps) {
+    const [activeModel, setActiveModel] = useState("Loading...");
+    const [memoryLabel, setMemoryLabel] = useState("Checking...");
+    const [memoryTone, setMemoryTone] = useState("text-muted-foreground");
+
     const handleNav = (view: string) => {
         onNavigate?.(view);
     };
@@ -47,6 +65,51 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
         { id: 'appearance', icon: Palette, label: "Appearance" },
         { id: 'config', icon: Settings, label: "Configuration" }
     ];
+
+    useEffect(() => {
+        let isMounted = true;
+
+        const refreshRuntimeDetails = async () => {
+            try {
+                const [configRes, memoryRes] = await Promise.all([
+                    axios.get(`${API_BASE_URL}/api/config`),
+                    axios.get(`${API_BASE_URL}/api/memory`),
+                ]);
+
+                if (!isMounted) return;
+
+                setActiveModel(configRes.data?.env?.LLM_MODEL || "Unknown");
+
+                const enabled = memoryRes.data?.enabled;
+                const mode = memoryRes.data?.mode || (enabled ? "vector" : "grep_fallback");
+                if (enabled === false) {
+                    setMemoryLabel("Offline");
+                    setMemoryTone("text-amber-500");
+                } else if (mode === "grep_fallback") {
+                    setMemoryLabel("Grep Fallback");
+                    setMemoryTone("text-amber-500");
+                } else {
+                    setMemoryLabel("Vector Online");
+                    setMemoryTone("text-emerald-500");
+                }
+            } catch (error: any) {
+                if (error?.response?.status !== 401 && error?.response?.status !== 403) {
+                    console.error("Failed to load runtime details:", error);
+                }
+                if (!isMounted) return;
+                setActiveModel("Unavailable");
+                setMemoryLabel("Unavailable");
+                setMemoryTone("text-muted-foreground");
+            }
+        };
+
+        refreshRuntimeDetails();
+        const interval = window.setInterval(refreshRuntimeDetails, 15000);
+        return () => {
+            isMounted = false;
+            window.clearInterval(interval);
+        };
+    }, []);
 
     return (
         <div className={cn("hidden h-[calc(100vh-2rem)] m-4 w-64 flex-col rounded-2xl bg-card border border-border md:flex shadow-xl", className)}>
@@ -104,16 +167,70 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
                     ))}
                 </nav>
             </div>
-            <div className="mt-auto p-4 m-2 rounded-xl bg-muted/30 border border-border">
-                <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary">
-                        <Users className="w-4 h-4" />
+            <div className="mt-auto m-2 rounded-xl border border-border bg-muted/30 p-4">
+                <div className="mb-3 flex items-center justify-between">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-muted-foreground">
+                        Runtime Status
                     </div>
-                    <div className="flex flex-col">
-                        <span className="text-xs font-medium text-foreground">Admin User</span>
-                        <span className="text-[10px] text-muted-foreground">Online</span>
-                    </div>
+                    <span
+                        className={cn(
+                            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                            runtimeStatus?.isConnected
+                                ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-500"
+                                : "border-amber-500/20 bg-amber-500/10 text-amber-500"
+                        )}
+                    >
+                        {runtimeStatus?.isConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+                        {runtimeStatus?.isConnected ? "Gateway Live" : "Reconnecting"}
+                    </span>
                 </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                    <StatusTile icon={Bot} label="Model" value={activeModel} />
+                    <StatusTile icon={ShieldCheck} label="Mode" value={runtimeStatus?.autonomousMode ? "Autonomous" : "Guarded"} />
+                    <StatusTile icon={Brain} label="Memory" value={memoryLabel} valueClassName={memoryTone} />
+                    <StatusTile
+                        icon={ActivitySquare}
+                        label="Approvals"
+                        value={runtimeStatus?.pendingApprovals ? String(runtimeStatus.pendingApprovals) : "Clear"}
+                        valueClassName={runtimeStatus?.pendingApprovals ? "text-amber-500" : "text-emerald-500"}
+                    />
+                </div>
+
+                {runtimeStatus?.activityText && (
+                    <div className="mt-3 rounded-lg border border-border bg-background/60 px-3 py-2">
+                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                            Latest activity
+                        </div>
+                        <div className="line-clamp-2 text-xs text-foreground/80">
+                            {runtimeStatus.activityText}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function StatusTile({
+    icon: Icon,
+    label,
+    value,
+    valueClassName,
+}: {
+    icon: any;
+    label: string;
+    value: string;
+    valueClassName?: string;
+}) {
+    return (
+        <div className="rounded-lg border border-border/70 bg-background/60 p-2.5">
+            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                <Icon className="h-3 w-3" />
+                {label}
+            </div>
+            <div className={cn("truncate text-xs font-medium text-foreground", valueClassName)}>
+                {value}
             </div>
         </div>
     );
