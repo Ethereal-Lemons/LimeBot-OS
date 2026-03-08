@@ -11,7 +11,10 @@
       "whatsapp",
       "docx-creator",
       "github",
-      "scrapling"
+      "scrapling",
+      "discord_voice_note",
+      "gworkspace_cli",
+      "daily_briefing"
     ],
     "installed": {}
   }
