@@ -10,7 +10,8 @@ from pathlib import Path
 
 env_path = Path(__file__).parent / ".env"
 if env_path.exists():
-    load_dotenv(dotenv_path=env_path, override=True)
+    # Keep runtime/container env vars authoritative; only fill missing keys from .env.
+    load_dotenv(dotenv_path=env_path, override=False)
 else:
     load_dotenv()
 
@@ -38,6 +39,7 @@ def load_config(force_reload=False):
     config.discord.activity_type = os.getenv("DISCORD_ACTIVITY_TYPE", "playing")
     config.discord.activity_text = os.getenv("DISCORD_ACTIVITY_TEXT", "LimeBot")
     config.discord.status = os.getenv("DISCORD_STATUS", "online")
+ 
     config.web = SimpleNamespace()
     try:
         config.web.port = int(os.getenv("WEB_PORT") or os.getenv("PORT") or "8000")
@@ -51,6 +53,15 @@ def load_config(force_reload=False):
     config.whatsapp.allow_from = [
         x for x in os.getenv("WHATSAPP_ALLOW_FROM", "").split(",") if x
     ]
+
+    config.browser = SimpleNamespace()
+    config.browser.mode = os.getenv("BROWSER_MODE", "isolated").strip().lower()
+    config.browser.channel = os.getenv("BROWSER_CHANNEL", "").strip()
+    config.browser.cdp_url = os.getenv("BROWSER_CDP_URL", "").strip()
+    config.browser.user_data_dir = os.getenv("BROWSER_USER_DATA_DIR", "").strip()
+    config.browser.profile_directory = os.getenv(
+        "BROWSER_PROFILE_DIRECTORY", ""
+    ).strip()
 
     config.autonomous_mode = os.getenv("AUTONOMOUS_MODE", "false").lower() == "true"
     config.allow_unsafe_commands = (
@@ -91,6 +102,7 @@ def load_config(force_reload=False):
     config.llm.enable_dynamic_personality = (
         os.getenv("ENABLE_DYNAMIC_PERSONALITY", "false").lower() == "true"
     )
+    config.llm.proxy_url = os.getenv("LLM_PROXY_URL", "")
 
     config.llm.base_url = os.getenv("LLM_BASE_URL")
 
@@ -105,7 +117,7 @@ def load_config(force_reload=False):
 
         config.llm.base_url = clean_url
         os.environ["OPENAI_API_BASE"] = clean_url
-    elif is_google_model:
+    elif is_google_model and not config.llm.proxy_url:
         config.llm.base_url = None
         if "OPENAI_API_BASE" in os.environ:
             del os.environ["OPENAI_API_BASE"]
@@ -199,6 +211,11 @@ def load_config(force_reload=False):
                 ):
                     for k, v in dynamic_config["discord"].items():
                         setattr(config.discord, k, v)
+                if "browser" in dynamic_config and isinstance(
+                    dynamic_config["browser"], dict
+                ):
+                    for k, v in dynamic_config["browser"].items():
+                        setattr(config.browser, k, v)
         except Exception as e:
             logger.error(f"Error loading limebot.json: {e}")
             config.skills = SimpleNamespace(disabled=[])
