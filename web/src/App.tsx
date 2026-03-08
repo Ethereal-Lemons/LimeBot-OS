@@ -32,6 +32,28 @@ type Message = ChatMessage & {
   confirmation?: ConfirmationRequest;
 };
 
+type ShellRuntimeStatus = {
+  isConnected: boolean;
+  autonomousMode: boolean;
+  pendingApprovals: number;
+  activityText: string | null;
+};
+
+const VIEW_META: Record<string, { title: string; description: string }> = {
+  chat: { title: "Chat", description: "Live conversation and tool execution." },
+  overview: { title: "Overview", description: "System health, gateway access, and controls." },
+  memory: { title: "Memory", description: "Stored facts, recall mode, and memory management." },
+  channels: { title: "Channels", description: "Discord, WhatsApp, and channel configuration." },
+  logs: { title: "System Logs", description: "Live backend output and operational events." },
+  instances: { title: "Instances", description: "Active sessions, sub-agents, and context state." },
+  cron: { title: "Cron Jobs", description: "Scheduled automations and recurring tasks." },
+  skills: { title: "Skills", description: "Installed capabilities and tool bundles." },
+  mcp: { title: "MCP", description: "External Model Context Protocol servers." },
+  persona: { title: "Persona", description: "Identity, style, and adaptive behavior." },
+  appearance: { title: "Appearance", description: "Themes, wallpaper, and visual settings." },
+  config: { title: "Configuration", description: "Model, environment, and browser settings." },
+};
+
 const InstancesList = lazy(() =>
   import("@/components/sessions/SessionsList").then((module) => ({
     default: module.InstancesList,
@@ -182,6 +204,16 @@ function App() {
 
   // Initialization State (to prevent flash)
   const [isInitialized, setIsInitialized] = useState(false);
+  const pendingApprovals = messages.filter(
+    (message) => message.type === 'confirmation' && message.confirmation?.status === 'pending'
+  ).length;
+  const currentViewMeta = VIEW_META[currentView] || VIEW_META.chat;
+  const shellRuntimeStatus: ShellRuntimeStatus = {
+    isConnected,
+    autonomousMode,
+    pendingApprovals,
+    activityText: activity?.text || null,
+  };
 
   // Helper to apply custom theme variables
   const applyCustomTheme = (themeId: string) => {
@@ -781,6 +813,9 @@ function App() {
       botIdentity={botIdentity}
       activeView={currentView}
       onNavigate={setCurrentView}
+      pageTitle={currentViewMeta.title}
+      pageDescription={currentViewMeta.description}
+      runtimeStatus={shellRuntimeStatus}
     >
       <AuthKeyModal
         isOpen={showAuthModal}
@@ -816,7 +851,7 @@ function App() {
           ) : currentView === 'cron' ? (
             <CronPage />
           ) : currentView === 'memory' ? (
-            <MemoryPage />
+            <MemoryPage onNavigate={setCurrentView} />
           ) : currentView === 'overview' ? (
             <OverviewPage />
           ) : currentView === 'channels' ? (
