@@ -1,6 +1,6 @@
 import { Sidebar } from "./Sidebar";
 import { useState } from "react";
-import { Menu, X } from "lucide-react";
+import { Menu, Wifi, WifiOff, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface AppLayoutProps {
@@ -8,9 +8,25 @@ interface AppLayoutProps {
     botIdentity?: { name: string; avatar: string | null };
     activeView?: string;
     onNavigate?: (view: string) => void;
+    pageTitle?: string;
+    pageDescription?: string;
+    runtimeStatus?: {
+        isConnected: boolean;
+        autonomousMode: boolean;
+        pendingApprovals: number;
+        activityText: string | null;
+    };
 }
 
-export function AppLayout({ children, botIdentity, activeView, onNavigate }: AppLayoutProps) {
+export function AppLayout({
+    children,
+    botIdentity,
+    activeView,
+    onNavigate,
+    pageTitle,
+    pageDescription,
+    runtimeStatus,
+}: AppLayoutProps) {
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
     const handleNavigate = (view: string) => {
@@ -26,17 +42,40 @@ export function AppLayout({ children, botIdentity, activeView, onNavigate }: App
                 botIdentity={botIdentity}
                 activeView={activeView}
                 onNavigate={onNavigate}
+                runtimeStatus={runtimeStatus}
             />
 
             {/* Mobile Header */}
-            <div className="md:hidden absolute top-0 left-0 right-0 z-50 flex items-center p-4 bg-background/80 backdrop-blur-md border-b border-border">
-                <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)}>
-                    <Menu className="h-6 w-6" />
-                </Button>
-                <span className="ml-3 font-bold text-lg flex items-center gap-2">
-                    <img src="/limesimple.png" alt="" className="h-6 w-6" />
-                    {botIdentity?.name || "LimeBot"}
-                </span>
+            <div className="md:hidden absolute top-0 left-0 right-0 z-50 border-b border-border bg-background/88 backdrop-blur-md">
+                <div className="flex items-start gap-3 px-4 py-3">
+                    <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)} className="mt-0.5 shrink-0">
+                        <Menu className="h-6 w-6" />
+                    </Button>
+                    <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                            <img src="/limesimple.png" alt="" className="h-4 w-4 shrink-0" />
+                            <span className="truncate">{botIdentity?.name || "LimeBot"}</span>
+                            <span
+                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal ${
+                                    runtimeStatus?.isConnected
+                                        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-500"
+                                        : "border-amber-500/20 bg-amber-500/10 text-amber-500"
+                                }`}
+                            >
+                                {runtimeStatus?.isConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+                                {runtimeStatus?.isConnected ? "Connected" : "Reconnecting"}
+                            </span>
+                        </div>
+                        <div className="min-w-0">
+                            <div className="truncate text-base font-semibold text-foreground">
+                                {pageTitle || botIdentity?.name || "LimeBot"}
+                            </div>
+                            <div className="truncate text-xs text-muted-foreground">
+                                {pageDescription || "LimeBot control surface"}
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             {/* Mobile Sidebar Drawer */}
@@ -49,23 +88,24 @@ export function AppLayout({ children, botIdentity, activeView, onNavigate }: App
                     />
 
                     {/* Drawer Content */}
-                    <div className="absolute left-0 top-0 bottom-0 w-3/4 max-w-sm bg-card border-r border-border p-4 shadow-2xl animate-in slide-in-from-left duration-200">
-                        <div className="flex justify-end mb-2">
+                    <div className="absolute left-0 top-0 bottom-0 w-[80%] max-w-sm bg-card border-r border-border p-4 shadow-2xl animate-in slide-in-from-left duration-200 flex flex-col">
+                        <div className="flex justify-end mb-2 shrink-0">
                             <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(false)}>
                                 <X className="h-5 w-5" />
                             </Button>
                         </div>
                         <Sidebar
-                            className="flex h-full w-full m-0 border-none shadow-none"
+                            className="flex flex-1 min-h-0 h-full w-full m-0 border-none shadow-none"
                             botIdentity={botIdentity}
                             activeView={activeView}
                             onNavigate={handleNavigate}
+                            runtimeStatus={runtimeStatus}
                         />
                     </div>
                 </div>
             )}
 
-            <main className="flex-1 h-full min-w-0 pt-16 md:pt-4 md:py-4 md:pr-4 relative z-0">
+            <main className="flex-1 h-full min-w-0 pt-20 md:pt-4 md:py-4 md:pr-4 relative z-0">
                 <div className="h-full rounded-none md:rounded-2xl overflow-hidden shadow-none md:shadow-2xl border-t md:border border-border bg-card">
                     {children}
                 </div>
