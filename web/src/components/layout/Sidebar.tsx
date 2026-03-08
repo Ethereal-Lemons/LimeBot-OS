@@ -73,7 +73,7 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
             try {
                 const [configRes, memoryRes] = await Promise.all([
                     axios.get(`${API_BASE_URL}/api/config`),
-                    axios.get(`${API_BASE_URL}/api/memory`),
+                    axios.get(`${API_BASE_URL}/api/memory/status`),
                 ]);
 
                 if (!isMounted) return;
