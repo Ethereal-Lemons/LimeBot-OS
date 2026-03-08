@@ -6,7 +6,7 @@
 
 
 
-> A persistent, self-evolving agentic AI that lives across your devices — with a soul, a memory, and a personality that's actually yours. Inspired by the powerful [OpenClaw](https://github.com/openclaw/openclaw) and the lightweight architecture of [Nanobot](https://github.com/HKUDS/nanobot).
+> A persistent, self-evolving agentic AI that lives across your devices  with a soul, a memory, and a personality that's actually yours. Inspired by the powerful [OpenClaw](https://github.com/openclaw/openclaw) and the lightweight architecture of [Nanobot](https://github.com/HKUDS/nanobot).
 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-lime.svg)](https://opensource.org/licenses/MIT)
@@ -16,7 +16,7 @@
 [![LiteLLM](https://img.shields.io/badge/LLM-LiteLLM%20Universal-blueviolet.svg)](https://github.com/BerriAI/litellm)
 [![Local First](https://img.shields.io/badge/Privacy-Local%20First-green.svg)](#-privacy--security)
 
-LimeBot is not a wrapper around an API. It's a full agentic system — event-driven, multi-channel, and built to remember who you are. It browses the web, manages your files, schedules reminders, spawns sub-agents for complex tasks, and evolves its personality through every conversation. All of it runs on your hardware. **Currently in public Beta and works best with Google Gemini.**
+LimeBot is not a wrapper around an API. It's a full agentic system  event-driven, multi-channel, and built to remember who you are. It browses the web, manages your files, schedules reminders, spawns sub-agents for complex tasks, and evolves its personality through every conversation. All of it runs on your hardware. **Currently in public Beta and works best with Google Gemini.**
 
 ---
 
@@ -24,19 +24,19 @@ LimeBot is not a wrapper around an API. It's a full agentic system — event-dri
 
 ### 🧠 It Remembers Everything
 Three-tier memory system that persists across sessions:
-- **Episodic Memory** — every conversation is appended to a daily markdown journal (`persona/memory/YYYY-MM-DD.md`)
-- **Semantic Memory** — entries are embedded and stored in a local LanceDB vector database, enabling fuzzy recall of anything said weeks ago
-- **Auto-RAG** — before every reply, LimeBot automatically searches its memory (semantically first, grep fallback) and injects relevant context into the prompt without you asking
-- **Reflection Engine** — a background cron job runs every 4 hours, reads today's journal, and distills the key facts into a permanent `MEMORY.md` long-term essence file
+- **Episodic Memory**  every conversation is appended to a daily markdown journal (`persona/memory/YYYY-MM-DD.md`)
+- **Semantic Memory**  entries are embedded and stored in a local LanceDB vector database, enabling fuzzy recall of anything said weeks ago
+- **Auto-RAG**  before every reply, LimeBot automatically searches its memory (semantically first, grep fallback) and injects relevant context into the prompt without you asking
+- **Reflection Engine**  a background cron job runs every 4 hours, reads today's journal, and distills the key facts into a permanent `MEMORY.md` long-term essence file
 
 ### 👤 It Has a Real Persona
 Not a hardcoded system prompt. A living identity that evolves:
-- **`SOUL.md`** — core values, personality, and behavioral boundaries
-- **`IDENTITY.md`** — name, emoji, avatar URL, style, catchphrases, interests, birthday
-- **Per-platform styles** — separate voice for Discord, WhatsApp, and Web
-- **Per-user profiles** — builds a relationship profile for each person it talks to, tracking affinity scores, relationship level, in-jokes, and milestones
-- **Dynamic Mood** — optional `MOOD.md` that shifts based on conversations and persists between sessions
-- **Setup Interview** — on first boot with no persona defined, the bot interviews you to build its identity from scratch. It saves the result automatically once it has enough to work with.
+- **`SOUL.md`**  core values, personality, and behavioral boundaries
+- **`IDENTITY.md`**  name, emoji, avatar URL, style, catchphrases, interests, birthday
+- **Per-platform styles**  separate voice for Discord, WhatsApp, and Web
+- **Per-user profiles**  builds a relationship profile for each person it talks to, tracking affinity scores, relationship level, in-jokes, and milestones
+- **Dynamic Mood**  optional `MOOD.md` that shifts based on conversations and persists between sessions
+- **Setup Interview**  on first boot with no persona defined, the bot interviews you to build its identity from scratch. It saves the result automatically once it has enough to work with.
 
 ### 🌐 It Browses the Web
 Full Playwright-powered browser automation:
@@ -49,17 +49,17 @@ Full Playwright-powered browser automation:
 ### 📁 It Has Access to Your Files
 Whitelisted filesystem operations:
 - Read, write, create, delete, move, rename files and directories
-- All operations sandboxed to `ALLOWED_PATHS` — nothing outside those roots is touchable unless you explicitly allow it
+- All operations sandboxed to `ALLOWED_PATHS`  nothing outside those roots is touchable unless you explicitly allow it
 - Dangerous operations (write, delete, run) require explicit confirmation through the web UI before executing
 
 ### ⚙️ It Can Run Commands
 Secure subprocess execution with real-time output streaming:
 - Runs shell commands inside the project root
 - Shell injection filter blocks `;`, `&&`, `|`, backticks, `$()`, and env manipulation
-- **Stall detection** — if a command produces no output for 30 seconds (likely waiting for interactive input), it's automatically terminated with guidance to retry using non-interactive flags
+- **Stall detection**  if a command produces no output for 30 seconds (likely waiting for interactive input), it's automatically terminated with guidance to retry using non-interactive flags
 - Requires user confirmation via the dashboard before any command executes
-- **Autonomous Mode** — optionally bypass all confirmation prompts for full hands-off operation
-- **Session-based approval** — approve a tool once for the current session without enabling full autonomy
+- **Autonomous Mode**  optionally bypass all confirmation prompts for full hands-off operation
+- **Session-based approval**  approve a tool once for the current session without enabling full autonomy
 
 ### 🕐 It Schedules Its Own Reminders
 Persistent cron system:
@@ -76,10 +76,10 @@ For complex multi-step tasks, LimeBot can delegate work to an isolated backgroun
 
 ### 🔌 Model Context Protocol (MCP) Support
 LimeBot is a fully-featured MCP client:
-- **Universal Tool Integration** — connect to any MCP server (Fetch, Filesystem, Brave Search, etc.) to immediately expand the bot's capabilities.
-- **Dynamic Discovery** — tools from connected MCP servers are automatically prefixed with `mcp_server_name_` and injected into the AI's tool registry.
-- **Configurable Servers** — manage server arguments and environment variables directly from the web dashboard.
-- **Safety & Resilience** — built-in timeouts and error handling ensure that misbehaving MCP servers don't hang the main agent loop.
+- **Universal Tool Integration**  connect to any MCP server (Fetch, Filesystem, Brave Search, etc.) to immediately expand the bot's capabilities.
+- **Dynamic Discovery**  tools from connected MCP servers are automatically prefixed with `mcp_server_name_` and injected into the AI's tool registry.
+- **Configurable Servers**  manage server arguments and environment variables directly from the web dashboard.
+- **Safety & Resilience**  built-in timeouts and error handling ensure that misbehaving MCP servers don't hang the main agent loop.
 
 ---
 
@@ -95,7 +95,7 @@ LimeBot is a fully-featured MCP client:
 
 ## 🤖 LLM Support
 
-LimeBot uses [LiteLLM](https://github.com/BerriAI/litellm) — any model it supports, LimeBot supports:
+LimeBot uses [LiteLLM](https://github.com/BerriAI/litellm)  any model it supports, LimeBot supports:
 
 | Provider | Example model string |
 |----------|---------------------|
@@ -110,8 +110,8 @@ Switch models live from the web dashboard without restarting.
 
 ### 🛡️ AI Gateway & Proxy Support
 LimeBot supports routing all LLM traffic through external security or caching middleware (like AI Gateway, Open Guardian, or Helicone):
-- **`LLM_PROXY_URL`** — configure a global proxy URL in the dashboard or `.env`. This overrides the default base URL for all providers.
-- **Provider Normalization** — LiteLLM handles the complex routing and header manipulation required to use custom gateways with cloud providers.
+- **`LLM_PROXY_URL`**  configure a global proxy URL in the dashboard or `.env`. This overrides the default base URL for all providers.
+- **Provider Normalization**  LiteLLM handles the complex routing and header manipulation required to use custom gateways with cloud providers.
 
 ---
 
@@ -123,7 +123,7 @@ Skills extend what LimeBot can do. Each skill is a folder with a `SKILL.md` (the
 
 | Skill | What it does |
 |-------|-------------|
-| `browser` | Full Playwright web browsing — navigate, click, type, search, extract |
+| `browser` | Full Playwright web browsing  navigate, click, type, search, extract |
 | `download_image` | Download high-res images from Pinterest, Reddit, Wikimedia, or direct URLs |
 | `filesystem` | Extended file operations beyond the core toolbox |
 | `discord` | Send messages and embeds to any Discord channel by ID |
@@ -193,12 +193,12 @@ The CLI handles everything on first run: creates a Python venv, installs backend
 
 ### Manual Start (Developers)
 ```bash
-# Terminal 1 — Backend
+# Terminal 1  Backend
 cp .env.example .env   # fill in your keys
 pip install -r requirements.txt
 python main.py
 
-# Terminal 2 — Frontend
+# Terminal 2  Frontend
 cd web && npm install && npm run dev
 ```
 
@@ -236,16 +236,16 @@ ENABLE_DYNAMIC_PERSONALITY=false   # per-user affinity, mood tracking, proactive
 LLM_PROXY_URL=http://localhost:8080/v1 # Optional: Route all traffic through a gateway
 ```
 
-Everything can also be changed live from the **Config** tab in the web dashboard — changes write `.env` and trigger a clean restart.
+Everything can also be changed live from the **Config** tab in the web dashboard  changes write `.env` and trigger a clean restart.
 
 ---
 
 ## 🛡️ Privacy & Security
 
-- **Local-first** — all conversations, memories, and personal data stay on your machine.
-- **Sandboxed Filesystem** — LimeBot can only read/write files in directories you explicitly whitelist.
-- **Human-in-the-loop** — sensitive actions (running code, deleting files) require your confirmation.
-- **Open Source** — audit the code yourself. No hidden telemetry.
+- **Local-first**  all conversations, memories, and personal data stay on your machine.
+- **Sandboxed Filesystem**  LimeBot can only read/write files in directories you explicitly whitelist.
+- **Human-in-the-loop**  sensitive actions (running code, deleting files) require your confirmation.
+- **Open Source**  audit the code yourself. No hidden telemetry.
 
 ---
 
