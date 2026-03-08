@@ -749,6 +749,13 @@ class WebChannel(BaseChannel):
                 ).lower(),
                 "WEB_PORT": str(getattr(cfg.web, "port", 8000)),
                 "LLM_PROXY_URL": getattr(cfg.llm, "proxy_url", ""),
+                "BROWSER_MODE": getattr(cfg.browser, "mode", "isolated"),
+                "BROWSER_CHANNEL": getattr(cfg.browser, "channel", ""),
+                "BROWSER_CDP_URL": getattr(cfg.browser, "cdp_url", ""),
+                "BROWSER_USER_DATA_DIR": getattr(cfg.browser, "user_data_dir", ""),
+                "BROWSER_PROFILE_DIRECTORY": getattr(
+                    cfg.browser, "profile_directory", ""
+                ),
             }
             for key in [
                 "OPENAI_API_KEY",
