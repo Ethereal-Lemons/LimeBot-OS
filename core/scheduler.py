@@ -21,6 +21,8 @@ try:
 except ImportError:
     croniter = None
 
+RECURRING_JOB_MAX_LAG_SECONDS = 300
+
 
 class CronManager:
     """Manages scheduled tasks and reminders."""
@@ -66,8 +68,9 @@ class CronManager:
 
     def _append_run_event(self, job_id: str, event: Dict[str, Any]) -> None:
         try:
-            self.runs_dir.mkdir(parents=True, exist_ok=True)
-            run_file = self.runs_dir / f"{job_id}.jsonl"
+            runs_dir = getattr(self, "runs_dir", self.data_file.parent / "cron_runs")
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            run_file = runs_dir / f"{job_id}.jsonl"
             payload = dict(event)
             payload.setdefault("timestamp", time.time())
             with run_file.open("a", encoding="utf-8") as f:
@@ -198,8 +201,6 @@ class CronManager:
                     ]
 
                     for job in due:
-                        asyncio.create_task(self._execute_job(job))
-
                         if job.get("cron_expr"):
                             tz_off = job.get("tz_offset")
                             tz = (
@@ -208,14 +209,31 @@ class CronManager:
                                 else timezone.utc
                             )
 
+                            lag = max(0.0, now - float(job["trigger"]))
                             scheduled_dt = datetime.fromtimestamp(job["trigger"], tz=tz)
                             cron_it = croniter(job["cron_expr"], scheduled_dt)
-                            job["trigger"] = cron_it.get_next(float)
+                            next_trigger = cron_it.get_next(float)
+                            skipped_stale = lag > RECURRING_JOB_MAX_LAG_SECONDS
+
+                            while next_trigger <= now:
+                                skipped_stale = True
+                                scheduled_dt = datetime.fromtimestamp(next_trigger, tz=tz)
+                                cron_it = croniter(job["cron_expr"], scheduled_dt)
+                                next_trigger = cron_it.get_next(float)
+
+                            job["trigger"] = next_trigger
                             logger.info(
                                 f"Rescheduled job {job['id']} → {job['trigger']} (tz_offset={tz_off})"
                             )
+                            if skipped_stale:
+                                logger.info(
+                                    f"Skipping stale recurring job {job['id']} (lag={lag:.1f}s)"
+                                )
+                                continue
                         else:
                             self.jobs = [j for j in self.jobs if j["id"] != job["id"]]
+
+                        asyncio.create_task(self._execute_job(job))
 
                     if due:
                         self._save_jobs()
