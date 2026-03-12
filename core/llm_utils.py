@@ -16,6 +16,10 @@ MODEL_ALIASES = {
     "xai/grok-4.1-fast-non-reasoning": "xai/grok-4",
     "grok-4.1-fast-reasoning": "xai/grok-4-fast-reasoning",
     "grok-4.1-fast-non-reasoning": "xai/grok-4",
+    "nvidia/moonshotai/kimi-k2-5": "nvidia/moonshotai/kimi-k2.5",
+    "moonshot/kimi-k2-5": "moonshot/kimi-k2.5",
+    "moonshotai/kimi-k2-5": "moonshot/kimi-k2.5",
+    "moonshotai/kimi-k2.5": "moonshot/kimi-k2.5",
 }
 
 
@@ -152,6 +156,12 @@ def get_api_key_for_model(model: str) -> Optional[str]:
         return os.getenv("XAI_API_KEY")
     elif model.startswith("deepseek/"):
         return os.getenv("DEEPSEEK_API_KEY")
+    elif model.startswith("moonshot/") or model.startswith("moonshotai/"):
+        return (
+            os.getenv("MOONSHOT_API_KEY")
+            or os.getenv("MOONSHOTAI_API_KEY")
+            or os.getenv("KIMI_API_KEY")
+        )
     elif model.startswith("qwen/") or model.startswith("qwen-"):
         return os.getenv("DASHSCOPE_API_KEY")
     elif model.startswith("nvidia/"):
@@ -164,6 +174,9 @@ def get_api_key_for_model(model: str) -> Optional[str]:
         or os.getenv("ANTHROPIC_API_KEY")
         or os.getenv("XAI_API_KEY")
         or os.getenv("DEEPSEEK_API_KEY")
+        or os.getenv("MOONSHOT_API_KEY")
+        or os.getenv("MOONSHOTAI_API_KEY")
+        or os.getenv("KIMI_API_KEY")
         or os.getenv("DASHSCOPE_API_KEY")
         or os.getenv("NVIDIA_API_KEY")
     )
@@ -180,6 +193,8 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
     normalized_model = (model or "").strip()
     if normalized_model and "/" not in normalized_model and normalized_model.startswith("qwen-"):
         normalized_model = f"qwen/{normalized_model}"
+    if normalized_model.startswith("moonshotai/"):
+        normalized_model = f"moonshot/{normalized_model.removeprefix('moonshotai/')}"
     normalized_model = MODEL_ALIASES.get(normalized_model, normalized_model)
 
     api_key = get_api_key_for_model(normalized_model)
@@ -193,7 +208,7 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
     if normalized_model.startswith("nvidia/"):
         base_url = "https://integrate.api.nvidia.com/v1"
         target_model = normalized_model.removeprefix("nvidia/")
-        custom_llm_provider = "openai"
+        custom_llm_provider = "nvidia_nim"
     elif normalized_model.startswith("xai/"):
         base_url = "https://api.x.ai/v1"
         target_model = normalized_model.removeprefix("xai/")
@@ -202,6 +217,15 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
         if not base_url:
             base_url = os.getenv("DASHSCOPE_BASE_URL") or QWEN_COMPAT_BASE_URLS[0]
         target_model = normalized_model.removeprefix("qwen/")
+        custom_llm_provider = "openai"
+    elif normalized_model.startswith("moonshot/"):
+        if not base_url:
+            base_url = (
+                os.getenv("MOONSHOT_BASE_URL")
+                or os.getenv("MOONSHOTAI_BASE_URL")
+                or "https://api.moonshot.ai/v1"
+            )
+        target_model = normalized_model.removeprefix("moonshot/")
         custom_llm_provider = "openai"
     elif normalized_model.startswith("gemini/"):
         target_model = normalized_model.removeprefix("gemini/")

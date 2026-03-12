@@ -1762,6 +1762,27 @@ class AgentLoop:
             return ""
 
         cleaned = content
+        marker_positions = []
+
+        inline_match = re.search(r"(?::?functions\.\w+(?::\d+)?\s*\{)", cleaned)
+        if inline_match:
+            marker_positions.append(inline_match.start())
+
+        block_match = re.search(r"<\|tool_call_begin\|>", cleaned)
+        if block_match:
+            marker_positions.append(block_match.start())
+
+        json_tool_match = re.search(
+            r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|parameters)"\s*:\s*\{',
+            cleaned,
+            flags=re.DOTALL,
+        )
+        if json_tool_match:
+            marker_positions.append(json_tool_match.start())
+
+        if marker_positions:
+            cleaned = cleaned[: min(marker_positions)]
+
         cleaned = re.sub(
             r"```(?:json)?\s*\{.*?\}\s*```",
             "",
@@ -1776,6 +1797,11 @@ class AgentLoop:
         )
         cleaned = re.sub(
             r"(?::?functions\.\w+(?::\d+)?\s*\{[^}]*\})",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(
+            r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}',
             "",
             cleaned,
         )

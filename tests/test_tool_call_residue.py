@@ -33,6 +33,21 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
             self.agent._sanitize_tool_call_content("Let me check.\n}\n```"),
             "Let me check.",
         )
+        self.assertEqual(
+            self.agent._sanitize_tool_call_content(
+                '{"name":"run_command","arguments":{"command":"echo hi"}} '
+                "Therefresh voice note in English just landed in your DMs."
+            ),
+            "",
+        )
+        self.assertEqual(
+            self.agent._sanitize_tool_call_content(
+                "Sending that now.\n"
+                'functions.run_command:1{"command":"echo hi"}\n'
+                "Extra promotional fluff."
+            ),
+            "Sending that now.",
+        )
 
     async def test_consume_stream_does_not_publish_residue_only_tool_preamble(self):
         from core.events import InboundMessage
