@@ -22,7 +22,7 @@ class VectorService:
         "vertex_ai": "gemini/gemini-embedding-001",
         "openai": "text-embedding-3-small",
         "azure": "azure/text-embedding-3-small",
-        "nvidia": "nvidia_nim/nvidia/NV-Embed-v2",
+        "nvidia": "gemini/gemini-embedding-001",
         "deepseek": "gemini/gemini-embedding-001",
         "anthropic": "gemini/gemini-embedding-001",
         "xai": "gemini/gemini-embedding-001",

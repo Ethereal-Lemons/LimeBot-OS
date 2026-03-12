@@ -549,8 +549,18 @@ class WebChannel(BaseChannel):
                     "provider": "nvidia",
                 },
                 {
+                    "id": "nvidia/moonshotai/kimi-k2-instruct",
+                    "name": "Kimi K2 Instruct",
+                    "provider": "nvidia",
+                },
+                {
                     "id": "nvidia/moonshotai/kimi-k2.5",
                     "name": "Kimi K2.5",
+                    "provider": "nvidia",
+                },
+                {
+                    "id": "nvidia/moonshotai/kimi-k2-thinking",
+                    "name": "Kimi K2 Thinking",
                     "provider": "nvidia",
                 },
                 {
