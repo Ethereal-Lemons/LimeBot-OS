@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from "@/lib/api";
-import { Save, MessageCircle, AlertCircle, RefreshCw, User, Activity, Monitor } from 'lucide-react';
+import { MessageCircle, AlertCircle, RefreshCw, User, Activity, Monitor, ShieldCheck, Radio, Wand2 } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,6 +42,8 @@ interface ConfigState {
     DISCORD_ACTIVITY_TEXT?: string;
     DISCORD_STATUS?: string;
     ENABLE_DISCORD?: string;
+    DISCORD_TOKEN?: string;
+    PERSONALITY_WHITELIST?: string;
     WHATSAPP_ALLOW_FROM?: string;
     ENABLE_WHATSAPP?: string;
     [key: string]: string | undefined;
@@ -95,11 +97,28 @@ function WhatsAppConnectionSection() {
         // Use relative path or dynamic base for WS
         const wsUrl = API_BASE_URL.replace('http', 'ws');
         const apiKey = localStorage.getItem('limebot_api_key');
-        const ws = new WebSocket(`${wsUrl}/ws?api_key=${apiKey || ''}`);
+        const socketUrl = new URL(`${wsUrl}/ws`);
+        if (apiKey) {
+            socketUrl.searchParams.set('api_key', apiKey);
+        }
+        const ws = new WebSocket(socketUrl.toString());
+
+        ws.onerror = (event) => {
+            console.error("Channels WS error", event);
+            if (
+                ws.readyState !== WebSocket.CLOSING &&
+                ws.readyState !== WebSocket.CLOSED
+            ) {
+                ws.close();
+            }
+        };
 
         ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
+                if (data.type === 'auth_ok') {
+                    return;
+                }
                 // Backend sends QR in metadata.qr
                 const qrCode = data.metadata?.qr || data.qr;
 
@@ -146,7 +165,7 @@ function WhatsAppConnectionSection() {
     };
 
     return (
-        <Card className="border-border/50 bg-card/50">
+        <Card>
             <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                     <Monitor className="h-5 w-5 text-[#25D366]" />
@@ -210,19 +229,29 @@ function WhatsAppConnectionSection() {
 
 export function ChannelsPage() {
     const [config, setConfig] = useState<ConfigState>({});
+    const [savedConfig, setSavedConfig] = useState<ConfigState>({});
     const [discordConfig, setDiscordConfig] = useState<DiscordUiConfig>({});
+    const [savedDiscordConfig, setSavedDiscordConfig] = useState<DiscordUiConfig>({});
     const [discordJson, setDiscordJson] = useState({
         styleGuilds: "{}",
         styleChannels: "{}",
         nickGuilds: "{}",
         themeGuilds: "{}",
     });
+    const [savedDiscordJson, setSavedDiscordJson] = useState({
+        styleGuilds: "{}",
+        styleChannels: "{}",
+        nickGuilds: "{}",
+        themeGuilds: "{}",
+    });
     const [globalAvatarUrl, setGlobalAvatarUrl] = useState("");
+    const [savedGlobalAvatarUrl, setSavedGlobalAvatarUrl] = useState("");
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
     const [discordSaving, setDiscordSaving] = useState(false);
     const [discordStatus, setDiscordStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+    const [activeTab, setActiveTab] = useState<'discord' | 'whatsapp'>('discord');
 
     useEffect(() => {
         fetchConfig();
@@ -235,6 +264,7 @@ export function ChannelsPage() {
             .then(res => {
                 if (res.data.env) {
                     setConfig(res.data.env);
+                    setSavedConfig(res.data.env);
                 }
                 setLoading(false);
             })
@@ -258,7 +288,15 @@ export function ChannelsPage() {
                     nickGuilds: JSON.stringify(dc.nickname_templates?.guilds || {}, null, 2),
                     themeGuilds: JSON.stringify(dc.embed_theme?.guilds || {}, null, 2),
                 });
+                setSavedDiscordConfig(dc);
+                setSavedDiscordJson({
+                    styleGuilds: JSON.stringify(dc.style_overrides?.guilds || {}, null, 2),
+                    styleChannels: JSON.stringify(dc.style_overrides?.channels || {}, null, 2),
+                    nickGuilds: JSON.stringify(dc.nickname_templates?.guilds || {}, null, 2),
+                    themeGuilds: JSON.stringify(dc.embed_theme?.guilds || {}, null, 2),
+                });
                 setGlobalAvatarUrl(dc.avatar_overrides?.global || "");
+                setSavedGlobalAvatarUrl(dc.avatar_overrides?.global || "");
             })
             .catch(err => {
                 if (err.response?.status !== 401) {
@@ -290,6 +328,7 @@ export function ChannelsPage() {
                 const data = res.data;
                 if (data.error) throw new Error(data.error);
                 setStatus({ type: 'success', message: "Access rules saved!" });
+                setSavedConfig(updateData);
                 setSaving(false);
             })
             .catch(err => {
@@ -351,6 +390,9 @@ export function ChannelsPage() {
                 .then(res => {
                     if (res.data.error) throw new Error(res.data.error);
                     setDiscordStatus({ type: 'success', message: "Discord personalization saved. Restarting..." });
+                    setSavedDiscordConfig(payload);
+                    setSavedDiscordJson({ ...discordJson });
+                    setSavedGlobalAvatarUrl(globalAvatarUrl.trim());
                     setDiscordSaving(false);
                 })
                 .catch(err => {
@@ -364,6 +406,60 @@ export function ChannelsPage() {
         }
     };
 
+    const configDirty = useMemo(
+        () => JSON.stringify(config) !== JSON.stringify(savedConfig),
+        [config, savedConfig]
+    );
+
+    const discordDirty = useMemo(
+        () =>
+            JSON.stringify(discordConfig) !== JSON.stringify(savedDiscordConfig) ||
+            JSON.stringify(discordJson) !== JSON.stringify(savedDiscordJson) ||
+            globalAvatarUrl.trim() !== savedGlobalAvatarUrl.trim(),
+        [discordConfig, savedDiscordConfig, discordJson, savedDiscordJson, globalAvatarUrl, savedGlobalAvatarUrl]
+    );
+
+    useEffect(() => {
+        if (!configDirty && !discordDirty) return;
+        const onBeforeUnload = (event: BeforeUnloadEvent) => {
+            event.preventDefault();
+            event.returnValue = "";
+        };
+        window.addEventListener("beforeunload", onBeforeUnload);
+        return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    }, [configDirty, discordDirty]);
+
+    const discardConfigChanges = () => {
+        setConfig(savedConfig);
+        setStatus(null);
+    };
+
+    const discardDiscordChanges = () => {
+        setDiscordConfig(savedDiscordConfig);
+        setDiscordJson(savedDiscordJson);
+        setGlobalAvatarUrl(savedGlobalAvatarUrl);
+        setDiscordStatus(null);
+    };
+
+    const reloadActive = () => {
+        if ((activeTab === 'discord' && (configDirty || discordDirty)) || (activeTab === 'whatsapp' && configDirty)) {
+            if (!window.confirm("Discard unsaved changes for the current view and reload from disk?")) {
+                return;
+            }
+        }
+        fetchConfig();
+        if (activeTab === 'discord') {
+            fetchDiscordConfig();
+        }
+    };
+
+    const discordEnabled = config.ENABLE_DISCORD !== 'false';
+    const whatsappEnabled = config.ENABLE_WHATSAPP === 'true';
+    const guildOverrideCount = Object.keys(discordConfig.style_overrides?.guilds || {}).length;
+    const channelOverrideCount = Object.keys(discordConfig.style_overrides?.channels || {}).length;
+    const nicknameOverrideCount = Object.keys(discordConfig.nickname_templates?.guilds || {}).length;
+    const themeOverrideCount = Object.keys(discordConfig.embed_theme?.guilds || {}).length;
+
     if (loading) {
         return (
             <div className="flex items-center justify-center h-full">
@@ -373,7 +469,7 @@ export function ChannelsPage() {
     }
 
     return (
-        <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">
+        <div className="h-full overflow-y-auto p-6 md:p-8">
             <div className="max-w-4xl mx-auto space-y-8">
                 <header>
                     <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -384,6 +480,88 @@ export function ChannelsPage() {
                         Configure integration status and security for connected platforms.
                     </p>
                 </header>
+
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <Card>
+                        <CardContent className="p-4">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Discord</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">{discordEnabled ? 'Enabled' : 'Disabled'}</div>
+                                </div>
+                                <ShieldCheck className={`h-5 w-5 ${discordEnabled ? 'text-[#5865F2]' : 'text-muted-foreground'}`} />
+                            </div>
+                        </CardContent>
+                    </Card>
+                    <Card>
+                        <CardContent className="p-4">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">WhatsApp</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">{whatsappEnabled ? 'Enabled' : 'Disabled'}</div>
+                                </div>
+                                <Radio className={`h-5 w-5 ${whatsappEnabled ? 'text-[#25D366]' : 'text-muted-foreground'}`} />
+                            </div>
+                        </CardContent>
+                    </Card>
+                    <Card>
+                        <CardContent className="p-4">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Discord overrides</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">{guildOverrideCount + channelOverrideCount}</div>
+                                </div>
+                                <Wand2 className="h-5 w-5 text-primary" />
+                            </div>
+                            <div className="mt-2 text-xs text-muted-foreground">{guildOverrideCount} guild, {channelOverrideCount} channel</div>
+                        </CardContent>
+                    </Card>
+                    <Card>
+                        <CardContent className="p-4">
+                            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Discord cosmetics</div>
+                            <div className="mt-1 text-lg font-semibold text-foreground">{nicknameOverrideCount + themeOverrideCount}</div>
+                            <div className="mt-2 text-xs text-muted-foreground">{nicknameOverrideCount} nickname, {themeOverrideCount} theme</div>
+                        </CardContent>
+                    </Card>
+                </div>
+
+                <div className="sticky top-0 z-20 -mx-6 border-b border-border bg-card px-6 py-3 md:-mx-8 md:px-8">
+                    <div className="flex flex-wrap items-center gap-2">
+                        {/* Dirty indicators */}
+                        <span className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest ${
+                            configDirty ? 'border-amber-500/30 bg-amber-500/10 text-amber-500' : 'border-border text-muted-foreground'
+                        }`}>
+                            Config {configDirty ? 'unsaved' : 'saved'}
+                        </span>
+                        <span className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest ${
+                            discordDirty ? 'border-amber-500/30 bg-amber-500/10 text-amber-500' : 'border-border text-muted-foreground'
+                        }`}>
+                            Personalization {discordDirty ? 'unsaved' : 'saved'}
+                        </span>
+
+                        <div className="ml-auto flex flex-wrap items-center gap-2">
+                            <Button variant="ghost" size="sm" onClick={reloadActive} className="h-8 px-3 text-xs">Reload</Button>
+                            {activeTab === 'discord' ? (
+                                <>
+                                    <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={discardDiscordChanges} disabled={!discordDirty || discordSaving}>Discard draft</Button>
+                                    <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={handleDiscordSave} disabled={!discordDirty || discordSaving}>
+                                        {discordSaving ? 'Saving…' : 'Save personalization'}
+                                    </Button>
+                                    <Button size="sm" className="h-8 px-3 text-xs" onClick={handleSave} disabled={!configDirty || saving}>
+                                        {saving ? 'Saving…' : 'Save channel config'}
+                                    </Button>
+                                </>
+                            ) : (
+                                <>
+                                    <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={discardConfigChanges} disabled={!configDirty || saving}>Discard</Button>
+                                    <Button size="sm" className="h-8 px-3 text-xs" onClick={handleSave} disabled={!configDirty || saving}>
+                                        {saving ? 'Saving…' : 'Save channel config'}
+                                    </Button>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
 
                 {status && (
                     <Alert className={status.type === 'success' ? "border-primary/50 bg-primary/10 text-primary" : "border-destructive/50 bg-destructive/10 text-destructive"}>
@@ -400,7 +578,7 @@ export function ChannelsPage() {
                     </Alert>
                 )}
 
-                <Tabs defaultValue="discord" className="w-full">
+                <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'discord' | 'whatsapp')} className="w-full">
                     <TabsList className="grid w-full grid-cols-2 mb-8">
                         <TabsTrigger value="discord" className="flex items-center gap-2">
                             <DiscordIcon className="h-4 w-4" /> Discord
@@ -412,7 +590,7 @@ export function ChannelsPage() {
 
                     {/* DISCORD TAB */}
                     <TabsContent value="discord" className="space-y-6">
-                        <Card className="border-border/50 bg-card/50">
+                        <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <DiscordIcon className="h-5 w-5 text-[#5865F2]" />
@@ -423,6 +601,18 @@ export function ChannelsPage() {
                                 </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-6">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className={`rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${discordEnabled ? 'border-[#5865F2]/20 bg-[#5865F2]/10 text-[#5865F2]' : 'border-border bg-background/70 text-muted-foreground'}`}>
+                                        {discordEnabled ? 'Integration live' : 'Integration disabled'}
+                                    </span>
+                                    <span className="rounded-full border border-border bg-background/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                                        {config.DISCORD_ALLOW_FROM ? 'Restricted users' : 'Open users'}
+                                    </span>
+                                    <span className="rounded-full border border-border bg-background/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                                        {config.DISCORD_ALLOW_CHANNELS ? 'Restricted channels' : 'All channels'}
+                                    </span>
+                                </div>
+
                                 <div className="flex items-center justify-between">
                                     <div className="space-y-1">
                                         <Label htmlFor="enable_discord" className="text-base">Enable Discord Integration</Label>
@@ -472,7 +662,7 @@ export function ChannelsPage() {
 
                         {config.ENABLE_DISCORD !== 'false' && (
                             <div className="space-y-6 animate-in slide-in-from-top-4 duration-300">
-                                <Card className="border-border/50 bg-card/50">
+                                <Card>
                                     <CardHeader>
                                         <CardTitle className="flex items-center gap-2">
                                             <Activity className="h-5 w-5 text-[#5865F2]" />
@@ -534,7 +724,7 @@ export function ChannelsPage() {
                                     </CardContent>
                                 </Card>
 
-                                <Card className="border-border/50 bg-card/50">
+                                <Card>
                                     <CardHeader>
                                         <CardTitle className="flex items-center gap-2">
                                             <User className="h-5 w-5 text-[#5865F2]" />
@@ -577,7 +767,7 @@ export function ChannelsPage() {
                                     </CardContent>
                                 </Card>
 
-                                <Card className="border-border/50 bg-card/50">
+                                <Card>
                                     <CardHeader>
                                         <CardTitle className="flex items-center gap-2">
                                             <MessageCircle className="h-5 w-5 text-[#5865F2]" />
@@ -770,7 +960,7 @@ export function ChannelsPage() {
 
                     {/* WHATSAPP TAB */}
                     <TabsContent value="whatsapp" className="space-y-6">
-                        <Card className="border-border/50 bg-card/50">
+                        <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <WhatsAppIcon className="h-5 w-5 text-[#25D366]" />
@@ -780,7 +970,16 @@ export function ChannelsPage() {
                                     Enable or disable the WhatsApp bridge.
                                 </CardDescription>
                             </CardHeader>
-                            <CardContent className="flex items-center justify-between">
+                            <CardContent className="space-y-6">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className={`rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${whatsappEnabled ? 'border-[#25D366]/20 bg-[#25D366]/10 text-[#25D366]' : 'border-border bg-background/70 text-muted-foreground'}`}>
+                                        {whatsappEnabled ? 'Bridge enabled' : 'Bridge disabled'}
+                                    </span>
+                                    <span className="rounded-full border border-[#25D366]/20 bg-[#25D366]/5 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#25D366]">
+                                        Autonomous only
+                                    </span>
+                                </div>
+                                <div className="flex items-center justify-between">
                                 <div className="space-y-1">
                                     <Label htmlFor="enable_whatsapp" className="text-base">Enable WhatsApp Integration</Label>
                                     <p className="text-sm text-muted-foreground">
@@ -792,6 +991,7 @@ export function ChannelsPage() {
                                     checked={config.ENABLE_WHATSAPP === 'true'}
                                     onCheckedChange={(checked) => handleChange('ENABLE_WHATSAPP', checked ? 'true' : 'false')}
                                 />
+                                </div>
                             </CardContent>
                         </Card>
 
@@ -815,30 +1015,6 @@ export function ChannelsPage() {
                     </TabsContent>
                 </Tabs>
 
-                <div className="flex justify-end pt-4 bg-background/95 backdrop-blur sticky bottom-0 p-4 border-t border-border mt-8">
-                    <div className="flex items-center gap-3">
-                        <Button
-                            variant="outline"
-                            onClick={handleDiscordSave}
-                            disabled={discordSaving}
-                        >
-                            {discordSaving ? (
-                                <>Saving...</>
-                            ) : (
-                                <>Save Discord Personalization</>
-                            )}
-                        </Button>
-                        <Button onClick={handleSave} disabled={saving} className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold shadow-lg">
-                            {saving ? (
-                                <>Saving...</>
-                            ) : (
-                                <>
-                                    <Save className="mr-2 h-4 w-4" /> Save Configuration
-                                </>
-                            )}
-                        </Button>
-                    </div>
-                </div>
             </div>
         </div>
     );
