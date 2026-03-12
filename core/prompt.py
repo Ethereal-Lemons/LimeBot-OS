@@ -45,6 +45,20 @@ _SOUL_KEYWORDS = frozenset(
     ["core", "truth", "value", "boundary", "personality", "who", "believe", "important"]
 )
 
+_IDENTITY_FIELDS = [
+    ("name", r"Name", "Name", "LimeBot"),
+    ("emoji", r"Emoji", "Emoji", "🍋"),
+    ("avatar", r"(?:Avatar|Pfp_URL|Pfp|Profile_Picture)", "Pfp_URL", ""),
+    ("style", r"Style", "Style", ""),
+    ("catchphrases", r"Catchphrases", "Catchphrases", ""),
+    ("interests", r"Interests", "Interests", ""),
+    ("birthday", r"Birthday", "Birthday", ""),
+    ("discord_style", r"Discord Style", "Discord Style", ""),
+    ("whatsapp_style", r"WhatsApp Style", "WhatsApp Style", ""),
+    ("web_style", r"Web Style", "Web Style", ""),
+    ("reaction_emojis", r"Reaction Emojis", "Reaction Emojis", ""),
+]
+
 
 def should_load_private_context(
     sender_id: str, channel: str, config: Optional[Any] = None
@@ -251,6 +265,40 @@ def _rotate_backups(target: Path, keep: int = 3) -> None:
         logger.warning(f"Backup rotation failed for {target.name}: {e}")
 
 
+def _clean_identity_value(value: str | None) -> str:
+    if not value:
+        return ""
+    cleaned = value.strip()
+    if cleaned.lower() in ("none", "n/a", "null", "undefined"):
+        return ""
+    return cleaned
+
+
+def _extract_identity_fields(
+    content: str, include_defaults: bool = True
+) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for key, label_pattern, _output_label, default in _IDENTITY_FIELDS:
+        match = re.search(
+            rf"^\s*(?:[-*]\s+)?(?:\*\*)?(?:{label_pattern}):(?:\*\*)?[ \t]*(.*)$",
+            content,
+            re.MULTILINE | re.IGNORECASE,
+        )
+        value = _clean_identity_value(match.group(1) if match else None)
+        if not value and include_defaults:
+            value = default
+        parsed[key] = value
+    return parsed
+
+
+def _normalize_identity_content(content: str) -> str:
+    parsed = _extract_identity_fields(content, include_defaults=False)
+    lines = ["# IDENTITY.md - Who I Am", ""]
+    for key, _label_pattern, output_label, _default in _IDENTITY_FIELDS:
+        lines.append(f"*   **{output_label}:** {parsed.get(key, '')}")
+    return "\n".join(lines).strip()
+
+
 def is_setup_complete(
     soul_content: Optional[str] = None, identity_content: Optional[str] = None
 ) -> bool:
@@ -324,37 +372,8 @@ def get_identity_data(identity_content: Optional[str] = None) -> dict:
         if not content:
             return _default
 
-        def _clean(val: str | None) -> str:
-            if not val:
-                return ""
-            v = val.strip()
-            if v.lower() in ("none", "n/a", "null", "undefined"):
-                return ""
-            return v
-
-        _FIELDS = [
-            ("name", "Name", "LimeBot"),
-            ("emoji", "Emoji", "🍋"),
-            ("avatar", "(?:Avatar|Pfp_URL|Pfp|Profile_Picture)", None),
-            ("style", "Style", ""),
-            ("discord_style", "Discord Style", ""),
-            ("whatsapp_style", "WhatsApp Style", ""),
-            ("web_style", "Web Style", ""),
-            ("reaction_emojis", "Reaction Emojis", ""),
-            ("catchphrases", "Catchphrases", ""),
-            ("interests", "Interests", ""),
-            ("birthday", "Birthday", ""),
-        ]
-
-        parsed = {}
-        for key, label, default in _FIELDS:
-            m = re.search(
-                rf"^\*\s*\*\*{label}:\*\*[ \t]*(.*)",
-                content,
-                re.MULTILINE | re.IGNORECASE,
-            )
-            parsed[key] = _clean(m.group(1)) if m else default
-
+        parsed = _extract_identity_fields(content, include_defaults=True)
+        parsed["avatar"] = parsed["avatar"] or None
         parsed["pfp_url"] = parsed["avatar"]
         return parsed
     except Exception:
@@ -532,6 +551,8 @@ def build_stable_system_prompt(
         f"you can use the following tags to overwrite the respective files:\n"
         f"<save_soul>...new markdown content...</save_soul>\n"
         f"<save_identity>...new markdown content...</save_identity>\n"
+        f"If the user gives you a direct avatar/profile image URL, do NOT browse, search, or download it. "
+        f"Copy that exact URL into `**Pfp_URL:**` inside `<save_identity>`.\n"
         f"For identity, you can specify platform styles using: `**Discord Style:** ...`, `**WhatsApp Style:** ...`, `**Web Style:** ...` and `**Reaction Emojis:** bucket:emoji,emoji;...`\n"
         f"--- SELF-EVOLUTION ---\n"
         f"Your SOUL.md defines your core personality. If you realize your current Soul no longer fits the user's needs "
@@ -709,8 +730,9 @@ def validate_and_save_identity(content: str) -> bool:
     if _check_forbidden(content, "IDENTITY.md"):
         return False
 
-    has_name = "**Name:**" in content or "Name:" in content
-    has_style = "**Style:**" in content or "Style:" in content
+    parsed = _extract_identity_fields(content, include_defaults=False)
+    has_name = bool(parsed.get("name"))
+    has_style = bool(parsed.get("style"))
     has_minimum_length = len(content) > 50
 
     if not (has_name and has_style and has_minimum_length):
@@ -720,7 +742,8 @@ def validate_and_save_identity(content: str) -> bool:
         )
         return False
 
-    return _atomic_write_with_backup(IDENTITY_FILE, content, "IDENTITY.md")
+    normalized = _normalize_identity_content(content)
+    return _atomic_write_with_backup(IDENTITY_FILE, normalized, "IDENTITY.md")
 
 
 def validate_and_save_soul(content: str) -> bool:
