@@ -1,6 +1,7 @@
 """Discord channel implementation."""
 
 import asyncio
+import io
 import json
 import aiohttp
 import discord
@@ -20,6 +21,13 @@ _MAX_MESSAGE_LEN = 2000
 _CHUNK_SIZE = 1900
 _AVATAR_STATE_FILE = "data/discord_avatar_state.json"
 _AVATAR_COOLDOWN_SECS = 24 * 60 * 60
+
+
+def _session_key(channel: str, chat_id: str) -> str:
+    key = f"{channel}_{chat_id}"
+    for char in ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]:
+        key = key.replace(char, "_")
+    return key
 
 
 class ToolConfirmationView(discord.ui.View):
@@ -124,6 +132,57 @@ class ToolConfirmationView(discord.ui.View):
         )
 
 
+class StopGenerationView(discord.ui.View):
+    def __init__(self, chat_id: str, agent=None):
+        super().__init__(timeout=300)
+        self.chat_id = chat_id
+        self.agent = agent
+        self.session_key = _session_key("discord", chat_id)
+        self.message: discord.Message | None = None
+
+    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger, emoji="🛑")
+    async def stop_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        if not self.agent:
+            await interaction.response.send_message(
+                "Stop is unavailable right now.", ephemeral=True
+            )
+            return
+
+        try:
+            cancelled = await self.agent.cancel_session(self.session_key)
+        except Exception as e:
+            logger.error(f"[Discord] Failed to cancel {self.session_key}: {e}")
+            await interaction.response.send_message(
+                "Failed to stop the current run.", ephemeral=True
+            )
+            return
+
+        for child in self.children:
+            child.disabled = True
+
+        await interaction.response.edit_message(
+            content=(
+                "Stopped the current run."
+                if cancelled
+                else "No active run found to stop."
+            ),
+            view=self,
+        )
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+        self.stop()
+
+
 _ACTIVITY_MAP = {
     "watching": discord.ActivityType.watching,
     "listening": discord.ActivityType.listening,
@@ -156,6 +215,7 @@ class DiscordChannel(BaseChannel):
         raw_channels = getattr(self.config, "allow_channels", [])
         self._allowed_channels: set[str] = set(raw_channels)
         self._tool_messages: dict[str, discord.Message] = {}
+        self._stop_messages: dict[str, discord.Message] = {}
         self.agent = None
         self._style_overrides = getattr(self.config, "style_overrides", {}) or {}
         self._signature = getattr(self.config, "signature", "") or ""
@@ -548,6 +608,9 @@ class DiscordChannel(BaseChannel):
         ):
             return
 
+        if not is_mentioned:
+            return
+
         content_parts = [message.content] if message.content else []
         attachments = [a.url for a in message.attachments]
         content = (
@@ -756,6 +819,9 @@ class DiscordChannel(BaseChannel):
                     await self._send_text(target, msg.content)
             elif msg_type == "typing":
                 await self._send_typing(target)
+                await self._show_stop_control(target, msg.chat_id)
+            elif msg_type == "stop_typing":
+                await self._clear_stop_control(msg.chat_id)
             elif msg_type == "file":
                 await self._send_file(target, metadata)
             elif metadata.get("embed"):
@@ -809,6 +875,31 @@ class DiscordChannel(BaseChannel):
     async def _send_typing(self, target) -> None:
         async with target.typing():
             await asyncio.sleep(0)
+
+    async def _show_stop_control(self, target, chat_id: str) -> None:
+        session_key = _session_key("discord", chat_id)
+        if session_key in self._stop_messages:
+            return
+
+        view = StopGenerationView(chat_id=chat_id, agent=self.agent)
+        message = await target.send("Working on it...", view=view)
+        view.message = message
+        self._stop_messages[session_key] = message
+
+    async def _clear_stop_control(self, chat_id: str) -> None:
+        session_key = _session_key("discord", chat_id)
+        message = self._stop_messages.pop(session_key, None)
+        if not message:
+            return
+
+        try:
+            await message.delete()
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as e:
+            logger.warning(
+                f"[Discord] Failed to clear stop control for {session_key}: {e}"
+            )
 
     async def _send_text(self, target, content: str) -> None:
         """Send text, splitting at word boundaries if it exceeds the Discord limit."""
@@ -1018,8 +1109,23 @@ class DiscordChannel(BaseChannel):
             return
 
         caption = metadata.get("caption", "")
-        await target.send(content=caption or None, file=discord.File(p))
-        logger.info(f"[Discord] File '{p.name}' sent to {_target_name(target)}")
+        cleanup_file = bool(metadata.get("cleanup_file"))
+        try:
+            payload = p.read_bytes()
+            file_obj = discord.File(io.BytesIO(payload), filename=p.name)
+            await target.send(content=caption or None, file=file_obj)
+            logger.info(f"[Discord] File '{p.name}' sent to {_target_name(target)}")
+        finally:
+            if "file_obj" in locals():
+                try:
+                    file_obj.close()
+                except Exception:
+                    pass
+            if cleanup_file:
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.warning(f"[Discord] Failed to clean up staged file '{p}': {e}")
 
 
 def _target_name(target) -> str:
