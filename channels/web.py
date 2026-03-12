@@ -1,11 +1,15 @@
 """Web channel implementation using FastAPI and WebSockets."""
 
 import asyncio
+import base64
+import binascii
 import json
 import os
+import re
 import socket
 import time
 from typing import Any, Optional
+from urllib.parse import unquote_to_bytes
 
 import uvicorn
 from fastapi import (
@@ -27,8 +31,18 @@ from channels.base import BaseChannel
 from core.bus import MessageBus
 from core.events import OutboundMessage
 from core.session_manager import SessionManager
+from core.tools import Toolbox
 
 _CONTACTS_PATH_REL = ("data", "contacts.json")
+_MAX_WEB_ATTACHMENT_BYTES = 8 * 1024 * 1024
+_DOCUMENT_EXTENSIONS = frozenset({".pdf", ".doc", ".docx"})
+_DOCUMENT_MIME_TYPES = frozenset(
+    {
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+)
 
 
 def _contacts_path():
@@ -74,13 +88,13 @@ class WebChannel(BaseChannel):
         self.app = FastAPI()
         self.server = None
         self.session_manager = session_manager or SessionManager()
+        self.allowed_origins = self._get_allowed_origins()
 
         async def verify_api_key(request: Request, x_api_key: str = Header(None)):
             internal_key = getattr(self.config.whitelist, "api_key", None)
             if not internal_key:
                 return True
-            provided_key = x_api_key or request.query_params.get("api_key")
-            if provided_key != internal_key:
+            if x_api_key != internal_key:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid or missing API Key",
@@ -110,10 +124,257 @@ class WebChannel(BaseChannel):
     def set_channels(self, channels: list):
         self.channels = channels
 
+    def _get_allowed_origins(self) -> list[str]:
+        origins = getattr(self.config.web, "allowed_origins", None) or []
+        return [origin for origin in origins if origin != "*"]
+
+    @staticmethod
+    async def _read_text(path, encoding: str = "utf-8") -> str:
+        return await asyncio.to_thread(path.read_text, encoding=encoding)
+
+    @staticmethod
+    async def _write_text(path, content: str, encoding: str = "utf-8") -> None:
+        await asyncio.to_thread(path.write_text, content, encoding=encoding)
+
+    @staticmethod
+    async def _read_json(path, default: Any = None) -> Any:
+        if not path.exists():
+            return default
+        raw = await asyncio.to_thread(path.read_text, encoding="utf-8")
+        return json.loads(raw)
+
+    @staticmethod
+    async def _write_json(path, data: Any) -> None:
+        payload = await asyncio.to_thread(json.dumps, data, indent=2)
+        await asyncio.to_thread(path.write_text, payload, encoding="utf-8")
+
+    @staticmethod
+    async def _tail_log_file(path, lines: int) -> list[str]:
+        def _read_tail() -> list[str]:
+            chunk_size = 8192
+            result_lines: list[str] = []
+            with path.open("rb") as f:
+                f.seek(0, 2)
+                remaining = f.tell()
+                buffer = b""
+                while remaining > 0 and len(result_lines) <= lines:
+                    read_size = min(chunk_size, remaining)
+                    remaining -= read_size
+                    f.seek(remaining)
+                    buffer = f.read(read_size) + buffer
+                    result_lines = buffer.decode("utf-8", errors="replace").splitlines()
+            return result_lines[-lines:]
+
+        return await asyncio.to_thread(_read_tail)
+
+    @staticmethod
+    async def _load_contacts_async() -> dict:
+        return await asyncio.to_thread(_load_contacts)
+
+    @staticmethod
+    async def _save_contacts_async(contacts: dict) -> None:
+        await asyncio.to_thread(_save_contacts, contacts)
+
+    @staticmethod
+    def _sanitize_upload_component(value: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "upload")).strip("._")
+        return safe or "upload"
+
+    @staticmethod
+    def _decode_data_url(data_url: str) -> tuple[str, bytes]:
+        if not isinstance(data_url, str) or not data_url.startswith("data:"):
+            raise ValueError("Attachment payload must be a valid data URL.")
+        if "," not in data_url:
+            raise ValueError("Attachment payload is malformed.")
+
+        header, payload = data_url.split(",", 1)
+        mime_type = header[5:].split(";", 1)[0].strip().lower()
+        try:
+            if ";base64" in header.lower():
+                content = base64.b64decode(payload, validate=True)
+            else:
+                content = unquote_to_bytes(payload)
+        except (binascii.Error, ValueError) as e:
+            raise ValueError("Attachment payload could not be decoded.") from e
+
+        return mime_type or "application/octet-stream", content
+
+    @staticmethod
+    def _extract_web_document_text(path) -> tuple[str, str | None]:
+        suffix = path.suffix.lower()
+        if suffix == ".doc":
+            return (
+                "",
+                "Legacy .doc files are stored, but automatic text extraction is only available for .docx and .pdf.",
+            )
+
+        try:
+            if suffix == ".docx":
+                extracted = Toolbox._extract_docx_text(path)
+            elif suffix == ".pdf":
+                extracted = Toolbox._extract_pdf_text(path)
+            else:
+                return "", None
+            return Toolbox._slice_text_for_read(extracted, max_chars=12_000), None
+        except Exception as e:
+            return "", str(e)
+
+    async def _normalize_web_attachments(
+        self, chat_id: str, raw_attachments: Any
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        if not isinstance(raw_attachments, list):
+            return [], None
+
+        from pathlib import Path
+
+        safe_chat_id = self._sanitize_upload_component(chat_id)
+        temp_dir = (Path.cwd() / "temp").resolve()
+        upload_dir = temp_dir / "web_uploads" / safe_chat_id
+        await asyncio.to_thread(upload_dir.mkdir, parents=True, exist_ok=True)
+
+        attachments: list[dict[str, Any]] = []
+        first_image_data_url: str | None = None
+
+        for index, item in enumerate(raw_attachments[:4]):
+            if not isinstance(item, dict):
+                continue
+
+            data_url = item.get("data_url") or item.get("url")
+            if not data_url:
+                continue
+
+            mime_type, blob = self._decode_data_url(str(data_url))
+            provided_mime = (
+                str(item.get("mimeType") or item.get("mime_type") or item.get("type") or "")
+                .strip()
+                .lower()
+            )
+            if provided_mime:
+                mime_type = provided_mime
+
+            if len(blob) > _MAX_WEB_ATTACHMENT_BYTES:
+                raise ValueError("Attachments are limited to 8 MB.")
+
+            original_name = str(item.get("name") or f"attachment-{index + 1}").strip()
+            original_name = Path(original_name).name or f"attachment-{index + 1}"
+            suffix = Path(original_name).suffix.lower()
+            is_image = mime_type.startswith("image/")
+            is_document = mime_type in _DOCUMENT_MIME_TYPES or suffix in _DOCUMENT_EXTENSIONS
+
+            if not is_image and not is_document:
+                raise ValueError("Only images, PDF, DOC, and DOCX files are supported in web chat.")
+
+            if not suffix:
+                if mime_type == "application/pdf":
+                    suffix = ".pdf"
+                elif mime_type == "application/msword":
+                    suffix = ".doc"
+                elif (
+                    mime_type
+                    == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ):
+                    suffix = ".docx"
+                elif is_image:
+                    suffix = ".png"
+
+            stem = self._sanitize_upload_component(Path(original_name).stem)
+            stored_name = f"{int(time.time() * 1000)}_{index}_{stem}{suffix}"
+            saved_path = upload_dir / stored_name
+            await asyncio.to_thread(saved_path.write_bytes, blob)
+
+            relative_path = saved_path.relative_to(Path.cwd()).as_posix()
+            public_url = f"/temp/{saved_path.relative_to(temp_dir).as_posix()}"
+            attachment: dict[str, Any] = {
+                "name": original_name,
+                "kind": "image" if is_image else "document",
+                "mime_type": mime_type,
+                "mimeType": mime_type,
+                "path": relative_path,
+                "url": public_url,
+            }
+
+            if is_image:
+                first_image_data_url = first_image_data_url or str(data_url)
+            else:
+                extracted_text, extraction_note = self._extract_web_document_text(
+                    saved_path
+                )
+                if extracted_text:
+                    attachment["extracted_text"] = extracted_text
+                if extraction_note:
+                    attachment["extraction_note"] = extraction_note
+
+            attachments.append(attachment)
+
+        return attachments, first_image_data_url
+
+    @staticmethod
+    async def _close_websocket_safely(
+        websocket: WebSocket, code: int = status.WS_1008_POLICY_VIOLATION
+    ) -> None:
+        try:
+            await websocket.close(code=code)
+        except RuntimeError:
+            pass
+        except Exception as e:
+            logger.debug(f"WebSocket close skipped: {e}")
+
+    async def _authenticate_websocket(self, websocket: WebSocket) -> bool:
+        internal_key = getattr(self.config.whitelist, "api_key", None)
+        if not internal_key:
+            return True
+
+        async def _send_auth_ok() -> bool:
+            try:
+                await websocket.send_text(json.dumps({"type": "auth_ok"}))
+                return True
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected during auth from {websocket.client}")
+                return False
+            except RuntimeError as e:
+                logger.info(
+                    f"WebSocket closed before auth completed from {websocket.client}: {e}"
+                )
+                return False
+
+        header_key = websocket.headers.get("x-api-key")
+        if header_key == internal_key:
+            return await _send_auth_ok()
+
+        query_key = websocket.query_params.get("api_key")
+        if query_key == internal_key:
+            return await _send_auth_ok()
+
+        try:
+            auth_frame = await asyncio.wait_for(websocket.receive_text(), timeout=5)
+            payload = json.loads(auth_frame)
+        except asyncio.TimeoutError:
+            logger.warning(f"WebSocket rejected: auth timeout from {websocket.client}")
+            await self._close_websocket_safely(websocket)
+            return False
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket disconnected before auth from {websocket.client}")
+            return False
+        except json.JSONDecodeError:
+            logger.warning(f"WebSocket rejected: invalid auth payload from {websocket.client}")
+            await self._close_websocket_safely(websocket)
+            return False
+        except Exception:
+            logger.warning(f"WebSocket rejected: invalid auth payload from {websocket.client}")
+            await self._close_websocket_safely(websocket)
+            return False
+
+        if payload.get("type") != "auth" or payload.get("api_key") != internal_key:
+            logger.warning(f"WebSocket rejected: bad API key from {websocket.client}")
+            await self._close_websocket_safely(websocket)
+            return False
+
+        return await _send_auth_ok()
+
     def _setup_routes(self):
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=["*"],
+            allow_origins=self.allowed_origins,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -129,18 +390,18 @@ class WebChannel(BaseChannel):
         async def get_identity():
             from core.prompt import get_identity_data
 
-            return get_identity_data()
+            return await asyncio.to_thread(get_identity_data)
 
         @self.app.get("/api/persona", dependencies=[Depends(self.verify_auth)])
         async def get_persona():
             from core.prompt import get_identity_data, SOUL_FILE, MOOD_FILE, USERS_DIR
             import re
 
-            result = get_identity_data()
+            result = await asyncio.to_thread(get_identity_data)
             result["soul_summary"] = ""
             if SOUL_FILE.exists():
                 try:
-                    soul_content = SOUL_FILE.read_text(encoding="utf-8")
+                    soul_content = await self._read_text(SOUL_FILE)
                     lines = soul_content.strip().split("\n")
                     if lines and lines[0].startswith("#"):
                         lines = lines[1:]
@@ -150,11 +411,11 @@ class WebChannel(BaseChannel):
 
             result["mood"] = ""
             if MOOD_FILE.exists():
-                result["mood"] = MOOD_FILE.read_text(encoding="utf-8").strip()
+                result["mood"] = (await self._read_text(MOOD_FILE)).strip()
 
             from config import load_config
 
-            cfg = load_config()
+            cfg = await asyncio.to_thread(load_config)
             result["enable_dynamic_personality"] = getattr(
                 cfg.llm, "enable_dynamic_personality", False
             )
@@ -163,7 +424,7 @@ class WebChannel(BaseChannel):
             if USERS_DIR.exists():
                 for user_file in USERS_DIR.glob("*.md"):
                     try:
-                        content = user_file.read_text(encoding="utf-8")
+                        content = await self._read_text(user_file)
                         name_match = re.search(
                             r"\*\*Preferred Name:\*\*\s*(.*)", content, re.IGNORECASE
                         )
@@ -227,13 +488,13 @@ class WebChannel(BaseChannel):
                     f"*   **Reaction Emojis:** {data.get('reaction_emojis', '')}"
                 )
                 lines.append("")
-                identity_file.write_text("\n".join(lines), encoding="utf-8")
+                await self._write_text(identity_file, "\n".join(lines))
 
                 mood_value = data.get("mood")
                 if mood_value:
                     tmp_mood = mood_file.with_suffix(".tmp")
-                    tmp_mood.write_text(mood_value, encoding="utf-8")
-                    tmp_mood.replace(mood_file)
+                    await self._write_text(tmp_mood, mood_value)
+                    await asyncio.to_thread(tmp_mood.replace, mood_file)
 
                 logger.info(f"Persona updated: {data.get('name')}")
                 return {"status": "success", "message": "Persona updated"}
@@ -254,9 +515,9 @@ class WebChannel(BaseChannel):
                     for item in persona_dir.iterdir():
                         if item.is_file():
                             if item.name.lower() == "identity.md":
-                                identity_content = item.read_text(encoding="utf-8")
+                                identity_content = await self._read_text(item)
                             elif item.name.lower() == "soul.md":
-                                soul_content = item.read_text(encoding="utf-8")
+                                soul_content = await self._read_text(item)
                 export_data = (
                     "<!-- SECTION: IDENTITY -->\n"
                     f"{identity_content}\n\n"
@@ -322,11 +583,16 @@ class WebChannel(BaseChannel):
 
                 updated_files = []
                 if identity_match:
-                    updated_files.append(
-                        safe_update("IDENTITY.md", identity_match.group(1))
+                    updated_files.append(await asyncio.to_thread(
+                        safe_update, "IDENTITY.md", identity_match.group(1)
+                    )
                     )
                 if soul_match:
-                    updated_files.append(safe_update("SOUL.md", soul_match.group(1)))
+                    updated_files.append(
+                        await asyncio.to_thread(
+                            safe_update, "SOUL.md", soul_match.group(1)
+                        )
+                    )
 
                 logger.info(f"Persona imported. Updated: {', '.join(updated_files)}")
                 return {
@@ -554,13 +820,13 @@ class WebChannel(BaseChannel):
                     "provider": "nvidia",
                 },
                 {
-                    "id": "nvidia/moonshotai/kimi-k2.5",
-                    "name": "Kimi K2.5",
+                    "id": "nvidia/moonshotai/kimi-k2-thinking",
+                    "name": "Kimi K2 Thinking",
                     "provider": "nvidia",
                 },
                 {
-                    "id": "nvidia/moonshotai/kimi-k2-thinking",
-                    "name": "Kimi K2 Thinking",
+                    "id": "nvidia/moonshotai/kimi-k2.5",
+                    "name": "Kimi K2.5",
                     "provider": "nvidia",
                 },
                 {
@@ -758,6 +1024,9 @@ class WebChannel(BaseChannel):
                     getattr(cfg, "allow_unsafe_commands", False)
                 ).lower(),
                 "WEB_PORT": str(getattr(cfg.web, "port", 8000)),
+                "WEB_ALLOWED_ORIGINS": ",".join(
+                    getattr(cfg.web, "allowed_origins", [])
+                ),
                 "LLM_PROXY_URL": getattr(cfg.llm, "proxy_url", ""),
                 "BROWSER_MODE": getattr(cfg.browser, "mode", "isolated"),
                 "BROWSER_CHANNEL": getattr(cfg.browser, "channel", ""),
@@ -790,7 +1059,7 @@ class WebChannel(BaseChannel):
             if not cfg_path.exists():
                 return {"discord": {}}
             try:
-                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                data = await self._read_json(cfg_path, default={})
             except Exception as e:
                 logger.error(f"Error reading limebot.json: {e}")
                 return {"discord": {}}
@@ -804,12 +1073,12 @@ class WebChannel(BaseChannel):
             try:
                 data = {}
                 if cfg_path.exists():
-                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                    data = await self._read_json(cfg_path, default={})
                 discord_cfg = payload.get("discord")
                 if not isinstance(discord_cfg, dict):
                     return {"error": "discord config must be an object"}
                 data["discord"] = discord_cfg
-                cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                await self._write_json(cfg_path, data)
                 logger.info("Discord UI config saved. Restarting...")
                 asyncio.get_running_loop().call_later(1.0, _spawn_restart)
                 return {
@@ -866,10 +1135,10 @@ class WebChannel(BaseChannel):
                         paths = [
                             p.strip() for p in str(paths_data).split(",") if p.strip()
                         ]
-                    paths_file.write_text("\n".join(paths), encoding="utf-8")
+                    await self._write_text(paths_file, "\n".join(paths))
 
                 current_lines = (
-                    env_file.read_text(encoding="utf-8").splitlines()
+                    (await self._read_text(env_file)).splitlines()
                     if env_file.exists()
                     else []
                 )
@@ -894,7 +1163,7 @@ class WebChannel(BaseChannel):
                     if key not in processed_keys:
                         final_lines.append(f"{key}={val}")
 
-                env_file.write_text("\n".join(final_lines), encoding="utf-8")
+                await self._write_text(env_file, "\n".join(final_lines))
 
                 # Update os.environ so the child process inherits
                 # the correct values (load_dotenv uses override=False,
@@ -925,7 +1194,7 @@ class WebChannel(BaseChannel):
 
             if not CONFIG_PATH.exists():
                 return {"mcpServers": {}}
-            return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            return await self._read_json(CONFIG_PATH, default={"mcpServers": {}})
 
         @self.app.post("/api/mcp/config", dependencies=[Depends(self.verify_auth)])
         async def update_mcp_config(data: dict):
@@ -940,7 +1209,7 @@ class WebChannel(BaseChannel):
                 ok, err = validate_mcp_config(data)
                 if not ok:
                     return {"error": err}
-                CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                await self._write_json(CONFIG_PATH, data)
                 # Re-initialize MCP manager to apply changes
                 mcp_manager = get_mcp_manager()
                 asyncio.create_task(mcp_manager.initialize())
@@ -1061,45 +1330,10 @@ class WebChannel(BaseChannel):
                 log_file = Path("logs/limebot.log")
                 if not log_file.exists():
                     return {"logs": ["No logs found."]}
-
-                chunk_size = 8192
-                result_lines: list[str] = []
-                with log_file.open("rb") as f:
-                    f.seek(0, 2)
-                    remaining = f.tell()
-                    buffer = b""
-                    while remaining > 0 and len(result_lines) <= lines:
-                        read_size = min(chunk_size, remaining)
-                        remaining -= read_size
-                        f.seek(remaining)
-                        buffer = f.read(read_size) + buffer
-                        result_lines = buffer.decode(
-                            "utf-8", errors="replace"
-                        ).splitlines()
-
-                return {"logs": result_lines[-lines:]}
+                return {"logs": await self._tail_log_file(log_file, lines)}
             except Exception as e:
                 logger.error(f"Error reading logs: {e}")
                 return {"logs": [f"Error reading logs: {e}"]}
-
-        @self.app.get("/api/memory/status", dependencies=[Depends(self.verify_auth)])
-        async def get_memory_status():
-            from core.vectors import get_vector_service
-
-            vector_service = get_vector_service()
-            if not vector_service.is_enabled:
-                return {
-                    "enabled": False,
-                    "mode": "grep_fallback",
-                    "read_only": True,
-                    "notice": "Using grep as fallback.",
-                }
-
-            return {
-                "enabled": True,
-                "mode": "vector",
-                "read_only": False,
-            }
 
         @self.app.get("/api/memory", dependencies=[Depends(self.verify_auth)])
         async def get_memory():
@@ -1121,7 +1355,7 @@ class WebChannel(BaseChannel):
                     if memory_dir.exists():
                         for file_path in sorted(memory_dir.glob("*.md"), reverse=True):
                             try:
-                                content = file_path.read_text(encoding="utf-8")
+                                content = await self._read_text(file_path)
                             except Exception:
                                 continue
 
@@ -1184,6 +1418,20 @@ class WebChannel(BaseChannel):
                     "error": str(e),
                     "memories": [],
                 }
+
+        @self.app.get("/api/memory/debug", dependencies=[Depends(self.verify_auth)])
+        async def get_memory_debug(session_key: Optional[str] = None, limit: int = 20):
+            if not getattr(self, "agent", None):
+                return {"traces": []}
+            try:
+                limit = max(1, min(int(limit), 100))
+            except Exception:
+                limit = 20
+            return {
+                "traces": self.agent.get_recent_rag_traces(
+                    session_key=session_key, limit=limit
+                )
+            }
 
         @self.app.delete(
             "/api/memory/{entry_id}", dependencies=[Depends(self.verify_auth)]
@@ -1391,7 +1639,7 @@ class WebChannel(BaseChannel):
 
                 log_file = Path("logs/limebot.log")
                 if log_file.exists():
-                    log_file.write_text("")
+                    await self._write_text(log_file, "")
                 logger.info("Logs cleared via API.")
                 return {"status": "success", "message": "Logs cleared."}
             except Exception as e:
@@ -1480,7 +1728,7 @@ class WebChannel(BaseChannel):
             "/api/whatsapp/contacts", dependencies=[Depends(self.verify_auth)]
         )
         async def get_whatsapp_contacts():
-            return _load_contacts()
+            return await self._load_contacts_async()
 
         @self.app.post(
             "/api/whatsapp/contacts/approve", dependencies=[Depends(self.verify_auth)]
@@ -1490,14 +1738,14 @@ class WebChannel(BaseChannel):
             chat_id = data.get("chat_id")
             if not chat_id:
                 return {"status": "error", "message": "Missing chat_id"}
-            contacts = _load_contacts()
+            contacts = await self._load_contacts_async()
             if chat_id in contacts.get("pending", []):
                 contacts["pending"].remove(chat_id)
             if chat_id in contacts.get("blocked", []):
                 contacts["blocked"].remove(chat_id)
             if chat_id not in contacts.get("allowed", []):
                 contacts.setdefault("allowed", []).append(chat_id)
-            _save_contacts(contacts)
+            await self._save_contacts_async(contacts)
             return {"status": "success", "contacts": contacts}
 
         @self.app.post(
@@ -1508,14 +1756,14 @@ class WebChannel(BaseChannel):
             chat_id = data.get("chat_id")
             if not chat_id:
                 return {"status": "error", "message": "Missing chat_id"}
-            contacts = _load_contacts()
+            contacts = await self._load_contacts_async()
             if chat_id in contacts.get("pending", []):
                 contacts["pending"].remove(chat_id)
             if chat_id in contacts.get("allowed", []):
                 contacts["allowed"].remove(chat_id)
             if chat_id not in contacts.get("blocked", []):
                 contacts.setdefault("blocked", []).append(chat_id)
-            _save_contacts(contacts)
+            await self._save_contacts_async(contacts)
             return {"status": "success", "contacts": contacts}
 
         @self.app.post(
@@ -1526,12 +1774,12 @@ class WebChannel(BaseChannel):
             chat_id = data.get("chat_id")
             if not chat_id:
                 return {"status": "error", "message": "Missing chat_id"}
-            contacts = _load_contacts()
+            contacts = await self._load_contacts_async()
             if chat_id in contacts.get("allowed", []):
                 contacts["allowed"].remove(chat_id)
             if chat_id not in contacts.get("pending", []):
                 contacts.setdefault("pending", []).append(chat_id)
-            _save_contacts(contacts)
+            await self._save_contacts_async(contacts)
             return {"status": "success", "contacts": contacts}
 
         @self.app.post("/api/whatsapp/reset", dependencies=[Depends(self.verify_auth)])
@@ -1641,17 +1889,9 @@ class WebChannel(BaseChannel):
 
     async def _websocket_handler(self, websocket: WebSocket) -> None:
         """Shared handler for all WebSocket connections."""
-        internal_key = getattr(self.config.whitelist, "api_key", None)
-        if internal_key:
-            api_key = websocket.query_params.get("api_key")
-            if api_key != internal_key:
-                logger.warning(
-                    f"WebSocket rejected: bad API key from {websocket.client}"
-                )
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-                return
-
         await websocket.accept()
+        if not await self._authenticate_websocket(websocket):
+            return
         self.active_connections.add(websocket)
         logger.info(f"Web client connected ({websocket.url.path})")
 
@@ -1710,13 +1950,45 @@ class WebChannel(BaseChannel):
                 metadata = {"source": "web"}
                 if sender_name:
                     metadata["sender_name"] = sender_name
-                if image_data := msg.get("image"):
+                attachment_paths: list[str] = []
+                if raw_attachments := msg.get("attachments"):
+                    try:
+                        attachments, first_image_data_url = (
+                            await self._normalize_web_attachments(
+                                str(chat_id), raw_attachments
+                            )
+                        )
+                    except ValueError as e:
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "type": "message",
+                                    "content": str(e),
+                                    "sender": "bot",
+                                    "chat_id": chat_id,
+                                    "metadata": {"is_error": True},
+                                }
+                            )
+                        )
+                        continue
+
+                    if attachments:
+                        metadata["attachments"] = attachments
+                        attachment_paths = [
+                            str(a.get("path"))
+                            for a in attachments
+                            if a.get("path")
+                        ]
+                    if first_image_data_url:
+                        metadata["image"] = first_image_data_url
+                elif image_data := msg.get("image"):
                     metadata["image"] = image_data
 
                 await self._handle_message(
                     sender_id=sender_id,
                     chat_id=chat_id,
                     content=content,
+                    media=attachment_paths,
                     metadata=metadata,
                 )
 
@@ -1731,8 +2003,38 @@ class WebChannel(BaseChannel):
         # Safely get port from config, defaulting to 8000
         web_config = getattr(self.config, "web", None)
         base_port = getattr(web_config, "port", 8000) if web_config else 8000
+        prefer_base_port_only = os.environ.pop("LIMEBOT_SOFT_RESTART", "") == "1"
+        base_port_wait_seconds = 12.0 if prefer_base_port_only else 5.0
+        base_port_retry_interval = 0.5
 
         max_retries = 10
+
+        async def _wait_for_preferred_port(port: int) -> bool:
+            deadline = asyncio.get_running_loop().time() + base_port_wait_seconds
+            while True:
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.bind(("0.0.0.0", port))
+                    return True
+                except OSError:
+                    if asyncio.get_running_loop().time() >= deadline:
+                        return False
+                    logger.warning(
+                        f"Port {port} is still in use; waiting before fallback..."
+                    )
+                    await asyncio.sleep(base_port_retry_interval)
+
+        if not await _wait_for_preferred_port(base_port):
+            if prefer_base_port_only:
+                logger.error(
+                    f"Configured web port {base_port} did not become available after "
+                    f"{base_port_wait_seconds:.1f}s during soft restart."
+                )
+                raise OSError(f"Port {base_port} unavailable after restart wait")
+            logger.warning(
+                f"Configured web port {base_port} did not become available after "
+                f"{base_port_wait_seconds:.1f}s; trying fallback ports."
+            )
 
         for port_offset in range(max_retries):
             current_port = base_port + port_offset
