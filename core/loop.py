@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import json
 import re
 import time
@@ -6,6 +7,22 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from core.confirmation import (
+    ConfirmationManager,
+    SENSITIVE_TOOLS,
+    APPROVE_WORDS,
+    DENY_WORDS,
+)
+from core.rag_engine import RagEngine, AUTORAG_MIN_SCORE
+from core.tool_dispatcher import (
+    normalize_tool_alias,
+    TOOL_RESULT_LIMITS,
+    DEFAULT_TOOL_RESULT_LIMIT,
+    BROWSER_CACHEABLE,
+    TAG_COMPAT_TOOLS,
+    TOOL_INTENT_RE,
+)
 
 from litellm import (
     acompletion,
@@ -29,6 +46,7 @@ from core.metrics import MetricsCollector
 from core.session_manager import SessionManager
 from core.skills import SkillRegistry
 from core.tag_parser import process_tags
+from core.tool_defs import shortlist_tool_definitions
 from core.tools import Toolbox
 from core.vectors import get_vector_service
 
@@ -36,29 +54,13 @@ from core.vectors import get_vector_service
 TOOL_BROADCAST_MAX_CHARS = 500
 
 
-_TOOL_RESULT_LIMITS: Dict[str, int] = {
-    "read_file": 8_000,
-    "search_files": 5_000,
-    "memory_search": 3_000,
-    "browser_extract": 5_000,
-    "browser_get_page_text": 5_000,
-    "browser_snapshot": 3_000,
-    "google_search": 2_000,
-    "run_command": 2_000,
-    "browser_list_media": 1_000,
-    "list_dir": 500,
-}
-_DEFAULT_TOOL_RESULT_LIMIT = 2_000
-
-
-AUTORAG_MIN_SCORE = 0.65
-
+# Tool result limits and browser cacheability are now in core/tool_dispatcher.py
+# and imported at the top of this file as TOOL_RESULT_LIMITS, DEFAULT_TOOL_RESULT_LIMIT,
+# BROWSER_CACHEABLE, TAG_COMPAT_TOOLS, TOOL_INTENT_RE.
+# AUTORAG_MIN_SCORE is imported from core/rag_engine.py.
+# SENSITIVE_TOOLS, APPROVE_WORDS, DENY_WORDS come from core/confirmation.py.
 
 _INTERIM_SAVE_EVERY = 5
-
-
-# Browser tools operate on mutable, session-local state, so tool-level caching is unsafe.
-_BROWSER_CACHEABLE = frozenset()
 
 _CASUAL_WORDS = frozenset(
     {
@@ -91,31 +93,6 @@ _CASUAL_WORDS = frozenset(
     }
 )
 
-_APPROVE_WORDS = frozenset(
-    {"proceed", "yes", "approve", "confirm", "ok", "sure", "y", "go", "run", "do it"}
-)
-
-_DENY_WORDS = frozenset(
-    {"no", "cancel", "deny", "stop", "reject", "n", "abort", "nope"}
-)
-
-_SENSITIVE_TOOLS = frozenset(
-    {"delete_file", "run_command", "write_file", "cron_remove"}
-)
-
-_TOOL_INTENT_RE = re.compile(
-    r"\b("
-    r"read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|"
-    r"cron_add|cron_list|cron_remove|spawn_agent|"
-    r"browser_navigate|browser_click|browser_type|browser_snapshot|browser_scroll|"
-    r"browser_wait|browser_press_key|browser_go_back|browser_tabs|browser_switch_tab|"
-    r"browser_extract|browser_get_page_text|browser_list_media|google_search|"
-    r"ls|pwd|cat|grep|find|mkdir|rm|cp|mv|npm|pip|python|bash|powershell|terminal|"
-    r"command|directory|folder|path|cron|schedule|skill"
-    r")\b",
-    re.IGNORECASE,
-)
-
 _GHOST_TAG_RE = re.compile(
     r"</?(?:save_user|save_soul|save_identity|save_memory"
     r"|log_memory|save_mood|save_relationship"
@@ -132,7 +109,15 @@ _GHOST_TAG_NAMES = (
     "save_relationship",
 )
 
-_TAG_COMPAT_TOOLS = frozenset({"save_memory", "log_memory"})
+# Backward-compat aliases for code that still uses the underscore-prefixed names
+_TOOL_RESULT_LIMITS = TOOL_RESULT_LIMITS
+_DEFAULT_TOOL_RESULT_LIMIT = DEFAULT_TOOL_RESULT_LIMIT
+_BROWSER_CACHEABLE = BROWSER_CACHEABLE
+_TAG_COMPAT_TOOLS = TAG_COMPAT_TOOLS
+_TOOL_INTENT_RE = TOOL_INTENT_RE
+_SENSITIVE_TOOLS = SENSITIVE_TOOLS
+_APPROVE_WORDS = APPROVE_WORDS
+_DENY_WORDS = DENY_WORDS
 
 from core.paths import PERSONA_DIR, USERS_DIR, MEMORY_DIR, SOUL_FILE, IDENTITY_FILE
 
@@ -201,6 +186,17 @@ class AgentLoop:
 
         self.skill_registry = SkillRegistry(skill_dirs=["./skills"], config=cfg)
 
+        # ── Sub-module managers ──────────────────────────────────────────
+        self.confirm = ConfirmationManager(
+            toolbox=self.toolbox,
+            truncate_fn=self._truncate_preview,
+            safe_json_load_fn=self._safe_json_load,
+        )
+        self.rag = RagEngine(
+            truncate_fn=self._truncate_preview,
+            safe_json_load_fn=self._safe_json_load,
+        )
+
         self._tool_definitions: Optional[List[Dict]] = None
         self._warmed = False
         asyncio.create_task(self._init_skills_and_tools())
@@ -209,14 +205,6 @@ class AgentLoop:
         self._STABLE_PROMPT_TTL = 30.0
         self._history_flush_interval = 5.0
         self._last_history_flush: Dict[str, float] = {}
-        self._filesystem_alias_actions = {
-            "list": "list_dir",
-            "read": "read_file",
-            "write": "write_file",
-            "delete": "delete_file",
-            "find": "search_files",
-            "search": "search_files",
-        }
 
     async def _init_skills_and_tools(self) -> None:
         """Background: discover skills, build tool definitions, then warm up slow services."""
@@ -296,6 +284,9 @@ class AgentLoop:
         if self._tool_definitions is None:
             self._refresh_tool_definitions()
         return self._tool_definitions
+
+    def _get_tool_definitions_for_turn(self, user_text: str = "") -> List[Dict]:
+        return shortlist_tool_definitions(self._get_tool_definitions(), user_text)
 
     def _resolve_provider(
         self,
@@ -380,6 +371,14 @@ class AgentLoop:
         ]:
             del self._stable_prompt_cache[key]
 
+    def _log_session_event(self, session_key: str, event: dict) -> None:
+        try:
+            asyncio.create_task(
+                self.session_manager.append_event_log(session_key, event)
+            )
+        except Exception:
+            pass
+
     async def _build_full_system_prompt(
         self,
         sender_id: str,
@@ -392,7 +391,14 @@ class AgentLoop:
         """Stable (cached) + volatile (per-message: memory + RAG + timestamp)."""
         stable = await self._get_stable_prompt(sender_id, channel, chat_id, sender_name)
         skills_docs = self.skill_registry.get_relevant_prompt_additions(current_message)
-        volatile = prompt_module.get_volatile_prompt_suffix(recalled_context)
+        include_private_memory = prompt_module.should_load_private_context(
+            sender_id, channel, self.config
+        )
+        volatile = prompt_module.get_volatile_prompt_suffix(
+            recalled_context,
+            include_private_memory=include_private_memory,
+            current_message=current_message,
+        )
         return stable + (skills_docs + "\n" if skills_docs else "") + volatile
 
     async def _cleanup_persisted_histories(self) -> None:
@@ -405,8 +411,8 @@ class AgentLoop:
             logger.debug(f"History cleanup skipped: {e}")
             return
 
-        cleaned_total = (
-            summary.get("history_entries", 0) + summary.get("log_entries", 0)
+        cleaned_total = summary.get("history_entries", 0) + summary.get(
+            "log_entries", 0
         )
         if not cleaned_total:
             return
@@ -442,82 +448,9 @@ class AgentLoop:
         self, function_name: str, function_args: dict, session_key: str
     ) -> tuple[str, dict]:
         """Normalize common alias tools back to canonical runtime tool names."""
-        normalized_name = function_name
-        normalized_args = dict(function_args or {})
-
-        if function_name != "filesystem":
-            return normalized_name, normalized_args
-
-        action = str(normalized_args.pop("action", "") or "").strip().lower()
-        if not action:
-            self.metrics.record_anomaly(
-                session_key, "filesystem_alias_missing_action", detail=str(function_args)
-            )
-            return function_name, function_args
-
-        mapped_name = self._filesystem_alias_actions.get(action)
-        if not mapped_name:
-            self.metrics.record_anomaly(
-                session_key,
-                "filesystem_alias_unsupported",
-                detail=f"action={action}",
-            )
-            return function_name, function_args
-
-        self.metrics.record_anomaly(
-            session_key,
-            "filesystem_alias_normalized",
-            detail=f"{action}->{mapped_name}",
+        return normalize_tool_alias(
+            function_name, function_args, self.metrics.record_anomaly, session_key
         )
-
-        if mapped_name == "list_dir":
-            normalized_args = {
-                "path": normalized_args.get("path", "."),
-                **{
-                    k: v
-                    for k, v in normalized_args.items()
-                    if k
-                    in {
-                        "limit",
-                        "offset",
-                        "include_hidden",
-                        "sort_by",
-                        "descending",
-                        "folders_first",
-                    }
-                },
-            }
-        elif mapped_name == "read_file":
-            normalized_args = {
-                "path": normalized_args.get("path", ""),
-                **{
-                    k: v
-                    for k, v in normalized_args.items()
-                    if k in {"max_chars", "start_line", "end_line"}
-                },
-            }
-        elif mapped_name == "write_file":
-            normalized_args = {
-                "path": normalized_args.get("path", ""),
-                "content": normalized_args.get("content", ""),
-            }
-        elif mapped_name == "delete_file":
-            normalized_args = {"path": normalized_args.get("path", "")}
-        elif mapped_name == "search_files":
-            normalized_args = {
-                "query": normalized_args.get("query")
-                or normalized_args.get("pattern")
-                or "",
-                "path": normalized_args.get("path", "."),
-                "mode": normalized_args.get("mode", "content"),
-                **{
-                    k: v
-                    for k, v in normalized_args.items()
-                    if k in {"file_glob", "case_sensitive", "max_results"}
-                },
-            }
-
-        return mapped_name, normalized_args
 
     # ── Shared publishing helpers ────────────────────────────────────────
 
@@ -551,59 +484,86 @@ class AgentLoop:
 
     # ── Confirmation embed builder ───────────────────────────────────────
 
+    async def _publish_activity(
+        self,
+        msg: Optional[InboundMessage],
+        text: str,
+        turn_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> None:
+        await self._publish_both(
+            msg,
+            "",
+            self._with_trace_metadata(
+                {"type": "activity", "text": text},
+                turn_id=turn_id,
+                message_id=message_id,
+            ),
+        )
+
     @staticmethod
+    def _truncate_preview(text: Any, limit: int = 1200) -> str:
+        raw = str(text or "")
+        if len(raw) <= limit:
+            return raw
+        return raw[:limit] + "\n... (truncated)"
+
+    @staticmethod
+    def _safe_json_load(raw: Any) -> Any:
+        if isinstance(raw, (dict, list)):
+            return raw
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            try:
+                return ast.literal_eval(raw)
+            except Exception:
+                return None
+
+    def _record_rag_trace(self, session_key: str, trace: Dict[str, Any]) -> None:
+        self.rag.record(session_key, trace)
+
+    def get_recent_rag_traces(
+        self, session_key: Optional[str] = None, limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        return self.rag.get_recent(session_key, limit)
+
+    def _build_rag_result_trace(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        return self.rag.build_result_trace(row)
+
+    def _build_write_preview(self, function_args: dict) -> Dict[str, Any]:
+        return self.confirm.build_write_preview(function_args)
+
+    def _build_delete_preview(self, function_args: dict) -> Dict[str, Any]:
+        return self.confirm.build_delete_preview(function_args)
+
+    @staticmethod
+    def _extract_command_paths(command: str, limit: int = 5) -> List[str]:
+        from core.confirmation import ConfirmationManager
+
+        return ConfirmationManager.extract_command_paths(command, limit)
+
+    def _build_command_preview(self, function_args: dict) -> Dict[str, Any]:
+        return self.confirm.build_command_preview(function_args)
+
+    def _build_confirmation_preview(
+        self, function_name: str, function_args: dict, session_key: str
+    ) -> Dict[str, Any]:
+        return self.confirm.build_preview(function_name, function_args, session_key)
+
     def _build_confirmation_embed(
-        function_name: str, function_args: dict, session_key: str
+        self,
+        function_name: str,
+        function_args: dict,
+        session_key: str,
+        preview: Optional[Dict[str, Any]] = None,
     ) -> list:
         """Build the embed fields list for a tool confirmation prompt."""
-        if function_name == "run_command":
-            return [
-                {
-                    "name": "Command",
-                    "value": f"```bash\n{function_args.get('command', '')}\n```",
-                    "inline": False,
-                },
-                {
-                    "name": "Working Directory",
-                    "value": f"`{function_args.get('cwd', 'default')}`",
-                    "inline": True,
-                },
-                {"name": "Agent", "value": f"`{session_key}`", "inline": True},
-            ]
-        if function_name == "delete_file":
-            return [
-                {
-                    "name": "Target File",
-                    "value": f"`{function_args.get('path', '')}`",
-                    "inline": False,
-                },
-                {"name": "Agent", "value": f"`{session_key}`", "inline": True},
-            ]
-        if function_name == "write_file":
-            raw = function_args.get("content", "")
-            preview = (raw[:100] + "...") if len(raw) > 100 else raw
-            return [
-                {
-                    "name": "Target File",
-                    "value": f"`{function_args.get('path', '')}`",
-                    "inline": False,
-                },
-                {
-                    "name": "Content Preview",
-                    "value": f"```\n{preview}\n```",
-                    "inline": False,
-                },
-                {"name": "Agent", "value": f"`{session_key}`", "inline": True},
-            ]
-        # Generic fallback
-        return [
-            {
-                "name": "Arguments",
-                "value": f"```json\n{json.dumps(function_args, indent=2)[:500]}\n```",
-                "inline": False,
-            },
-            {"name": "Agent", "value": f"`{session_key}`", "inline": True},
-        ]
+        return self.confirm.build_embed(
+            function_name, function_args, session_key, preview
+        )
 
     # ── Stream result unpacker ───────────────────────────────────────────
 
@@ -664,24 +624,73 @@ class AgentLoop:
         self._running = False
 
     async def cancel_session(self, session_key: str) -> bool:
-        if session_key in self.active_tasks:
-            task = self.active_tasks[session_key]
-            if not task.done():
+        cancelled_any = False
+        self._log_session_event(
+            session_key,
+            {"type": "cancel_requested", "session_key": session_key},
+        )
+
+        related_sessions = {session_key}
+        for sk, meta in list(getattr(self.session_manager, "sessions", {}).items()):
+            if meta.get("parent_id") == session_key:
+                related_sessions.add(sk)
+
+        for sk in related_sessions:
+            task = self.active_tasks.get(sk)
+            if task and not task.done():
                 task.cancel()
-                logger.info(f"🛑 Cancelled task for {session_key}")
-                if task.done():
-                    del self.active_tasks[session_key]
-                return True
+                logger.info(f"🛑 Cancelled task for {sk}")
+                self._log_session_event(
+                    sk,
+                    {
+                        "type": "task_cancelled",
+                        "session_key": sk,
+                        "parent": session_key,
+                    },
+                )
+                cancelled_any = True
+
+        for conf_id, conf in list(self.pending_confirmations.items()):
+            if conf.get("session_key") not in related_sessions:
+                continue
+            conf["approved"] = False
+            event = conf.get("event")
+            if event:
+                event.set()
+            logger.info(
+                f"🛑 Released pending confirmation {conf_id} for {conf.get('session_key')}"
+            )
+            self._log_session_event(
+                conf.get("session_key") or session_key,
+                {
+                    "type": "confirmation_released",
+                    "confirmation_id": conf_id,
+                    "tool": conf.get("tool"),
+                },
+            )
+            cancelled_any = True
+
         for sk, t in list(self.active_tasks.items()):
             if t.done():
                 del self.active_tasks[sk]
-        return False
+
+        return cancelled_any
 
     async def confirm_tool(
         self, conf_id: str, approved: bool, session_whitelist: bool = False
     ) -> bool:
         if conf_id in self.pending_confirmations:
             conf = self.pending_confirmations[conf_id]
+            self._log_session_event(
+                conf.get("session_key", "unknown"),
+                {
+                    "type": "confirmation_resolved",
+                    "confirmation_id": conf_id,
+                    "approved": approved,
+                    "tool": conf.get("tool"),
+                    "session_whitelist": session_whitelist,
+                },
+            )
             conf["approved"] = approved
             if approved and session_whitelist:
                 sk = conf["session_key"]
@@ -761,6 +770,7 @@ class AgentLoop:
                     session_key=sub_session_key,
                     msg=None,
                     stream=False,
+                    tool_context_text=task,
                 )
 
                 if hasattr(response, "usage"):
@@ -841,9 +851,14 @@ class AgentLoop:
             return True
         if _TOOL_INTENT_RE.search(text):
             return True
-        if any(token in lowered for token in ("./", "../", ".py", ".ts", ".md", ".json")):
+        if any(
+            token in lowered for token in ("./", "../", ".py", ".ts", ".md", ".json")
+        ):
             return True
-        if any(token in text for token in ("\\", "/", "$", ">>", "->")) and len(text) > 12:
+        if (
+            any(token in text for token in ("\\", "/", "$", ">>", "->"))
+            and len(text) > 12
+        ):
             return True
         return False
 
@@ -855,12 +870,17 @@ class AgentLoop:
         max_retries: int = 3,
         stream: bool = False,
         include_tools: bool = True,
+        tool_context_text: str = "",
         turn_id: Optional[str] = None,
         message_id: Optional[str] = None,
     ) -> Any:
 
         model, base_url, api_key, custom_llm_provider = self._provider
-        tools = self._get_tool_definitions() if include_tools else []
+        tools = (
+            self._get_tool_definitions_for_turn(tool_context_text)
+            if include_tools
+            else []
+        )
         qwen_auth_failover_attempted: Set[str] = set()
 
         for attempt in range(max_retries):
@@ -1155,7 +1175,9 @@ class AgentLoop:
             return str(result)
 
         except Exception as e:
-            logger.exception(f"Browser tool execution failed: {function_name} args={args}")
+            logger.exception(
+                f"Browser tool execution failed: {function_name} args={args}"
+            )
             return f"Error executing browser tool: {e}"
 
     async def _execute_tag_compat_tool(
@@ -1282,12 +1304,17 @@ class AgentLoop:
             if result and not str(result).startswith("Error:") and is_read_only:
                 self.tool_cache.set(function_name, function_args, result)
 
-            if function_name in {
-                "write_file",
-                "delete_file",
-                "create_skill",
-                "run_command",
-            } and result and not str(result).startswith("Error:"):
+            if (
+                function_name
+                in {
+                    "write_file",
+                    "delete_file",
+                    "create_skill",
+                    "run_command",
+                }
+                and result
+                and not str(result).startswith("Error:")
+            ):
                 # File/system mutations can stale read/list/search caches.
                 self.tool_cache.clear()
 
@@ -1360,6 +1387,77 @@ class AgentLoop:
             f"a natural-language wrap-up. Recent steps: {recent_tools}."
         )
 
+    @staticmethod
+    def _build_empty_reply_fallback() -> str:
+        return (
+            "I processed that, but I failed to produce a visible reply. "
+            "Please ask again if you still need the answer."
+        )
+
+    def _parse_tool_call(
+        self, tool_call: dict, session_key: str
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        tc_id = tool_call.get("id") or f"call_{uuid.uuid4().hex[:8]}"
+        tool_call["id"] = tc_id
+        function_name = tool_call.get("function", {}).get("name", "")
+        raw_args = tool_call.get("function", {}).get("arguments", "{}")
+
+        if raw_args == "{}{}":
+            logger.warning(f"Malformed args for {function_name} - fixing to {{}}")
+            self.metrics.record_anomaly(
+                session_key,
+                "malformed_tool_args",
+                detail=f"{function_name}:double_object",
+            )
+            raw_args = "{}"
+            tool_call["function"]["arguments"] = raw_args
+
+        try:
+            function_args = json.loads(raw_args)
+        except json.JSONDecodeError:
+            function_args = {}
+            logger.error(f"Invalid JSON args for '{function_name}'. Using {{}}.")
+            self.metrics.record_anomaly(
+                session_key,
+                "invalid_tool_args_json",
+                detail=f"{function_name}:{raw_args[:120]}",
+            )
+
+        function_name, function_args = self._normalize_tool_alias(
+            function_name, function_args, session_key
+        )
+        return tc_id, function_name, function_args
+
+    async def _publish_tool_intents(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        session_key: str,
+        msg: Optional[InboundMessage],
+        turn_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> None:
+        for tool_call in tool_calls:
+            tc_id, function_name, function_args = self._parse_tool_call(
+                tool_call, session_key
+            )
+            preview = self._build_confirmation_preview(
+                function_name, function_args, session_key
+            )
+            await self._publish_both(
+                msg,
+                "",
+                {
+                    "type": "tool_execution",
+                    "status": "planned",
+                    "tool": function_name,
+                    "args": function_args,
+                    "preview": preview,
+                    "tool_call_id": tc_id,
+                    "turn_id": turn_id,
+                    "message_id": message_id,
+                },
+            )
+
     async def _execute_tool_batch(
         self,
         tool_calls: list,
@@ -1386,34 +1484,8 @@ class AgentLoop:
                     }
                 )
 
-                raw_args = tool_call["function"]["arguments"]
-                if raw_args == "{}{}":
-                    logger.warning(
-                        f"⚠ Malformed args for {function_name} — fixing to {{}}"
-                    )
-                    self.metrics.record_anomaly(
-                        session_key,
-                        "malformed_tool_args",
-                        detail=f"{function_name}:double_object",
-                    )
-                    raw_args = "{}"
-                    tool_call["function"]["arguments"] = raw_args
-
-                try:
-                    function_args = json.loads(raw_args)
-                except json.JSONDecodeError:
-                    function_args = {}
-                    logger.error(
-                        f"⚠ Invalid JSON args for '{function_name}'. Using {{}}."
-                    )
-                    self.metrics.record_anomaly(
-                        session_key,
-                        "invalid_tool_args_json",
-                        detail=f"{function_name}:{raw_args[:120]}",
-                    )
-
-                function_name, function_args = self._normalize_tool_alias(
-                    function_name, function_args, session_key
+                tc_id, function_name, function_args = self._parse_tool_call(
+                    tool_call, session_key
                 )
 
                 logger.info(f"Executing: {function_name}({function_args})")
@@ -1436,15 +1508,31 @@ class AgentLoop:
                     if not is_whitelisted:
                         conf_id = f"conf_{uuid.uuid4().hex[:8]}"
                         event = asyncio.Event()
+                        confirmation_preview = self._build_confirmation_preview(
+                            function_name, function_args, session_key
+                        )
                         self.pending_confirmations[conf_id] = {
                             "event": event,
                             "approved": False,
                             "session_key": session_key,
                             "tool": function_name,
+                            "preview": confirmation_preview,
                         }
+                        self._log_session_event(
+                            session_key,
+                            {
+                                "type": "confirmation_requested",
+                                "confirmation_id": conf_id,
+                                "tool": function_name,
+                                "args": function_args,
+                            },
+                        )
 
                         embed_fields = self._build_confirmation_embed(
-                            function_name, function_args, session_key
+                            function_name,
+                            function_args,
+                            session_key,
+                            preview=confirmation_preview,
                         )
 
                         tool_content = (
@@ -1455,6 +1543,7 @@ class AgentLoop:
                             "status": "waiting_confirmation",
                             "tool": function_name,
                             "args": function_args,
+                            "preview": confirmation_preview,
                             "tool_call_id": tc_id,
                             "conf_id": conf_id,
                             "turn_id": turn_id,
@@ -1517,6 +1606,15 @@ class AgentLoop:
                     "message_id": message_id,
                 }
                 await self._publish_both(msg, tool_content, run_meta)
+                self._log_session_event(
+                    session_key,
+                    {
+                        "type": "tool_started",
+                        "tool": function_name,
+                        "tool_call_id": tc_id,
+                        "args": function_args,
+                    },
+                )
 
                 t0 = time.time()
                 try:
@@ -1554,6 +1652,17 @@ class AgentLoop:
                 self.metrics.record_tool_call(session_key, function_name, 0, error=True)
 
             is_blocked = str(result).startswith("ACTION BLOCKED:")
+            self._log_session_event(
+                session_key,
+                {
+                    "type": "tool_finished",
+                    "tool": function_name,
+                    "tool_call_id": tc_id,
+                    "blocked": is_blocked,
+                    "is_internal": is_internal,
+                    "result_preview": str(result)[:400],
+                },
+            )
             return tc_id, function_name, function_args, result, is_blocked, is_internal
 
         outcomes = await asyncio.gather(
@@ -1800,6 +1909,7 @@ class AgentLoop:
             "",
             cleaned,
         )
+        # Strip bare JSON tool-call objects: {"name": "...", "arguments": {...}}
         cleaned = re.sub(
             r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}',
             "",
@@ -2181,6 +2291,18 @@ class AgentLoop:
         assistant_message_id = f"msg_{uuid.uuid4().hex[:12]}"
         try:
             content = msg.content or ""
+            self._log_session_event(
+                session_key,
+                {
+                    "type": "inbound_message",
+                    "turn_id": turn_id,
+                    "channel": msg.channel,
+                    "chat_id": msg.chat_id,
+                    "sender_id": msg.sender_id,
+                    "is_scheduler": bool(msg.metadata.get("is_scheduler")),
+                    "content_preview": content[:500],
+                },
+            )
             if content.startswith("[SCHEDULER] "):
                 content = content.replace("[SCHEDULER] ", "").strip()
 
@@ -2229,9 +2351,13 @@ class AgentLoop:
                 return
 
             sender_id = msg.sender_id
+            normalized = content.strip().lower()
+            is_stop_request = normalized in _DENY_WORDS or any(
+                normalized.startswith(k + " ") for k in _DENY_WORDS
+            )
 
             msg_hash = hash(msg.content) if msg.content else None
-            if msg_hash is not None:
+            if msg_hash is not None and not is_stop_request:
                 now_ts = asyncio.get_running_loop().time()
                 last_seen = self._last_msg_hash.get(session_key)
                 if last_seen is not None:
@@ -2255,13 +2381,29 @@ class AgentLoop:
             # before it enters the full agent loop so the asyncio.Event fires
             # and the waiting tool call is unblocked immediately.
             if msg.channel != "web":
+                if is_stop_request:
+                    cancelled = await self.cancel_session(session_key)
+                    if cancelled:
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content="🛑 Stopped the current run.",
+                                metadata=self._with_trace_metadata(
+                                    {"reply_to": msg.sender_id},
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
+                                ),
+                            )
+                        )
+                        return
+
                 pending_for_session = [
                     (cid, c)
                     for cid, c in self.pending_confirmations.items()
                     if c["session_key"] == session_key
                 ]
                 if pending_for_session:
-                    normalized = content.strip().lower()
                     is_approve = normalized in _APPROVE_WORDS or any(
                         normalized.startswith(k + " ") for k in _APPROVE_WORDS
                     )
@@ -2313,19 +2455,34 @@ class AgentLoop:
                 try:
                     # ── Parallel: Auto-RAG + history load ───────────────────
 
+                    await self._publish_activity(
+                        msg,
+                        "Recalling memory and loading history...",
+                        turn_id=turn_id,
+                        message_id=assistant_message_id,
+                    )
+
                     _RAG_TIMEOUT = 0.2
 
                     # Fast-path: skip RAG for short/casual messages.
-                    async def _do_rag() -> str:
+                    async def _do_rag() -> Dict[str, Any]:
+                        trace: Dict[str, Any] = {
+                            "ts": time.time(),
+                            "query": content,
+                            "status": "skipped",
+                            "mode": "none",
+                            "results": [],
+                            "recalled_context": "",
+                        }
                         if not (
                             content
                             and len(content) > 10
                             and not content.startswith(("/", "@"))
                         ):
-                            return ""
+                            return trace
                         # Skip RAG for single casual words
                         if content.strip().lower() in _CASUAL_WORDS:
-                            return ""
+                            return trace
                         try:
                             results: list = []
                             resolved_key = self.vector_service._resolve_api_key(
@@ -2342,12 +2499,16 @@ class AgentLoop:
                                         for r in semantic_results
                                         if r.get("score", 1.0) >= AUTORAG_MIN_SCORE
                                     ]
+                                    if results:
+                                        trace["mode"] = "vector"
                                 except Exception as e:
                                     logger.warning(f"Semantic search failed: {e}")
                             if not results:
                                 results = await self.vector_service.search_grep(
                                     content, limit=3
                                 )
+                                if results:
+                                    trace["mode"] = "grep_fallback"
                             if results:
                                 seen, lines = set(), []
                                 for r in results:
@@ -2358,13 +2519,21 @@ class AgentLoop:
                                             f"- {text} (Date: {r.get('timestamp', 'unknown')})"
                                         )
                                 if lines:
+                                    trace["status"] = "recalled"
+                                    trace["results"] = [
+                                        self._build_rag_result_trace(r) for r in results
+                                    ]
+                                    trace["recalled_context"] = "\n".join(lines)
                                     logger.info(
-                                        f"🧠 Auto-RAG: {len(lines)} memories recalled."
+                                        f"Auto-RAG: {len(lines)} memories recalled."
                                     )
-                                    return "\n".join(lines)
+                                    return trace
+                            trace["status"] = "miss"
                         except Exception as e:
-                            logger.warning(f"⚠ Auto-RAG failed: {e}")
-                        return ""
+                            trace["status"] = "error"
+                            trace["error"] = str(e)
+                            logger.warning(f"Auto-RAG failed: {e}")
+                        return trace
 
                     async def _do_history_load():
                         if session_key not in self.history:
@@ -2388,16 +2557,52 @@ class AgentLoop:
 
                     if rag_task is not None:
                         try:
-                            recalled_context = await rag_task
+                            rag_result = await rag_task
+                            recalled_context = rag_result.get("recalled_context", "")
+                            self._record_rag_trace(session_key, rag_result)
                         except asyncio.TimeoutError:
                             recalled_context = ""
-                            logger.debug("⚡ Auto-RAG timeout — skipping.")
+                            self._record_rag_trace(
+                                session_key,
+                                {
+                                    "ts": time.time(),
+                                    "query": content,
+                                    "status": "timeout",
+                                    "mode": "timeout",
+                                    "results": [],
+                                    "recalled_context": "",
+                                },
+                            )
+                            logger.debug("Auto-RAG timeout - skipping.")
                         except Exception as e:
                             recalled_context = ""
-                            logger.warning(f"⚠ Auto-RAG error: {e}")
+                            self._record_rag_trace(
+                                session_key,
+                                {
+                                    "ts": time.time(),
+                                    "query": content,
+                                    "status": "error",
+                                    "mode": "error",
+                                    "results": [],
+                                    "recalled_context": "",
+                                    "error": str(e),
+                                },
+                            )
+                            logger.warning(f"Auto-RAG error: {e}")
                     else:
                         recalled_context = ""
-                        logger.debug("⚡ Auto-RAG skipped (short/casual message).")
+                        self._record_rag_trace(
+                            session_key,
+                            {
+                                "ts": time.time(),
+                                "query": content,
+                                "status": "skipped",
+                                "mode": "none",
+                                "results": [],
+                                "recalled_context": "",
+                            },
+                        )
+                        logger.debug("Auto-RAG skipped (short/casual message).")
 
                     persisted = await hist_task
 
@@ -2479,6 +2684,7 @@ class AgentLoop:
                         msg=msg,
                         stream=True,
                         include_tools=include_tools,
+                        tool_context_text=content,
                         turn_id=turn_id,
                         message_id=assistant_message_id,
                     )
@@ -2509,6 +2715,19 @@ class AgentLoop:
                     raw_reply = accumulated_content or ""
 
                     if tool_calls:
+                        await self._publish_activity(
+                            msg,
+                            "Planning tool calls...",
+                            turn_id=turn_id,
+                            message_id=assistant_message_id,
+                        )
+                        await self._publish_tool_intents(
+                            tool_calls,
+                            session_key,
+                            msg,
+                            turn_id=turn_id,
+                            message_id=assistant_message_id,
+                        )
                         await self.bus.publish_outbound(
                             OutboundMessage(
                                 channel=msg.channel,
@@ -2522,6 +2741,12 @@ class AgentLoop:
                             )
                         )
 
+                        await self._publish_activity(
+                            msg,
+                            "Executing tools...",
+                            turn_id=turn_id,
+                            message_id=assistant_message_id,
+                        )
                         is_blocked = await self._execute_tool_batch(
                             tool_calls,
                             session_key,
@@ -2566,6 +2791,7 @@ class AgentLoop:
                                     msg=msg,
                                     stream=True,
                                     include_tools=True,
+                                    tool_context_text=content,
                                     turn_id=turn_id,
                                     message_id=assistant_message_id,
                                 )
@@ -2668,14 +2894,7 @@ class AgentLoop:
                     soul_updated = tag_result.soul_updated
                     identity_updated = tag_result.identity_updated
 
-                    placeholder_replies = {
-                        "(System updated configuration/memory files.)",
-                        "(Persona configuration updated.)",
-                    }
-                    if any_tool_calls_in_turn and (
-                        not str(reply_to_user or "").strip()
-                        or reply_to_user in placeholder_replies
-                    ):
+                    if any_tool_calls_in_turn and not str(reply_to_user or "").strip():
                         fallback_reply = self._build_tool_fallback_reply(session_key)
                         reply_to_user = fallback_reply
                         raw_reply = fallback_reply
@@ -2686,6 +2905,14 @@ class AgentLoop:
                             )
                             self._mark_dirty(session_key)
                             fallback_inserted = True
+                    elif msg and not str(reply_to_user or "").strip():
+                        logger.warning(
+                            "Empty user-visible reply after tag processing; sending fallback."
+                        )
+                        fallback_reply = self._build_empty_reply_fallback()
+                        reply_to_user = fallback_reply
+                        raw_reply = fallback_reply
+                        force_direct_reply = True
 
                     # ── Self-repetition dedup ────────────────────────────
                     # Some models (e.g. Kimi K2) repeat their entire
@@ -2760,9 +2987,24 @@ class AgentLoop:
                                 metadata=meta,
                             )
                         await self.bus.publish_outbound(outbound)
+                        self._log_session_event(
+                            session_key,
+                            {
+                                "type": "outbound_message",
+                                "turn_id": turn_id,
+                                "channel": outbound.channel,
+                                "chat_id": outbound.chat_id,
+                                "content_preview": (outbound.content or "")[:500],
+                                "metadata_type": outbound.metadata.get("type"),
+                            },
+                        )
 
                 except asyncio.CancelledError:
                     logger.warning(f"⚠ Task cancelled for {session_key}")
+                    self._log_session_event(
+                        session_key,
+                        {"type": "turn_cancelled", "turn_id": turn_id},
+                    )
                     import contextlib
 
                     with contextlib.suppress(Exception):
@@ -2787,6 +3029,14 @@ class AgentLoop:
 
                     traceback.print_exc()
                     logger.exception(f"❌ Error processing message: {e}")
+                    self._log_session_event(
+                        session_key,
+                        {
+                            "type": "turn_error",
+                            "turn_id": turn_id,
+                            "error": str(e)[:500],
+                        },
+                    )
                     await self.bus.publish_outbound(
                         OutboundMessage(
                             channel=msg.channel,

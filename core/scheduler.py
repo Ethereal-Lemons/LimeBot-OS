@@ -25,49 +25,14 @@ except ImportError:
 class CronManager:
     """Manages scheduled tasks and reminders."""
 
-    CRON_MISFIRE_GRACE_SECONDS = 60
-
     def __init__(self, bus: Any):
         self.bus = bus
         self.jobs: List[Dict[str, Any]] = []
         self._running = False
         self.data_file = Path("data/cron.json")
+        self.runs_dir = Path("data/cron_runs")
         self.lock = asyncio.Lock()
         self._load_jobs()
-
-    @staticmethod
-    def _get_timezone(tz_offset: Optional[int]) -> timezone:
-        return (
-            timezone(timedelta(minutes=tz_offset))
-            if tz_offset is not None
-            else timezone.utc
-        )
-
-    def _next_cron_trigger(
-        self,
-        cron_expr: str,
-        base_timestamp: float,
-        tz_offset: Optional[int],
-        min_timestamp: Optional[float] = None,
-    ) -> float:
-        if not croniter:
-            raise ImportError("croniter library is required for cron expressions.")
-
-        tz = self._get_timezone(tz_offset)
-        base = datetime.fromtimestamp(base_timestamp, tz=tz)
-        cron_it = croniter(cron_expr, base)
-        next_trigger = cron_it.get_next(float)
-
-        while min_timestamp is not None and next_trigger <= min_timestamp:
-            next_trigger = cron_it.get_next(float)
-
-        return next_trigger
-
-    def _is_stale_recurring_job(self, job: Dict[str, Any], now: float) -> bool:
-        trigger = job.get("trigger")
-        if trigger is None or not job.get("cron_expr"):
-            return False
-        return (now - trigger) > self.CRON_MISFIRE_GRACE_SECONDS
 
     def _load_jobs(self) -> None:
         """Load jobs from disk (sync — called only at init)."""
@@ -99,6 +64,17 @@ class CronManager:
         except Exception as e:
             logger.error(f"Error saving jobs: {e}")
 
+    def _append_run_event(self, job_id: str, event: Dict[str, Any]) -> None:
+        try:
+            self.runs_dir.mkdir(parents=True, exist_ok=True)
+            run_file = self.runs_dir / f"{job_id}.jsonl"
+            payload = dict(event)
+            payload.setdefault("timestamp", time.time())
+            with run_file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, default=str) + "\n")
+        except Exception as e:
+            logger.error(f"Error writing cron run event for {job_id}: {e}")
+
     async def add_job(
         self,
         trigger_time: Optional[float],
@@ -118,12 +94,20 @@ class CronManager:
             tz_offset:    Timezone offset in minutes (e.g. -360 for UTC-6).
         """
         async with self.lock:
-            if cron_expr and trigger_time is None:
-                trigger_time = self._next_cron_trigger(
-                    cron_expr,
-                    time.time(),
-                    tz_offset,
+            if cron_expr and not trigger_time:
+                if not croniter:
+                    raise ImportError(
+                        "croniter library is required for cron expressions."
+                    )
+                tz = (
+                    timezone(timedelta(minutes=tz_offset))
+                    if tz_offset is not None
+                    else timezone.utc
                 )
+                base = datetime.fromtimestamp(time.time(), tz=tz)
+
+                cron_it = croniter(cron_expr, base)
+                trigger_time = cron_it.get_next(float)
 
             job_id = str(uuid.uuid4())[:8]
             job = {
@@ -214,36 +198,23 @@ class CronManager:
                     ]
 
                     for job in due:
+                        asyncio.create_task(self._execute_job(job))
+
                         if job.get("cron_expr"):
                             tz_off = job.get("tz_offset")
-                            if self._is_stale_recurring_job(job, now):
-                                previous_trigger = job["trigger"]
-                                job["trigger"] = self._next_cron_trigger(
-                                    job["cron_expr"],
-                                    now,
-                                    tz_off,
-                                    min_timestamp=now,
-                                )
-                                logger.info(
-                                    f"Skipped stale cron run for job {job['id']} "
-                                    f"(trigger={previous_trigger}) → {job['trigger']} "
-                                    f"(tz_offset={tz_off})"
-                                )
-                                continue
-
-                            asyncio.create_task(self._execute_job(job))
-                            job["trigger"] = self._next_cron_trigger(
-                                job["cron_expr"],
-                                job["trigger"],
-                                tz_off,
-                                min_timestamp=now,
+                            tz = (
+                                timezone(timedelta(minutes=tz_off))
+                                if tz_off is not None
+                                else timezone.utc
                             )
+
+                            scheduled_dt = datetime.fromtimestamp(job["trigger"], tz=tz)
+                            cron_it = croniter(job["cron_expr"], scheduled_dt)
+                            job["trigger"] = cron_it.get_next(float)
                             logger.info(
-                                f"Rescheduled job {job['id']} → {job['trigger']} "
-                                f"(tz_offset={tz_off})"
+                                f"Rescheduled job {job['id']} → {job['trigger']} (tz_offset={tz_off})"
                             )
                         else:
-                            asyncio.create_task(self._execute_job(job))
                             self.jobs = [j for j in self.jobs if j["id"] != job["id"]]
 
                     if due:
@@ -266,6 +237,15 @@ class CronManager:
     async def _execute_job(self, job: Dict[str, Any]) -> None:
         """Fire a triggered job by publishing an inbound message."""
         logger.info(f"Executing job {job['id']}: {job['payload']}")
+        await asyncio.to_thread(
+            self._append_run_event,
+            job["id"],
+            {
+                "type": "job_started",
+                "payload": job["payload"],
+                "context": job.get("context", {}),
+            },
+        )
 
         context = job.get("context", {})
         msg = InboundMessage(
@@ -281,5 +261,24 @@ class CronManager:
         )
         try:
             await self.bus.publish_inbound(msg)
+            await asyncio.to_thread(
+                self._append_run_event,
+                job["id"],
+                {
+                    "type": "job_published",
+                    "payload": job["payload"],
+                    "channel": context.get("channel", "unknown"),
+                    "chat_id": context.get("chat_id", "unknown"),
+                },
+            )
         except Exception as e:
             logger.error(f"Failed to publish job {job['id']}: {e}")
+            await asyncio.to_thread(
+                self._append_run_event,
+                job["id"],
+                {
+                    "type": "job_error",
+                    "payload": job["payload"],
+                    "error": str(e),
+                },
+            )
