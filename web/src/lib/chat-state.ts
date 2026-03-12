@@ -38,6 +38,13 @@ export type ChatConfirmation = {
   status: 'pending' | 'approved' | 'denied';
 };
 
+export type ChatAttachment = {
+  name: string;
+  mimeType: string;
+  kind: 'image' | 'document';
+  url: string;
+};
+
 export type ChatMessage = {
   sender: 'user' | 'bot';
   type?: 'text' | 'tool' | 'confirmation';
@@ -45,6 +52,7 @@ export type ChatMessage = {
   thinking?: string;
   isStreaming?: boolean;
   image?: string | null;
+  attachments?: ChatAttachment[];
   toolExecution?: ChatToolExecution;
   confirmation?: ChatConfirmation;
   variant?: 'default' | 'destructive' | 'warning';
@@ -65,6 +73,8 @@ type StreamDelta = MessageTarget & {
 type FinalText = MessageTarget & {
   content: string;
   variant: 'default' | 'destructive' | 'warning';
+  image?: string | null;
+  attachments?: ChatAttachment[];
 };
 
 const isBotTextMessage = (message: ChatMessage) =>
@@ -174,6 +184,8 @@ export function applyFinalAssistantMessage(
         variant: payload.variant,
         type: 'text',
         isStreaming: false,
+        image: payload.image ?? null,
+        attachments: payload.attachments,
         messageId: payload.messageId || undefined,
         turnId: payload.turnId || undefined,
       },
@@ -187,6 +199,8 @@ export function applyFinalAssistantMessage(
     variant: payload.variant,
     type: 'text',
     isStreaming: false,
+    image: payload.image ?? updated[index].image ?? null,
+    attachments: payload.attachments ?? updated[index].attachments,
     messageId: payload.messageId || updated[index].messageId,
     turnId: payload.turnId || updated[index].turnId,
   };

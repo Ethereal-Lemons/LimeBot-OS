@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
-import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, Check, Copy, ArrowDown, ShieldAlert, Wifi, WifiOff } from "lucide-react";
+import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, Check, Copy, ArrowDown, ShieldAlert, Wifi, WifiOff, FileText, ExternalLink } from "lucide-react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -25,6 +25,8 @@ import { ToolCard, ToolExecution } from './ToolCard';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle, Info } from "lucide-react";
 import { ThinkingBubble } from './ThinkingBubble';
+import { toast } from "sonner";
+import type { ChatAttachment } from "@/lib/chat-state";
 
 
 import { ToolTimeline } from './ToolTimeline';
@@ -36,6 +38,7 @@ interface Message {
     thinking?: string;
     isStreaming?: boolean;
     image?: string | null;
+    attachments?: ChatAttachment[];
     toolExecution?: ToolExecution;
     variant?: 'default' | 'destructive' | 'warning';
 }
@@ -47,7 +50,7 @@ interface ChatInterfaceProps {
     isTyping?: boolean;
     botIdentity?: { name: string; avatar: string | null };
     onInputChange: (value: string) => void;
-    onSendMessage: (content?: string | null, image?: string | null) => void;
+    onSendMessage: (content?: string | null, attachment?: ChatAttachment | null) => void;
     onReconnect: () => void;
     onNewChat?: () => void;
     activeChatId: string;
@@ -60,6 +63,40 @@ const QUICK_ACTIONS = [
     { label: "Session recap", prompt: "Summarize what you remember about this session and what should happen next." },
     { label: "UI suggestion", prompt: "Inspect the codebase and propose the next UI improvement." },
 ];
+
+const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+const ACCEPTED_ATTACHMENT_TYPES = [
+    "image/*",
+    ".pdf",
+    ".doc",
+    ".docx",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+].join(",");
+
+const WORD_DOCUMENT_MIME_TYPES = new Set([
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+
+const resolveAttachmentUrl = (url: string) => {
+    if (!url) return "";
+    if (url.startsWith("data:") || /^https?:\/\//i.test(url)) return url;
+    return `${API_BASE_URL}${url}`;
+};
+
+const isPdfAttachment = (attachment: ChatAttachment) =>
+    attachment.mimeType === "application/pdf" || attachment.name.toLowerCase().endsWith(".pdf");
+
+const attachmentLabel = (attachment: ChatAttachment) => {
+    if (attachment.kind === "image") return "Image";
+    if (isPdfAttachment(attachment)) return "PDF";
+    if (WORD_DOCUMENT_MIME_TYPES.has(attachment.mimeType) || /\.(doc|docx)$/i.test(attachment.name)) {
+        return "Word";
+    }
+    return "Document";
+};
 
 
 
@@ -99,6 +136,66 @@ function ChatImage({ src, alt }: { src: string, alt: string }) {
             className="max-w-full rounded-lg mb-2 max-h-64 object-cover"
             onError={() => setError(true)}
         />
+    );
+}
+
+function AttachmentPreview({
+    attachment,
+    compact = false,
+}: {
+    attachment: ChatAttachment;
+    compact?: boolean;
+}) {
+    const resolvedUrl = resolveAttachmentUrl(attachment.url);
+    const label = attachmentLabel(attachment);
+
+    if (attachment.kind === "image") {
+        return <ChatImage src={resolvedUrl} alt={attachment.name || "Uploaded image"} />;
+    }
+
+    if (isPdfAttachment(attachment) && !compact) {
+        return (
+            <div className="mb-2 overflow-hidden rounded-xl border border-border bg-background/80 shadow-sm">
+                <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
+                    <div className="min-w-0">
+                        <div className="truncate text-xs font-semibold text-foreground">{attachment.name}</div>
+                        <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+                    </div>
+                    <a
+                        href={resolvedUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-2 py-1 text-[10px] font-semibold text-muted-foreground transition-colors hover:border-primary/30 hover:text-foreground"
+                    >
+                        <ExternalLink className="h-3 w-3" />
+                        Open
+                    </a>
+                </div>
+                <iframe
+                    src={resolvedUrl}
+                    title={attachment.name}
+                    className="h-64 w-full bg-white"
+                />
+            </div>
+        );
+    }
+
+    return (
+        <a
+            href={resolvedUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mb-2 flex items-center gap-3 rounded-xl border border-border bg-background/80 px-3 py-2 text-left shadow-sm transition-colors hover:border-primary/30 hover:bg-background"
+        >
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <FileText className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold text-foreground">{attachment.name}</div>
+                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+            </div>
+            <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </a>
     );
 }
 
@@ -287,6 +384,11 @@ const MemoizedMessageItem = memo(({
 }) => {
     const isUser = msg.sender === 'user';
     const isBot = msg.sender === 'bot';
+    const renderableAttachments = msg.attachments?.length
+        ? msg.attachments
+        : msg.image
+            ? [{ name: 'Uploaded image', mimeType: 'image/*', kind: 'image', url: msg.image } satisfies ChatAttachment]
+            : [];
 
     if (msg.content?.includes('[CONFIRM_SESSION]') || msg.content?.includes('[CONFIRM_EXECUTION]') || msg.type === 'confirmation') {
         return null; // Hidden confirmation trace messages
@@ -364,7 +466,7 @@ const MemoizedMessageItem = memo(({
                             />
                         )}
 
-                        {(msg.content || msg.image) && (
+                        {(msg.content || renderableAttachments.length > 0) && (
                             <div className={cn(
                                 "relative group px-3.5 py-2 text-[14px] leading-tight transition-all duration-300 max-w-full overflow-hidden",
                                 isUser
@@ -372,9 +474,12 @@ const MemoizedMessageItem = memo(({
                                     : "bg-muted/80 backdrop-blur-sm text-foreground rounded-2xl rounded-tl-none border shadow-sm hover:bg-muted/90 hover:border-primary/30 hover:shadow-md"
                             )}>
                                 <div className="whitespace-pre-wrap break-words max-w-full overflow-x-auto">
-                                    {msg.image && (
-                                        <ChatImage src={msg.image} alt="Uploaded content" />
-                                    )}
+                                    {renderableAttachments.map((attachment) => (
+                                        <AttachmentPreview
+                                            key={`${attachment.kind}:${attachment.name}:${attachment.url.slice(0, 24)}`}
+                                            attachment={attachment}
+                                        />
+                                    ))}
                                     <MarkdownMessage
                                         content={msg.content}
                                         isUser={isUser}
@@ -414,7 +519,7 @@ export function ChatInterface({
     const scrollRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const [selectedImage, setSelectedImage] = useState<string | null>(null);
+    const [selectedAttachment, setSelectedAttachment] = useState<ChatAttachment | null>(null);
     const [visibleCount, setVisibleCount] = useState(10);
     const [isAtBottom, setIsAtBottom] = useState(true);
     const [unreadAnchorIndex, setUnreadAnchorIndex] = useState<number | null>(null);
@@ -471,7 +576,7 @@ export function ChatInterface({
             return;
         }
         requestAnimationFrame(() => syncBottomState(false));
-    }, [messages, selectedImage]);
+    }, [messages, selectedAttachment]);
 
     useEffect(() => {
         const previousCount = prevMessageCountRef.current;
@@ -546,9 +651,62 @@ export function ChatInterface({
 
     const showComposerPrompts =
         !inputValue.trim() &&
-        !selectedImage &&
+        !selectedAttachment &&
         !isTyping &&
         messages.length < 4;
+
+    const clearSelectedAttachment = () => {
+        setSelectedAttachment(null);
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+    };
+
+    const fileToAttachment = (file: File) =>
+        new Promise<ChatAttachment>((resolve, reject) => {
+            const displayName = file.name || (file.type.startsWith('image/') ? 'pasted-image.png' : 'attachment');
+            if (file.size > MAX_ATTACHMENT_BYTES) {
+                reject(new Error("Attachments are limited to 8 MB."));
+                return;
+            }
+
+            const lowerName = displayName.toLowerCase();
+            const mimeType = file.type || (
+                lowerName.endsWith('.pdf')
+                    ? 'application/pdf'
+                    : lowerName.endsWith('.docx')
+                        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                        : lowerName.endsWith('.doc')
+                            ? 'application/msword'
+                            : 'application/octet-stream'
+            );
+            const isSupportedImage = mimeType.startsWith('image/');
+            const isSupportedDocument =
+                mimeType === 'application/pdf' ||
+                WORD_DOCUMENT_MIME_TYPES.has(mimeType) ||
+                /\.(pdf|doc|docx)$/i.test(file.name);
+
+            if (!isSupportedImage && !isSupportedDocument) {
+                reject(new Error("Only images, PDF, DOC, and DOCX files are supported."));
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onerror = () => reject(new Error("Failed to read the selected file."));
+            reader.onloadend = () => {
+                if (typeof reader.result !== 'string') {
+                    reject(new Error("Failed to load the selected file."));
+                    return;
+                }
+                resolve({
+                    name: displayName,
+                    mimeType,
+                    kind: isSupportedImage ? 'image' : 'document',
+                    url: reader.result,
+                });
+            };
+            reader.readAsDataURL(file);
+        });
 
     const handleKeyPress = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -558,38 +716,42 @@ export function ChatInterface({
     };
 
     const handleSend = () => {
-        if (inputValue.trim() || selectedImage) {
-            onSendMessage(null, selectedImage);
-            setSelectedImage(null);
+        if (inputValue.trim() || selectedAttachment) {
+            onSendMessage(null, selectedAttachment);
+            clearSelectedAttachment();
             if (textareaRef.current) {
                 textareaRef.current.style.height = 'auto';
             }
         }
     };
 
-    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
-        if (file) {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                setSelectedImage(reader.result as string);
-            };
-            reader.readAsDataURL(file);
+        if (!file) return;
+
+        try {
+            setSelectedAttachment(await fileToAttachment(file));
+        } catch (error) {
+            const description = error instanceof Error ? error.message : "Failed to attach file.";
+            toast.error("Attachment rejected", { description });
+            clearSelectedAttachment();
         }
     };
 
-    const handlePaste = (e: React.ClipboardEvent) => {
+    const handlePaste = async (e: React.ClipboardEvent) => {
         const items = e.clipboardData.items;
         for (let i = 0; i < items.length; i++) {
             if (items[i].type.indexOf('image') !== -1) {
                 const blob = items[i].getAsFile();
                 if (blob) {
-                    const reader = new FileReader();
-                    reader.onload = (event) => {
-                        setSelectedImage(event.target?.result as string);
-                    };
-                    reader.readAsDataURL(blob);
+                    try {
+                        setSelectedAttachment(await fileToAttachment(blob));
+                    } catch (error) {
+                        const description = error instanceof Error ? error.message : "Failed to attach pasted image.";
+                        toast.error("Attachment rejected", { description });
+                    }
                     e.preventDefault();
+                    break;
                 }
             }
         }
@@ -1111,18 +1273,20 @@ export function ChatInterface({
                         {waitingToolCount > 0 && (
                             <StatusChip label="Pending approval" value={String(waitingToolCount)} tone="warn" />
                         )}
-                        {selectedImage && (
-                            <StatusChip label="Attachment" value="Image ready" tone="good" />
+                        {selectedAttachment && (
+                            <StatusChip label="Attachment" value={selectedAttachment.name} tone="good" />
                         )}
                     </div>
 
-                    {/* Image Preview */}
-                    {selectedImage && (
+                    {/* Attachment Preview */}
+                    {selectedAttachment && (
                         <div className="absolute bottom-full left-0 mb-4 bg-background border border-border p-2 rounded-xl shadow-lg animate-in fade-in slide-in-from-bottom-2">
                             <div className="relative">
-                                <img src={selectedImage} alt="Preview" className="h-24 w-auto rounded-lg object-cover" />
+                                <div className="max-w-sm">
+                                    <AttachmentPreview attachment={selectedAttachment} compact={selectedAttachment.kind !== 'image'} />
+                                </div>
                                 <button
-                                    onClick={() => setSelectedImage(null)}
+                                    onClick={clearSelectedAttachment}
                                     className="absolute -top-2 -right-2 bg-destructive text-white rounded-full p-1 shadow-sm hover:bg-destructive/90 transition-colors"
                                 >
                                     <X className="w-3 h-3" />
@@ -1144,7 +1308,7 @@ export function ChatInterface({
                             type="file"
                             ref={fileInputRef}
                             className="hidden"
-                            accept="image/*"
+                            accept={ACCEPTED_ATTACHMENT_TYPES}
                             onChange={handleFileSelect}
                         />
 
@@ -1200,11 +1364,11 @@ export function ChatInterface({
                         <div className="pb-2 pr-2">
                             <Button
                                 onClick={handleSend}
-                                disabled={!isConnected || isTyping || (!inputValue.trim() && !selectedImage)}
+                                disabled={!isConnected || isTyping || (!inputValue.trim() && !selectedAttachment)}
                                 size="icon"
                                 className={cn(
                                     "h-9 w-9 rounded-lg transition-all duration-200",
-                                    (inputValue.trim() || selectedImage)
+                                    (inputValue.trim() || selectedAttachment)
                                         ? "bg-primary hover:bg-primary/90 text-primary-foreground"
                                         : "bg-transparent text-muted-foreground hover:bg-muted-foreground/10"
                                 )}
@@ -1236,7 +1400,7 @@ export function ChatInterface({
                             ? "Pending approvals are handled directly in the tool timeline."
                             : "Secure channel with guarded tool execution."}
                     </span>
-                    <span>LimeBot v1.0.6</span>
+                    <span>LimeBot v1.0.5</span>
                 </div>
             </div>
         </div>

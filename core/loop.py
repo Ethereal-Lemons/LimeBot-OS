@@ -352,10 +352,58 @@ class AgentLoop:
                 image_notes.append(note)
 
         combined = "\n".join(part for part in text_parts + image_notes if part)
-        return (
-            combined
-            or "[Image attachment shared, but the current model does not support vision]"
+        return combined or "[Image attachment shared, but the current model does not support vision]"
+
+    @staticmethod
+    def _join_message_sections(*sections: str) -> str:
+        return "\n\n".join(
+            section.strip() for section in sections if str(section or "").strip()
         )
+
+    @staticmethod
+    def _build_attachment_summary(attachments: List[Dict[str, Any]]) -> str:
+        lines: List[str] = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            if attachment.get("kind") == "image":
+                continue
+
+            name = str(attachment.get("name") or "document").strip()
+            path = str(attachment.get("path") or "").strip()
+            note = f"[Attached document: {name}]"
+            if path:
+                note += f" Saved as `{path}`."
+            lines.append(note)
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_document_attachment_context(attachments: List[Dict[str, Any]]) -> str:
+        sections: List[str] = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            if attachment.get("kind") != "document":
+                continue
+
+            name = str(attachment.get("name") or "document").strip()
+            path = str(attachment.get("path") or "").strip()
+            extracted_text = str(attachment.get("extracted_text") or "").strip()
+            extraction_note = str(attachment.get("extraction_note") or "").strip()
+
+            parts = [f"[Document attachment: {name}]"]
+            if path:
+                parts.append(f"Saved as: {path}")
+            if extracted_text:
+                parts.append("Extracted text:")
+                parts.append(extracted_text)
+            elif extraction_note:
+                parts.append(f"Note: {extraction_note}")
+
+            sections.append("\n".join(parts))
+
+        return "\n\n".join(section for section in sections if section.strip())
 
     @staticmethod
     def _messages_have_image_inputs(messages: List[Dict[str, Any]]) -> bool:
@@ -1605,6 +1653,9 @@ class AgentLoop:
                 function = tool_call.get("function")
                 if not isinstance(function, dict):
                     tool_call["function"] = {"name": "", "arguments": "{}"}
+                    function = tool_call["function"]
+                function.setdefault("name", "")
+                function.setdefault("arguments", "{}")
                 self._parse_tool_call(tool_call, session_key)
         return messages
 
@@ -2471,6 +2522,11 @@ class AgentLoop:
         assistant_message_id = f"msg_{uuid.uuid4().hex[:12]}"
         try:
             content = msg.content or ""
+            attachments = [
+                attachment
+                for attachment in (msg.metadata.get("attachments") or [])
+                if isinstance(attachment, dict)
+            ]
             self._log_session_event(
                 session_key,
                 {
@@ -2481,6 +2537,10 @@ class AgentLoop:
                     "sender_id": msg.sender_id,
                     "is_scheduler": bool(msg.metadata.get("is_scheduler")),
                     "content_preview": content[:500],
+                    "attachments": [
+                        str(attachment.get("name") or "attachment")
+                        for attachment in attachments
+                    ],
                 },
             )
             if content.startswith("[SCHEDULER] "):
@@ -2611,6 +2671,15 @@ class AgentLoop:
                             )
                         )
                         return
+
+            attachment_summary = self._build_attachment_summary(attachments)
+            document_attachment_context = self._build_document_attachment_context(
+                attachments
+            )
+            user_text_content = self._join_message_sections(
+                content, attachment_summary, document_attachment_context
+            )
+            content = self._join_message_sections(content, attachment_summary) or content
 
             await self.bus.publish_outbound(
                 OutboundMessage(
@@ -2813,12 +2882,13 @@ class AgentLoop:
                     }
 
                     image_data = msg.metadata.get("image")
+                    user_text_payload = user_text_content or content or " "
                     if image_data and self._image_inputs_disabled_for_session(
                         session_key
                     ):
                         user_msg_content = self._render_text_only_message_content(
                             [
-                                {"type": "text", "text": msg.content or ""},
+                                {"type": "text", "text": user_text_payload},
                                 {
                                     "type": "image_url",
                                     "image_url": {"url": image_data},
@@ -2828,14 +2898,14 @@ class AgentLoop:
                     else:
                         user_msg_content = (
                             [
-                                {"type": "text", "text": msg.content or " "},
+                                {"type": "text", "text": user_text_payload},
                                 {
                                     "type": "image_url",
                                     "image_url": {"url": image_data},
                                 },
                             ]
                             if image_data
-                            else msg.content
+                            else user_text_payload
                         )
                     self.history[session_key].append(
                         {"role": "user", "content": user_msg_content}
@@ -2847,8 +2917,12 @@ class AgentLoop:
                             session_key,
                             {
                                 "role": "user",
-                                "content": content,
+                                "content": msg.content or "",
                                 "image": bool(image_data),
+                                "attachments": [
+                                    str(attachment.get("name") or "attachment")
+                                    for attachment in attachments
+                                ],
                             },
                         )
                     )
@@ -2860,6 +2934,10 @@ class AgentLoop:
                     ]
                     if (USERS_DIR / f"{sender_id}.md").exists():
                         injected.append(f"users/{sender_id}.md")
+                    for attachment in attachments:
+                        path = str(attachment.get("path") or "").strip()
+                        if path:
+                            injected.append(path)
 
                     asyncio.create_task(
                         self.session_manager.update_session(

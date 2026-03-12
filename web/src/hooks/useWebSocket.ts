@@ -13,6 +13,7 @@ import { WS_BASE_URL } from '@/lib/api';
 import {
     applyFinalAssistantMessage,
     applyStopTyping,
+    type ChatAttachment,
     type ChatMessage,
     upsertStreamDelta,
 } from '@/lib/chat-state';
@@ -20,6 +21,41 @@ import type { ToolExecution } from '@/components/chat/ToolCard';
 
 type Message = ChatMessage & {
     toolExecution?: ToolExecution;
+};
+
+const normalizeIncomingAttachments = (value: unknown): ChatAttachment[] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+
+    const attachments = value
+        .map((item) => {
+            if (!item || typeof item !== 'object') return null;
+            const attachment = item as Record<string, unknown>;
+            const name = typeof attachment.name === 'string' ? attachment.name : 'attachment';
+            const mimeType =
+                typeof attachment.mimeType === 'string'
+                    ? attachment.mimeType
+                    : typeof attachment.mime_type === 'string'
+                        ? attachment.mime_type
+                        : 'application/octet-stream';
+            const kind =
+                attachment.kind === 'image' || attachment.kind === 'document'
+                    ? attachment.kind
+                    : mimeType.startsWith('image/')
+                        ? 'image'
+                        : 'document';
+            const url =
+                typeof attachment.url === 'string'
+                    ? attachment.url
+                    : typeof attachment.data_url === 'string'
+                        ? attachment.data_url
+                        : '';
+
+            if (!url) return null;
+            return { name, mimeType, kind, url } satisfies ChatAttachment;
+        })
+        .filter((item): item is ChatAttachment => Boolean(item));
+
+    return attachments.length > 0 ? attachments : undefined;
 };
 
 interface UseWebSocketOptions {
@@ -257,6 +293,8 @@ export function useWebSocket({
                             turnId: eventTurnId,
                             content: data.content,
                             variant,
+                            image: typeof data.metadata?.image === 'string' ? data.metadata.image : null,
+                            attachments: normalizeIncomingAttachments(data.metadata?.attachments),
                         })
                     );
 
@@ -337,13 +375,36 @@ export function useWebSocket({
 
     // ── Send / new chat ───────────────────────────────────────────────────
 
-    const handleSendMessage = (contentOverride?: string | null, image?: string | null) => {
+    const handleSendMessage = (
+        contentOverride?: string | null,
+        attachment?: ChatAttachment | null
+    ) => {
         const finalContent = contentOverride || inputValue.trim();
-        if ((!finalContent && !image) || !ws.current || ws.current.readyState !== WebSocket.OPEN || isTyping) return;
+        if ((!finalContent && !attachment) || !ws.current || ws.current.readyState !== WebSocket.OPEN || isTyping) return;
 
         setIsTyping(true);
-        ws.current.send(JSON.stringify({ content: finalContent, image, chat_id: sessionId }));
-        setMessages(prev => [...prev, { sender: 'user', content: finalContent, image }]);
+        const attachments = attachment
+            ? [
+                {
+                    name: attachment.name,
+                    mimeType: attachment.mimeType,
+                    kind: attachment.kind,
+                    data_url: attachment.url,
+                },
+            ]
+            : [];
+        const image = attachment?.kind === 'image' ? attachment.url : null;
+
+        ws.current.send(JSON.stringify({ content: finalContent, image, attachments, chat_id: sessionId }));
+        setMessages(prev => [
+            ...prev,
+            {
+                sender: 'user',
+                content: finalContent,
+                image,
+                attachments: attachment ? [attachment] : undefined,
+            },
+        ]);
         setInputValue('');
     };
 
