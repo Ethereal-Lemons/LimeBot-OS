@@ -16,14 +16,31 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+export interface ConfirmationPreview {
+    kind: string;
+    summary?: string;
+    path?: string;
+    mode?: string;
+    content_preview?: string;
+    diff?: string;
+    diff_error?: string;
+    command?: string;
+    cwd?: string;
+    risk_flags?: string[];
+    affected_paths?: string[];
+    target_type?: string;
+    args_preview?: string;
+}
+
 export interface ToolExecution {
     tool: string;
-    status: 'running' | 'completed' | 'error' | 'pending_confirmation' | 'progress' | 'waiting_confirmation';
+    status: 'planned' | 'running' | 'completed' | 'error' | 'pending_confirmation' | 'progress' | 'waiting_confirmation';
     args: any;
     result?: string;
     tool_call_id: string;
     conf_id?: string;
     logs?: string[];
+    preview?: ConfirmationPreview;
 }
 
 interface ToolCardProps {
@@ -61,6 +78,7 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
     };
 
     const depsNotice = parseDepsNotice(execution.result);
+    const preview = execution.preview;
 
     // Needs confirmation if:
     // 1. Backend signaled waiting_confirmation status (New Way)
@@ -84,6 +102,7 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
     };
 
     const getSummary = () => {
+        if (preview?.summary) return preview.summary;
         const args = execution.args;
         if (!args) return '';
 
@@ -95,6 +114,73 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
             case 'search_web': return `Searching "${args.query}"`;
             default: return JSON.stringify(args).slice(0, 50);
         }
+    };
+
+    const renderPreview = () => {
+        if (!preview) return null;
+
+        return (
+            <div className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-[11px] text-amber-100/90">
+                {preview.summary && (
+                    <div className="font-semibold text-amber-200">{preview.summary}</div>
+                )}
+
+                {preview.risk_flags && preview.risk_flags.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                        {preview.risk_flags.map((flag) => (
+                            <span
+                                key={flag}
+                                className="rounded border border-amber-400/20 bg-amber-400/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300"
+                            >
+                                {flag.replace(/_/g, ' ')}
+                            </span>
+                        ))}
+                    </div>
+                )}
+
+                {preview.affected_paths && preview.affected_paths.length > 0 && (
+                    <div className="mt-2">
+                        <div className="text-amber-200/70">Affected paths</div>
+                        <div className="mt-1 font-mono text-amber-100/80 whitespace-pre-wrap break-words">
+                            {preview.affected_paths.join('\n')}
+                        </div>
+                    </div>
+                )}
+
+                {preview.diff && (
+                    <div className="mt-2">
+                        <div className="text-amber-200/70">Diff preview</div>
+                        <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-amber-400/10 bg-black/30 p-2 text-[10px] text-amber-50">
+                            {preview.diff}
+                        </pre>
+                    </div>
+                )}
+
+                {!preview.diff && preview.content_preview && (
+                    <div className="mt-2">
+                        <div className="text-amber-200/70">Content preview</div>
+                        <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-amber-400/10 bg-black/30 p-2 text-[10px] text-amber-50">
+                            {preview.content_preview}
+                        </pre>
+                    </div>
+                )}
+
+                {preview.command && (
+                    <div className="mt-2">
+                        <div className="text-amber-200/70">Command</div>
+                        <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words rounded border border-amber-400/10 bg-black/30 p-2 text-[10px] text-amber-50">
+                            {preview.command}
+                        </pre>
+                    </div>
+                )}
+
+                {preview.diff_error && (
+                    <div className="mt-2 text-amber-200/70">
+                        Diff preview unavailable: {preview.diff_error}
+                    </div>
+                )}
+            </div>
+        );
     };
 
     const getFileName = (path: string) => {
@@ -120,7 +206,7 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                         needsConfirmation && confirmationStatus === null
                             ? "bg-primary/20"
                             : "bg-muted",
-                        execution.status === 'running' && !needsConfirmation && "animate-pulse"
+                        (execution.status === 'running' || execution.status === 'planned') && !needsConfirmation && "animate-pulse"
                     )}>
                         {getIcon()}
                     </div>
@@ -146,6 +232,7 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                                 {confirmationStatus === 'approved' ? 'Approved' :
                                     confirmationStatus === 'denied' ? 'Denied' :
                                         needsConfirmation && confirmationStatus === null ? 'Blocked' :
+                                            execution.status === 'planned' ? 'Planned' :
                                             execution.status === 'running' ? 'Running...' :
                                                 execution.status === 'completed' ? 'Completed' : 'Failed'}
                             </span>
@@ -156,7 +243,7 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                     </div>
 
                     <div className="flex items-center gap-2 text-muted-foreground">
-                        {execution.status === 'running' && !needsConfirmation && <Loader2 className="h-4 w-4 animate-spin" />}
+                        {(execution.status === 'running' || execution.status === 'planned') && !needsConfirmation && <Loader2 className="h-4 w-4 animate-spin" />}
                         {execution.status === 'completed' && !isBlocked && <CheckCircle2 className="h-4 w-4 text-primary" />}
                         {execution.status === 'error' && <XCircle className="h-4 w-4 text-red-500" />}
                         {confirmationStatus === 'approved' && <CheckCircle2 className="h-4 w-4 text-primary" />}
@@ -220,6 +307,7 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                                 <div className="font-mono">{depsNotice.notice}</div>
                             </div>
                         )}
+                        {renderPreview()}
                         <div className="mt-2 text-xs font-mono whitespace-pre-wrap text-muted-foreground max-h-60 overflow-y-auto">
                             {execution.logs && execution.logs.length > 0 && (
                                 <div className="mb-3 flex flex-col gap-1">

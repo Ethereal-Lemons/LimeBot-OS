@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, lazy, Suspense } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import axios from 'axios';
 import {
   AlertDialog,
@@ -10,49 +10,18 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-import { API_BASE_URL, WS_BASE_URL } from "@/lib/api";
+import { API_BASE_URL } from "@/lib/api";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ChatInterface } from "@/components/chat/ChatInterface";
 import { AuthKeyModal } from "@/components/auth/AuthKeyModal";
 import { injectCss, CSS_STORAGE_KEY } from "@/lib/css-injector";
-import {
-  applyFinalAssistantMessage,
-  applyStopTyping,
-  type ChatMessage,
-  upsertStreamDelta,
-} from "@/lib/chat-state";
-
-import { ToolExecution } from "@/components/chat/ToolCard";
-import { ConfirmationRequest } from "@/components/chat/ConfirmationCard";
-import { GhostActivity } from "@/components/chat/GhostActivity";
 import { Toaster } from "@/components/ui/sonner";
 
-type Message = ChatMessage & {
-  toolExecution?: ToolExecution;
-  confirmation?: ConfirmationRequest;
-};
+import { useWebSocket } from "@/hooks/useWebSocket";
+import { useTheme, applyThemeWithSchedule } from "@/hooks/useTheme";
+import { useIdentity } from "@/hooks/useIdentity";
 
-type ShellRuntimeStatus = {
-  isConnected: boolean;
-  autonomousMode: boolean;
-  pendingApprovals: number;
-  activityText: string | null;
-};
-
-const VIEW_META: Record<string, { title: string; description: string }> = {
-  chat: { title: "Chat", description: "Live conversation and tool execution." },
-  overview: { title: "Overview", description: "System health, gateway access, and controls." },
-  memory: { title: "Memory", description: "Stored facts, recall mode, and memory management." },
-  channels: { title: "Channels", description: "Discord, WhatsApp, and channel configuration." },
-  logs: { title: "System Logs", description: "Live backend output and operational events." },
-  instances: { title: "Instances", description: "Active sessions, sub-agents, and context state." },
-  cron: { title: "Cron Jobs", description: "Scheduled automations and recurring tasks." },
-  skills: { title: "Skills", description: "Installed capabilities and tool bundles." },
-  mcp: { title: "MCP", description: "External Model Context Protocol servers." },
-  persona: { title: "Persona", description: "Identity, style, and adaptive behavior." },
-  appearance: { title: "Appearance", description: "Themes, wallpaper, and visual settings." },
-  config: { title: "Configuration", description: "Model, environment, and browser settings." },
-};
+// ── Lazy-loaded views ─────────────────────────────────────────────────────────
 
 const InstancesList = lazy(() =>
   import("@/components/sessions/SessionsList").then((module) => ({
@@ -115,267 +84,72 @@ const McpPage = lazy(() =>
   }))
 );
 
-type TimeThemeSettings = {
-  enabled: boolean;
-  dayTheme: string;
-  nightTheme: string;
-  dayStart: number;
-  nightStart: number;
+// ── View metadata ─────────────────────────────────────────────────────────────
+
+const VIEW_META: Record<string, { title: string; description: string }> = {
+  chat: { title: "Chat", description: "Live conversation and tool execution." },
+  overview: { title: "Overview", description: "System health, gateway access, and controls." },
+  memory: { title: "Memory", description: "Stored facts, recall mode, and memory management." },
+  channels: { title: "Channels", description: "Discord, WhatsApp, and channel configuration." },
+  logs: { title: "System Logs", description: "Live backend output and operational events." },
+  instances: { title: "Instances", description: "Active sessions, sub-agents, and context state." },
+  cron: { title: "Cron Jobs", description: "Scheduled automations and recurring tasks." },
+  skills: { title: "Skills", description: "Installed capabilities and tool bundles." },
+  mcp: { title: "MCP", description: "External Model Context Protocol servers." },
+  persona: { title: "Persona", description: "Identity, style, and adaptive behavior." },
+  appearance: { title: "Appearance", description: "Themes, wallpaper, and visual settings." },
+  config: { title: "Configuration", description: "Model, environment, and browser settings." },
 };
 
-const TIME_THEME_STORAGE_KEY = 'limebot-time-theme';
-const DEFAULT_TIME_THEME_SETTINGS: TimeThemeSettings = {
-  enabled: false,
-  dayTheme: 'glacier',
-  nightTheme: 'midnight-synth',
-  dayStart: 7,
-  nightStart: 19,
+type ShellRuntimeStatus = {
+  isConnected: boolean;
+  autonomousMode: boolean;
+  pendingApprovals: number;
 };
 
-function loadTimeThemeSettings(): TimeThemeSettings {
-  try {
-    const raw = localStorage.getItem(TIME_THEME_STORAGE_KEY);
-    if (!raw) return DEFAULT_TIME_THEME_SETTINGS;
-    const parsed = JSON.parse(raw);
-    return {
-      enabled: Boolean(parsed?.enabled),
-      dayTheme: typeof parsed?.dayTheme === 'string' ? parsed.dayTheme : DEFAULT_TIME_THEME_SETTINGS.dayTheme,
-      nightTheme: typeof parsed?.nightTheme === 'string' ? parsed.nightTheme : DEFAULT_TIME_THEME_SETTINGS.nightTheme,
-      dayStart: Number.isInteger(parsed?.dayStart) ? parsed.dayStart : DEFAULT_TIME_THEME_SETTINGS.dayStart,
-      nightStart: Number.isInteger(parsed?.nightStart) ? parsed.nightStart : DEFAULT_TIME_THEME_SETTINGS.nightStart,
-    };
-  } catch {
-    return DEFAULT_TIME_THEME_SETTINGS;
-  }
-}
-
-function resolveEffectiveTheme(baseTheme: string, settings: TimeThemeSettings): string {
-  if (!settings.enabled) return baseTheme;
-  const hour = new Date().getHours();
-  const dayStart = Math.max(0, Math.min(23, settings.dayStart));
-  const nightStart = Math.max(0, Math.min(23, settings.nightStart));
-
-  if (dayStart === nightStart) return settings.dayTheme;
-
-  const isDay =
-    dayStart < nightStart
-      ? hour >= dayStart && hour < nightStart
-      : hour >= dayStart || hour < nightStart;
-  return isDay ? settings.dayTheme : settings.nightTheme;
-}
+// ── Root component ────────────────────────────────────────────────────────────
 
 function App() {
-  const STREAM_FLUSH_INTERVAL_MS = 40;
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputValue, setInputValue] = useState("");
-  const [isConnected, setIsConnected] = useState(false);
-  const [botIdentity, setBotIdentity] = useState<{ name: string, avatar: string | null }>({ name: 'LimeBot', avatar: null });
   const [currentView, setCurrentView] = useState('chat');
   const [forceSetup, setForceSetup] = useState(window.location.pathname === '/setup');
-  const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const ws = useRef<WebSocket | null>(null);
-  const sessionIdRef = useRef(sessionId);
-  const streamFlushTimerRef = useRef<number | null>(null);
-  const streamBufferRef = useRef<{
-    chatId: string | null;
-    messageId: string | null;
-    turnId: string | null;
-    content: string;
-    thinking: string;
-  }>({
-    chatId: null,
-    messageId: null,
-    turnId: null,
-    content: "",
-    thinking: "",
-  });
-
-  const [isTyping, setIsTyping] = useState(false);
-
-  // Rate Limit Handling
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [autonomousMode, setAutonomousMode] = useState(false);
   const [rateLimitAlertOpen, setRateLimitAlertOpen] = useState(false);
-
-  // Ghost Activity (Memory updates, etc.)
   const [activity, setActivity] = useState<{ text: string } | null>(null);
 
-  // Autonomous Mode Status
-  const [autonomousMode, setAutonomousMode] = useState(false);
+  // ── Custom hooks ────────────────────────────────────────────────────────
+  const { botIdentity, setBotIdentity, refreshIdentity, lastExplicitFetch } = useIdentity();
+  const { handleThemeChange, handleTimeThemeSettingsChange } = useTheme();
 
-  // Initialization State (to prevent flash)
-  const [isInitialized, setIsInitialized] = useState(false);
-  const pendingApprovals = messages.filter(
-    (message) => message.type === 'confirmation' && message.confirmation?.status === 'pending'
-  ).length;
-  const currentViewMeta = VIEW_META[currentView] || VIEW_META.chat;
-  const shellRuntimeStatus: ShellRuntimeStatus = {
+  const {
+    messages,
+    inputValue,
+    setInputValue,
     isConnected,
-    autonomousMode,
-    pendingApprovals,
-    activityText: activity?.text || null,
+    isTyping,
+    sessionId,
+    connectWebSocket,
+    handleSendMessage,
+    handleNewChat,
+  } = useWebSocket({
+    onIdentityUpdated: refreshIdentity,
+    onRateLimit: () => setRateLimitAlertOpen(true),
+    onActivity: (text) => setActivity({ text }),
+    onActivityClear: () => setActivity(null),
+  });
+
+  // ── Auth ────────────────────────────────────────────────────────────────
+  const handleAuthSuccess = (key: string) => {
+    localStorage.setItem('limebot_api_key', key);
+    axios.defaults.headers.common['X-API-Key'] = key;
+    setShowAuthModal(false);
+    window.location.reload();
   };
 
-  // Helper to apply custom theme variables
-  const applyCustomTheme = (themeId: string) => {
-    try {
-      const savedThemes = localStorage.getItem('limebot-custom-themes');
-      if (savedThemes) {
-        const themes = JSON.parse(savedThemes);
-        const theme = themes.find((t: any) => t.id === themeId);
-        if (theme) {
-          // Apply variables
-          Object.entries(theme.variables).forEach(([key, value]) => {
-            document.documentElement.style.setProperty(key, value as string);
-          });
-          // Apply background image if it exists
-          if (theme.bgImage) {
-            document.documentElement.style.setProperty('--bg-image', theme.bgImage);
-          }
-          document.documentElement.setAttribute('data-custom-theme', 'true');
-        }
-      }
-    } catch (e) {
-      console.error("Failed to apply custom theme", e);
-    }
-  };
-
-  const clearCustomThemeVars = () => {
-    const propsToRemove = [
-      '--primary', '--primary-foreground', '--background', '--foreground',
-      '--card', '--card-foreground', '--popover', '--popover-foreground',
-      '--border', '--input', '--accent', '--accent-foreground',
-      '--ring', '--radius', '--muted', '--muted-foreground', '--bg-image'
-    ];
-    propsToRemove.forEach(prop => document.documentElement.style.removeProperty(prop));
-    document.documentElement.removeAttribute('data-custom-theme');
-  };
-
-  const applyThemeToDom = (theme: string) => {
-    clearCustomThemeVars();
-    if (theme === 'lime') {
-      document.documentElement.removeAttribute('data-theme');
-    } else if (theme.startsWith('custom-')) {
-      document.documentElement.removeAttribute('data-theme');
-      applyCustomTheme(theme);
-    } else {
-      document.documentElement.setAttribute('data-theme', theme);
-    }
-
-    // Apply wallpaper overlay if set
-    try {
-      const wallpaper = localStorage.getItem('limebot-wallpaper');
-      if (wallpaper) {
-        const wp = JSON.parse(wallpaper);
-        if (wp.url) {
-          document.documentElement.style.setProperty(
-            '--bg-image',
-            `linear-gradient(rgba(0,0,0,${wp.overlay ?? 0.6}), rgba(0,0,0,${wp.overlay ?? 0.6})), url(${wp.url})`
-          );
-        }
-      }
-    } catch { /* ignore */ }
-  };
-
-  const applyThemeWithSchedule = (baseTheme: string) => {
-    const settings = loadTimeThemeSettings();
-    const effectiveTheme = resolveEffectiveTheme(baseTheme, settings);
-    applyThemeToDom(effectiveTheme);
-  };
-
-  const clearStreamFlushTimer = () => {
-    if (streamFlushTimerRef.current !== null) {
-      window.clearTimeout(streamFlushTimerRef.current);
-      streamFlushTimerRef.current = null;
-    }
-  };
-
-  const flushStreamBuffer = () => {
-    clearStreamFlushTimer();
-
-    const pending = streamBufferRef.current;
-    if (!pending.chatId) return;
-
-    const bufferedChatId = pending.chatId;
-    const bufferedMessageId = pending.messageId;
-    const bufferedTurnId = pending.turnId;
-    const bufferedContent = pending.content;
-    const bufferedThinking = pending.thinking;
-
-    streamBufferRef.current = {
-      chatId: null,
-      messageId: null,
-      turnId: null,
-      content: "",
-      thinking: "",
-    };
-
-    if (bufferedChatId !== sessionIdRef.current) return;
-    if (!bufferedContent && !bufferedThinking) return;
-
-    setMessages(prev =>
-      upsertStreamDelta(prev, {
-        messageId: bufferedMessageId,
-        turnId: bufferedTurnId,
-        contentDelta: bufferedContent,
-        thinkingDelta: bufferedThinking,
-      })
-    );
-  };
-
-  const queueStreamDelta = (
-    chatId: string | undefined,
-    messageId: string | undefined,
-    turnId: string | undefined,
-    contentDelta = "",
-    thinkingDelta = ""
-  ) => {
-    if (!chatId || chatId !== sessionIdRef.current) return;
-
-    if (
-      streamBufferRef.current.chatId &&
-      (
-        streamBufferRef.current.chatId !== chatId ||
-        streamBufferRef.current.messageId !== (messageId || null)
-      )
-    ) {
-      flushStreamBuffer();
-    }
-
-    if (!streamBufferRef.current.chatId) {
-      streamBufferRef.current.chatId = chatId;
-      streamBufferRef.current.messageId = messageId || null;
-      streamBufferRef.current.turnId = turnId || null;
-    }
-    if (contentDelta) {
-      streamBufferRef.current.content += contentDelta;
-    }
-    if (thinkingDelta) {
-      streamBufferRef.current.thinking += thinkingDelta;
-    }
-
-    if (streamFlushTimerRef.current === null) {
-      streamFlushTimerRef.current = window.setTimeout(() => {
-        streamFlushTimerRef.current = null;
-        flushStreamBuffer();
-      }, STREAM_FLUSH_INTERVAL_MS);
-    }
-  };
-
-  useEffect(() => {
-    sessionIdRef.current = sessionId;
-    clearStreamFlushTimer();
-    streamBufferRef.current = {
-      chatId: null,
-      messageId: null,
-      turnId: null,
-      content: "",
-      thinking: "",
-    };
-  }, [sessionId]);
-
+  // ── Initialization effect ───────────────────────────────────────────────
   useEffect(() => {
     document.documentElement.classList.add('dark');
-
 
     const savedTheme = localStorage.getItem('limebot-theme') || 'lime';
     applyThemeWithSchedule(savedTheme);
@@ -402,20 +176,15 @@ function App() {
       }
     );
 
-
     const customCss = localStorage.getItem(CSS_STORAGE_KEY) || '';
     injectCss(customCss);
 
-
-
     const init = async () => {
-
       const MAX_RETRIES = 5;
       const RETRY_DELAY = 2000;
 
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-          // 1. Initial configuration check (no auth needed)
           const statusRes = await axios.get(`${API_BASE_URL}/api/setup/status`);
           if (statusRes.data.configured) {
             setForceSetup(false);
@@ -425,354 +194,63 @@ function App() {
             return;
           }
 
-          // 2. Load authenticated data if configured
           await Promise.all([
             axios.get(`${API_BASE_URL}/api/identity`)
-              .then(res => { setBotIdentity(res.data); lastExplicitIdentityFetch.current = Date.now(); }),
+              .then(res => {
+                setBotIdentity(res.data);
+                lastExplicitFetch.current = Date.now();
+              }),
             axios.get(`${API_BASE_URL}/api/config`)
               .then(res => {
                 if (res.data.env?.AUTONOMOUS_MODE === 'true') {
                   setAutonomousMode(true);
                 }
-              })
+              }),
           ]);
 
           break;
-        } catch (err: any) {
-          const status = err?.response?.status;
-
-          // If unauthorized, wait for AuthKeyModal
+        } catch (err: unknown) {
+          const status = (err as { response?: { status?: number } })?.response?.status;
           if (status === 401 || status === 403) break;
 
-          if (!err?.response && attempt < MAX_RETRIES) {
+          if (!(err as { response?: unknown })?.response && attempt < MAX_RETRIES) {
             console.log(`Backend not reachable, retrying in ${RETRY_DELAY}ms (${attempt + 1}/${MAX_RETRIES})...`);
             await new Promise(r => setTimeout(r, RETRY_DELAY));
             continue;
           }
-
-          // All retries exhausted or got a real error response
-          console.error("Initialization failed:", err);
+          console.error('Initialization failed:', err);
         }
       }
       setIsInitialized(true);
     };
 
     init();
-
     connectWebSocket();
 
-
-
     return () => {
-      clearStreamFlushTimer();
-      streamBufferRef.current = {
-        chatId: null,
-        messageId: null,
-        turnId: null,
-        content: "",
-        thinking: "",
-      };
-      ws.current?.close();
       axios.interceptors.response.eject(interceptor);
       window.clearInterval(themeTimer);
       document.removeEventListener('visibilitychange', reapplyScheduledTheme);
     };
-  }, []);
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleThemeChange = (theme: string) => {
-    localStorage.setItem('limebot-theme', theme);
-    applyThemeWithSchedule(theme);
+  // ── Derived state ───────────────────────────────────────────────────────
+  const pendingApprovals = messages.filter(
+    (message) =>
+      message.type === 'tool' &&
+      (
+        message.toolExecution?.status === 'waiting_confirmation' ||
+        message.toolExecution?.status === 'pending_confirmation'
+      )
+  ).length;
+  const currentViewMeta = VIEW_META[currentView] || VIEW_META.chat;
+  const shellRuntimeStatus: ShellRuntimeStatus = {
+    isConnected,
+    autonomousMode,
+    pendingApprovals,
   };
 
-  const handleTimeThemeSettingsChange = (settings: TimeThemeSettings) => {
-    localStorage.setItem(TIME_THEME_STORAGE_KEY, JSON.stringify(settings));
-    const savedTheme = localStorage.getItem('limebot-theme') || 'lime';
-    applyThemeWithSchedule(savedTheme);
-  };
-
-  const handleAuthSuccess = (key: string) => {
-    localStorage.setItem('limebot_api_key', key);
-    axios.defaults.headers.common['X-API-Key'] = key;
-    setShowAuthModal(false);
-    axios.defaults.headers.common['X-API-Key'] = key;
-    setShowAuthModal(false);
-    window.location.reload();
-  };
-
-
-
-  const connectWebSocket = () => {
-    if (ws.current?.readyState === WebSocket.OPEN) return;
-
-    const apiKey = localStorage.getItem('limebot_api_key');
-    ws.current = new WebSocket(`${WS_BASE_URL}/ws?api_key=${apiKey || ''}`);
-
-    ws.current.onopen = () => {
-      console.log('Connected to LimeBot');
-      setIsConnected(true);
-    };
-
-    ws.current.onclose = () => {
-      console.log('Disconnected from LimeBot');
-      setIsConnected(false);
-      clearStreamFlushTimer();
-      streamBufferRef.current = {
-        chatId: null,
-        messageId: null,
-        turnId: null,
-        content: "",
-        thinking: "",
-      };
-
-      setIsConnected(false);
-
-      setTimeout(() => {
-        console.log('Attempting to reconnect...');
-        connectWebSocket();
-      }, 3000);
-    };
-
-    ws.current.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        const isMaintenanceEvent = data.type === 'maintenance' || data.metadata?.is_maintenance;
-        const eventChatId: string | undefined = typeof data.chat_id === 'string' ? data.chat_id : undefined;
-        const eventTurnId: string | undefined =
-          typeof data.turn_id === 'string'
-            ? data.turn_id
-            : typeof data.metadata?.turn_id === 'string'
-              ? data.metadata.turn_id
-              : undefined;
-        const eventMessageId: string | undefined =
-          typeof data.message_id === 'string'
-            ? data.message_id
-            : typeof data.metadata?.message_id === 'string'
-              ? data.metadata.message_id
-              : undefined;
-        const activeSessionId = sessionIdRef.current;
-        const streamType = data.metadata?.type;
-
-        // Show maintenance broadcasts (e.g. background reflection) as ghost activity
-        if (isMaintenanceEvent) {
-          setActivity({ text: data.content || '✨ Background task complete' });
-          setTimeout(() => setActivity(null), 4000);
-          return;
-        }
-
-        // Ignore all non-maintenance events that are not for the active session.
-        if (eventChatId !== activeSessionId) {
-          return;
-        }
-
-        if (streamType === 'chunk') {
-          queueStreamDelta(eventChatId, eventMessageId, eventTurnId, data.content || '', '');
-          return;
-        }
-        if (streamType === 'thinking') {
-          queueStreamDelta(eventChatId, eventMessageId, eventTurnId, '', data.content || '');
-          return;
-        }
-
-        // Flush any pending stream updates before applying non-stream events.
-        flushStreamBuffer();
-
-        if (data.type === 'message' || data.type === 'full_content') {
-          setIsTyping(false);
-          let variant: 'default' | 'destructive' | 'warning' = 'default';
-          if (data.metadata?.is_error) variant = 'destructive';
-          if (data.metadata?.is_warning) variant = 'warning';
-
-          setMessages(prev =>
-            applyFinalAssistantMessage(prev, {
-              messageId: eventMessageId,
-              turnId: eventTurnId,
-              content: data.content,
-              variant,
-            })
-          );
-
-          if (data.metadata && data.metadata.identity_updated) {
-            refreshIdentity();
-          }
-        }
-        else if (data.type === 'cancellation' || data.metadata?.is_cancellation) {
-          setIsTyping(false);
-          // Mark all running tools as cancelled/error
-          setMessages(prev => prev.map(m => {
-            if (m.type === 'tool' && m.toolExecution?.status === 'running') {
-              return {
-                ...m,
-                toolExecution: {
-                  ...m.toolExecution,
-                  status: 'error',
-                  result: 'Cancelled by user.'
-                }
-              };
-            }
-            return m;
-          }));
-        }
-        else if (data.type === 'stop_typing' || data.metadata?.type === 'stop_typing') {
-          setIsTyping(false);
-          setMessages(prev => applyStopTyping(prev, { messageId: eventMessageId, turnId: eventTurnId }));
-        }
-        else if (data.type === 'typing' || data.metadata?.type === 'typing') {
-          setIsTyping(true);
-        }
-        else if (data.type === 'rate_limit_error') {
-          console.error("Rate Limit Error:", data.metadata?.details);
-          setRateLimitAlertOpen(true);
-        } else if (data.type === 'tool_execution') {
-          const toolData = data.metadata;
-
-          setMessages(prev => {
-            const existingIndex = prev.findIndex(m =>
-              m.type === 'tool' && m.toolExecution?.tool_call_id === toolData.tool_call_id
-            );
-
-            if (existingIndex !== -1) {
-              // Update existing tool card
-              const newMessages = [...prev];
-              const existingExec = newMessages[existingIndex].toolExecution!;
-
-              // If it's a progress update, append to logs
-              let updatedLogs = existingExec.logs || [];
-              if (toolData.status === 'progress') {
-                updatedLogs = [...updatedLogs, data.content];
-              }
-
-              newMessages[existingIndex] = {
-                ...newMessages[existingIndex],
-                toolExecution: {
-                  ...existingExec,
-                  status: toolData.status === 'progress' ? existingExec.status : toolData.status,
-                  result: toolData.result,
-                  conf_id: toolData.conf_id || existingExec.conf_id,
-                  logs: updatedLogs
-                }
-              };
-              return newMessages;
-            } else {
-              // Create new tool card
-              return [...prev, {
-                sender: 'bot',
-                type: 'tool',
-                content: '',
-                toolExecution: {
-                  tool: toolData.tool,
-                  status: toolData.status,
-                  args: toolData.args,
-                  tool_call_id: toolData.tool_call_id,
-                  conf_id: toolData.conf_id,
-                  logs: []
-                }
-              }];
-            }
-          });
-        } else if (data.type === 'confirmation_request') {
-          // Handle confirmation request from backend
-          const confData = data.metadata;
-          setMessages(prev => [...prev, {
-            sender: 'bot',
-            type: 'confirmation',
-            content: '',
-            confirmation: {
-              id: confData.id,
-              action: confData.action,
-              description: confData.description,
-              details: confData.details,
-              status: 'pending'
-            }
-          }]);
-        } else if (data.metadata?.type === 'activity') {
-          // Handle background activity (Ghost Mode)
-          console.log("👻 Activity:", data.metadata.text);
-          setActivity({ text: data.metadata.text });
-
-          // Auto-clear after 4s (matching component animation)
-          setTimeout(() => setActivity(null), 4000);
-        }
-      } catch (error) {
-        console.error('Error parsing message:', error);
-      }
-
-    };
-  };
-
-  const handleSendMessage = (contentOverride?: string | null, image?: string | null) => {
-    const finalContent = contentOverride || inputValue.trim();
-
-    if ((!finalContent && !image) || !ws.current || ws.current.readyState !== WebSocket.OPEN || isTyping) return;
-
-    setIsTyping(true); // Start typing on send
-
-    // Send object with optional image and session ID
-    ws.current.send(JSON.stringify({
-      content: finalContent,
-      image: image,
-      chat_id: sessionId
-    }));
-
-    setMessages(prev => [...prev, { sender: 'user', content: finalContent, image: image }]);
-    setInputValue("");
-  };
-
-  const handleNewChat = () => {
-    flushStreamBuffer();
-    clearStreamFlushTimer();
-    streamBufferRef.current = {
-      chatId: null,
-      messageId: null,
-      turnId: null,
-      content: "",
-      thinking: "",
-    };
-    // Generate new Session ID
-    const newId = crypto.randomUUID();
-    setSessionId(newId);
-    setMessages([]); // Clear chat window
-    setIsTyping(false);
-    console.log("Started new session:", newId);
-  };
-
-
-  // Poll for identity updates periodically.
-  // FIX 6: track when the last *explicit* refresh happened so the background
-  // poll never races with (and overwrites) a freshly-fetched identity.
-  const lastExplicitIdentityFetch = useRef(0);
-  const POLL_SKIP_WINDOW_MS = 8000; // skip poll for 8 s after an explicit fetch
-
-  // Expose a helper the rest of the app can call for explicit refreshes.
-  const refreshIdentity = () => {
-    lastExplicitIdentityFetch.current = Date.now();
-    axios.get(`${API_BASE_URL}/api/identity`)
-      .then(res => setBotIdentity(res.data))
-      .catch(err => {
-        if (err.response?.status !== 401)
-          console.error("Failed to refresh identity:", err);
-      });
-  };
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      // Skip if an explicit fetch happened very recently
-      if (Date.now() - lastExplicitIdentityFetch.current < POLL_SKIP_WINDOW_MS) return;
-      axios.get(`${API_BASE_URL}/api/identity`)
-        .then(res => {
-          const data = res.data;
-          setBotIdentity(prev => {
-            if (prev.name !== data.name || prev.avatar !== data.avatar) return data;
-            return prev;
-          });
-        })
-        .catch(err => {
-          if (err.response?.status !== 401)
-            console.error("Failed to poll identity:", err);
-        });
-    }, 5000);
-    return () => clearInterval(interval);
-  }, []);
-
+  // ── Loading screen ──────────────────────────────────────────────────────
   if (!isInitialized) {
     return (
       <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
@@ -808,6 +286,7 @@ function App() {
     );
   }
 
+  // ── Main layout ─────────────────────────────────────────────────────────
   return (
     <AppLayout
       botIdentity={botIdentity}
@@ -843,7 +322,6 @@ function App() {
         </AlertDialogContent>
       </AlertDialog>
 
-
       <Suspense fallback={<div className="h-full min-h-[40vh] bg-card/10 rounded-2xl border border-border/30" />}>
         {
           currentView === 'instances' ? (
@@ -861,7 +339,7 @@ function App() {
           ) : currentView === 'skills' ? (
             <SkillsPage />
           ) : currentView === 'persona' ? (
-            <PersonaPage />
+            <PersonaPage onNavigate={setCurrentView} />
           ) : currentView === 'appearance' ? (
             <AppearancePage
               onThemeChange={handleThemeChange}
@@ -880,6 +358,7 @@ function App() {
               botIdentity={botIdentity}
               activeChatId={sessionId}
               autonomousMode={autonomousMode}
+              activityText={activity?.text || null}
               onInputChange={setInputValue}
               onSendMessage={handleSendMessage}
               onReconnect={connectWebSocket}
@@ -888,8 +367,6 @@ function App() {
           )
         }
       </Suspense>
-
-      <GhostActivity activity={activity} />
       <Toaster position="top-right" />
     </AppLayout >
   );

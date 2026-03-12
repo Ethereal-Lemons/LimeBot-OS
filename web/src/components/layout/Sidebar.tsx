@@ -31,7 +31,6 @@ interface SidebarProps {
         isConnected: boolean;
         autonomousMode: boolean;
         pendingApprovals: number;
-        activityText: string | null;
     };
 }
 
@@ -73,7 +72,7 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
             try {
                 const [configRes, memoryRes] = await Promise.all([
                     axios.get(`${API_BASE_URL}/api/config`),
-                    axios.get(`${API_BASE_URL}/api/memory/status`),
+                    axios.get(`${API_BASE_URL}/api/memory`),
                 ]);
 
                 if (!isMounted) return;
@@ -196,17 +195,6 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
                         valueClassName={runtimeStatus?.pendingApprovals ? "text-amber-500" : "text-emerald-500"}
                     />
                 </div>
-
-                {runtimeStatus?.activityText && (
-                    <div className="mt-3 rounded-lg border border-border bg-background/60 px-3 py-2">
-                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                            Latest activity
-                        </div>
-                        <div className="line-clamp-2 text-xs text-foreground/80">
-                            {runtimeStatus.activityText}
-                        </div>
-                    </div>
-                )}
             </div>
         </div>
     );
