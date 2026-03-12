@@ -104,3 +104,35 @@ def test_theme_color_override():
 
     color = channel._get_theme_color(target, 0xABCDEF)
     assert color == 0x123456
+
+
+def test_extract_discord_attachment_urls_promotes_first_image():
+    from channels.discord import DiscordChannel
+
+    attachments = [
+        SimpleNamespace(
+            url="https://cdn.example.com/image.png",
+            content_type="image/png",
+            filename="image.png",
+        ),
+        SimpleNamespace(
+            url="https://cdn.example.com/document.pdf",
+            content_type="application/pdf",
+            filename="document.pdf",
+        ),
+        SimpleNamespace(
+            url="https://cdn.example.com/second.jpg",
+            content_type="image/jpeg",
+            filename="second.jpg",
+        ),
+    ]
+
+    image_url, attachment_urls = DiscordChannel._extract_discord_attachment_urls(
+        attachments
+    )
+
+    assert image_url == "https://cdn.example.com/image.png"
+    assert attachment_urls == [
+        "https://cdn.example.com/document.pdf",
+        "https://cdn.example.com/second.jpg",
+    ]

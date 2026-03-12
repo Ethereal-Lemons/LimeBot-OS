@@ -613,27 +613,33 @@ class DiscordChannel(BaseChannel):
             return
 
         content_parts = [message.content] if message.content else []
-        attachments = [a.url for a in message.attachments]
-        content = (
-            "\n".join(content_parts + attachments) if attachments else message.content
+        image_url, attachment_urls = self._extract_discord_attachment_urls(
+            message.attachments
         )
+        if attachment_urls:
+            content_parts.extend(attachment_urls)
+        content = "\n".join(part for part in content_parts if part)
 
-        if not content:
+        if not content and not image_url:
             return
+
+        metadata = {
+            "author": message.author.name,
+            "author_display": message.author.display_name,
+            "channel_name": getattr(message.channel, "name", "DM"),
+            "guild_id": str(message.guild.id) if message.guild else None,
+            "mentioned": is_mentioned,
+            "is_dm": is_dm,
+            "message_id": str(message.id),
+        }
+        if image_url:
+            metadata["image"] = image_url
 
         await self._handle_message(
             sender_id=sender_id,
             chat_id=chat_id,
             content=content,
-            metadata={
-                "author": message.author.name,
-                "author_display": message.author.display_name,
-                "channel_name": getattr(message.channel, "name", "DM"),
-                "guild_id": str(message.guild.id) if message.guild else None,
-                "mentioned": is_mentioned,
-                "is_dm": is_dm,
-                "message_id": str(message.id),
-            },
+            metadata=metadata,
         )
 
         if random.random() < 0.2:
@@ -872,6 +878,32 @@ class DiscordChannel(BaseChannel):
             logger.error(f"[Discord] Failed to resolve target {chat_id}: {e}")
 
         return None
+
+    @staticmethod
+    def _extract_discord_attachment_urls(
+        attachments: list[Any],
+    ) -> tuple[str | None, list[str]]:
+        image_url: str | None = None
+        attachment_urls: list[str] = []
+        image_suffixes = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+
+        for attachment in attachments:
+            url = getattr(attachment, "url", None)
+            if not url:
+                continue
+
+            content_type = (getattr(attachment, "content_type", "") or "").lower()
+            filename = (getattr(attachment, "filename", "") or "").lower()
+            is_image = content_type.startswith("image/") or filename.endswith(
+                image_suffixes
+            )
+
+            if is_image and image_url is None:
+                image_url = url
+            else:
+                attachment_urls.append(url)
+
+        return image_url, attachment_urls
 
     async def _send_typing(self, target, chat_id: str) -> None:
         session_key = _session_key("discord", chat_id)

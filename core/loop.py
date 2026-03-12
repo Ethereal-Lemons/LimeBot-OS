@@ -205,6 +205,7 @@ class AgentLoop:
         self._STABLE_PROMPT_TTL = 30.0
         self._history_flush_interval = 5.0
         self._last_history_flush: Dict[str, float] = {}
+        self._image_input_fallback_sessions: Set[str] = set()
 
     async def _init_skills_and_tools(self) -> None:
         """Background: discover skills, build tool definitions, then warm up slow services."""
@@ -312,6 +313,103 @@ class AgentLoop:
         self.model = model
         self._provider = self._resolve_provider()
         self._stable_prompt_cache.clear()
+        self._image_input_fallback_sessions.clear()
+
+    def _image_input_fallback_key(self, session_key: str) -> str:
+        return f"{self.model}::{session_key}"
+
+    def _image_inputs_disabled_for_session(self, session_key: str) -> bool:
+        return self._image_input_fallback_key(session_key) in (
+            self._image_input_fallback_sessions
+        )
+
+    def _disable_image_inputs_for_session(self, session_key: str) -> None:
+        self._image_input_fallback_sessions.add(
+            self._image_input_fallback_key(session_key)
+        )
+
+    @staticmethod
+    def _render_text_only_message_content(content: Any) -> str:
+        if not isinstance(content, list):
+            return str(content or "")
+
+        text_parts: List[str] = []
+        image_notes: List[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text":
+                text = str(item.get("text", "") or "").strip()
+                if text:
+                    text_parts.append(text)
+            elif item.get("type") == "image_url":
+                url = str(item.get("image_url", {}).get("url", "") or "").strip()
+                note = (
+                    "[Image attachment shared, but the current model does not support vision]"
+                )
+                if url:
+                    note = f"{note}: {url}"
+                image_notes.append(note)
+
+        combined = "\n".join(part for part in text_parts + image_notes if part)
+        return (
+            combined
+            or "[Image attachment shared, but the current model does not support vision]"
+        )
+
+    @staticmethod
+    def _messages_have_image_inputs(messages: List[Dict[str, Any]]) -> bool:
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    return True
+        return False
+
+    def _downgrade_image_messages_for_text_model(
+        self, messages: List[Dict[str, Any]], session_key: str
+    ) -> bool:
+        changed = False
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            if not any(
+                isinstance(item, dict) and item.get("type") == "image_url"
+                for item in content
+            ):
+                continue
+            message["content"] = self._render_text_only_message_content(content)
+            changed = True
+
+        if changed:
+            self.metrics.record_anomaly(
+                session_key,
+                "image_input_downgraded_for_text_model",
+                detail=self.model,
+            )
+        return changed
+
+    def _should_retry_without_images(
+        self, error: Exception, messages: List[Dict[str, Any]]
+    ) -> bool:
+        if not self._messages_have_image_inputs(messages):
+            return False
+        error_text = str(error).lower()
+        return any(
+            phrase in error_text
+            for phrase in (
+                "not a multimodal model",
+                "does not support vision",
+                "does not support image",
+                "doesn't support vision",
+                "doesn't support image",
+            )
+        )
 
     async def _get_stable_prompt(
         self, sender_id: str, channel: str, chat_id: str, sender_name: str = ""
@@ -883,6 +981,7 @@ class AgentLoop:
             else []
         )
         qwen_auth_failover_attempted: Set[str] = set()
+        image_fallback_attempted = False
 
         for attempt in range(max_retries):
             try:
@@ -993,6 +1092,21 @@ class AgentLoop:
                             )
                         )
                     raise
+            except Exception as e:
+                if (
+                    not image_fallback_attempted
+                    and self._should_retry_without_images(e, messages)
+                    and self._downgrade_image_messages_for_text_model(
+                        messages, session_key
+                    )
+                ):
+                    image_fallback_attempted = True
+                    self._disable_image_inputs_for_session(session_key)
+                    logger.warning(
+                        f"Model '{self.model}' rejected image input for {session_key}; retrying without multimodal content."
+                    )
+                    continue
+                raise
 
     async def _trim_history(self, session_key: str, max_tokens: int = 12_000) -> None:
         if session_key not in self.history or len(self.history[session_key]) <= 1:
@@ -2699,14 +2813,30 @@ class AgentLoop:
                     }
 
                     image_data = msg.metadata.get("image")
-                    user_msg_content = (
-                        [
-                            {"type": "text", "text": msg.content or " "},
-                            {"type": "image_url", "image_url": {"url": image_data}},
-                        ]
-                        if image_data
-                        else msg.content
-                    )
+                    if image_data and self._image_inputs_disabled_for_session(
+                        session_key
+                    ):
+                        user_msg_content = self._render_text_only_message_content(
+                            [
+                                {"type": "text", "text": msg.content or ""},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": image_data},
+                                },
+                            ]
+                        )
+                    else:
+                        user_msg_content = (
+                            [
+                                {"type": "text", "text": msg.content or " "},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": image_data},
+                                },
+                            ]
+                            if image_data
+                            else msg.content
+                        )
                     self.history[session_key].append(
                         {"role": "user", "content": user_msg_content}
                     )
