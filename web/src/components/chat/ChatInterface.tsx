@@ -1236,7 +1236,7 @@ export function ChatInterface({
                             ? "Pending approvals are handled directly in the tool timeline."
                             : "Secure channel with guarded tool execution."}
                     </span>
-                    <span>LimeBot v1.0.5</span>
+                    <span>LimeBot v1.0.6</span>
                 </div>
             </div>
         </div>
