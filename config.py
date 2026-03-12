@@ -97,7 +97,8 @@ def load_config(force_reload=False):
     from core.llm_utils import get_api_key_for_model
 
     config.llm = SimpleNamespace()
-    config.llm.model = os.getenv("LLM_MODEL") or "gemini/gemini-2.0-flash"
+    default_llm_model = "gemini/gemini-2.0-flash"
+    config.llm.model = str(os.getenv("LLM_MODEL") or "").strip() or default_llm_model
     config.llm.api_key = get_api_key_for_model(config.llm.model)
     config.llm.enable_dynamic_personality = (
         os.getenv("ENABLE_DYNAMIC_PERSONALITY", "false").lower() == "true"
@@ -205,6 +206,11 @@ def load_config(force_reload=False):
 
                 if "llm" in dynamic_config and isinstance(dynamic_config["llm"], dict):
                     for k, v in dynamic_config["llm"].items():
+                        if k == "model":
+                            logger.warning(
+                                "Ignoring deprecated llm.model in limebot.json; use LLM_MODEL in .env instead."
+                            )
+                            continue
                         setattr(config.llm, k, v)
                 if "discord" in dynamic_config and isinstance(
                     dynamic_config["discord"], dict
@@ -221,6 +227,14 @@ def load_config(force_reload=False):
             config.skills = SimpleNamespace(disabled=[])
     else:
         config.skills = SimpleNamespace(disabled=[])
+
+    config.llm.model = str(getattr(config.llm, "model", "") or "").strip()
+    if not config.llm.model:
+        logger.warning(
+            "LLM model resolved empty after config load; falling back to default model."
+        )
+        config.llm.model = default_llm_model
+    config.llm.api_key = get_api_key_for_model(config.llm.model)
 
     _cached_config = config
     return config

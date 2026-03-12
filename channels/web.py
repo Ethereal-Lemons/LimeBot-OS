@@ -828,6 +828,34 @@ class WebChannel(BaseChannel):
 
                 env_file = Path(".env")
                 new_env = data.get("env", {})
+                cfg_json_file = Path("limebot.json")
+
+                if "LLM_MODEL" in new_env:
+                    model_value = str(new_env["LLM_MODEL"] or "").strip()
+                    if not model_value:
+                        return {"error": "LLM_MODEL cannot be empty."}
+                    new_env["LLM_MODEL"] = model_value
+
+                    try:
+                        cfg_json = (
+                            await self._read_json(cfg_json_file, default={})
+                            if cfg_json_file.exists()
+                            else {}
+                        )
+                        if not isinstance(cfg_json, dict):
+                            cfg_json = {}
+                        llm_cfg = cfg_json.get("llm")
+                        if isinstance(llm_cfg, dict) and "model" in llm_cfg:
+                            llm_cfg.pop("model", None)
+                            if llm_cfg:
+                                cfg_json["llm"] = llm_cfg
+                            else:
+                                cfg_json.pop("llm", None)
+                            await self._write_json(cfg_json_file, cfg_json)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to remove deprecated llm.model from limebot.json: {e}"
+                        )
 
                 if "ALLOWED_PATHS" in new_env:
                     paths_data = new_env.pop("ALLOWED_PATHS")
