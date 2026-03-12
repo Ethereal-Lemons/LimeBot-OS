@@ -1,6 +1,7 @@
 export type ChatToolExecution = {
   tool: string;
   status:
+    | 'planned'
     | 'running'
     | 'completed'
     | 'error'
@@ -12,6 +13,21 @@ export type ChatToolExecution = {
   tool_call_id: string;
   conf_id?: string;
   logs?: string[];
+  preview?: {
+    kind: string;
+    summary?: string;
+    path?: string;
+    mode?: string;
+    content_preview?: string;
+    diff?: string;
+    diff_error?: string;
+    command?: string;
+    cwd?: string;
+    risk_flags?: string[];
+    affected_paths?: string[];
+    target_type?: string;
+    args_preview?: string;
+  };
 };
 
 export type ChatConfirmation = {

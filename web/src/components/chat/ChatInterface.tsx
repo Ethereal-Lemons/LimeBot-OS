@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
-import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, Check, Copy, ArrowDown } from "lucide-react";
+import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, Check, Copy, ArrowDown, ShieldAlert, Wifi, WifiOff } from "lucide-react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -22,12 +22,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Loader2 } from "lucide-react";
 import { ToolCard, ToolExecution } from './ToolCard';
-import { ConfirmationCard, ConfirmationRequest } from './ConfirmationCard';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle, Info } from "lucide-react";
-
-
 import { ThinkingBubble } from './ThinkingBubble';
+
+
 import { ToolTimeline } from './ToolTimeline';
 
 interface Message {
@@ -38,7 +37,6 @@ interface Message {
     isStreaming?: boolean;
     image?: string | null;
     toolExecution?: ToolExecution;
-    confirmation?: ConfirmationRequest;
     variant?: 'default' | 'destructive' | 'warning';
 }
 
@@ -54,6 +52,39 @@ interface ChatInterfaceProps {
     onNewChat?: () => void;
     activeChatId: string;
     autonomousMode?: boolean;
+    activityText?: string | null;
+}
+
+const QUICK_ACTIONS = [
+    { label: "Project status", prompt: "Review the current project state and tell me what needs attention." },
+    { label: "Session recap", prompt: "Summarize what you remember about this session and what should happen next." },
+    { label: "UI suggestion", prompt: "Inspect the codebase and propose the next UI improvement." },
+];
+
+
+
+function StatusChip({
+    label,
+    value,
+    tone = 'default',
+}: {
+    label: string;
+    value: string;
+    tone?: 'default' | 'good' | 'warn';
+}) {
+    return (
+        <div
+            className={cn(
+                "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]",
+                tone === 'good' && "border-emerald-500/20 bg-emerald-500/10 text-emerald-500",
+                tone === 'warn' && "border-amber-500/20 bg-amber-500/10 text-amber-500",
+                tone === 'default' && "border-border bg-background/70 text-muted-foreground"
+            )}
+        >
+            <span>{label}</span>
+            <span className="normal-case tracking-normal text-foreground">{value}</span>
+        </div>
+    );
 }
 
 function ChatImage({ src, alt }: { src: string, alt: string }) {
@@ -212,6 +243,33 @@ const UnreadSeparator = ({ count }: { count: number }) => (
     </div>
 );
 
+function TypingIndicator({ botIdentity }: { botIdentity?: { name: string; avatar: string | null } }) {
+    return (
+        <div className="flex w-full max-w-[90%] gap-4 animate-in fade-in slide-in-from-bottom-2 duration-200">
+            <Avatar className="h-9 w-9 mt-1 shrink-0 border border-border shadow-sm">
+                <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
+                <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">Bot</AvatarFallback>
+            </Avatar>
+            <div className="flex items-center">
+                <div className="flex items-center gap-1 rounded-2xl rounded-tl-none bg-muted/80 border px-4 py-3 shadow-sm">
+                    <span
+                        className="h-2 w-2 rounded-full bg-muted-foreground/60"
+                        style={{ animation: 'typing-dot 1.2s infinite ease-in-out', animationDelay: '0ms' }}
+                    />
+                    <span
+                        className="h-2 w-2 rounded-full bg-muted-foreground/60"
+                        style={{ animation: 'typing-dot 1.2s infinite ease-in-out', animationDelay: '200ms' }}
+                    />
+                    <span
+                        className="h-2 w-2 rounded-full bg-muted-foreground/60"
+                        style={{ animation: 'typing-dot 1.2s infinite ease-in-out', animationDelay: '400ms' }}
+                    />
+                </div>
+            </div>
+        </div>
+    );
+}
+
 const MemoizedMessageItem = memo(({
     msg,
     botIdentity,
@@ -230,7 +288,7 @@ const MemoizedMessageItem = memo(({
     const isUser = msg.sender === 'user';
     const isBot = msg.sender === 'bot';
 
-    if (msg.content?.includes('[CONFIRM_SESSION]') || msg.content?.includes('[CONFIRM_EXECUTION]')) {
+    if (msg.content?.includes('[CONFIRM_SESSION]') || msg.content?.includes('[CONFIRM_EXECUTION]') || msg.type === 'confirmation') {
         return null; // Hidden confirmation trace messages
     }
 
@@ -290,10 +348,6 @@ const MemoizedMessageItem = memo(({
                             }}
                         />
                     </div>
-                ) : msg.type === 'confirmation' && msg.confirmation ? (
-                    <div className="w-full max-w-2xl">
-                        <ConfirmationCard request={msg.confirmation} />
-                    </div>
                 ) : msg.variant && msg.variant !== 'default' ? (
                     <Alert variant={msg.variant} className="max-w-xl shadow-sm border-l-4">
                         {msg.variant === 'destructive' ? <AlertTriangle className="h-4 w-4" /> : <Info className="h-4 w-4" />}
@@ -301,38 +355,41 @@ const MemoizedMessageItem = memo(({
                         <AlertDescription className="ml-2 mt-1 text-xs opacity-90">{msg.content}</AlertDescription>
                     </Alert>
                 ) : (
-                    <div className={cn(
-                        "relative group px-3.5 py-2 text-[14px] leading-tight transition-all duration-300 max-w-full overflow-hidden",
-                        isUser
-                            ? "bg-zinc-800 text-white rounded-2xl rounded-tr-none shadow-sm hover:bg-zinc-700/90 hover:shadow-md"
-                            : "bg-muted/80 backdrop-blur-sm text-foreground rounded-2xl rounded-tl-none border shadow-sm hover:bg-muted/90 hover:border-primary/30 hover:shadow-md"
-                    )}>
-                        {/* Thinking Bubble */}
-                        {msg.thinking && (
+                    <>
+                        {!isUser && msg.thinking && (
                             <ThinkingBubble
                                 content={msg.thinking}
-                                isComplete={!!msg.content}
-                                defaultCollapsed={!!msg.content}
+                                isComplete={!msg.isStreaming}
+                                defaultCollapsed={!msg.isStreaming && !!msg.content}
                             />
                         )}
 
-                        <div className="whitespace-pre-wrap break-words max-w-full overflow-x-auto">
-                            {msg.image && (
-                                <ChatImage src={msg.image} alt="Uploaded content" />
-                            )}
-                            <MarkdownMessage
-                                content={msg.content}
-                                isUser={isUser}
-                                isStreaming={msg.isStreaming}
-                            />
-                        </div>
+                        {(msg.content || msg.image) && (
+                            <div className={cn(
+                                "relative group px-3.5 py-2 text-[14px] leading-tight transition-all duration-300 max-w-full overflow-hidden",
+                                isUser
+                                    ? "bg-zinc-800 text-white rounded-2xl rounded-tr-none shadow-sm hover:bg-zinc-700/90 hover:shadow-md"
+                                    : "bg-muted/80 backdrop-blur-sm text-foreground rounded-2xl rounded-tl-none border shadow-sm hover:bg-muted/90 hover:border-primary/30 hover:shadow-md"
+                            )}>
+                                <div className="whitespace-pre-wrap break-words max-w-full overflow-x-auto">
+                                    {msg.image && (
+                                        <ChatImage src={msg.image} alt="Uploaded content" />
+                                    )}
+                                    <MarkdownMessage
+                                        content={msg.content}
+                                        isUser={isUser}
+                                        isStreaming={msg.isStreaming}
+                                    />
+                                </div>
 
-                        {isUser && (
-                            <div className="absolute -left-12 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-40 transition-opacity text-[9px] font-medium uppercase tracking-tighter hidden md:block">
-                                {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                {isUser && (
+                                    <div className="absolute -left-12 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-40 transition-opacity text-[9px] font-medium uppercase tracking-tighter hidden md:block">
+                                        {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    </div>
+                                )}
                             </div>
                         )}
-                    </div>
+                    </>
                 )
                 }
             </div >
@@ -351,6 +408,7 @@ export function ChatInterface({
     onNewChat,
     activeChatId,
     autonomousMode,
+    activityText,
 }: ChatInterfaceProps) {
     const scrollAreaRef = useRef<HTMLDivElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -450,15 +508,47 @@ export function ChatInterface({
         prevMessageCountRef.current = messages.length;
     }, [activeChatId]);
 
-    const hasThinking = [...messages].reverse().some(
-        (m) => m.sender === 'bot' && !!m.thinking
-    );
     const runningTool = [...messages].reverse().find(
-        (m) => m.type === 'tool' && m.toolExecution?.status === 'running'
+        (m) => m.type === 'tool' && (m.toolExecution?.status === 'running' || m.toolExecution?.status === 'planned')
     );
     const waitingTool = [...messages].reverse().find(
         (m) => m.type === 'tool' && (m.toolExecution?.status === 'waiting_confirmation' || m.toolExecution?.status === 'pending_confirmation')
     );
+    const runningToolCount = messages.filter(
+        (m) => m.type === 'tool' && (m.toolExecution?.status === 'running' || m.toolExecution?.status === 'planned')
+    ).length;
+    const waitingToolCount = messages.filter(
+        (m) => m.type === 'tool' && (m.toolExecution?.status === 'waiting_confirmation' || m.toolExecution?.status === 'pending_confirmation')
+    ).length;
+    const sessionLabel = activeChatId.slice(0, 8).toUpperCase();
+    const waitingExecution = waitingTool?.toolExecution;
+    const runningExecution = runningTool?.toolExecution;
+
+    let railTitle = "Ready";
+    let railTone: 'default' | 'good' | 'warn' = isConnected ? 'good' : 'default';
+
+    if (!isConnected) {
+        railTitle = "Gateway reconnecting";
+        railTone = 'default';
+    } else if (waitingExecution) {
+        railTitle = waitingToolCount > 1 ? `${waitingToolCount} approvals needed` : "Approval required";
+        railTone = 'warn';
+    } else if (runningExecution) {
+        railTitle = runningToolCount > 1 ? `Executing ${runningToolCount} tools` : "Executing tool";
+        railTone = 'good';
+    } else if (activityText) {
+        railTitle = "Working";
+        railTone = 'good';
+    } else if (isTyping) {
+        railTitle = "Drafting response";
+        railTone = 'good';
+    }
+
+    const showComposerPrompts =
+        !inputValue.trim() &&
+        !selectedImage &&
+        !isTyping &&
+        messages.length < 4;
 
     const handleKeyPress = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -645,34 +735,59 @@ export function ChatInterface({
     return (
         <div className="flex flex-col h-full bg-background relative">
             {/* Chat Header - Hidden on mobile, shown on md+ */}
-            <header className="hidden md:flex h-16 items-center gap-4 px-6 border-b border-border bg-card z-10 transition-all duration-200">
-                <div className="flex-1">
-                    <h1 className="text-lg font-bold text-foreground">Chat</h1>
-                    <p className="text-xs text-muted-foreground">
-                        Direct Gateway Session
-                    </p>
+            <header className="hidden md:flex h-14 items-center gap-3 px-6 border-b border-border bg-card z-10 transition-all duration-200">
+                <div className="flex-1 min-w-0">
+                    <h1 className="text-base font-bold text-foreground leading-tight">Chat</h1>
                 </div>
-                <div className="flex items-center gap-3">
-                    <div className={cn("px-3 py-1 rounded-full text-[10px] font-bold tracking-wide border flex items-center gap-2",
-                        isConnected
-                            ? "bg-primary/10 text-primary border-primary/20"
-                            : "bg-muted text-muted-foreground border-border"
-                    )}>
-                        <div className={cn("w-1.5 h-1.5 rounded-full", isConnected ? "bg-primary" : "bg-muted-foreground")} />
-                        {isConnected ? "ONLINE" : "OFFLINE"}
-                    </div>
 
-                    <div className="h-6 w-px bg-border mx-1" />
-
-                    {autonomousMode && (
-                        <div className="px-2 py-1 rounded bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 text-[10px] font-bold tracking-wide flex items-center gap-1.5 animate-pulse">
-                            <span className="relative flex h-1.5 w-1.5">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-500 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-yellow-500"></span>
-                            </span>
-                            AUTONOMOUS
-                        </div>
+                {/* Inline status chips */}
+                <div className="flex items-center gap-2">
+                    <StatusChip
+                        label="Gateway"
+                        value={isConnected ? "Live" : "Reconnecting"}
+                        tone={isConnected ? 'good' : 'default'}
+                    />
+                    <StatusChip
+                        label="Mode"
+                        value={autonomousMode ? "Autonomous" : "Guarded"}
+                        tone={autonomousMode ? 'warn' : 'default'}
+                    />
+                    <StatusChip label="Session" value={sessionLabel} />
+                    {waitingToolCount > 0 && (
+                        <StatusChip label="Approvals" value={String(waitingToolCount)} tone="warn" />
                     )}
+                    {runningToolCount > 0 && (
+                        <StatusChip label="Tools" value={String(runningToolCount)} tone="good" />
+                    )}
+                </div>
+
+                {/* Compact rail status pill */}
+                <div
+                    className={cn(
+                        "flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] transition-all",
+                        railTone === 'good' && "border-primary/20 bg-primary/5 text-primary",
+                        railTone === 'warn' && "border-amber-500/20 bg-amber-500/5 text-amber-500",
+                        railTone === 'default' && "border-border bg-card/70 text-muted-foreground"
+                    )}
+                >
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                        {!isConnected ? (
+                            <WifiOff className="h-3.5 w-3.5" />
+                        ) : waitingExecution ? (
+                            <ShieldAlert className="h-3.5 w-3.5" />
+                        ) : isTyping || runningExecution || activityText ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                            <Wifi className="h-3.5 w-3.5" />
+                        )}
+                    </span>
+                    <span className="font-semibold">{railTitle}</span>
+                    <span className="uppercase tracking-[0.14em] opacity-60">
+                        {waitingExecution ? "review" : runningExecution || isTyping || activityText ? "live" : "idle"}
+                    </span>
+                </div>
+
+                <div className="flex items-center gap-2">
 
                     {/* Skills Button */}
                     <Button
@@ -684,31 +799,6 @@ export function ChatInterface({
                     >
                         <Zap className="h-4 w-4" />
                     </Button>
-
-                    {/* Mobile Header Spacer/Compact View */}
-                    <header className="md:hidden flex h-14 items-center justify-between px-4 border-b border-border bg-card/60 backdrop-blur-sm z-10">
-                        {/* Left side empty for hamburger menu space */}
-                        <div className="w-8"></div>
-
-                        <div className="flex items-center gap-2">
-                            <div className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold border flex items-center gap-1.5",
-                                isConnected
-                                    ? "bg-primary/5 text-primary border-primary/10"
-                                    : "bg-muted text-muted-foreground border-border"
-                            )}>
-                                <div className={cn("w-1 h-1 rounded-full", isConnected ? "bg-primary" : "bg-muted-foreground")} />
-                                {isConnected ? "ON" : "OFF"}
-                            </div>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => setSkillsModalOpen(true)}
-                                className="h-8 w-8 -mr-2 text-muted-foreground"
-                            >
-                                <Zap className="h-4 w-4" />
-                            </Button>
-                        </div>
-                    </header>
 
                     <AlertDialog open={skillsModalOpen} onOpenChange={setSkillsModalOpen}>
                         <AlertDialogContent className="border-primary/20 max-w-2xl max-h-[80vh] overflow-hidden flex flex-col p-0">
@@ -854,24 +944,28 @@ export function ChatInterface({
                 </div>
             </header>
 
+
             {/* Chat Messages */}
             <div className="flex-1 overflow-hidden relative">
                 <ScrollArea ref={scrollAreaRef} className="h-full p-4 md:p-8" onScroll={handleScroll}>
                     <div className="flex flex-col gap-8 max-w-4xl mx-auto pb-4">
                         {messages.length === 0 && (
-                            <div className="flex flex-col items-center justify-center min-h-[50vh] text-center space-y-4">
-                                <Avatar className="h-20 w-20 shadow-xl shadow-primary/20">
+                            <div className="flex flex-col items-center justify-center py-16 text-center">
+                                <Avatar className="h-14 w-14 shadow-lg shadow-primary/20">
                                     <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
                                     <AvatarFallback className="bg-primary/10 text-primary">
-                                        <Bot className="h-10 w-10" />
+                                        <Bot className="h-7 w-7" />
                                     </AvatarFallback>
                                 </Avatar>
-                                <div className="space-y-1">
-                                    <h3 className="font-semibold text-lg text-foreground">
-                                        {botIdentity?.name ? `${botIdentity.name} is Ready` : "System Ready"}
+                                <div className="mt-4 space-y-1">
+                                    <div className="text-[10px] font-bold uppercase tracking-[0.24em] text-primary/70">
+                                        Session {sessionLabel}
+                                    </div>
+                                    <h3 className="text-lg font-semibold text-foreground">
+                                        {botIdentity?.name ? `${botIdentity.name} is ready` : "LimeBot is ready"}
                                     </h3>
-                                    <p className="text-sm text-muted-foreground max-w-xs mx-auto">
-                                        I am active and listening. Start a secure session below.
+                                    <p className="text-xs text-muted-foreground">
+                                        Ask anything, or pick a suggestion below.
                                     </p>
                                 </div>
                             </div>
@@ -970,38 +1064,15 @@ export function ChatInterface({
                         })()}
                     </div>
 
-                    {/* Typing Indicator */}
-                    {isTyping && (
-                        <div className="flex w-full gap-4 max-w-[85%]">
-                            <Avatar className={cn(
-                                "h-8 w-8 mt-1 shrink-0",
-                                (isTyping || runningTool || waitingTool) && "lime-avatar-pulse"
-                            )}>
-                                <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
-                                <AvatarFallback className="bg-primary text-primary-foreground text-xs">LB</AvatarFallback>
-                            </Avatar>
-                            <div className="flex flex-col gap-2">
-                                {hasThinking && (
-                                    <div className="lime-activity-ribbon">
-                                        <div className={cn("lime-step", hasThinking && "is-active")}>Memory</div>
-                                        <div className={cn(
-                                            "lime-step",
-                                            (runningTool || waitingTool) && "is-active"
-                                        )}>Tools</div>
-                                        <div className={cn(
-                                            "lime-step",
-                                            !(runningTool || waitingTool) && hasThinking && "is-active"
-                                        )}>Compose</div>
-                                    </div>
-                                )}
-                                <div className="bg-muted text-foreground rounded-xl rounded-tl-sm px-4 py-3 flex items-center gap-1">
-                                    <div className="w-2 h-2 rounded-full bg-primary/50 animate-bounce [animation-delay:-0.3s]"></div>
-                                    <div className="w-2 h-2 rounded-full bg-primary/50 animate-bounce [animation-delay:-0.15s]"></div>
-                                    <div className="w-2 h-2 rounded-full bg-primary/50 animate-bounce"></div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+                    {/* ChatGPT-style typing indicator */}
+                    {isTyping && (() => {
+                        const last = messages[messages.length - 1];
+                        const botAlreadyStreaming = last?.sender === 'bot' && last?.isStreaming;
+                        return !botAlreadyStreaming ? (
+                            <TypingIndicator botIdentity={botIdentity} />
+                        ) : null;
+                    })()}
+
                     <div ref={scrollRef} />
                 </ScrollArea>
 
@@ -1026,8 +1097,25 @@ export function ChatInterface({
             </div>
 
             {/* Input Area */}
-            <div className="p-6 bg-background border-t border-border relative z-20">
+            <div className="p-4 bg-background border-t border-border relative z-20">
                 <div className="max-w-4xl mx-auto relative group">
+                    <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
+                        <StatusChip
+                            label="Compose"
+                            value="Enter sends"
+                        />
+                        <StatusChip
+                            label="Line break"
+                            value="Shift+Enter"
+                        />
+                        {waitingToolCount > 0 && (
+                            <StatusChip label="Pending approval" value={String(waitingToolCount)} tone="warn" />
+                        )}
+                        {selectedImage && (
+                            <StatusChip label="Attachment" value="Image ready" tone="good" />
+                        )}
+                    </div>
+
                     {/* Image Preview */}
                     {selectedImage && (
                         <div className="absolute bottom-full left-0 mb-4 bg-background border border-border p-2 rounded-xl shadow-lg animate-in fade-in slide-in-from-bottom-2">
@@ -1061,7 +1149,7 @@ export function ChatInterface({
                         />
 
                         {/* Stop Button (visible when typing or executing tools) */}
-                        {(isTyping || messages.some(m => m.type === 'tool' && m.toolExecution?.status === 'running')) && (
+                        {(isTyping || messages.some(m => m.type === 'tool' && (m.toolExecution?.status === 'running' || m.toolExecution?.status === 'planned'))) && (
                             <Button
                                 variant="ghost"
                                 size="icon"
@@ -1089,7 +1177,13 @@ export function ChatInterface({
 
                         <Textarea
                             ref={textareaRef}
-                            placeholder="Type a message (or paste an image)..."
+                            placeholder={
+                                !isConnected
+                                    ? "Waiting for the gateway to reconnect..."
+                                    : waitingToolCount > 0
+                                        ? "Approve or deny the waiting action below, or send a clarification..."
+                                        : "Ask LimeBot to inspect, plan, code, or explain..."
+                            }
                             value={inputValue}
                             onChange={(e) => onInputChange(e.target.value)}
                             onKeyDown={handleKeyPress}
@@ -1120,10 +1214,29 @@ export function ChatInterface({
                             </Button>
                         </div>
                     </div>
+
+                    {showComposerPrompts && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                            {QUICK_ACTIONS.map(({ label, prompt }) => (
+                                <button
+                                    key={label}
+                                    type="button"
+                                    onClick={() => onSendMessage(prompt)}
+                                    className="rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground"
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    )}
                 </div>
-                <div className="max-w-4xl mx-auto mt-2 flex justify-between px-1 text-[10px] font-medium text-muted-foreground">
-                    <span>Secure Channel</span>
-                    <span>LimeBot v1.0.4</span>
+                <div className="max-w-4xl mx-auto mt-2 flex flex-wrap justify-between gap-2 px-1 text-[10px] font-medium text-muted-foreground">
+                    <span>
+                        {waitingToolCount > 0
+                            ? "Pending approvals are handled directly in the tool timeline."
+                            : "Secure channel with guarded tool execution."}
+                    </span>
+                    <span>LimeBot v1.0.5</span>
                 </div>
             </div>
         </div>

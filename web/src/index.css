@@ -1378,3 +1378,15 @@
 .chat-group-spacer {
   height: 6px;
 }
+
+/* Typing indicator — three-dot bounce */
+@keyframes typing-dot {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-5px);
+    opacity: 1;
+  }
+}

@@ -14,7 +14,6 @@ interface AppLayoutProps {
         isConnected: boolean;
         autonomousMode: boolean;
         pendingApprovals: number;
-        activityText: string | null;
     };
 }
 
