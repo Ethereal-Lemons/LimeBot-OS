@@ -406,6 +406,25 @@ class AgentLoop:
         return "\n\n".join(section for section in sections if section.strip())
 
     @staticmethod
+    def _should_suppress_web_final_reply(
+        *,
+        channel: str,
+        any_tool_calls_in_turn: bool,
+        iterations_limit_reached: bool,
+        web_streamed_reply: bool,
+        force_direct_reply: bool,
+        reply_to_user: str,
+        raw_reply: str,
+    ) -> bool:
+        if channel != "web":
+            return False
+        if not any_tool_calls_in_turn:
+            return False
+        if iterations_limit_reached or not web_streamed_reply or force_direct_reply:
+            return False
+        return str(reply_to_user or "").strip() == str(raw_reply or "").strip()
+
+    @staticmethod
     def _messages_have_image_inputs(messages: List[Dict[str, Any]]) -> bool:
         for message in messages:
             content = message.get("content") if isinstance(message, dict) else None
@@ -3236,11 +3255,15 @@ class AgentLoop:
                         )
 
                         suppress_web_final_reply = (
-                            msg.channel == "web"
-                            and tool_calls
-                            and not iterations_limit_reached
-                            and web_streamed_reply
-                            and not force_direct_reply
+                            self._should_suppress_web_final_reply(
+                                channel=msg.channel,
+                                any_tool_calls_in_turn=any_tool_calls_in_turn,
+                                iterations_limit_reached=iterations_limit_reached,
+                                web_streamed_reply=web_streamed_reply,
+                                force_direct_reply=force_direct_reply,
+                                reply_to_user=reply_to_user,
+                                raw_reply=raw_reply,
+                            )
                         )
 
                         if suppress_web_final_reply:
