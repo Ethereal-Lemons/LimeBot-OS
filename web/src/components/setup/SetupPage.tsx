@@ -5,12 +5,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Key, Bot, ShieldCheck, ArrowRight, CheckCircle2, RefreshCw, Trash, Plus } from 'lucide-react';
 import { Badge } from '../ui/badge';
+import { DEFAULT_MODEL_BY_PROVIDER, getAdditionalModels, getInitialModelForProvider, getRecommendedModels, PROVIDER_LABELS, type LlmModelOption } from '@/lib/llm-models';
 
-const FALLBACK_MODELS = [
+const FALLBACK_MODELS: LlmModelOption[] = [
     { id: 'gemini/gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash-Lite (Preview)', provider: 'gemini' },
     { id: 'gemini/gemini-2.0-flash', name: 'Gemini 2.0 Flash', provider: 'gemini' },
     { id: 'gemini/gemini-1.5-flash', name: 'Gemini 1.5 Flash', provider: 'gemini' },
@@ -23,6 +24,10 @@ const FALLBACK_MODELS = [
     { id: 'qwen/qwen-plus', name: 'Qwen Plus', provider: 'qwen' },
     { id: 'qwen/qwen-max', name: 'Qwen Max', provider: 'qwen' },
     { id: 'qwen/qwen-flash', name: 'Qwen Flash', provider: 'qwen' },
+    { id: 'nvidia/moonshotai/kimi-k2-instruct', name: 'Kimi K2 Instruct', provider: 'nvidia' },
+    { id: 'nvidia/moonshotai/kimi-k2.5', name: 'Kimi K2.5', provider: 'nvidia' },
+    { id: 'nvidia/moonshotai/kimi-k2-thinking', name: 'Kimi K2 Thinking', provider: 'nvidia' },
+    { id: 'nvidia/gpt-oss/120b', name: 'GPT-OSS 120B', provider: 'nvidia' },
 ];
 
 export function SetupPage() {
@@ -40,8 +45,9 @@ export function SetupPage() {
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const [availableModels, setAvailableModels] = useState<any[]>(FALLBACK_MODELS);
+    const [availableModels, setAvailableModels] = useState<LlmModelOption[]>(FALLBACK_MODELS);
     const [isLoadingModels, setIsLoadingModels] = useState(false);
+    const [showAllModels, setShowAllModels] = useState(false);
 
     useEffect(() => {
         fetchModels();
@@ -64,8 +70,23 @@ export function SetupPage() {
         }
     };
 
-    const getModelsForProvider = (providerId: string) => {
-        return availableModels.filter(m => m.provider === providerId);
+    const currentProvider = config.LLM_MODEL.split('/')[0] || 'gemini';
+    const recommendedModels = getRecommendedModels(availableModels, currentProvider);
+    const additionalModels = getAdditionalModels(availableModels, currentProvider);
+    const selectedHiddenModel = additionalModels.find((model) => model.id === config.LLM_MODEL);
+    const recommendedDisplayModels = selectedHiddenModel
+        ? [selectedHiddenModel, ...recommendedModels]
+        : recommendedModels;
+
+    const getRequiredKeyError = () => {
+        if (config.LLM_MODEL.startsWith('gemini') && !config.GEMINI_API_KEY) return 'Gemini API Key is required.';
+        if (config.LLM_MODEL.startsWith('openai') && !(config as any).OPENAI_API_KEY) return 'OpenAI API Key is required.';
+        if (config.LLM_MODEL.startsWith('anthropic') && !(config as any).ANTHROPIC_API_KEY) return 'Anthropic API Key is required.';
+        if (config.LLM_MODEL.startsWith('xai') && !(config as any).XAI_API_KEY) return 'xAI API Key is required.';
+        if (config.LLM_MODEL.startsWith('deepseek') && !(config as any).DEEPSEEK_API_KEY) return 'DeepSeek API Key is required.';
+        if (config.LLM_MODEL.startsWith('qwen') && !(config as any).DASHSCOPE_API_KEY) return 'Qwen API Key is required.';
+        if (config.LLM_MODEL.startsWith('nvidia') && !(config as any).NVIDIA_API_KEY) return 'NVIDIA API Key is required.';
+        return null;
     };
 
     const handleChange = (key: string, value: any) => {
@@ -76,6 +97,14 @@ export function SetupPage() {
         setSaving(true);
         setError(null);
         try {
+            if (!config.LLM_MODEL.trim()) {
+                throw new Error('Please select an LLM model.');
+            }
+            const keyError = getRequiredKeyError();
+            if (keyError) {
+                throw new Error(keyError);
+            }
+
             const res = await axios.post(`${API_BASE_URL}/api/config`, { env: config });
             const data = res.data;
             if (data.error) throw new Error(data.error);
@@ -143,12 +172,12 @@ export function SetupPage() {
                                 <Select
                                     value={config.LLM_MODEL.split('/')[0] || 'gemini'}
                                     onValueChange={(val) => {
-                                        // Set default model for the selected provider
-                                        const models = getModelsForProvider(val);
-                                        if (models.length > 0) {
-                                            handleChange('LLM_MODEL', models[0].id);
+                                        setShowAllModels(false);
+                                        const nextModel = getInitialModelForProvider(availableModels, val);
+                                        if (nextModel) {
+                                            handleChange('LLM_MODEL', nextModel);
                                         } else {
-                                            handleChange('LLM_MODEL', `${val}/unknown`);
+                                            handleChange('LLM_MODEL', DEFAULT_MODEL_BY_PROVIDER[val] || config.LLM_MODEL);
                                         }
                                     }}
                                 >
@@ -156,13 +185,13 @@ export function SetupPage() {
                                         <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="gemini">Google Gemini</SelectItem>
-                                        <SelectItem value="openai">OpenAI</SelectItem>
-                                        <SelectItem value="anthropic">Anthropic Claude</SelectItem>
-                                        <SelectItem value="xai">xAI (Grok)</SelectItem>
-                                        <SelectItem value="deepseek">DeepSeek</SelectItem>
-                                        <SelectItem value="qwen">Qwen (DashScope)</SelectItem>
-                                        <SelectItem value="nvidia">NVIDIA</SelectItem>
+                                        <SelectItem value="gemini">{PROVIDER_LABELS.gemini}</SelectItem>
+                                        <SelectItem value="openai">{PROVIDER_LABELS.openai}</SelectItem>
+                                        <SelectItem value="anthropic">{PROVIDER_LABELS.anthropic}</SelectItem>
+                                        <SelectItem value="xai">{PROVIDER_LABELS.xai}</SelectItem>
+                                        <SelectItem value="deepseek">{PROVIDER_LABELS.deepseek}</SelectItem>
+                                        <SelectItem value="qwen">{PROVIDER_LABELS.qwen}</SelectItem>
+                                        <SelectItem value="nvidia">{PROVIDER_LABELS.nvidia}</SelectItem>
                                     </SelectContent>
                                 </Select>
                                 {isLoadingModels && (
@@ -180,16 +209,52 @@ export function SetupPage() {
                                         <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        {getModelsForProvider(config.LLM_MODEL.split('/')[0]).map((model) => (
-                                            <SelectItem key={model.id} value={model.id}>
-                                                {model.name}
-                                            </SelectItem>
-                                        ))}
-                                        {getModelsForProvider(config.LLM_MODEL.split('/')[0]).length === 0 && (
+                                        {recommendedDisplayModels.length > 0 && (
+                                            <SelectGroup>
+                                                <SelectLabel>Recommended</SelectLabel>
+                                                {recommendedDisplayModels.map((model) => (
+                                                    <SelectItem key={model.id} value={model.id}>
+                                                        {model.name}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectGroup>
+                                        )}
+                                        {showAllModels && additionalModels.length > 0 && (
+                                            <>
+                                                <SelectSeparator />
+                                                <SelectGroup>
+                                                    <SelectLabel>All {PROVIDER_LABELS[currentProvider]} Models</SelectLabel>
+                                                    {additionalModels.map((model) => (
+                                                        <SelectItem key={model.id} value={model.id}>
+                                                            {model.name}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectGroup>
+                                            </>
+                                        )}
+                                        {recommendedDisplayModels.length === 0 && (!showAllModels || additionalModels.length === 0) && (
                                             <div className="p-2 text-xs text-muted-foreground">Loading models...</div>
                                         )}
                                     </SelectContent>
                                 </Select>
+                                {additionalModels.length > 0 && (
+                                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                        <span>
+                                            Showing {recommendedDisplayModels.length} recommended model{recommendedDisplayModels.length === 1 ? '' : 's'} first.
+                                        </span>
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-7 px-2 text-xs"
+                                            onClick={() => setShowAllModels((prev) => !prev)}
+                                        >
+                                            {showAllModels
+                                                ? 'Show recommended only'
+                                                : `Show all ${recommendedDisplayModels.length + additionalModels.length} models`}
+                                        </Button>
+                                    </div>
+                                )}
                             </div>
 
                             {/* Dynamic API Key Input */}
@@ -295,12 +360,7 @@ export function SetupPage() {
                                 onClick={() => setStep(3)}
                                 className="flex-1"
                                 disabled={
-                                    (config.LLM_MODEL.startsWith('gemini') && !config.GEMINI_API_KEY) ||
-                                    (config.LLM_MODEL.startsWith('openai') && !(config as any).OPENAI_API_KEY) ||
-                                    (config.LLM_MODEL.startsWith('anthropic') && !(config as any).ANTHROPIC_API_KEY) ||
-                                    (config.LLM_MODEL.startsWith('xai') && !(config as any).XAI_API_KEY) ||
-                                    (config.LLM_MODEL.startsWith('deepseek') && !(config as any).DEEPSEEK_API_KEY) ||
-                                    (config.LLM_MODEL.startsWith('qwen') && !(config as any).DASHSCOPE_API_KEY)
+                                    !!getRequiredKeyError()
                                 }
                             >
                                 Continue

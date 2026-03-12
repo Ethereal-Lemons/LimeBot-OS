@@ -4,7 +4,7 @@ import { API_BASE_URL } from "@/lib/api";
 import { Save, Settings, Key, Cpu, RefreshCw, Globe, Server, User, Trash, Plus } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -16,6 +16,7 @@ import {
     CardHeader,
     CardTitle,
 } from "@/components/ui/card";
+import { getAdditionalModels, getInitialModelForProvider, getModelProvider, getRecommendedModels, PROVIDER_LABELS, type LlmModelOption } from "@/lib/llm-models";
 
 interface ConfigState {
     OPENAI_API_KEY?: string;
@@ -48,8 +49,9 @@ export function ConfigPage() {
     const [saving, setSaving] = useState(false);
     const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
 
-    const [availableModels, setAvailableModels] = useState<any[]>([]);
+    const [availableModels, setAvailableModels] = useState<LlmModelOption[]>([]);
     const [modelsLoading, setModelsLoading] = useState(false);
+    const [showAllModels, setShowAllModels] = useState(false);
 
     useEffect(() => {
         fetchConfig();
@@ -135,6 +137,19 @@ export function ConfigPage() {
     }
 
     const filteredModels = getFilteredModels();
+    const knownModel = filteredModels.find((model) => model.id === config.LLM_MODEL);
+    const selectedProvider = knownModel?.provider || getModelProvider(config.LLM_MODEL);
+    const providerOptions = Array.from(new Set(filteredModels.map((model) => model.provider)));
+    const recommendedModels = selectedProvider === 'custom'
+        ? []
+        : getRecommendedModels(filteredModels, selectedProvider);
+    const additionalModels = selectedProvider === 'custom'
+        ? []
+        : getAdditionalModels(filteredModels, selectedProvider);
+    const selectedHiddenModel = additionalModels.find((model) => model.id === config.LLM_MODEL);
+    const recommendedDisplayModels = selectedHiddenModel
+        ? [selectedHiddenModel, ...recommendedModels]
+        : recommendedModels;
 
     return (
         <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">
@@ -187,6 +202,40 @@ export function ConfigPage() {
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <div className="grid gap-2">
+                                    <Label htmlFor="provider">Provider</Label>
+                                    <Select
+                                        value={selectedProvider}
+                                        onValueChange={(value) => {
+                                            setShowAllModels(false);
+                                            if (value === "custom") {
+                                                handleChange("LLM_MODEL", "");
+                                                return;
+                                            }
+                                            handleChange(
+                                                "LLM_MODEL",
+                                                getInitialModelForProvider(filteredModels, value),
+                                            );
+                                        }}
+                                    >
+                                        <SelectTrigger id="provider">
+                                            <SelectValue placeholder="Select Provider" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {providerOptions.map((provider) => (
+                                                <SelectItem key={provider} value={provider}>
+                                                    {PROVIDER_LABELS[provider] || provider}
+                                                </SelectItem>
+                                            ))}
+                                            <SelectSeparator />
+                                            <SelectItem value="custom">{PROVIDER_LABELS.custom}</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <p className="text-[10px] text-muted-foreground">
+                                        Start with a short recommended list per provider. Expand only when you need niche or experimental models.
+                                    </p>
+                                </div>
+
+                                <div className="grid gap-2">
                                     <Label htmlFor="model">LLM Model</Label>
                                     <div className="flex gap-2">
                                         <Select
@@ -194,7 +243,9 @@ export function ConfigPage() {
                                             value={
                                                 modelsLoading
                                                     ? "loading"
-                                                    : filteredModels.find(m => m.id === config.LLM_MODEL)
+                                                    : selectedProvider === "custom"
+                                                        ? "custom"
+                                                        : filteredModels.find(m => m.id === config.LLM_MODEL)
                                                         ? config.LLM_MODEL
                                                         : "custom"
                                             }
@@ -221,20 +272,60 @@ export function ConfigPage() {
                                                 ) : (
                                                     <>
                                                         <SelectItem value="custom" className="font-semibold text-primary">
-                                                            ✨ Custom / Local Model
+                                                            Custom / Local Model
                                                         </SelectItem>
-                                                        {filteredModels.map((model) => (
-                                                            <SelectItem key={model.id} value={model.id}>
-                                                                {model.name}
-                                                            </SelectItem>
-                                                        ))}
+                                                        {recommendedDisplayModels.length > 0 && (
+                                                            <>
+                                                                <SelectSeparator />
+                                                                <SelectGroup>
+                                                                    <SelectLabel>Recommended</SelectLabel>
+                                                                    {recommendedDisplayModels.map((model) => (
+                                                                        <SelectItem key={model.id} value={model.id}>
+                                                                            {model.name}
+                                                                        </SelectItem>
+                                                                    ))}
+                                                                </SelectGroup>
+                                                            </>
+                                                        )}
+                                                        {showAllModels && additionalModels.length > 0 && (
+                                                            <>
+                                                                <SelectSeparator />
+                                                                <SelectGroup>
+                                                                    <SelectLabel>All {PROVIDER_LABELS[selectedProvider] || selectedProvider} Models</SelectLabel>
+                                                                    {additionalModels.map((model) => (
+                                                                        <SelectItem key={model.id} value={model.id}>
+                                                                            {model.name}
+                                                                        </SelectItem>
+                                                                    ))}
+                                                                </SelectGroup>
+                                                            </>
+                                                        )}
                                                     </>
                                                 )}
                                             </SelectContent>
                                         </Select>
                                     </div>
 
-                                    {(!filteredModels.find(m => m.id === config.LLM_MODEL) || config.LLM_MODEL?.startsWith("ollama/")) && (
+                                    {selectedProvider !== 'custom' && additionalModels.length > 0 && (
+                                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                            <span>
+                                                Showing {recommendedDisplayModels.length} recommended model{recommendedDisplayModels.length === 1 ? '' : 's'} first.
+                                            </span>
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-7 px-2 text-xs"
+                                                onClick={() => setShowAllModels((prev) => !prev)}
+                                            >
+                                                {showAllModels
+                                                    ? 'Show recommended only'
+                                                    : `Show all ${recommendedDisplayModels.length + additionalModels.length} models`}
+                                            </Button>
+                                        </div>
+                                    )}
+
+                                    {(selectedProvider === "custom" || !filteredModels.find(m => m.id === config.LLM_MODEL) || config.LLM_MODEL?.startsWith("ollama/")) && (
                                         <div className="pt-2 animate-in fade-in slide-in-from-top-2">
                                             <Label htmlFor="custom_model" className="text-xs text-muted-foreground">Custom Model Name (e.g. ollama/llama3)</Label>
                                             <Input
