@@ -216,6 +216,7 @@ class DiscordChannel(BaseChannel):
         self._allowed_channels: set[str] = set(raw_channels)
         self._tool_messages: dict[str, discord.Message] = {}
         self._stop_messages: dict[str, discord.Message] = {}
+        self._typing_tasks: dict[str, asyncio.Task] = {}
         self.agent = None
         self._style_overrides = getattr(self.config, "style_overrides", {}) or {}
         self._signature = getattr(self.config, "signature", "") or ""
@@ -818,9 +819,9 @@ class DiscordChannel(BaseChannel):
                 else:
                     await self._send_text(target, msg.content)
             elif msg_type == "typing":
-                await self._send_typing(target)
-                await self._show_stop_control(target, msg.chat_id)
+                await self._send_typing(target, msg.chat_id)
             elif msg_type == "stop_typing":
+                await self._stop_typing(msg.chat_id)
                 await self._clear_stop_control(msg.chat_id)
             elif msg_type == "file":
                 await self._send_file(target, metadata)
@@ -872,9 +873,47 @@ class DiscordChannel(BaseChannel):
 
         return None
 
-    async def _send_typing(self, target) -> None:
-        async with target.typing():
-            await asyncio.sleep(0)
+    async def _send_typing(self, target, chat_id: str) -> None:
+        session_key = _session_key("discord", chat_id)
+        existing = self._typing_tasks.get(session_key)
+        if existing and not existing.done():
+            return
+
+        async def _typing_loop() -> None:
+            try:
+                async with target.typing():
+                    while True:
+                        await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                raise
+            except discord.HTTPException as e:
+                logger.warning(
+                    f"[Discord] Failed to keep typing in {_target_name(target)}: {e}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[Discord] Typing keepalive stopped in {_target_name(target)}: {e}"
+                )
+            finally:
+                current = self._typing_tasks.get(session_key)
+                if current is asyncio.current_task():
+                    self._typing_tasks.pop(session_key, None)
+
+        self._typing_tasks[session_key] = asyncio.create_task(_typing_loop())
+
+    async def _stop_typing(self, chat_id: str) -> None:
+        session_key = _session_key("discord", chat_id)
+        task = self._typing_tasks.pop(session_key, None)
+        if not task:
+            return
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"[Discord] Typing task cleanup skipped for {session_key}: {e}")
 
     async def _show_stop_control(self, target, chat_id: str) -> None:
         session_key = _session_key("discord", chat_id)

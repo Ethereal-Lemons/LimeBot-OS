@@ -220,13 +220,6 @@ async def main():
 
     async def init_background_services():
         from core.reflection import get_reflection_service
-        from core.mcp_client import get_mcp_manager
-
-        # Initialize MCP Manager
-        mcp_manager = get_mcp_manager()
-        asyncio.create_task(mcp_manager.initialize())
-
-        from core.reflection import get_reflection_service
 
         get_reflection_service(bus, model=config.llm.model)
 
