@@ -121,3 +121,4 @@ skills/gworkspace_cli/token.pickle
 skills/daily_briefing/*
 temp_tasks.json
 skills/linkedin_scout/*
+allowed_paths.txt

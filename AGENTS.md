@@ -185,6 +185,7 @@ Persistent job scheduler with cron expression support.
 - Repeating jobs: standard 5-field cron expression via `croniter`
 - Timezone support via `tz_offset` (minutes from UTC)
 - Schedule drift prevention: next trigger is computed from the **scheduled** time, not `time.time()` at execution
+- Recurring job misfire guard: repeating jobs missed by more than 60 seconds while the app was offline are skipped and advanced to the next future slot instead of replaying backlog runs
 - Proactive system jobs (when `ENABLE_DYNAMIC_PERSONALITY=true`):
   - Morning greeting at 8:00 AM daily
   - Silence check-in at 10:00 AM daily
