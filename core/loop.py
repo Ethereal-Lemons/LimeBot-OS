@@ -876,6 +876,7 @@ class AgentLoop:
     ) -> Any:
 
         model, base_url, api_key, custom_llm_provider = self._provider
+        messages = self._sanitize_messages_for_llm(messages, session_key)
         tools = (
             self._get_tool_definitions_for_turn(tool_context_text)
             if include_tools
@@ -1399,8 +1400,21 @@ class AgentLoop:
     ) -> Tuple[str, str, Dict[str, Any]]:
         tc_id = tool_call.get("id") or f"call_{uuid.uuid4().hex[:8]}"
         tool_call["id"] = tc_id
-        function_name = tool_call.get("function", {}).get("name", "")
-        raw_args = tool_call.get("function", {}).get("arguments", "{}")
+        function = tool_call.get("function")
+        if not isinstance(function, dict):
+            function = {"name": "", "arguments": "{}"}
+            tool_call["function"] = function
+
+        function_name = function.get("name", "")
+        raw_args = function.get("arguments", "{}")
+
+        if isinstance(raw_args, dict):
+            function_args = raw_args
+            raw_args = json.dumps(raw_args)
+            function["arguments"] = raw_args
+        elif raw_args in (None, ""):
+            raw_args = "{}"
+            function["arguments"] = raw_args
 
         if raw_args == "{}{}":
             logger.warning(f"Malformed args for {function_name} - fixing to {{}}")
@@ -1410,23 +1424,75 @@ class AgentLoop:
                 detail=f"{function_name}:double_object",
             )
             raw_args = "{}"
-            tool_call["function"]["arguments"] = raw_args
+            function["arguments"] = raw_args
 
-        try:
-            function_args = json.loads(raw_args)
-        except json.JSONDecodeError:
+        if not isinstance(raw_args, str):
+            raw_args_type = type(raw_args).__name__
             function_args = {}
-            logger.error(f"Invalid JSON args for '{function_name}'. Using {{}}.")
+            raw_args = "{}"
+            function["arguments"] = raw_args
+            logger.error(
+                f"Invalid non-string args for '{function_name}'. Using {{}}."
+            )
             self.metrics.record_anomaly(
                 session_key,
-                "invalid_tool_args_json",
-                detail=f"{function_name}:{raw_args[:120]}",
+                "invalid_tool_args_type",
+                detail=f"{function_name}:{raw_args_type}",
+            )
+        else:
+            raw_args_detail = raw_args
+            try:
+                function_args = json.loads(raw_args)
+            except json.JSONDecodeError:
+                function_args = {}
+                raw_args = "{}"
+                function["arguments"] = raw_args
+                logger.error(f"Invalid JSON args for '{function_name}'. Using {{}}.")
+                self.metrics.record_anomaly(
+                    session_key,
+                    "invalid_tool_args_json",
+                    detail=f"{function_name}:{raw_args_detail[:120]}",
+                )
+
+        if not isinstance(function_args, dict):
+            function_args = {}
+            raw_args_detail = str(raw_args)
+            raw_args = "{}"
+            function["arguments"] = raw_args
+            logger.error(
+                f"Non-object JSON args for '{function_name}'. Using {{}}."
+            )
+            self.metrics.record_anomaly(
+                session_key,
+                "non_object_tool_args",
+                detail=f"{function_name}:{raw_args_detail[:120]}",
             )
 
         function_name, function_args = self._normalize_tool_alias(
             function_name, function_args, session_key
         )
+        function["name"] = function_name
+        function["arguments"] = json.dumps(function_args)
         return tc_id, function_name, function_args
+
+    def _sanitize_messages_for_llm(
+        self, messages: List[Dict[str, Any]], session_key: str
+    ) -> List[Dict[str, Any]]:
+        """Repair assistant tool calls in-place before sending history upstream."""
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            tool_calls = message.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    tool_call["function"] = {"name": "", "arguments": "{}"}
+                self._parse_tool_call(tool_call, session_key)
+        return messages
 
     async def _publish_tool_intents(
         self,
@@ -2728,18 +2794,19 @@ class AgentLoop:
                             turn_id=turn_id,
                             message_id=assistant_message_id,
                         )
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                content="",
-                                metadata=self._with_trace_metadata(
-                                    {"type": "stop_typing"},
-                                    turn_id=turn_id,
-                                    message_id=assistant_message_id,
-                                ),
+                        if msg.channel == "web":
+                            await self.bus.publish_outbound(
+                                OutboundMessage(
+                                    channel=msg.channel,
+                                    chat_id=msg.chat_id,
+                                    content="",
+                                    metadata=self._with_trace_metadata(
+                                        {"type": "stop_typing"},
+                                        turn_id=turn_id,
+                                        message_id=assistant_message_id,
+                                    ),
+                                )
                             )
-                        )
 
                         await self._publish_activity(
                             msg,
