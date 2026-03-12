@@ -13,6 +13,7 @@ from core.paths import PERSONA_DIR
 SESSION_DIR = PERSONA_DIR / "sessions"
 SESSION_FILE = SESSION_DIR / "sessions.json"
 LOGS_DIR = SESSION_DIR / "logs"
+EVENTS_DIR = SESSION_DIR / "events"
 SKILLS_DIR = Path("skills")
 _STRUCTURAL_RESIDUE_RE = re.compile(r"^[`{}\[\],:;\s]+$")
 
@@ -54,6 +55,7 @@ class SessionManager:
 
         SESSION_DIR.mkdir(parents=True, exist_ok=True)
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        EVENTS_DIR.mkdir(parents=True, exist_ok=True)
 
         self.sessions: Dict[str, Any] = {}
         self._skills_cache: Optional[list] = None
@@ -176,6 +178,21 @@ class SessionManager:
 
         await asyncio.to_thread(_sync_append)
 
+    async def append_event_log(self, session_key: str, event: Dict[str, Any]):
+        """Append a structured event to the session audit log."""
+
+        def _sync_append():
+            log_file = EVENTS_DIR / f"{session_key}.jsonl"
+            try:
+                payload = dict(event)
+                payload.setdefault("timestamp", time.time())
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(payload, default=str) + "\n")
+            except Exception as e:
+                logger.error(f"Error appending event log: {e}")
+
+        await asyncio.to_thread(_sync_append)
+
     async def save_history(self, session_key: str, history: list):
         """Persist full conversation history to disk (JSON)."""
         history_dir = SESSION_DIR / "history"
@@ -293,6 +310,13 @@ class SessionManager:
                     except Exception as e:
                         logger.error(f"Error deleting log file {log_file}: {e}")
 
+                event_file = EVENTS_DIR / f"{session_key}.jsonl"
+                if event_file.exists():
+                    try:
+                        await asyncio.to_thread(os.remove, event_file)
+                    except Exception as e:
+                        logger.error(f"Error deleting event file {event_file}: {e}")
+
                 self.delete_history(session_key)
                 return True
         return False
@@ -313,6 +337,13 @@ class SessionManager:
                             await asyncio.to_thread(os.remove, log_file)
                         except Exception as e:
                             logger.error(f"Error deleting log file {log_file}: {e}")
+
+                    event_file = EVENTS_DIR / f"{key}.jsonl"
+                    if event_file.exists():
+                        try:
+                            await asyncio.to_thread(os.remove, event_file)
+                        except Exception as e:
+                            logger.error(f"Error deleting event file {event_file}: {e}")
 
                     # Delete history
                     self.delete_history(key)

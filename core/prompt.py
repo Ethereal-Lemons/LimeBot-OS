@@ -16,6 +16,9 @@ from core.paths import (
     USERS_DIR,
     MEMORY_DIR,
     LONG_TERM_MEMORY_FILE,
+    USER_CONTEXT_FILE,
+    TOOLS_NOTES_FILE,
+    HEARTBEAT_FILE,
     SOUL_FILE,
     IDENTITY_FILE,
     MOOD_FILE,
@@ -43,10 +46,32 @@ _SOUL_KEYWORDS = frozenset(
 )
 
 
-def get_memory_context() -> str:
+def should_load_private_context(
+    sender_id: str, channel: str, config: Optional[Any] = None
+) -> bool:
+    """Only trusted/direct sessions should see global memory and operator notes."""
+    if channel == "web":
+        return True
+
+    whitelist = getattr(config, "personality_whitelist", []) if config else []
+    return sender_id in whitelist
+
+
+def get_memory_context(include_private_memory: bool = True) -> str:
     """
-    Retrieve memory context (Selective Daily Journal + Long Term Essence).
+    Retrieve memory context.
+
+    Trusted sessions receive the shared daily journal and long-term memory.
+    Other sessions get an explicit omission marker so the model does not assume
+    those files were forgotten or unavailable.
     """
+    if not include_private_memory:
+        return (
+            "--- CONTEXT POLICY ---\n"
+            "Shared memory files are intentionally hidden in this conversation.\n"
+            "Rely on the current chat, the per-user profile, and retrieved context only.\n\n"
+        )
+
     today_str = datetime.now().strftime("%Y-%m-%d")
     memory_file = MEMORY_DIR / f"{today_str}.md"
 
@@ -84,6 +109,49 @@ def get_memory_context() -> str:
 
     context += "\n\n(Note: Use 'memory_search' to retrieve MORE specific details from past logs.)\n"
     return context + "\n"
+
+
+def _read_optional_context_file(path: Path, heading: str) -> str:
+    if not path.exists():
+        return ""
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        logger.warning(f"Failed reading {path.name}: {e}")
+        return ""
+    if not content:
+        return ""
+    return f"\n--- {heading} ---\n{content}\n"
+
+
+def get_private_user_context(include_private_memory: bool = True) -> str:
+    if not include_private_memory:
+        return ""
+    return _read_optional_context_file(USER_CONTEXT_FILE, "PRIMARY USER CONTEXT")
+
+
+def get_tools_notes_context(include_private_memory: bool = True) -> str:
+    if not include_private_memory:
+        return ""
+    return _read_optional_context_file(TOOLS_NOTES_FILE, "LOCAL OPERATOR NOTES")
+
+
+def get_heartbeat_context(current_message: str = "") -> str:
+    normalized = (current_message or "").strip().lower()
+    if not (
+        normalized in {"@heartbeat", "heartbeat"} or normalized.startswith("@heartbeat::")
+    ):
+        return ""
+
+    heartbeat_notes = _read_optional_context_file(HEARTBEAT_FILE, "HEARTBEAT POLICY")
+    return (
+        "\n--- HEARTBEAT MODE ---\n"
+        "This turn is a proactive heartbeat check.\n"
+        "Follow HEARTBEAT.md strictly if present.\n"
+        "If there is nothing useful to do or say, reply exactly: HEARTBEAT_OK\n"
+        "Do not revive stale tasks from older chats unless the heartbeat file explicitly says to.\n"
+        f"{heartbeat_notes}"
+    )
 
 
 def get_mood_context() -> str:
@@ -361,7 +429,11 @@ def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
     return "".join(parts)
 
 
-def get_volatile_prompt_suffix(recalled_context: str = "") -> str:
+def get_volatile_prompt_suffix(
+    recalled_context: str = "",
+    include_private_memory: bool = True,
+    current_message: str = "",
+) -> str:
     """
     Return the frequently-changing part of the system prompt.
     This includes memory, RAG results, and the current timestamp.
@@ -370,7 +442,8 @@ def get_volatile_prompt_suffix(recalled_context: str = "") -> str:
     if recalled_context:
         suffix += f"RECALLED FROM VECTOR DB:\n{recalled_context}\n\n"
 
-    suffix += get_memory_context()
+    suffix += get_memory_context(include_private_memory=include_private_memory)
+    suffix += get_heartbeat_context(current_message=current_message)
 
     suffix += f"\n- **Current Timestamp:** {datetime.now().strftime('%A, %B %d, %Y - %H:%M:%S')}\n"
 
@@ -396,6 +469,7 @@ def build_stable_system_prompt(
     if not is_setup_complete(soul_content=soul, identity_content=identity_raw):
         return get_setup_prompt(soul_content=soul, identity_content=identity_raw)
 
+    include_private_context = should_load_private_context(sender_id, channel, config)
     identity_data = get_identity_data(identity_content=identity_raw)
     identity_header = (
         f"# {identity_data['name']}'s Identity\n"
@@ -434,6 +508,14 @@ def build_stable_system_prompt(
         mood_ctx = get_mood_context()
         if mood_ctx:
             segments.append(mood_ctx)
+
+    private_user_ctx = get_private_user_context(include_private_context)
+    if private_user_ctx:
+        segments.append(private_user_ctx)
+
+    tools_notes_ctx = get_tools_notes_context(include_private_context)
+    if tools_notes_ctx:
+        segments.append(tools_notes_ctx)
 
     allowed_paths_str = "\n".join(f"- {p}" for p in allowed_paths)
 
@@ -526,11 +608,7 @@ def build_stable_system_prompt(
     )
 
     # user_text already loaded above
-
     if user_text:
-        display_label = sender_name if sender_name else sender_id
-        base_prompt += f"\n--- USER CONTEXT ({display_label}) ---\n{user_text}\n"
-
         relationship_ctx = get_relationship_context(sender_id)
         if (
             relationship_ctx
@@ -573,8 +651,7 @@ def build_stable_system_prompt(
             "Fill in what you know. Leave sections as placeholders until you learn more.\n"
         )
 
-    whitelist = getattr(config, "personality_whitelist", [])
-    if sender_id not in whitelist:
+    if not should_load_private_context(sender_id, channel, config):
         base_prompt += (
             f"\n--- IMPORTANT: USER IDENTITY IS CONSTRAINED ---\n"
             f"The user you are currently talking to ({sender_id}) is NOT on your Personality Whitelist.\n"
@@ -593,6 +670,13 @@ def build_stable_system_prompt(
         )
         if channel == "whatsapp":
             base_prompt += f"When sending files via WhatsApp to THIS user, use the exact chat_id above: `{chat_id}`\n"
+
+    if not include_private_context:
+        base_prompt += (
+            "\n--- PRIVATE CONTEXT POLICY ---\n"
+            "Do not assume access to global/shared memory in this conversation.\n"
+            "Never cite or rely on hidden operator notes, hidden daily journals, or hidden long-term memory.\n"
+        )
 
     return base_prompt
 
