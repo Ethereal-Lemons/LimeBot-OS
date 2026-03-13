@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn, exec, execSync } from 'child_process';
+import { spawn, exec, execSync, execFile } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -13,6 +13,10 @@ const UPDATE_CHECK_TTL_MS = 1000 * 60 * 60 * 6;
 const UPDATE_CHECK_TIMEOUT_MS = 2500;
 const UPDATE_CHECK_CACHE_PATH = path.join(rootDir, 'data', 'cli-update-check.json');
 const WIN_MAX_PATH_SAFE = 259;
+const MIN_PYTHON_MAJOR = 3;
+const MIN_PYTHON_MINOR = 11;
+const MAX_SUPPORTED_PYTHON_MINOR = 14;
+const WIN_PREFERRED_PYTHON_MINORS = [14, 13, 12, 11];
 const WIN_VENV_PATH_PROBES = [
     path.join('Lib', 'site-packages'),
     path.join(
@@ -490,6 +494,10 @@ async function findAvailablePort(startPort, maxChecks = 100, reservedPorts = new
 
 function commandExists(cmd) {
     return new Promise((resolve) => {
+        if (!cmd) return resolve(false);
+        if (path.isAbsolute(cmd) || /[\\/]/.test(cmd)) {
+            return resolve(fs.existsSync(cmd));
+        }
         try {
             exec(
                 process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`,
@@ -502,16 +510,32 @@ function commandExists(cmd) {
 }
 
 async function getSystemPython() {
-    if (process.platform === 'win32' && await commandExists('py')) return 'py';
-    if (await commandExists('python3')) return 'python3';
-    if (await commandExists('python')) {
+    const pinnedPython = String(process.env.LIMEBOT_PYTHON || '').trim();
+    if (pinnedPython) return pinnedPython;
 
-        if (process.platform === 'win32') {
-            const ver = await getVersion('python');
-            if (ver && ver.toLowerCase().includes('python')) return 'python';
-        } else {
-            return 'python';
+    let firstDetected = null;
+
+    if (process.platform === 'win32' && await commandExists('py')) {
+        const requestedVersion = String(process.env.LIMEBOT_PYTHON_VERSION || '').trim();
+        if (requestedVersion) {
+            const requested = await resolvePyLauncherPython(`-${requestedVersion}`);
+            if (requested) return requested;
         }
+
+        for (const minor of WIN_PREFERRED_PYTHON_MINORS) {
+            const resolved = await resolvePyLauncherPython(`-3.${minor}`);
+            if (resolved) return resolved;
+        }
+
+        const fallback = await resolvePyLauncherPython();
+        if (fallback) firstDetected = fallback;
+    }
+
+    for (const candidate of ['python3', 'python']) {
+        if (!await commandExists(candidate)) continue;
+        const info = await getPythonRuntimeInfo(candidate);
+        if (info.supported) return candidate;
+        if (!firstDetected) firstDetected = candidate;
     }
 
     if (process.platform === 'win32') {
@@ -536,20 +560,124 @@ async function getSystemPython() {
                 }
             } catch { }
         }
+
         for (const c of candidates) {
-            if (fs.existsSync(c)) return c;
+            if (!fs.existsSync(c)) continue;
+            const info = await getPythonRuntimeInfo(c);
+            if (info.supported) return c;
+            if (!firstDetected) firstDetected = c;
         }
     }
-    return 'python';
+
+    return firstDetected || 'python';
 }
 
 function getVersion(cmd, args = ['--version']) {
     return new Promise((resolve) => {
+        if (!cmd) return resolve(null);
+        try {
+            if (path.isAbsolute(cmd) || !cmd.includes(' ')) {
+                execFile(cmd, args, { windowsHide: true }, (err, stdout, stderr) => {
+                    if (err) resolve(null);
+                    else resolve((stdout || stderr).trim().split('\n')[0]);
+                });
+                return;
+            }
 
-        exec(`${cmd} ${args.join(' ')}`, (err, stdout, stderr) => {
-            if (err) resolve(null);
-            else resolve((stdout || stderr).trim().split('\n')[0]);
-        });
+            exec(`${cmd} ${args.join(' ')}`, (err, stdout, stderr) => {
+                if (err) resolve(null);
+                else resolve((stdout || stderr).trim().split('\n')[0]);
+            });
+        } catch {
+            resolve(null);
+        }
+    });
+}
+
+function parsePythonVersion(versionText) {
+    const raw = String(versionText || '').trim();
+    if (!raw) return null;
+
+    const match = raw.match(/Python\s+(\d+)\.(\d+)(?:\.(\d+))?/i)
+        || raw.match(/^(\d+)\.(\d+)(?:\.(\d+))?$/);
+    if (!match) return null;
+
+    return {
+        major: Number(match[1]),
+        minor: Number(match[2]),
+        patch: Number(match[3] || 0),
+        raw,
+    };
+}
+
+function describeSupportedPython() {
+    return 'Python 3.11 to 3.14';
+}
+
+function isSupportedPythonVersion(version) {
+    if (!version) return false;
+    if (version.major !== MIN_PYTHON_MAJOR) return false;
+    if (version.minor < MIN_PYTHON_MINOR) return false;
+    if (version.minor > MAX_SUPPORTED_PYTHON_MINOR) {
+        return false;
+    }
+    return true;
+}
+
+async function getPythonRuntimeInfo(cmd) {
+    const versionText = await getVersion(cmd);
+    const version = parsePythonVersion(versionText);
+    return {
+        command: cmd,
+        versionText,
+        version,
+        supported: isSupportedPythonVersion(version),
+    };
+}
+
+function unsupportedPythonMessage(info, { location = null, venvDir = null } = {}) {
+    const versionText = info?.versionText || 'an unknown Python version';
+    const target = location || `Python interpreter ${info?.command || '<unknown>'}`;
+
+    let message = `${target} is using ${versionText}. LimeBot currently supports ${describeSupportedPython()}.`;
+    if (process.platform === 'win32') {
+        message += ` Recreate the venv with a supported version, for example: py -3.14 -m venv "${venvDir || venvDirPath()}"`;
+    }
+    return message;
+}
+
+async function ensureSupportedPython(cmd, purpose, venvDir = null) {
+    const info = await getPythonRuntimeInfo(cmd);
+    if (!info.version) {
+        throw new Error(`${purpose} was found, but its version could not be determined (${cmd}).`);
+    }
+    if (!info.supported) {
+        throw new Error(
+            unsupportedPythonMessage(info, {
+                location: purpose,
+                venvDir,
+            })
+        );
+    }
+    return info;
+}
+
+function resolvePyLauncherPython(versionArg = null) {
+    return new Promise((resolve) => {
+        const args = [];
+        if (versionArg) args.push(versionArg);
+        args.push('-c', 'import sys; print(sys.executable)');
+
+        try {
+            execFile('py', args, { windowsHide: true }, (err, stdout) => {
+                if (err) return resolve(null);
+                const candidate = String(stdout || '').trim().split(/\r?\n/)[0];
+                if (candidate && fs.existsSync(candidate)) resolve(candidate);
+                else resolve(null);
+            });
+        } catch {
+            resolve(null);
+        }
     });
 }
 
@@ -698,7 +826,14 @@ async function cmdDoctor(args = []) {
 
     const pythonCmd = await getSystemPython();
     if (await commandExists(pythonCmd)) {
-        success(`Python installed: ${await getVersion(pythonCmd)} (${pythonCmd})`);
+        const pythonInfo = await getPythonRuntimeInfo(pythonCmd);
+        if (pythonInfo.supported) {
+            success(`Python installed: ${pythonInfo.versionText} (${pythonCmd})`);
+        } else {
+            error(`Unsupported Python installed: ${pythonInfo.versionText} (${pythonCmd})`);
+            info(`Expected ${describeSupportedPython()}.`);
+            issues++;
+        }
     } else {
         error('Python not found in PATH'); issues++;
     }
@@ -723,6 +858,23 @@ async function cmdDoctor(args = []) {
     fs.existsSync(venvLayout.venvDir)
         ? success(`Python virtual environment exists${venvLayout.usingFallback ? ` (${venvLayout.venvDir})` : ''}`)
         : warning(`Python virtual environment not created (will be created on first start${venvLayout.usingFallback ? ` at ${venvLayout.venvDir}` : ''})`);
+
+    const venvPython = venvPythonPath();
+    if (fs.existsSync(venvPython)) {
+        const venvInfo = await getPythonRuntimeInfo(venvPython);
+        if (venvInfo.supported) {
+            success(`Venv Python: ${venvInfo.versionText} (${venvPython})`);
+        } else {
+            error(`Unsupported venv Python: ${venvInfo.versionText} (${venvPython})`);
+            info(
+                unsupportedPythonMessage(venvInfo, {
+                    location: `The virtual environment at ${venvLayout.venvDir}`,
+                    venvDir: venvLayout.venvDir,
+                })
+            );
+            issues++;
+        }
+    }
 
     fs.existsSync(path.join(rootDir, 'web', 'node_modules'))
         ? success('Frontend dependencies installed')
@@ -1113,6 +1265,7 @@ async function cmdStart(args) {
     const venvDir = venvLayout.venvDir;
     const venvPython = venvPythonPath();
     const childEnv = buildChildEnv();
+    const systemPython = await getSystemPython();
     const configuredBackendPort = getConfiguredPort('WEB_PORT', 8000);
     const configuredFrontendPort = getConfiguredPort('FRONTEND_PORT', 5173);
     const backendPort = frontendOnly
@@ -1131,6 +1284,14 @@ async function cmdStart(args) {
     }
     if (venvLayout.usingFallback) {
         warning(`Windows path safety: using venv at ${venvDir} (projected max path ${venvLayout.projectedMaxPathLength}/${WIN_MAX_PATH_SAFE})`);
+    }
+
+    if (!frontendOnly) {
+        if (fs.existsSync(venvPython)) {
+            await ensureSupportedPython(venvPython, 'Virtual environment Python', venvDir);
+        } else {
+            await ensureSupportedPython(systemPython, 'System Python', venvDir);
+        }
     }
 
     childEnv.WEB_PORT = String(backendPort);
@@ -1174,7 +1335,6 @@ async function cmdStart(args) {
                 });
             }
 
-            const systemPython = await getSystemPython();
             const pythonCmd = fs.existsSync(venvPython) ? venvPython : systemPython;
 
             await runWithSpinner('Checking backend requirements...', () => {
@@ -1214,7 +1374,6 @@ async function cmdStart(args) {
         }
 
         info('Starting backend...');
-        const systemPython = await getSystemPython();
         const cmd = fs.existsSync(venvPython) ? venvPython : systemPython;
 
         backendProc = spawn(cmd, ['main.py'], { cwd: rootDir, shell: true, stdio: 'inherit', env: childEnv });
