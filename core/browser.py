@@ -9,6 +9,7 @@ import hashlib
 import os
 import random
 import re
+import shutil
 import sys
 import time
 import urllib.parse
@@ -118,6 +119,23 @@ class BrowserManager:
     BASE_DIR = Path.home() / ".limebot" / "browser"
     PROFILES_DIR = BASE_DIR / "profiles"
     SCREENSHOTS_DIR = BASE_DIR / "screenshots"
+    SNAPSHOT_SKIP_NAMES = frozenset(
+        {
+            "cache",
+            "code cache",
+            "gpucache",
+            "dawncache",
+            "grshadercache",
+            "shadercache",
+            "media cache",
+            "crashpad",
+            "crash reports",
+            "safe browsing",
+            "optimizationguidepredictionmodels",
+            "service worker",
+            "blob_storage",
+        }
+    )
 
     _LB_ATTR = "data-lb-id"
 
@@ -144,6 +162,9 @@ class BrowserManager:
         self._element_map: Dict[str, Any] = {}
         self._attached_browser = False
         self._action_lock = asyncio.Lock()
+        self._system_source_user_data_dir: Optional[Path] = None
+        self._system_snapshot_dir: Optional[Path] = None
+        self._using_system_snapshot = False
 
         storage_key = session_key if self.mode == "isolated" else self.manager_key
         storage_name = self._storage_name(storage_key)
@@ -155,6 +176,7 @@ class BrowserManager:
             self.user_data_dir.mkdir(parents=True, exist_ok=True)
         elif self.mode == "system":
             self.user_data_dir, detected_channel = self._resolve_system_profile()
+            self._system_source_user_data_dir = self.user_data_dir
             if not self.channel and detected_channel:
                 self.channel = detected_channel
 
@@ -241,7 +263,8 @@ class BrowserManager:
         )
 
     def _format_system_profile_error(self, error: Exception) -> str:
-        base = f"Failed to open the system browser profile at {self.user_data_dir}."
+        source_dir = self._system_source_user_data_dir or self.user_data_dir
+        base = f"Failed to open the system browser profile at {source_dir}."
         if self._is_profile_locked_error(error):
             return (
                 f"{base} That profile is already in use by your browser. "
@@ -249,6 +272,89 @@ class BrowserManager:
                 "and point BROWSER_CDP_URL at a live Chrome/Edge debugging endpoint."
             )
         return f"{base} {error}"
+
+    @classmethod
+    def _should_skip_snapshot_name(cls, name: str) -> bool:
+        lowered = name.strip().lower()
+        if lowered in cls.SNAPSHOT_SKIP_NAMES:
+            return True
+        if lowered.startswith("singleton"):
+            return True
+        return lowered.endswith((".lock", ".tmp"))
+
+    @staticmethod
+    def _is_browser_profile_dir(name: str) -> bool:
+        return (
+            name == "Default"
+            or name.startswith("Profile ")
+            or name in {"Guest Profile", "System Profile"}
+        )
+
+    def _copy_tree_soft(self, source: Path, destination: Path) -> None:
+        for root, dirs, files in os.walk(source):
+            root_path = Path(root)
+            relative = root_path.relative_to(source)
+            target_root = destination / relative
+            target_root.mkdir(parents=True, exist_ok=True)
+
+            dirs[:] = [
+                directory
+                for directory in dirs
+                if not self._should_skip_snapshot_name(directory)
+            ]
+
+            for filename in files:
+                if self._should_skip_snapshot_name(filename):
+                    continue
+                source_file = root_path / filename
+                target_file = target_root / filename
+                try:
+                    shutil.copy2(source_file, target_file)
+                except OSError as copy_error:
+                    logger.debug(
+                        f"Skipping locked system-profile file during snapshot: {source_file} ({copy_error})"
+                    )
+
+    def _copy_system_profile_snapshot(self, source: Path, destination: Path) -> None:
+        destination.mkdir(parents=True, exist_ok=True)
+        selected_profile = (self.profile_directory or "").strip()
+
+        for entry in source.iterdir():
+            if self._should_skip_snapshot_name(entry.name):
+                continue
+
+            if entry.is_dir():
+                if selected_profile:
+                    if entry.name not in {selected_profile, "System Profile"}:
+                        continue
+                elif not self._is_browser_profile_dir(entry.name):
+                    continue
+
+                self._copy_tree_soft(entry, destination / entry.name)
+                continue
+
+            try:
+                shutil.copy2(entry, destination / entry.name)
+            except OSError as copy_error:
+                logger.debug(
+                    f"Skipping locked system-profile file during snapshot: {entry} ({copy_error})"
+                )
+
+    def _prepare_system_profile_snapshot(self) -> Path:
+        source = self._system_source_user_data_dir
+        if source is None:
+            raise RuntimeError("System browser mode did not resolve a source profile.")
+
+        snapshot_dir = (
+            self.PROFILES_DIR / self._storage_name(self.manager_key) / "system-snapshot"
+        )
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
+
+        self._copy_system_profile_snapshot(source, snapshot_dir)
+        self._system_snapshot_dir = snapshot_dir
+        self._using_system_snapshot = True
+        return snapshot_dir
 
     async def _ensure_browser(self) -> Page:
         """Ensure browser is running and return the active page."""
@@ -300,33 +406,48 @@ class BrowserManager:
                     )
                 except Exception as persistent_error:
                     if self.mode == "system":
-                        await self._playwright.stop()
-                        self._playwright = None
-                        raise RuntimeError(
-                            self._format_system_profile_error(persistent_error)
-                        ) from persistent_error
+                        try:
+                            snapshot_dir = await asyncio.to_thread(
+                                self._prepare_system_profile_snapshot
+                            )
+                            self.user_data_dir = snapshot_dir
+                            logger.info(
+                                f"Falling back to a snapshot of the system browser profile: {snapshot_dir}"
+                            )
+                            self._context = await self._playwright.chromium.launch_persistent_context(
+                                user_data_dir=str(snapshot_dir),
+                                **self._launch_kwargs(viewport),
+                            )
+                        except Exception as snapshot_error:
+                            await self._playwright.stop()
+                            self._playwright = None
+                            raise RuntimeError(
+                                f"{self._format_system_profile_error(persistent_error)} "
+                                f"Snapshot retry also failed: {snapshot_error}"
+                            ) from snapshot_error
 
-                    logger.warning(
-                        f"Persistent browser launch failed ({persistent_error}). "
-                        "Falling back to ephemeral context."
-                    )
-                    try:
-                        self._browser = await self._playwright.chromium.launch(
-                            headless=self.headless,
-                            channel=self.channel or None,
-                            args=self._launch_args(),
+                    if self._context is None:
+                        logger.warning(
+                            f"Persistent browser launch failed ({persistent_error}). "
+                            "Falling back to ephemeral context."
                         )
-                        self._context = await self._browser.new_context(
-                            viewport=viewport
-                        )
-                    except Exception as fallback_error:
-                        await self._playwright.stop()
-                        self._playwright = None
-                        raise RuntimeError(
-                            "Failed to start browser in both persistent and ephemeral modes. "
-                            f"Persistent error: {persistent_error} | "
-                            f"Fallback error: {fallback_error}"
-                        ) from fallback_error
+                        try:
+                            self._browser = await self._playwright.chromium.launch(
+                                headless=self.headless,
+                                channel=self.channel or None,
+                                args=self._launch_args(),
+                            )
+                            self._context = await self._browser.new_context(
+                                viewport=viewport
+                            )
+                        except Exception as fallback_error:
+                            await self._playwright.stop()
+                            self._playwright = None
+                            raise RuntimeError(
+                                "Failed to start browser in both persistent and ephemeral modes. "
+                                f"Persistent error: {persistent_error} | "
+                                f"Fallback error: {fallback_error}"
+                            ) from fallback_error
 
             self._context.on("page", self._handle_new_page)
 
@@ -542,6 +663,14 @@ class BrowserManager:
             await self._playwright.stop()
             self._playwright = None
 
+        if self._system_snapshot_dir and self._system_snapshot_dir.exists():
+            await asyncio.to_thread(
+                shutil.rmtree, self._system_snapshot_dir, True
+            )
+        if self.mode == "system" and self._system_source_user_data_dir is not None:
+            self.user_data_dir = self._system_source_user_data_dir
+        self._system_snapshot_dir = None
+        self._using_system_snapshot = False
         self._attached_browser = False
         self._element_map.clear()
         logger.info("Browser closed")

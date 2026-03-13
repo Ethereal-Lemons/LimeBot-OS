@@ -2021,6 +2021,36 @@ class AgentLoop:
         if not content or not content.strip():
             return []
 
+        def _implicit_tool_call_from_dict(parsed: dict):
+            if not isinstance(parsed, dict) or "name" in parsed:
+                return []
+
+            if isinstance(parsed.get("url"), str) and parsed["url"].strip():
+                return [
+                    {
+                        "id": f"call_{uuid.uuid4().hex[:12]}",
+                        "type": "function",
+                        "function": {
+                            "name": "browser_navigate",
+                            "arguments": json.dumps({"url": parsed["url"]}),
+                        },
+                    }
+                ]
+
+            if isinstance(parsed.get("query"), str) and parsed["query"].strip():
+                return [
+                    {
+                        "id": f"call_{uuid.uuid4().hex[:12]}",
+                        "type": "function",
+                        "function": {
+                            "name": "google_search",
+                            "arguments": json.dumps({"query": parsed["query"]}),
+                        },
+                    }
+                ]
+
+            return []
+
         try:
             cleaned = content
             if "```" in content:
@@ -2032,26 +2062,28 @@ class AgentLoop:
             e = cleaned.rfind("}")
             if s != -1 and e >= s:
                 json_str = cleaned[s : e + 1]
+                parsed = json.loads(json_str)
                 lower = json_str.lower()
-                if '"name"' in lower and (
+                if isinstance(parsed, dict) and "name" in parsed and '"name"' in lower and (
                     '"arguments"' in lower or '"parameters"' in lower
                 ):
-                    parsed = json.loads(json_str)
-                    if isinstance(parsed, dict) and "name" in parsed:
-                        args = parsed.get("arguments", parsed.get("parameters", {}))
-                        args_str = (
-                            json.dumps(args) if isinstance(args, dict) else str(args)
-                        )
-                        return [
-                            {
-                                "id": f"call_{uuid.uuid4().hex[:12]}",
-                                "type": "function",
-                                "function": {
-                                    "name": parsed["name"],
-                                    "arguments": args_str,
-                                },
-                            }
-                        ]
+                    args = parsed.get("arguments", parsed.get("parameters", {}))
+                    args_str = (
+                        json.dumps(args) if isinstance(args, dict) else str(args)
+                    )
+                    return [
+                        {
+                            "id": f"call_{uuid.uuid4().hex[:12]}",
+                            "type": "function",
+                            "function": {
+                                "name": parsed["name"],
+                                "arguments": args_str,
+                            },
+                        }
+                    ]
+                implicit = _implicit_tool_call_from_dict(parsed)
+                if implicit:
+                    return implicit
         except Exception:
             pass
 
@@ -2173,6 +2205,16 @@ class AgentLoop:
                 continue
             cleaned_lines.append(line)
         cleaned = "\n".join(cleaned_lines).strip()
+
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                if isinstance(parsed.get("url"), str) and parsed["url"].strip():
+                    return ""
+                if isinstance(parsed.get("query"), str) and parsed["query"].strip():
+                    return ""
+        except Exception:
+            pass
 
         if not re.search(r"[A-Za-z0-9]", cleaned):
             return ""

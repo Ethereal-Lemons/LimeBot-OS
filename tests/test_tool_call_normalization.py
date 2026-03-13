@@ -61,3 +61,23 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
             messages[0]["tool_calls"][0]["function"]["arguments"],
             "{}",
         )
+
+    async def test_extract_tool_from_content_infers_browser_navigate_from_url_dict(self):
+        tool_calls = self.agent._extract_tool_from_content(
+            '{"url":"https://open.spotify.com/track/5SudOD9R1Of6CsJVWZy6CQ"}'
+        )
+
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "browser_navigate")
+        self.assertEqual(
+            tool_calls[0]["function"]["arguments"],
+            '{"url": "https://open.spotify.com/track/5SudOD9R1Of6CsJVWZy6CQ"}',
+        )
+
+    async def test_sanitize_tool_call_content_drops_implicit_browser_url_dict(self):
+        self.assertEqual(
+            self.agent._sanitize_tool_call_content(
+                '{"url":"https://open.spotify.com/track/5SudOD9R1Of6CsJVWZy6CQ"}'
+            ),
+            "",
+        )

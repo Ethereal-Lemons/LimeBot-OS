@@ -59,6 +59,72 @@ class TestBrowserState(unittest.IsolatedAsyncioTestCase):
         self.assertIs(first, second)
         self.assertEqual(first.mode, "shared")
 
+    async def test_system_mode_retries_with_profile_snapshot(self):
+        from core.browser import BrowserManager
+
+        profiles_dir = Path("temp") / "test-browser-profiles-system"
+        screenshots_dir = Path("temp") / "test-browser-screenshots-system"
+        cfg = SimpleNamespace(browser=SimpleNamespace(mode="system"))
+
+        class _FakePage:
+            def __init__(self):
+                self.url = "about:blank"
+
+            def is_closed(self):
+                return False
+
+            async def add_init_script(self, *_args, **_kwargs):
+                return None
+
+        class _FakeContext:
+            def __init__(self, page):
+                self.pages = [page]
+
+            def on(self, *_args, **_kwargs):
+                return None
+
+            async def close(self):
+                return None
+
+        fake_page = _FakePage()
+        fake_context = _FakeContext(fake_page)
+        launch_persistent = AsyncMock(
+            side_effect=[
+                RuntimeError(
+                    "BrowserType.launch_persistent_context: Target page, context or browser has been closed"
+                ),
+                fake_context,
+            ]
+        )
+        fake_playwright = SimpleNamespace(
+            chromium=SimpleNamespace(launch_persistent_context=launch_persistent),
+            stop=AsyncMock(),
+        )
+        fake_factory = SimpleNamespace(start=AsyncMock(return_value=fake_playwright))
+        source_profile = Path("C:/fake/Edge/User Data")
+        snapshot_profile = profiles_dir / "snapshot-user-data"
+
+        with patch.object(BrowserManager, "PROFILES_DIR", profiles_dir), patch.object(
+            BrowserManager, "SCREENSHOTS_DIR", screenshots_dir
+        ), patch.object(
+            BrowserManager,
+            "_resolve_system_profile",
+            return_value=(source_profile, "msedge"),
+        ), patch.object(
+            BrowserManager,
+            "_prepare_system_profile_snapshot",
+            return_value=snapshot_profile,
+        ) as prepare_snapshot, patch(
+            "core.browser.async_playwright", return_value=fake_factory
+        ):
+            manager = BrowserManager("web:system", config=cfg)
+            page = await manager._ensure_browser()
+
+        self.assertIs(page, fake_page)
+        self.assertEqual(launch_persistent.await_count, 2)
+        self.assertEqual(manager.user_data_dir, snapshot_profile)
+        prepare_snapshot.assert_called_once()
+
     async def test_execute_browser_tool_uses_calling_session_key(self):
         from core.bus import MessageBus
         from core.loop import AgentLoop
