@@ -17,6 +17,14 @@ class TestBrowserState(unittest.IsolatedAsyncioTestCase):
 
         await close_browser()
 
+    async def test_default_system_profile_candidates_handles_platform_lookup(self):
+        import core.browser as browser_module
+
+        with patch.object(browser_module.sys, "platform", "win32"):
+            candidates = browser_module._default_system_profile_candidates()
+
+        self.assertTrue(candidates)
+
     async def test_browser_manager_is_scoped_per_session(self):
         from core.browser import BrowserManager, get_browser_manager
 
