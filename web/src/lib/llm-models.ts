@@ -41,9 +41,10 @@ const FEATURED_MODEL_IDS_BY_PROVIDER: Record<string, string[]> = {
   qwen: ["qwen/qwen-plus", "qwen/qwen-max", "qwen/qwen-flash"],
   nvidia: [
     "nvidia/moonshotai/kimi-k2-instruct",
-    "nvidia/moonshotai/kimi-k2.5",
-    "nvidia/moonshotai/kimi-k2-thinking",
-    "nvidia/gpt-oss/120b",
+    "nvidia/openai/gpt-oss-120b",
+    "nvidia/meta/llama-4-maverick-17b-128e-instruct",
+    "nvidia/qwen/qwen3-next-80b-a3b-instruct",
+    "nvidia/deepseek-ai/deepseek-v3.2",
     "nvidia/meta/llama-3.3-70b-instruct",
   ],
 };

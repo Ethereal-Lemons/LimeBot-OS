@@ -25,9 +25,10 @@ const FALLBACK_MODELS: LlmModelOption[] = [
     { id: 'qwen/qwen-max', name: 'Qwen Max', provider: 'qwen' },
     { id: 'qwen/qwen-flash', name: 'Qwen Flash', provider: 'qwen' },
     { id: 'nvidia/moonshotai/kimi-k2-instruct', name: 'Kimi K2 Instruct', provider: 'nvidia' },
-    { id: 'nvidia/moonshotai/kimi-k2.5', name: 'Kimi K2.5', provider: 'nvidia' },
-    { id: 'nvidia/moonshotai/kimi-k2-thinking', name: 'Kimi K2 Thinking', provider: 'nvidia' },
-    { id: 'nvidia/gpt-oss/120b', name: 'GPT-OSS 120B', provider: 'nvidia' },
+    { id: 'nvidia/openai/gpt-oss-120b', name: 'GPT-OSS 120B', provider: 'nvidia' },
+    { id: 'nvidia/openai/gpt-oss-20b', name: 'GPT-OSS 20B', provider: 'nvidia' },
+    { id: 'nvidia/meta/llama-4-maverick-17b-128e-instruct', name: 'Llama 4 Maverick', provider: 'nvidia' },
+    { id: 'nvidia/deepseek-ai/deepseek-v3.2', name: 'DeepSeek V3.2', provider: 'nvidia' },
 ];
 
 export function SetupPage() {
