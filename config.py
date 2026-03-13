@@ -46,6 +46,27 @@ def load_config(force_reload=False):
     except ValueError:
         logger.warning("Invalid WEB_PORT/PORT in .env, defaulting to 8000.")
         config.web.port = 8000
+    frontend_port = (
+        os.getenv("VITE_DEV_SERVER_PORT")
+        or os.getenv("FRONTEND_PORT")
+        or "5173"
+    ).strip()
+    default_web_origins = [
+        f"http://localhost:{frontend_port}",
+        f"http://127.0.0.1:{frontend_port}",
+    ]
+    raw_web_origins = os.getenv("WEB_ALLOWED_ORIGINS", "").strip()
+    if raw_web_origins:
+        parsed_web_origins = [
+            origin.strip().rstrip("/")
+            for origin in raw_web_origins.replace(";", ",").split(",")
+            if origin.strip()
+        ]
+        config.web.allowed_origins = (
+            default_web_origins if "*" in parsed_web_origins else parsed_web_origins
+        )
+    else:
+        config.web.allowed_origins = default_web_origins
 
     config.whatsapp = SimpleNamespace()
     config.whatsapp.enabled = os.getenv("ENABLE_WHATSAPP", "false").lower() == "true"

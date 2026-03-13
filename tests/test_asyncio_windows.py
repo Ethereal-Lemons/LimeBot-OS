@@ -49,7 +49,7 @@ class TestAsyncioWindows(unittest.TestCase):
 
     def test_does_not_suppress_other_windows_socket_errors(self):
         context = {
-            "exception": _winerror(10054),
+            "exception": _winerror(10053),
             "handle": SimpleNamespace(
                 _callback=SimpleNamespace(
                     __qualname__="_ProactorBasePipeTransport._call_connection_lost"
@@ -59,6 +59,15 @@ class TestAsyncioWindows(unittest.TestCase):
 
         with patch("core.asyncio_windows._is_windows", return_value=True):
             self.assertFalse(should_suppress_windows_proactor_error(context))
+
+    def test_suppresses_connection_reset_during_proactor_connection_lost(self):
+        context = {
+            "exception": _winerror(10054),
+            "message": "Exception in callback _ProactorBasePipeTransport._call_connection_lost()",
+        }
+
+        with patch("core.asyncio_windows._is_windows", return_value=True):
+            self.assertTrue(should_suppress_windows_proactor_error(context))
 
     def test_installed_handler_skips_known_benign_context(self):
         loop = _FakeLoop()

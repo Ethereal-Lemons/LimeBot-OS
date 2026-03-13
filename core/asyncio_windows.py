@@ -9,7 +9,7 @@ from typing import Any
 from loguru import logger
 
 _PROACTOR_CALLBACK = "_ProactorBasePipeTransport._call_connection_lost"
-_SUPPRESSED_WINERRORS = frozenset({10038})
+_SUPPRESSED_WINERRORS = frozenset({10038, 10054})
 
 
 def _is_windows() -> bool:
