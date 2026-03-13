@@ -800,17 +800,17 @@ class WebChannel(BaseChannel):
                 },
                 # ── NVIDIA NIM (static fallbacks — dynamic list fetched below) ─
                 {
-                    "id": "nvidia/gpt-oss/120b",
+                    "id": "nvidia/openai/gpt-oss-120b",
                     "name": "GPT-OSS 120B",
                     "provider": "nvidia",
                 },
                 {
-                    "id": "nvidia/gpt-oss/20b",
+                    "id": "nvidia/openai/gpt-oss-20b",
                     "name": "GPT-OSS 20B",
                     "provider": "nvidia",
                 },
                 {
-                    "id": "nvidia/glm/4.7",
+                    "id": "nvidia/z-ai/glm4.7",
                     "name": "GLM 4.7",
                     "provider": "nvidia",
                 },
@@ -830,18 +830,18 @@ class WebChannel(BaseChannel):
                     "provider": "nvidia",
                 },
                 {
-                    "id": "nvidia/llama/4-scout",
+                    "id": "nvidia/meta/llama-4-scout-17b-16e-instruct",
                     "name": "Llama 4 Scout",
                     "provider": "nvidia",
                 },
                 {
-                    "id": "nvidia/llama/4-maverick",
+                    "id": "nvidia/meta/llama-4-maverick-17b-128e-instruct",
                     "name": "Llama 4 Maverick",
                     "provider": "nvidia",
                 },
                 {
-                    "id": "nvidia/qwen/3-30b-a3b-instruct",
-                    "name": "Qwen 3 30B",
+                    "id": "nvidia/qwen/qwen3-next-80b-a3b-instruct",
+                    "name": "Qwen 3 Next 80B",
                     "provider": "nvidia",
                 },
                 {
@@ -865,13 +865,13 @@ class WebChannel(BaseChannel):
                     "provider": "nvidia",
                 },
                 {
-                    "id": "nvidia/ministral/14b-reasoning",
-                    "name": "Ministral 14B",
+                    "id": "nvidia/deepseek-ai/deepseek-v3.2",
+                    "name": "DeepSeek V3.2",
                     "provider": "nvidia",
                 },
                 {
-                    "id": "nvidia/qwen/qwen2.5-72b-instruct",
-                    "name": "Qwen 2.5 72B Instruct",
+                    "id": "nvidia/qwen/qwen3-next-80b-a3b-thinking",
+                    "name": "Qwen 3 Next 80B Thinking",
                     "provider": "nvidia",
                 },
             ]
