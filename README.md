@@ -12,7 +12,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-lime.svg)](https://opensource.org/licenses/MIT)
 [![Status](https://img.shields.io/badge/Status-Public%20Beta-orange.svg)](#-getting-started)
 [![Optimized for](https://img.shields.io/badge/Optimized%20for-Google%20Gemini-blue.svg)](https://ai.google.dev/)
-[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11--3.14-blue.svg)](https://www.python.org/)
 [![LiteLLM](https://img.shields.io/badge/LLM-LiteLLM%20Universal-blueviolet.svg)](https://github.com/BerriAI/litellm)
 [![Local First](https://img.shields.io/badge/Privacy-Local%20First-green.svg)](#-privacy--security)
 
@@ -179,7 +179,8 @@ Skills can also be managed from the **Skills** tab in the web dashboard.
 - **CPU**: Dual-core (Quad-core recommended for browser tools)
 - **RAM**: 4GB Minimum (8GB recommended for multitasking)
 - **Disk**: ~2GB for installation (venv, node_modules, Chromium)
-- **Software**: Node.js 18+, Python 3.11+
+- **Software**: Node.js 18+, Python 3.11-3.14
+- **Windows asyncio**: LimeBot relies on asyncio's default Proactor loop on Windows instead of manually forcing a deprecated event loop policy, which keeps Python 3.11-3.14 on one runtime path.
 - **Connectivity**: Stable internet for LLM API and web browsing
 
 ### Quick Start

@@ -9,17 +9,12 @@ import hashlib
 import os
 import random
 import re
-import sys
 import time
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
-
-
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 try:
     from playwright.async_api import async_playwright, Browser, BrowserContext, Page

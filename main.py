@@ -10,11 +10,13 @@ import time
 from loguru import logger
 
 from config import load_config
+from core.asyncio_compat import configure_asyncio_runtime
 from core.bus import MessageBus
 from core.loop import AgentLoop
 from core.scheduler import CronManager
 from core.session_manager import SessionManager
 from core.asyncio_windows import install_windows_asyncio_exception_filter
+from core.runtime_compat import enforce_supported_python_runtime
 from channels.discord import DiscordChannel
 from channels.whatsapp import WhatsAppChannel
 from channels.web import WebChannel
@@ -308,9 +310,8 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        if sys.platform == "win32":
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
+        enforce_supported_python_runtime()
+        configure_asyncio_runtime()
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
