@@ -125,8 +125,23 @@ class WebChannel(BaseChannel):
         self.channels = channels
 
     def _get_allowed_origins(self) -> list[str]:
-        origins = getattr(self.config.web, "allowed_origins", None) or []
-        return [origin for origin in origins if origin != "*"]
+        origins = [
+            str(origin).strip().rstrip("/")
+            for origin in (getattr(self.config.web, "allowed_origins", None) or [])
+            if str(origin).strip()
+        ]
+        if origins and "*" not in origins:
+            return origins
+
+        frontend_port = (
+            os.getenv("VITE_DEV_SERVER_PORT")
+            or os.getenv("FRONTEND_PORT")
+            or "5173"
+        ).strip()
+        return [
+            f"http://localhost:{frontend_port}",
+            f"http://127.0.0.1:{frontend_port}",
+        ]
 
     @staticmethod
     async def _read_text(path, encoding: str = "utf-8") -> str:

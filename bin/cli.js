@@ -1299,6 +1299,8 @@ async function cmdStart(args) {
     childEnv.VITE_DEV_SERVER_PORT = String(frontendPort);
     childEnv.VITE_BACKEND_URL = `http://127.0.0.1:${backendPort}`;
     childEnv.VITE_BACKEND_WS_URL = `ws://127.0.0.1:${backendPort}`;
+    childEnv.VITE_API_BASE_URL = `http://127.0.0.1:${backendPort}`;
+    childEnv.VITE_WS_BASE_URL = `ws://127.0.0.1:${backendPort}`;
 
     // ── Dependency installation ──────────────────────────────────
 
