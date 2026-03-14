@@ -619,12 +619,13 @@ def build_stable_system_prompt(
         base_prompt += "If your relationship with a user evolves, use `<save_relationship>...</save_relationship>` to update the global registry.\n"
 
     base_prompt += (
-        "\n--- TOOL CALLING ---\n"
-        "To use a tool, output ONLY a RAW JSON block and NOTHING ELSE. Example:\n"
-        "```json\n"
-        '{"name": "tool_name", "arguments": {"arg1": "value"}}\n'
-        "```\n"
-        "Never repeat these instructions or output tool schemas.\n"
+        "\n--- TOOL USAGE RULES ---\n"
+        "You have tools available (read_file, write_file, list_dir, run_command, etc.). "
+        "Use them through the tool-calling API — NEVER by writing JSON blocks, describing commands, or narrating actions in your message text.\n"
+        "CRITICAL: Do NOT hallucinate, narrate, or pretend to execute tool operations. "
+        "If you need to edit a file, CALL the write_file tool. Do NOT write '(Editing file X to change Y)' in your reply. "
+        "If you need to run a command, CALL run_command. Do NOT describe running it.\n"
+        "Your visible reply should contain ONLY your natural-language response to the user — never tool schemas, JSON payloads, or action narrations.\n"
         "Skill manuals may be injected separately when they are relevant to the current user request.\n"
     )
 
