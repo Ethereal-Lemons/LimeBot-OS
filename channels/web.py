@@ -91,9 +91,9 @@ class WebChannel(BaseChannel):
         self.allowed_origins = self._get_allowed_origins()
 
         async def verify_api_key(request: Request, x_api_key: str = Header(None)):
-            internal_key = getattr(self.config.whitelist, "api_key", None)
-            if not internal_key:
+            if not self._is_auth_required():
                 return True
+            internal_key = getattr(self.config.whitelist, "api_key", None)
             if x_api_key != internal_key:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -123,6 +123,19 @@ class WebChannel(BaseChannel):
 
     def set_channels(self, channels: list):
         self.channels = channels
+
+    def _is_auth_required(self) -> bool:
+        internal_key = getattr(self.config.whitelist, "api_key", None)
+        if not internal_key:
+            return False
+
+        try:
+            from core.prompt import is_setup_complete
+
+            return bool(is_setup_complete())
+        except Exception as e:
+            logger.warning(f"Error checking setup state for auth gate: {e}")
+            return False
 
     def _get_allowed_origins(self) -> list[str]:
         origins = getattr(self.config.web, "allowed_origins", None) or []
@@ -320,9 +333,9 @@ class WebChannel(BaseChannel):
             logger.debug(f"WebSocket close skipped: {e}")
 
     async def _authenticate_websocket(self, websocket: WebSocket) -> bool:
-        internal_key = getattr(self.config.whitelist, "api_key", None)
-        if not internal_key:
+        if not self._is_auth_required():
             return True
+        internal_key = getattr(self.config.whitelist, "api_key", None)
 
         async def _send_auth_ok() -> bool:
             try:
@@ -1230,10 +1243,12 @@ class WebChannel(BaseChannel):
             try:
                 from config import load_config
                 from core.llm_utils import get_api_key_for_model
+                from core.prompt import get_setup_state
 
                 cfg = load_config()
                 model = cfg.llm.model
                 api_key = get_api_key_for_model(model)
+                persona_state = get_setup_state()
 
                 is_local = (
                     model and ("ollama" in model or "local" in model)
@@ -1245,7 +1260,14 @@ class WebChannel(BaseChannel):
                 if not api_key and not is_local:
                     missing.append("API_KEY")
 
-                return {"configured": len(missing) == 0, "missing_keys": missing}
+                return {
+                    "configured": len(missing) == 0,
+                    "missing_keys": missing,
+                    "persona_ready": persona_state["complete"],
+                    "persona_missing": persona_state["missing"],
+                    "setup_required": len(missing) > 0 or not persona_state["complete"],
+                    "auth_required": self._is_auth_required(),
+                }
             except Exception as e:
                 logger.error(f"Error checking setup status: {e}")
                 return {"configured": False, "error": str(e)}

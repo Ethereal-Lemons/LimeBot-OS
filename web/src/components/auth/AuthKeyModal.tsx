@@ -20,7 +20,7 @@ export function AuthKeyModal({ isOpen, onSuccess }: AuthKeyModalProps) {
         setLoading(true);
         setError(null);
         try {
-            await axios.get(`${API_BASE_URL}/api/identity`, {
+            await axios.get(`${API_BASE_URL}/api/config`, {
                 headers: { 'X-API-Key': key }
             });
             onSuccess(key);
