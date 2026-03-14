@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from 'react';
+import { useEffect, useRef, useState, lazy, Suspense } from 'react';
 import axios from 'axios';
 import {
   AlertDialog,
@@ -117,6 +117,8 @@ function App() {
   const [autonomousMode, setAutonomousMode] = useState(false);
   const [rateLimitAlertOpen, setRateLimitAlertOpen] = useState(false);
   const [activity, setActivity] = useState<{ text: string } | null>(null);
+  const [personaSetupPending, setPersonaSetupPending] = useState(false);
+  const setupKickoffSessionRef = useRef<string | null>(null);
 
   // ── Custom hooks ────────────────────────────────────────────────────────
   const { botIdentity, setBotIdentity, refreshIdentity, lastExplicitFetch } = useIdentity();
@@ -188,8 +190,10 @@ function App() {
           const statusRes = await axios.get(`${API_BASE_URL}/api/setup/status`);
           if (statusRes.data.configured) {
             setForceSetup(false);
+            setPersonaSetupPending(!statusRes.data.persona_ready);
           } else {
             setForceSetup(true);
+            setPersonaSetupPending(false);
             setIsInitialized(true);
             return;
           }
@@ -233,6 +237,26 @@ function App() {
       document.removeEventListener('visibilitychange', reapplyScheduledTheme);
     };
   }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!isInitialized || forceSetup || !personaSetupPending || !isConnected) return;
+    if (messages.length > 0 || setupKickoffSessionRef.current === sessionId) return;
+
+    setupKickoffSessionRef.current = sessionId;
+    handleSendMessage(
+      'Please begin the first-time persona setup interview now.',
+      null,
+      { echoUserMessage: false }
+    );
+  }, [
+    forceSetup,
+    handleSendMessage,
+    isConnected,
+    isInitialized,
+    messages.length,
+    personaSetupPending,
+    sessionId,
+  ]);
 
   // ── Derived state ───────────────────────────────────────────────────────
   const pendingApprovals = messages.filter(

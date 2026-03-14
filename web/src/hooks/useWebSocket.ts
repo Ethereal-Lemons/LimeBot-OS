@@ -69,6 +69,10 @@ interface UseWebSocketOptions {
     onActivityClear: () => void;
 }
 
+type SendMessageOptions = {
+    echoUserMessage?: boolean;
+};
+
 const STREAM_FLUSH_INTERVAL_MS = 40;
 
 export function useWebSocket({
@@ -377,10 +381,12 @@ export function useWebSocket({
 
     const handleSendMessage = (
         contentOverride?: string | null,
-        attachment?: ChatAttachment | null
+        attachment?: ChatAttachment | null,
+        options: SendMessageOptions = {}
     ) => {
         const finalContent = contentOverride || inputValue.trim();
         if ((!finalContent && !attachment) || !ws.current || ws.current.readyState !== WebSocket.OPEN || isTyping) return;
+        const { echoUserMessage = true } = options;
 
         setIsTyping(true);
         const attachments = attachment
@@ -396,15 +402,17 @@ export function useWebSocket({
         const image = attachment?.kind === 'image' ? attachment.url : null;
 
         ws.current.send(JSON.stringify({ content: finalContent, image, attachments, chat_id: sessionId }));
-        setMessages(prev => [
-            ...prev,
-            {
-                sender: 'user',
-                content: finalContent,
-                image,
-                attachments: attachment ? [attachment] : undefined,
-            },
-        ]);
+        if (echoUserMessage) {
+            setMessages(prev => [
+                ...prev,
+                {
+                    sender: 'user',
+                    content: finalContent,
+                    image,
+                    attachments: attachment ? [attachment] : undefined,
+                },
+            ]);
+        }
         setInputValue('');
     };
 
