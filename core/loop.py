@@ -2022,6 +2022,65 @@ class AgentLoop:
         if not content or not content.strip():
             return []
 
+        def _tool_code_call(tool_expr: str) -> list:
+            raw_expr = str(tool_expr or "").strip()
+            if not raw_expr:
+                return []
+
+            try:
+                parsed = ast.parse(raw_expr, mode="eval")
+            except Exception:
+                return []
+
+            call = parsed.body
+            if not isinstance(call, ast.Call):
+                return []
+            if not isinstance(call.func, ast.Name):
+                return []
+
+            canonical_name = TOOL_NAME_ALIASES.get(call.func.id, call.func.id)
+            arg_names = {
+                "read_file": ["path"],
+                "write_file": ["path", "content"],
+                "delete_file": ["path"],
+                "list_dir": ["path"],
+                "search_files": ["query", "path"],
+                "run_command": ["command"],
+                "memory_search": ["query"],
+                "google_search": ["query"],
+                "browser_navigate": ["url"],
+                "spawn_agent": ["task"],
+                "cron_remove": ["job_id"],
+                "save_memory": ["content"],
+                "log_memory": ["content"],
+            }.get(canonical_name)
+            if arg_names is None:
+                return []
+
+            function_args: Dict[str, Any] = {}
+            try:
+                for idx, arg in enumerate(call.args):
+                    if idx >= len(arg_names):
+                        return []
+                    function_args[arg_names[idx]] = ast.literal_eval(arg)
+                for kw in call.keywords:
+                    if kw.arg is None:
+                        return []
+                    function_args[kw.arg] = ast.literal_eval(kw.value)
+            except Exception:
+                return []
+
+            return [
+                {
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": {
+                        "name": canonical_name,
+                        "arguments": json.dumps(function_args),
+                    },
+                }
+            ]
+
         def _legacy_xml_tool_call(tag_name: str, inner_content: str) -> list:
             canonical_name = TOOL_NAME_ALIASES.get(tag_name, tag_name)
             raw_content = (inner_content or "").strip()
@@ -2155,6 +2214,15 @@ class AgentLoop:
             return tool_calls
 
         try:
+            tool_code_pattern = re.compile(
+                r"<tool_code>\s*(?P<body>.*?)\s*</tool_code>",
+                re.IGNORECASE | re.DOTALL,
+            )
+            for match in tool_code_pattern.finditer(content):
+                extracted = _tool_code_call(match.group("body"))
+                if extracted:
+                    return extracted
+
             legacy_tag_pattern = re.compile(
                 r"<(?P<tag>[A-Za-z_][\w]*)>\s*(?P<body>.*?)\s*</(?P=tag)>",
                 re.DOTALL,
@@ -2222,6 +2290,7 @@ class AgentLoop:
             r"save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|"
             r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>"
         )
+        tool_code_pattern = r"<tool_code>"
 
         inline_match = re.search(r"(?::?functions\.\w+(?::\d+)?\s*\{)", cleaned)
         if inline_match:
@@ -2242,6 +2311,9 @@ class AgentLoop:
         legacy_tag_match = re.search(legacy_tag_pattern, cleaned, flags=re.IGNORECASE)
         if legacy_tag_match:
             marker_positions.append(legacy_tag_match.start())
+        tool_code_match = re.search(tool_code_pattern, cleaned, flags=re.IGNORECASE)
+        if tool_code_match:
+            marker_positions.append(tool_code_match.start())
 
         if marker_positions:
             cleaned = cleaned[: min(marker_positions)]
@@ -2265,6 +2337,12 @@ class AgentLoop:
         )
         cleaned = re.sub(
             legacy_tag_pattern + r".*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+            "",
+            cleaned,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"<tool_code>.*?</tool_code>",
             "",
             cleaned,
             flags=re.DOTALL | re.IGNORECASE,
@@ -2600,6 +2678,12 @@ class AgentLoop:
                 ).strip()
                 clean_content = re.sub(
                     r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+                    "",
+                    clean_content,
+                    flags=re.DOTALL | re.IGNORECASE,
+                ).strip()
+                clean_content = re.sub(
+                    r"<tool_code>.*?</tool_code>",
                     "",
                     clean_content,
                     flags=re.DOTALL | re.IGNORECASE,
