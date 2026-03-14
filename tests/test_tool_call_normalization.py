@@ -74,6 +74,18 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
             '{"url": "https://open.spotify.com/track/5SudOD9R1Of6CsJVWZy6CQ"}',
         )
 
+    async def test_extract_tool_from_content_recovers_legacy_xml_tool_tag(self):
+        tool_calls = self.agent._extract_tool_from_content(
+            "<run_command>echo hello</run_command>"
+        )
+
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "run_command")
+        self.assertEqual(
+            tool_calls[0]["function"]["arguments"],
+            '{"command": "echo hello"}',
+        )
+
     async def test_sanitize_tool_call_content_drops_implicit_browser_url_dict(self):
         self.assertEqual(
             self.agent._sanitize_tool_call_content(
