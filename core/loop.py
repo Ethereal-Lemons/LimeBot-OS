@@ -22,6 +22,7 @@ from core.tool_dispatcher import (
     BROWSER_CACHEABLE,
     TAG_COMPAT_TOOLS,
     TOOL_INTENT_RE,
+    TOOL_NAME_ALIASES,
 )
 
 from litellm import (
@@ -2021,6 +2022,53 @@ class AgentLoop:
         if not content or not content.strip():
             return []
 
+        def _legacy_xml_tool_call(tag_name: str, inner_content: str) -> list:
+            canonical_name = TOOL_NAME_ALIASES.get(tag_name, tag_name)
+            raw_content = (inner_content or "").strip()
+            if not raw_content:
+                return []
+
+            function_args: Dict[str, Any]
+            if raw_content.startswith("{") and raw_content.endswith("}"):
+                try:
+                    parsed = json.loads(raw_content)
+                    if isinstance(parsed, dict):
+                        function_args = parsed
+                    else:
+                        function_args = {}
+                except Exception:
+                    function_args = {}
+            else:
+                default_arg_name = {
+                    "read_file": "path",
+                    "write_file": "content",
+                    "delete_file": "path",
+                    "list_dir": "path",
+                    "search_files": "query",
+                    "run_command": "command",
+                    "memory_search": "query",
+                    "google_search": "query",
+                    "browser_navigate": "url",
+                    "spawn_agent": "task",
+                    "cron_remove": "job_id",
+                    "save_memory": "content",
+                    "log_memory": "content",
+                }.get(canonical_name)
+                if not default_arg_name:
+                    return []
+                function_args = {default_arg_name: raw_content}
+
+            return [
+                {
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": {
+                        "name": canonical_name,
+                        "arguments": json.dumps(function_args),
+                    },
+                }
+            ]
+
         def _implicit_tool_call_from_dict(parsed: dict):
             if not isinstance(parsed, dict) or "name" in parsed:
                 return []
@@ -2106,6 +2154,20 @@ class AgentLoop:
         if tool_calls:
             return tool_calls
 
+        try:
+            legacy_tag_pattern = re.compile(
+                r"<(?P<tag>[A-Za-z_][\w]*)>\s*(?P<body>.*?)\s*</(?P=tag)>",
+                re.DOTALL,
+            )
+            for match in legacy_tag_pattern.finditer(content):
+                extracted = _legacy_xml_tool_call(
+                    match.group("tag"), match.group("body")
+                )
+                if extracted:
+                    return extracted
+        except Exception:
+            pass
+
         # ── Kimi K2 inline format: functions.tool_name:N{"arg":"val"} ──
         try:
             kimi_pattern = r"(?:^|\s)(?::?functions\.)(\w+)(?::\d+)?\s*(\{[^}]*\})"
@@ -2154,6 +2216,12 @@ class AgentLoop:
 
         cleaned = content
         marker_positions = []
+        legacy_tag_pattern = (
+            r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|"
+            r"memory_search|google_search|browser_navigate|spawn_agent|"
+            r"save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|"
+            r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>"
+        )
 
         inline_match = re.search(r"(?::?functions\.\w+(?::\d+)?\s*\{)", cleaned)
         if inline_match:
@@ -2170,6 +2238,10 @@ class AgentLoop:
         )
         if json_tool_match:
             marker_positions.append(json_tool_match.start())
+
+        legacy_tag_match = re.search(legacy_tag_pattern, cleaned, flags=re.IGNORECASE)
+        if legacy_tag_match:
+            marker_positions.append(legacy_tag_match.start())
 
         if marker_positions:
             cleaned = cleaned[: min(marker_positions)]
@@ -2190,6 +2262,12 @@ class AgentLoop:
             r"(?::?functions\.\w+(?::\d+)?\s*\{[^}]*\})",
             "",
             cleaned,
+        )
+        cleaned = re.sub(
+            legacy_tag_pattern + r".*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+            "",
+            cleaned,
+            flags=re.DOTALL | re.IGNORECASE,
         )
         # Strip bare JSON tool-call objects: {"name": "...", "arguments": {...}}
         cleaned = re.sub(
@@ -2519,6 +2597,12 @@ class AgentLoop:
                     r"(?::?functions\.\w+(?::\d+)?\s*\{[^}]*\})",
                     "",
                     clean_content,
+                ).strip()
+                clean_content = re.sub(
+                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+                    "",
+                    clean_content,
+                    flags=re.DOTALL | re.IGNORECASE,
                 ).strip()
                 if clean_content:
                     full_content = clean_content

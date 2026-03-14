@@ -622,6 +622,8 @@ def build_stable_system_prompt(
         "\n--- TOOL USAGE RULES ---\n"
         "You have tools available (read_file, write_file, list_dir, run_command, etc.). "
         "Use them through the tool-calling API — NEVER by writing JSON blocks, describing commands, or narrating actions in your message text.\n"
+        "XML tags are only for the supported side-effect tags like <save_soul>, <save_identity>, <save_user>, <save_mood>, <save_relationship>, <log_memory>, <save_memory>, <discord_send>, and <discord_embed>. "
+        "Do NOT invent XML tags for normal tools such as <read_file>, <list_dir>, or <run_command>.\n"
         "CRITICAL: Do NOT hallucinate, narrate, or pretend to execute tool operations. "
         "If you need to edit a file, CALL the write_file tool. Do NOT write '(Editing file X to change Y)' in your reply. "
         "If you need to run a command, CALL run_command. Do NOT describe running it.\n"
