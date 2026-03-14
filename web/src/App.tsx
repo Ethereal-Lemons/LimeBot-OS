@@ -110,8 +110,9 @@ type ShellRuntimeStatus = {
 // ── Root component ────────────────────────────────────────────────────────────
 
 function App() {
+  const setupRouteRequested = window.location.pathname === '/setup';
   const [currentView, setCurrentView] = useState('chat');
-  const [forceSetup, setForceSetup] = useState(window.location.pathname === '/setup');
+  const [forceSetup, setForceSetup] = useState(setupRouteRequested);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [autonomousMode, setAutonomousMode] = useState(false);
@@ -185,6 +186,13 @@ function App() {
       const MAX_RETRIES = 5;
       const RETRY_DELAY = 2000;
 
+      if (setupRouteRequested) {
+        setForceSetup(true);
+        setPersonaSetupPending(false);
+        setIsInitialized(true);
+        return;
+      }
+
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
           const statusRes = await axios.get(`${API_BASE_URL}/api/setup/status`);
@@ -229,7 +237,9 @@ function App() {
     };
 
     init();
-    connectWebSocket();
+    if (!setupRouteRequested) {
+      connectWebSocket();
+    }
 
     return () => {
       axios.interceptors.response.eject(interceptor);

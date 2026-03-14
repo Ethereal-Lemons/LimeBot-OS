@@ -13,8 +13,7 @@
       "github",
       "scrapling",
       "discord_voice_note",
-      "gworkspace_cli",
-      "daily_briefing"
+      "gworkspace_cli"
     ],
     "installed": {}
   }
