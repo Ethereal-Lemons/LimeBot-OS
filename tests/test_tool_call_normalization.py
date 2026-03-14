@@ -86,6 +86,18 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
             '{"command": "echo hello"}',
         )
 
+    async def test_extract_tool_from_content_recovers_tool_code_wrapper(self):
+        tool_calls = self.agent._extract_tool_from_content(
+            '<tool_code>list_dir("C:/tmp")</tool_code>'
+        )
+
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "list_dir")
+        self.assertEqual(
+            tool_calls[0]["function"]["arguments"],
+            '{"path": "C:/tmp"}',
+        )
+
     async def test_sanitize_tool_call_content_drops_implicit_browser_url_dict(self):
         self.assertEqual(
             self.agent._sanitize_tool_call_content(

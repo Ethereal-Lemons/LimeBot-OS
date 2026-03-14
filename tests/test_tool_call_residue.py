@@ -54,6 +54,12 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
             ),
             "Voy a hacerlo.",
         )
+        self.assertEqual(
+            self.agent._sanitize_tool_call_content(
+                'Voy a hacerlo.\n<tool_code>list_dir("C:/tmp")</tool_code>\nMas texto.'
+            ),
+            "Voy a hacerlo.",
+        )
 
     async def test_consume_stream_does_not_publish_residue_only_tool_preamble(self):
         from core.events import InboundMessage
