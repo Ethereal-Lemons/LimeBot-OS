@@ -299,11 +299,11 @@ def _normalize_identity_content(content: str) -> str:
     return "\n".join(lines).strip()
 
 
-def is_setup_complete(
+def get_setup_state(
     soul_content: Optional[str] = None, identity_content: Optional[str] = None
-) -> bool:
+) -> dict[str, Any]:
     """
-    Check if persona setup is fully complete with validation.
+    Return setup validation details for the current persona state.
     Accepts optional content to avoid redundant disk reads.
     """
     try:
@@ -327,22 +327,55 @@ def is_setup_complete(
         )
     except Exception as e:
         logger.warning(f"Error checking setup completion: {e}")
-        return False
+        return {
+            "complete": False,
+            "soul": "",
+            "identity": "",
+            "soul_valid": False,
+            "identity_valid": False,
+            "missing": [
+                "Soul (Core Truths, Boundaries, Vibe)",
+                "Identity (Name, Emoji, Style)",
+            ],
+        }
 
-    if not soul or not identity:
-        return False
-
-    soul_valid = len(soul) > 100 and any(
+    soul_valid = bool(soul) and len(soul) > 100 and any(
         keyword in soul.lower() for keyword in _SOUL_KEYWORDS
     )
-
-    identity_valid = (
+    identity_valid = bool(identity) and (
         ("**Name:**" in identity or "Name:" in identity)
         and ("**Style:**" in identity or "Style:" in identity)
         and len(identity) > 50
     )
 
-    return soul_valid and identity_valid
+    missing = []
+    if not soul_valid:
+        missing.append("Soul (Core Truths, Boundaries, Vibe)")
+    if not identity_valid:
+        missing.append("Identity (Name, Emoji, Style)")
+
+    return {
+        "complete": soul_valid and identity_valid,
+        "soul": soul,
+        "identity": identity,
+        "soul_valid": soul_valid,
+        "identity_valid": identity_valid,
+        "missing": missing,
+    }
+
+
+def is_setup_complete(
+    soul_content: Optional[str] = None, identity_content: Optional[str] = None
+) -> bool:
+    """
+    Check if persona setup is fully complete with validation.
+    Accepts optional content to avoid redundant disk reads.
+    """
+    return bool(
+        get_setup_state(soul_content=soul_content, identity_content=identity_content)[
+            "complete"
+        ]
+    )
 
 
 def get_identity_data(identity_content: Optional[str] = None) -> dict:
@@ -382,14 +415,13 @@ def get_identity_data(identity_content: Optional[str] = None) -> dict:
 
 def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
     """Generate the system prompt for first-time interview / setup mode."""
-    soul_exists = len(soul_content.strip()) > 100
-    identity_exists = len(identity_content.strip()) > 50
+    setup_state = get_setup_state(
+        soul_content=soul_content, identity_content=identity_content
+    )
+    soul_exists = setup_state["soul_valid"]
+    identity_exists = setup_state["identity_valid"]
 
-    missing = []
-    if not soul_exists:
-        missing.append("Soul (Core Truths, Boundaries, Vibe)")
-    if not identity_exists:
-        missing.append("Identity (Name, Emoji, Style)")
+    missing = setup_state["missing"]
 
     existing_context = ""
     if soul_content:

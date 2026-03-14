@@ -69,6 +69,28 @@ class TestSetupPrompt(unittest.IsolatedAsyncioTestCase):
         prompt = await self._get_prompt()
         self.assertIn("SYSTEM STATUS: SETUP MODE", prompt)
 
+    async def test_setup_state_marks_stub_identity_as_incomplete(self):
+        from core.prompt import get_setup_state
+
+        SOUL_FILE.write_text(
+            "Core values: truth and boundaries. "
+            "Personality and values are important. "
+            "This soul description is long enough to pass validation. "
+            "It includes who I am and what I believe. "
+            "Boundaries matter, and this text exceeds one hundred characters.",
+            encoding="utf-8",
+        )
+        IDENTITY_FILE.write_text(
+            "# IDENTITY\n\n(Configure your bot's identity here.)",
+            encoding="utf-8",
+        )
+
+        state = get_setup_state()
+        self.assertFalse(state["complete"])
+        self.assertTrue(state["soul_valid"])
+        self.assertFalse(state["identity_valid"])
+        self.assertIn("Identity (Name, Emoji, Style)", state["missing"])
+
     async def test_valid_persona_content_exits_setup_prompt(self):
         SOUL_FILE.write_text(
             "Core values: truth and boundaries. "
