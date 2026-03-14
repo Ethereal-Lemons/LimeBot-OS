@@ -16,6 +16,55 @@ LOGS_DIR = SESSION_DIR / "logs"
 EVENTS_DIR = SESSION_DIR / "events"
 SKILLS_DIR = Path("skills")
 _STRUCTURAL_RESIDUE_RE = re.compile(r"^[`{}\[\],:;\s]+$")
+_LEGACY_XML_TOOL_TAG_NAMES = (
+    "read_file|write_file|delete_file|list_dir|search_files|run_command|"
+    "memory_search|google_search|browser_navigate|spawn_agent|"
+    "save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|"
+    "grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd"
+)
+_LEGACY_XML_TOOL_OPEN_RE = re.compile(
+    rf"<(?:{_LEGACY_XML_TOOL_TAG_NAMES})>",
+    re.IGNORECASE,
+)
+_LEGACY_XML_TOOL_BLOCK_RE = re.compile(
+    rf"<(?:{_LEGACY_XML_TOOL_TAG_NAMES})>\s*.*?\s*</(?:{_LEGACY_XML_TOOL_TAG_NAMES})>",
+    re.IGNORECASE | re.DOTALL,
+)
+_INLINE_TOOL_CALL_RE = re.compile(
+    r"(?::?functions\.\w+(?::\d+)?\s*\{[^}]*\})",
+    re.IGNORECASE,
+)
+_JSON_TOOL_OBJECT_RE = re.compile(
+    r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|parameters)"\s*:\s*\{[^}]*\}\s*\}',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _sanitize_assistant_text_content(content: str) -> tuple[str, bool]:
+    """Remove assistant-side leaked tool syntax from persisted history."""
+    if not isinstance(content, str) or not content:
+        return content, False
+
+    cleaned = content
+    marker_positions = []
+
+    for pattern in (_LEGACY_XML_TOOL_OPEN_RE, _INLINE_TOOL_CALL_RE, _JSON_TOOL_OBJECT_RE):
+        match = pattern.search(cleaned)
+        if match:
+            marker_positions.append(match.start())
+
+    if marker_positions:
+        cleaned = cleaned[: min(marker_positions)]
+
+    cleaned = _LEGACY_XML_TOOL_BLOCK_RE.sub("", cleaned)
+    cleaned = _INLINE_TOOL_CALL_RE.sub("", cleaned)
+    cleaned = _JSON_TOOL_OBJECT_RE.sub("", cleaned)
+    cleaned = cleaned.strip()
+
+    if _STRUCTURAL_RESIDUE_RE.fullmatch(cleaned or ""):
+        cleaned = ""
+
+    return cleaned, cleaned != content.strip()
 
 
 def _sanitize_assistant_content(message: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], bool]:
@@ -27,15 +76,22 @@ def _sanitize_assistant_content(message: Dict[str, Any]) -> tuple[Optional[Dict[
     if not isinstance(content, str):
         return message, False
 
-    stripped = content.strip()
-    if not stripped or not _STRUCTURAL_RESIDUE_RE.fullmatch(stripped):
+    cleaned = dict(message)
+    stripped, content_changed = _sanitize_assistant_text_content(content)
+
+    if stripped:
+        if content_changed:
+            cleaned["content"] = stripped
+            return cleaned, True
         return message, False
 
-    cleaned = dict(message)
-    cleaned["content"] = ""
-    if cleaned.get("tool_calls"):
-        return cleaned, True
-    return None, True
+    if not content.strip() or _STRUCTURAL_RESIDUE_RE.fullmatch(content.strip()) or content_changed:
+        cleaned["content"] = ""
+        if cleaned.get("tool_calls"):
+            return cleaned, True
+        return None, True
+
+    return message, False
 
 
 def _sanitize_history_rows(rows: list[Dict[str, Any]]) -> tuple[list[Dict[str, Any]], int]:
