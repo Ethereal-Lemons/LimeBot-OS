@@ -525,8 +525,6 @@ export function SetupPage() {
                                             <Label htmlFor="dynamic_personality">Adaptive Persona</Label>
                                             <Badge variant="outline" size="sm" className="text-[10px] uppercase tracking-wider opacity-70">Experimental</Badge>
                                         </div>
-
-                                        <Label htmlFor="dynamic_personality">Adaptive Persona</Label>
                                         <p className="text-[10px] text-muted-foreground">Bot adjusts trust and style based on interaction.</p>
                                     </div>
                                     <Switch

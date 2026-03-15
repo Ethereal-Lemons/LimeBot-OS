@@ -1,7 +1,4 @@
 {
-  "llm": {
-    "model": "gemini/gemini-3.1-flash-lite-preview"
-  },
   "skills": {
     "enabled": [
       "browser",
