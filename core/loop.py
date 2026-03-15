@@ -1,6 +1,7 @@
 import asyncio
 import ast
 import json
+import os
 import re
 import time
 import uuid
@@ -21,7 +22,6 @@ from core.tool_dispatcher import (
     DEFAULT_TOOL_RESULT_LIMIT,
     BROWSER_CACHEABLE,
     TAG_COMPAT_TOOLS,
-    TOOL_INTENT_RE,
     TOOL_NAME_ALIASES,
 )
 
@@ -57,7 +57,7 @@ TOOL_BROADCAST_MAX_CHARS = 500
 
 # Tool result limits and browser cacheability are now in core/tool_dispatcher.py
 # and imported at the top of this file as TOOL_RESULT_LIMITS, DEFAULT_TOOL_RESULT_LIMIT,
-# BROWSER_CACHEABLE, TAG_COMPAT_TOOLS, TOOL_INTENT_RE.
+# BROWSER_CACHEABLE, TAG_COMPAT_TOOLS.
 # AUTORAG_MIN_SCORE is imported from core/rag_engine.py.
 # SENSITIVE_TOOLS, APPROVE_WORDS, DENY_WORDS come from core/confirmation.py.
 
@@ -115,7 +115,6 @@ _TOOL_RESULT_LIMITS = TOOL_RESULT_LIMITS
 _DEFAULT_TOOL_RESULT_LIMIT = DEFAULT_TOOL_RESULT_LIMIT
 _BROWSER_CACHEABLE = BROWSER_CACHEABLE
 _TAG_COMPAT_TOOLS = TAG_COMPAT_TOOLS
-_TOOL_INTENT_RE = TOOL_INTENT_RE
 _SENSITIVE_TOOLS = SENSITIVE_TOOLS
 _APPROVE_WORDS = APPROVE_WORDS
 _DENY_WORDS = DENY_WORDS
@@ -288,7 +287,26 @@ class AgentLoop:
         return self._tool_definitions
 
     def _get_tool_definitions_for_turn(self, user_text: str = "") -> List[Dict]:
-        return shortlist_tool_definitions(self._get_tool_definitions(), user_text)
+        all_tools = self._get_tool_definitions()
+        if self._tool_shortlist_enabled():
+            selected = shortlist_tool_definitions(all_tools, user_text)
+            strategy = "shortlist_env_opt_in"
+        else:
+            selected = list(all_tools)
+            strategy = "full_schema_default"
+
+        all_names = self._tool_definition_names(all_tools)
+        selected_names = self._tool_definition_names(selected)
+        self._log_tool_debug(
+            "tool_schema_selection",
+            strategy=strategy,
+            user_text=user_text,
+            total_tool_count=len(all_names),
+            total_tools=all_names,
+            selected_tool_count=len(selected_names),
+            selected_tools=selected_names,
+        )
+        return selected
 
     def _resolve_provider(
         self,
@@ -688,6 +706,98 @@ class AgentLoop:
             except Exception:
                 return None
 
+    @staticmethod
+    def _env_truthy(name: str) -> bool:
+        value = str(os.getenv(name, "") or "").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    def _tool_debug_enabled(self) -> bool:
+        return self._env_truthy("LIMEBOT_TOOL_DEBUG")
+
+    def _tool_shortlist_enabled(self) -> bool:
+        return self._env_truthy("LIMEBOT_ENABLE_TOOL_SHORTLIST")
+
+    @staticmethod
+    def _tool_definition_names(tool_defs: List[Dict[str, Any]]) -> List[str]:
+        names: List[str] = []
+        for tool in tool_defs or []:
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function")
+            if not isinstance(function, dict):
+                continue
+            name = function.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+        return names
+
+    def _tool_call_debug_rows(self, tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for tool_call in tool_calls or []:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                function = {}
+            rows.append(
+                {
+                    "id": tool_call.get("id"),
+                    "name": function.get("name"),
+                    "arguments": self._tool_debug_preview(
+                        function.get("arguments", ""), limit=240
+                    ),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _tool_debug_preview(text: Any, limit: int = 400) -> str:
+        raw = str(text or "")
+        raw = raw.replace("\r", "\\r").replace("\n", "\\n")
+        if len(raw) <= limit:
+            return raw
+        return raw[:limit] + "... (truncated)"
+
+    def _log_tool_debug(self, event: str, **fields: Any) -> None:
+        if not self._tool_debug_enabled():
+            return
+
+        rendered: Dict[str, Any] = {}
+        for key, value in fields.items():
+            if isinstance(value, str):
+                rendered[key] = self._tool_debug_preview(value, limit=900)
+            elif isinstance(value, list):
+                if all(
+                    isinstance(item, (str, int, float, bool, type(None)))
+                    for item in value
+                ):
+                    items = list(value[:40])
+                    rendered[key] = [
+                        self._tool_debug_preview(item, limit=160)
+                        if isinstance(item, str)
+                        else item
+                        for item in items
+                    ]
+                    if len(value) > 40:
+                        rendered[key].append(f"... (+{len(value) - 40} more)")
+                else:
+                    rendered[key] = self._tool_debug_preview(
+                        json.dumps(value, ensure_ascii=False, default=str),
+                        limit=1600,
+                    )
+            elif isinstance(value, dict):
+                rendered[key] = self._tool_debug_preview(
+                    json.dumps(value, ensure_ascii=False, default=str),
+                    limit=1600,
+                )
+            else:
+                rendered[key] = value
+
+        logger.info(
+            f"[TOOL DEBUG] {event} | "
+            f"{json.dumps(rendered, ensure_ascii=False, default=str)}"
+        )
+
     def _record_rag_trace(self, session_key: str, trace: Dict[str, Any]) -> None:
         self.rag.record(session_key, trace)
 
@@ -1005,28 +1115,9 @@ class AgentLoop:
     @staticmethod
     def _should_include_tools(content: str) -> bool:
         """
-        Return True when the user message likely needs tool/function calling.
-        Keeps casual conversation turns lightweight by skipping tool schemas.
+        Keep tool routing simple and predictable: non-empty user turns get tools.
         """
-        text = (content or "").strip()
-        if not text:
-            return False
-
-        lowered = text.lower()
-        if text.startswith(("/", "@")):
-            return True
-        if _TOOL_INTENT_RE.search(text):
-            return True
-        if any(
-            token in lowered for token in ("./", "../", ".py", ".ts", ".md", ".json")
-        ):
-            return True
-        if (
-            any(token in text for token in ("\\", "/", "$", ">>", "->"))
-            and len(text) > 12
-        ):
-            return True
-        return False
+        return bool(str(content or "").strip())
 
     async def _llm_call_with_retry(
         self,
@@ -1047,6 +1138,18 @@ class AgentLoop:
             self._get_tool_definitions_for_turn(tool_context_text)
             if include_tools
             else []
+        )
+        self._log_tool_debug(
+            "llm_call_prepare",
+            session_key=session_key,
+            model=model,
+            stream=stream,
+            include_tools=include_tools,
+            tool_context=tool_context_text,
+            message_count=len(messages),
+            tool_count=len(tools),
+            tool_names=self._tool_definition_names(tools),
+            last_message=messages[-1].get("content", "") if messages else "",
         )
         qwen_auth_failover_attempted: Set[str] = set()
         image_fallback_attempted = False
@@ -1069,6 +1172,13 @@ class AgentLoop:
                 return await acompletion(**kwargs)
 
             except AuthenticationError as e:
+                self._log_tool_debug(
+                    "llm_call_error",
+                    session_key=session_key,
+                    attempt=attempt + 1,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
                 # DashScope keys can be region-scoped. If auth fails on one endpoint,
                 # try other official compatible endpoints before failing.
                 current_base = (base_url or "").lower()
@@ -1104,6 +1214,13 @@ class AgentLoop:
                 APIConnectionError,
                 ServiceUnavailableError,
             ) as e:
+                self._log_tool_debug(
+                    "llm_call_error",
+                    session_key=session_key,
+                    attempt=attempt + 1,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
                 is_500 = isinstance(e, InternalServerError)
                 is_conn = isinstance(e, (APIConnectionError, ServiceUnavailableError))
                 wait_time = (2**attempt) * 5
@@ -1159,8 +1276,15 @@ class AgentLoop:
                                 ),
                             )
                         )
-                    raise
+                raise
             except Exception as e:
+                self._log_tool_debug(
+                    "llm_call_error",
+                    session_key=session_key,
+                    attempt=attempt + 1,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
                 if (
                     not image_fallback_attempted
                     and self._should_retry_without_images(e, messages)
@@ -2022,6 +2146,34 @@ class AgentLoop:
         if not content or not content.strip():
             return []
 
+        default_arg_names = {
+            "read_file": "path",
+            "write_file": "content",
+            "delete_file": "path",
+            "list_dir": "path",
+            "search_files": "query",
+            "run_command": "command",
+            "memory_search": "query",
+            "google_search": "query",
+            "browser_navigate": "url",
+            "spawn_agent": "task",
+            "cron_remove": "job_id",
+            "save_memory": "content",
+            "log_memory": "content",
+        }
+
+        def _make_tool_call(function_name: str, function_args: Dict[str, Any]) -> list:
+            return [
+                {
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": {
+                        "name": function_name,
+                        "arguments": json.dumps(function_args),
+                    },
+                }
+            ]
+
         def _tool_code_call(tool_expr: str) -> list:
             raw_expr = str(tool_expr or "").strip()
             if not raw_expr:
@@ -2070,16 +2222,7 @@ class AgentLoop:
             except Exception:
                 return []
 
-            return [
-                {
-                    "id": f"call_{uuid.uuid4().hex[:12]}",
-                    "type": "function",
-                    "function": {
-                        "name": canonical_name,
-                        "arguments": json.dumps(function_args),
-                    },
-                }
-            ]
+            return _make_tool_call(canonical_name, function_args)
 
         def _legacy_xml_tool_call(tag_name: str, inner_content: str) -> list:
             canonical_name = TOOL_NAME_ALIASES.get(tag_name, tag_name)
@@ -2098,63 +2241,52 @@ class AgentLoop:
                 except Exception:
                     function_args = {}
             else:
-                default_arg_name = {
-                    "read_file": "path",
-                    "write_file": "content",
-                    "delete_file": "path",
-                    "list_dir": "path",
-                    "search_files": "query",
-                    "run_command": "command",
-                    "memory_search": "query",
-                    "google_search": "query",
-                    "browser_navigate": "url",
-                    "spawn_agent": "task",
-                    "cron_remove": "job_id",
-                    "save_memory": "content",
-                    "log_memory": "content",
-                }.get(canonical_name)
+                default_arg_name = default_arg_names.get(canonical_name)
                 if not default_arg_name:
                     return []
                 function_args = {default_arg_name: raw_content}
 
-            return [
-                {
-                    "id": f"call_{uuid.uuid4().hex[:12]}",
-                    "type": "function",
-                    "function": {
-                        "name": canonical_name,
-                        "arguments": json.dumps(function_args),
-                    },
-                }
-            ]
+            return _make_tool_call(canonical_name, function_args)
+
+        def _xml_attr_tool_call(tag_name: str, raw_attrs: str) -> list:
+            canonical_name = TOOL_NAME_ALIASES.get(tag_name, tag_name)
+            default_arg_name = default_arg_names.get(canonical_name)
+            if not default_arg_name:
+                return []
+
+            attrs: Dict[str, Any] = {}
+            for match in re.finditer(
+                r'([A-Za-z_][\w-]*)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', raw_attrs or ""
+            ):
+                attrs[match.group(1)] = (
+                    match.group(2) if match.group(2) is not None else match.group(3)
+                )
+
+            if not attrs:
+                return []
+
+            if default_arg_name in attrs:
+                function_args = {default_arg_name: attrs[default_arg_name]}
+            else:
+                first_value = next(iter(attrs.values()))
+                function_args = {default_arg_name: first_value}
+            return _make_tool_call(canonical_name, function_args)
 
         def _implicit_tool_call_from_dict(parsed: dict):
             if not isinstance(parsed, dict) or "name" in parsed:
                 return []
 
             if isinstance(parsed.get("url"), str) and parsed["url"].strip():
-                return [
-                    {
-                        "id": f"call_{uuid.uuid4().hex[:12]}",
-                        "type": "function",
-                        "function": {
-                            "name": "browser_navigate",
-                            "arguments": json.dumps({"url": parsed["url"]}),
-                        },
-                    }
-                ]
+                return _make_tool_call("browser_navigate", {"url": parsed["url"]})
 
             if isinstance(parsed.get("query"), str) and parsed["query"].strip():
-                return [
-                    {
-                        "id": f"call_{uuid.uuid4().hex[:12]}",
-                        "type": "function",
-                        "function": {
-                            "name": "google_search",
-                            "arguments": json.dumps({"query": parsed["query"]}),
-                        },
-                    }
-                ]
+                return _make_tool_call("google_search", {"query": parsed["query"]})
+
+            cmd = parsed.get("cmd")
+            if isinstance(cmd, list):
+                cmd_text = " ".join(str(part or "") for part in cmd).strip().lower()
+                if re.search(r"\b(ls|dir)\b", cmd_text):
+                    return _make_tool_call("list_dir", {"path": "."})
 
             return []
 
@@ -2214,6 +2346,17 @@ class AgentLoop:
             return tool_calls
 
         try:
+            pipe_tag_pattern = re.compile(
+                r"<\|(?P<tag>[A-Za-z_][\w]*)\|>\s*(?P<body>{.*?})\s*<\|/(?P=tag)\|>",
+                re.DOTALL,
+            )
+            for match in pipe_tag_pattern.finditer(content):
+                extracted = _legacy_xml_tool_call(
+                    match.group("tag"), match.group("body")
+                )
+                if extracted:
+                    return extracted
+
             tool_code_pattern = re.compile(
                 r"<tool_code>\s*(?P<body>.*?)\s*</tool_code>",
                 re.IGNORECASE | re.DOTALL,
@@ -2231,6 +2374,29 @@ class AgentLoop:
                 extracted = _legacy_xml_tool_call(
                     match.group("tag"), match.group("body")
                 )
+                if extracted:
+                    return extracted
+
+            legacy_attr_tag_pattern = re.compile(
+                r"<(?P<tag>[A-Za-z_][\w]*)\s+(?P<attrs>[^<>]*?)\s*/?>",
+                re.DOTALL,
+            )
+            for match in legacy_attr_tag_pattern.finditer(content):
+                extracted = _xml_attr_tool_call(
+                    match.group("tag"), match.group("attrs")
+                )
+                if extracted:
+                    return extracted
+
+            bare_call_pattern = re.compile(
+                r"\b(?:list_dir|read_file|write_file|delete_file|search_files|"
+                r"run_command|memory_search|google_search|browser_navigate|"
+                r"spawn_agent|cron_remove|save_memory|log_memory|ls|dir|cat|"
+                r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|"
+                r"powershell|cmd)\s*\([^)]*\)"
+            )
+            for match in bare_call_pattern.finditer(content):
+                extracted = _tool_code_call(match.group(0))
                 if extracted:
                     return extracted
         except Exception:
@@ -2300,6 +2466,10 @@ class AgentLoop:
         if block_match:
             marker_positions.append(block_match.start())
 
+        pipe_tag_match = re.search(r"<\|[A-Za-z_][\w]*\|>", cleaned)
+        if pipe_tag_match:
+            marker_positions.append(pipe_tag_match.start())
+
         json_tool_match = re.search(
             r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|parameters)"\s*:\s*\{',
             cleaned,
@@ -2331,6 +2501,12 @@ class AgentLoop:
             flags=re.DOTALL,
         )
         cleaned = re.sub(
+            r"<\|[A-Za-z_][\w]*\|>.*?<\|/[A-Za-z_][\w]*\|>",
+            "",
+            cleaned,
+            flags=re.DOTALL,
+        )
+        cleaned = re.sub(
             r"(?::?functions\.\w+(?::\d+)?\s*\{[^}]*\})",
             "",
             cleaned,
@@ -2346,6 +2522,12 @@ class AgentLoop:
             "",
             cleaned,
             flags=re.DOTALL | re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r'^\s*\{\s*"path"\s*:\s*".*?"\s*\}\s*$',
+            "",
+            cleaned,
+            flags=re.MULTILINE,
         )
         # Strip bare JSON tool-call objects: {"name": "...", "arguments": {...}}
         cleaned = re.sub(
@@ -2398,9 +2580,13 @@ class AgentLoop:
         last_flush = time.monotonic()
         flush_interval_s = 0.08
         flush_min_chars = 256
+        thinking_buffer: str = ""
+        extracted_from = "provider_tool_calls"
+        chunk_index = 0
 
         try:
             async for chunk in response_stream:
+                chunk_index += 1
                 if hasattr(chunk, "usage") and chunk.usage:
                     usage = chunk.usage
 
@@ -2408,6 +2594,12 @@ class AgentLoop:
 
                 if hasattr(delta, "content") and delta.content:
                     content_chunk = delta.content
+                    self._log_tool_debug(
+                        "stream_chunk_content",
+                        session_key=session_key,
+                        chunk_index=chunk_index,
+                        delta_content=content_chunk,
+                    )
 
                     if full_content and content_chunk == full_content:
                         continue
@@ -2567,6 +2759,14 @@ class AgentLoop:
                 thinking = getattr(delta, "reasoning_content", None) or getattr(
                     delta, "thinking", None
                 )
+                if thinking:
+                    thinking_buffer += thinking
+                    self._log_tool_debug(
+                        "stream_chunk_thinking",
+                        session_key=session_key,
+                        chunk_index=chunk_index,
+                        delta_thinking=thinking,
+                    )
                 if thinking and msg.channel == "web":
                     await self.bus.publish_outbound(
                         OutboundMessage(
@@ -2582,6 +2782,12 @@ class AgentLoop:
                     )
 
                 if hasattr(delta, "tool_calls") and delta.tool_calls:
+                    self._log_tool_debug(
+                        "stream_chunk_tool_delta",
+                        session_key=session_key,
+                        chunk_index=chunk_index,
+                        tool_delta=str(delta.tool_calls),
+                    )
                     for tc_chunk in delta.tool_calls:
                         while len(tool_calls) <= tc_chunk.index:
                             tool_calls.append(
@@ -2663,6 +2869,7 @@ class AgentLoop:
         if not tool_calls and full_content:
             extracted = self._extract_tool_from_content(full_content)
             if extracted:
+                extracted_from = "assistant_content"
                 tool_calls = extracted
                 clean_content = re.sub(
                     r"```(?:json)?\s*\{.*?\}(?:\s*```)?",
@@ -2691,6 +2898,15 @@ class AgentLoop:
                 if clean_content:
                     full_content = clean_content
                 logger.info(f"✨ Extracted tool: {tool_calls[0]['function']['name']}")
+
+        if not tool_calls and thinking_buffer:
+            extracted = self._extract_tool_from_content(thinking_buffer)
+            if extracted:
+                extracted_from = "reasoning_content"
+                tool_calls = extracted
+                logger.info(
+                    f"✨ Extracted tool from reasoning: {tool_calls[0]['function']['name']}"
+                )
 
         valid_tcs = []
         for tc in tool_calls:
@@ -2722,6 +2938,25 @@ class AgentLoop:
                     "tool_call_residue_stripped",
                     detail=pre_sanitize[:160],
                 )
+                self._log_tool_debug(
+                    "tool_residue_stripped",
+                    session_key=session_key,
+                    before=pre_sanitize,
+                    after=full_content,
+                )
+                if msg.channel == "web" and streamed_to_web:
+                    await self.bus.publish_outbound(
+                        OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=full_content,
+                            metadata=self._with_trace_metadata(
+                                {"type": "full_content"},
+                                turn_id=turn_id,
+                                message_id=message_id,
+                            ),
+                        )
+                    )
 
         if (
             is_potential_json
@@ -2742,6 +2977,17 @@ class AgentLoop:
                     ),
                 )
             )
+
+        self._log_tool_debug(
+            "stream_summary",
+            session_key=session_key,
+            raw_content=full_content,
+            thinking=thinking_buffer,
+            tool_calls=self._tool_call_debug_rows(tool_calls),
+            extracted_from=extracted_from if tool_calls else "none",
+            streamed_to_web=streamed_to_web,
+            usage=str(usage) if usage else "",
+        )
 
         return full_content, tool_calls, usage, streamed_to_web
 
@@ -3181,6 +3427,12 @@ class AgentLoop:
                     asyncio.create_task(self._flush_history(session_key))
 
                     include_tools = self._should_include_tools(content)
+                    self._log_tool_debug(
+                        "tool_gate_decision",
+                        session_key=session_key,
+                        include_tools=include_tools,
+                        content=content,
+                    )
                     stream = await self._llm_call_with_retry(
                         messages=self.history[session_key],
                         session_key=session_key,
@@ -3374,6 +3626,11 @@ class AgentLoop:
                         raw_reply = full_content
 
                     if tool_calls and not str(raw_reply or "").strip():
+                        self._log_tool_debug(
+                            "tool_fallback_inserted",
+                            session_key=session_key,
+                            stage="post_initial_tool_batch",
+                        )
                         raw_reply = self._build_tool_fallback_reply(session_key)
                         force_direct_reply = True
                         fallback_inserted = True
@@ -3399,6 +3656,11 @@ class AgentLoop:
                     identity_updated = tag_result.identity_updated
 
                     if any_tool_calls_in_turn and not str(reply_to_user or "").strip():
+                        self._log_tool_debug(
+                            "tool_fallback_inserted",
+                            session_key=session_key,
+                            stage="post_tag_processing",
+                        )
                         fallback_reply = self._build_tool_fallback_reply(session_key)
                         reply_to_user = fallback_reply
                         raw_reply = fallback_reply

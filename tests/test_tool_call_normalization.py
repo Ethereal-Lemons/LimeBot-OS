@@ -74,6 +74,18 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
             '{"url": "https://open.spotify.com/track/5SudOD9R1Of6CsJVWZy6CQ"}',
         )
 
+    async def test_extract_tool_from_content_maps_shell_cmd_array_to_list_dir(self):
+        tool_calls = self.agent._extract_tool_from_content(
+            '{"cmd":["bash","-lc","ls -R"]}'
+        )
+
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "list_dir")
+        self.assertEqual(
+            tool_calls[0]["function"]["arguments"],
+            '{"path": "."}',
+        )
+
     async def test_extract_tool_from_content_recovers_legacy_xml_tool_tag(self):
         tool_calls = self.agent._extract_tool_from_content(
             "<run_command>echo hello</run_command>"
@@ -84,6 +96,40 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             tool_calls[0]["function"]["arguments"],
             '{"command": "echo hello"}',
+        )
+
+    async def test_extract_tool_from_content_recovers_legacy_xml_attr_tool_tag(self):
+        tool_calls = self.agent._extract_tool_from_content('<list_dir path=".">')
+
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "list_dir")
+        self.assertEqual(
+            tool_calls[0]["function"]["arguments"],
+            '{"path": "."}',
+        )
+
+    async def test_extract_tool_from_content_recovers_pipe_tool_tag(self):
+        tool_calls = self.agent._extract_tool_from_content(
+            '<|list_dir|>{"path": "."}<|/list_dir|>'
+        )
+
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "list_dir")
+        self.assertEqual(
+            tool_calls[0]["function"]["arguments"],
+            '{"path": "."}',
+        )
+
+    async def test_extract_tool_from_content_recovers_bare_tool_call_snippet(self):
+        tool_calls = self.agent._extract_tool_from_content(
+            'We should first list current directory. Use list_dir(".").'
+        )
+
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "list_dir")
+        self.assertEqual(
+            tool_calls[0]["function"]["arguments"],
+            '{"path": "."}',
         )
 
     async def test_extract_tool_from_content_recovers_tool_code_wrapper(self):

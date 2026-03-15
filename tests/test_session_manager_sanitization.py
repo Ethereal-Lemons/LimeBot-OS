@@ -29,6 +29,17 @@ class TestSessionManagerSanitization(unittest.TestCase):
         self.assertTrue(changed)
         self.assertIsNone(row)
 
+    def test_drops_pipe_tool_wrapper_from_persisted_history(self):
+        row, changed = _sanitize_assistant_content(
+            {
+                "role": "assistant",
+                "content": '<|list_dir|>{"path": "."}<|/list_dir|>',
+            }
+        )
+
+        self.assertTrue(changed)
+        self.assertIsNone(row)
+
     def test_keeps_preamble_and_strips_legacy_xml_tool_tag(self):
         row, changed = _sanitize_assistant_content(
             {
