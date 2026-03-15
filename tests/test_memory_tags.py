@@ -70,6 +70,23 @@ class TestMemoryTags(unittest.IsolatedAsyncioTestCase):
             LONG_TERM_MEMORY_FILE.read_text(encoding="utf-8"),
         )
 
+    async def test_process_tags_keeps_empty_reply_empty(self):
+        from core.tag_parser import process_tags
+        from core import prompt as prompt_module
+
+        result = await process_tags(
+            raw_reply="",
+            sender_id="tester",
+            validate_soul=prompt_module.validate_and_save_soul,
+            validate_identity=prompt_module.validate_and_save_identity,
+            vector_service=None,
+            bus=None,
+            msg=None,
+            config=None,
+        )
+
+        self.assertEqual(result.clean_reply, "")
+
     async def test_save_memory_tool_call_is_routed_through_tag_parser(self):
         from core.bus import MessageBus
         from core.loop import AgentLoop

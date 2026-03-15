@@ -1,7 +1,22 @@
+import os
 import unittest
+from unittest import mock
 
 
 class TestToolSelection(unittest.TestCase):
+    def test_should_include_tools_for_plain_directory_request(self):
+        from core.loop import AgentLoop
+
+        self.assertTrue(AgentLoop._should_include_tools("list your current dir"))
+        self.assertTrue(
+            AgentLoop._should_include_tools("show me the working directory")
+        )
+
+    def test_should_include_tools_for_plain_smalltalk(self):
+        from core.loop import AgentLoop
+
+        self.assertTrue(AgentLoop._should_include_tools("how are you today"))
+
     def test_shortlist_prefers_filesystem_cluster_for_code_search(self):
         from core.tool_defs import build_tool_definitions, shortlist_tool_definitions
 
@@ -76,3 +91,46 @@ class TestToolSelection(unittest.TestCase):
         )
         self.assertEqual(name, "run_command")
         self.assertEqual(args["command"], "git status")
+
+    def test_agent_uses_full_tool_schema_by_default(self):
+        from core.loop import AgentLoop
+
+        agent = object.__new__(AgentLoop)
+        all_tools = [
+            {"function": {"name": "read_file"}},
+            {"function": {"name": "browser_navigate"}},
+            {"function": {"name": "list_dir"}},
+        ]
+        agent._get_tool_definitions = lambda: all_tools
+
+        selected = agent._get_tool_definitions_for_turn(
+            "open https://example.com and inspect the page"
+        )
+
+        self.assertEqual(selected, all_tools)
+
+    def test_agent_can_opt_in_to_tool_shortlisting_via_env(self):
+        from core.loop import AgentLoop
+        from core.tool_defs import shortlist_tool_definitions
+
+        agent = object.__new__(AgentLoop)
+        all_tools = [
+            {"function": {"name": "read_file"}},
+            {"function": {"name": "browser_navigate"}},
+            {"function": {"name": "browser_snapshot"}},
+            {"function": {"name": "browser_click"}},
+            {"function": {"name": "list_dir"}},
+        ]
+        agent._get_tool_definitions = lambda: all_tools
+
+        with mock.patch.dict(os.environ, {"LIMEBOT_ENABLE_TOOL_SHORTLIST": "1"}):
+            selected = agent._get_tool_definitions_for_turn(
+                "open https://example.com and inspect the page"
+            )
+
+        self.assertEqual(
+            selected,
+            shortlist_tool_definitions(
+                all_tools, "open https://example.com and inspect the page"
+            ),
+        )
