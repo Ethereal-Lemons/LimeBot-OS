@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useLayoutEffect, memo } from 'react';
+import { useRef, useEffect, useState, memo } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import axios from 'axios';
@@ -241,7 +241,7 @@ const MemoizedCodeBlock = memo(({ language, value }: { language: string; value: 
                     language={language}
                     PreTag="div"
                     wrapLongLines={true}
-                    customStyle={{ margin: 0, padding: '1.25rem', background: '#09090b', fontSize: '13px', lineHeight: '1.6' }}
+                    customStyle={{ margin: 0, padding: '1.1rem 1.25rem', background: '#09090b', fontSize: '13.5px', lineHeight: '1.7' }}
                 >
                     {value}
                 </SyntaxHighlighter>
@@ -265,7 +265,9 @@ const MarkdownMessage = memo(({
 
     return (
         <div className={cn(
-            "prose prose-sm dark:prose-invert max-w-none break-words leading-tight text-inherit",
+            "prose dark:prose-invert max-w-none break-words font-sans text-[15px] leading-[1.72] text-inherit",
+            "prose-p:my-0 prose-p:leading-[1.72] prose-headings:mb-2 prose-headings:mt-5",
+            "prose-li:my-0.5 prose-ul:my-2.5 prose-ol:my-2.5 prose-pre:my-0 prose-code:before:hidden prose-code:after:hidden",
             isStreaming && "streaming-markdown"
         )}>
             <ReactMarkdown
@@ -279,7 +281,7 @@ const MarkdownMessage = memo(({
                             className="font-bold underline text-primary decoration-primary/30 hover:decoration-primary"
                         />
                     ),
-                    p: ({ node, ...props }) => <p {...props} className="last:mb-1" />,
+                    p: ({ node, ...props }) => <p {...props} className="mb-2.5 last:mb-0" />,
                     code: ({ node, className, children, ...props }: any) => {
                         const codeContent = String(children || '').trim();
                         if (!codeContent) return null;
@@ -288,8 +290,8 @@ const MarkdownMessage = memo(({
                         return !match ? (
                             <code
                                 className={cn(
-                                    "bg-muted/50 px-1.5 py-0.5 rounded font-mono text-[12px] break-all",
-                                    isUser ? "bg-black/30" : "bg-zinc-200/50 dark:bg-zinc-800/50"
+                                    "rounded-md px-1.5 py-0.5 font-mono text-[12.5px] break-all",
+                                    isUser ? "bg-black/30 text-white" : "bg-muted text-foreground"
                                 )}
                                 {...props}
                             >
@@ -309,11 +311,11 @@ const MarkdownMessage = memo(({
                     tr: ({ node, ...props }) => <tr className="hover:bg-muted/20 transition-colors" {...props} />,
                     th: ({ node, ...props }) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...props} />,
                     td: ({ node, ...props }) => <td className="px-4 py-3 align-top" {...props} />,
-                    h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-4 mb-2 border-b border-border/50 pb-1" {...props} />,
-                    h2: ({ node, ...props }) => <h2 className="text-lg font-bold mt-3 mb-2" {...props} />,
-                    h3: ({ node, ...props }) => <h3 className="text-md font-bold mt-2 mb-1" {...props} />,
+                    h1: ({ node, ...props }) => <h1 className="text-2xl font-semibold tracking-tight" {...props} />,
+                    h2: ({ node, ...props }) => <h2 className="text-xl font-semibold tracking-tight" {...props} />,
+                    h3: ({ node, ...props }) => <h3 className="text-lg font-semibold tracking-tight" {...props} />,
                     blockquote: ({ node, ...props }) => (
-                        <blockquote className="border-l-4 border-primary/30 pl-4 py-1 my-3 italic text-muted-foreground bg-primary/5 rounded-r" {...props} />
+                        <blockquote className="my-4 rounded-2xl border border-border/70 bg-muted/35 px-4 py-3 text-muted-foreground" {...props} />
                     ),
                     img: ({ node, ...props }: any) => <ChatImage src={props.src || ''} alt={props.alt || ''} />,
                 }}
@@ -342,13 +344,13 @@ const UnreadSeparator = ({ count }: { count: number }) => (
 
 function TypingIndicator({ botIdentity }: { botIdentity?: { name: string; avatar: string | null } }) {
     return (
-        <div className="flex w-full max-w-[90%] gap-4 animate-in fade-in slide-in-from-bottom-2 duration-200">
-            <Avatar className="h-9 w-9 mt-1 shrink-0 border border-border shadow-sm">
+        <div className="flex w-full max-w-[48rem] gap-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
+            <Avatar className="mt-0.5 h-8 w-8 shrink-0 border border-border/70 shadow-sm">
                 <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
-                <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">Bot</AvatarFallback>
+                <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">Bot</AvatarFallback>
             </Avatar>
             <div className="flex items-center">
-                <div className="flex items-center gap-1 rounded-2xl rounded-tl-none bg-muted/80 border px-4 py-3 shadow-sm">
+                <div className="flex items-center gap-1 rounded-2xl bg-muted/50 px-4 py-3 text-muted-foreground">
                     <span
                         className="h-2 w-2 rounded-full bg-muted-foreground/60"
                         style={{ animation: 'typing-dot 1.2s infinite ease-in-out', animationDelay: '0ms' }}
@@ -396,15 +398,15 @@ const MemoizedMessageItem = memo(({
 
     return (
         <div className={cn(
-            "flex w-full gap-4",
-            isUser ? "ml-auto flex-row-reverse max-w-[85%]" : "max-w-[90%]"
+            "flex w-full gap-3",
+            isUser ? "justify-end" : "max-w-[48rem]"
         )}>
-            {showAvatar ? (
-                <Avatar className="h-9 w-9 mt-1 shrink-0 border border-border shadow-sm">
+            {isBot && showAvatar ? (
+                <Avatar className="mt-0.5 h-8 w-8 shrink-0 border border-border/70 shadow-sm">
                     {isBot ? (
                         <>
                             <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
-                            <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">Bot</AvatarFallback>
+                            <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">Bot</AvatarFallback>
                         </>
                     ) : (
                         <>
@@ -415,19 +417,19 @@ const MemoizedMessageItem = memo(({
                         </>
                     )}
                 </Avatar>
+            ) : isBot ? (
+                <div className="h-8 w-8 shrink-0" />
             ) : (
-                <div className="h-9 w-9 mt-1 shrink-0" />
+                <div className="hidden" />
             )}
 
             <div className={cn(
-                "flex flex-col gap-1 min-w-0 flex-1",
+                "flex min-w-0 flex-1 flex-col gap-1",
                 isUser ? "items-end" : "items-start"
             )}>
                 {!isUser && showHeader && (
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest opacity-50 mb-0.5 ml-1">
-                        <span className="text-primary">{botIdentity?.name || "LimeBot"}</span>
-                        <span className="h-1 w-1 rounded-full bg-muted-foreground/30" />
-                        <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    <div className="ml-0.5 text-[11px] font-medium text-muted-foreground/70">
+                        {botIdentity?.name || "LimeBot"}
                     </div>
                 )}
 
@@ -468,12 +470,12 @@ const MemoizedMessageItem = memo(({
 
                         {(msg.content || renderableAttachments.length > 0) && (
                             <div className={cn(
-                                "relative group px-3.5 py-2 text-[14px] leading-tight transition-all duration-300 max-w-full overflow-hidden",
+                                "relative max-w-full overflow-hidden transition-all duration-200",
                                 isUser
-                                    ? "bg-zinc-800 text-white rounded-2xl rounded-tr-none shadow-sm hover:bg-zinc-700/90 hover:shadow-md"
-                                    : "bg-muted/80 backdrop-blur-sm text-foreground rounded-2xl rounded-tl-none border shadow-sm hover:bg-muted/90 hover:border-primary/30 hover:shadow-md"
+                                    ? "group max-w-[min(82%,30rem)] rounded-2xl rounded-tr-none bg-zinc-800 px-3.5 py-2 text-[14px] leading-tight text-white shadow-sm transition-all duration-300 hover:bg-zinc-700/90 hover:shadow-md"
+                                    : "w-full bg-transparent px-0 py-0 text-foreground"
                             )}>
-                                <div className="whitespace-pre-wrap break-words max-w-full overflow-x-auto">
+                                <div className="max-w-full overflow-x-auto whitespace-pre-wrap break-words">
                                     {renderableAttachments.map((attachment) => (
                                         <AttachmentPreview
                                             key={`${attachment.kind}:${attachment.name}:${attachment.url.slice(0, 24)}`}
@@ -486,12 +488,6 @@ const MemoizedMessageItem = memo(({
                                         isStreaming={msg.isStreaming}
                                     />
                                 </div>
-
-                                {isUser && (
-                                    <div className="absolute -left-12 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-40 transition-opacity text-[9px] font-medium uppercase tracking-tighter hidden md:block">
-                                        {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                    </div>
-                                )}
                             </div>
                         )}
                     </>
@@ -520,12 +516,9 @@ export function ChatInterface({
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [selectedAttachment, setSelectedAttachment] = useState<ChatAttachment | null>(null);
-    const [visibleCount, setVisibleCount] = useState(10);
     const [isAtBottom, setIsAtBottom] = useState(true);
     const [unreadAnchorIndex, setUnreadAnchorIndex] = useState<number | null>(null);
     const [unreadCount, setUnreadCount] = useState(0);
-    const lastScrollHeightRef = useRef(0);
-    const isLoadingHistoryRef = useRef(false);
     const isAtBottomRef = useRef(true);
     const prevMessageCountRef = useRef(messages.length);
 
@@ -606,7 +599,6 @@ export function ChatInterface({
     }, [messages.length, unreadAnchorIndex, unreadCount]);
 
     useEffect(() => {
-        setVisibleCount(10);
         setIsAtBottom(true);
         isAtBottomRef.current = true;
         clearUnread();
@@ -790,23 +782,7 @@ export function ChatInterface({
         } else if (isAtBottom) {
             setIsAtBottom(false);
         }
-
-        if (viewport.scrollTop <= 40 && messages.length > visibleCount) {
-            isLoadingHistoryRef.current = true;
-            lastScrollHeightRef.current = viewport.scrollHeight;
-            setVisibleCount(prev => Math.min(messages.length, prev + 10));
-        }
     };
-
-    useLayoutEffect(() => {
-        if (isLoadingHistoryRef.current) {
-            const viewport = getScrollViewport();
-            if (viewport) {
-                viewport.scrollTop = viewport.scrollHeight - lastScrollHeightRef.current;
-            }
-            isLoadingHistoryRef.current = false;
-        }
-    }, [visibleCount]);
 
     // --- SKILLS MANAGEMENT ---
     const [skillsModalOpen, setSkillsModalOpen] = useState(false);
@@ -1110,7 +1086,7 @@ export function ChatInterface({
             {/* Chat Messages */}
             <div className="flex-1 overflow-hidden relative">
                 <ScrollArea ref={scrollAreaRef} className="h-full p-4 md:p-8" onScroll={handleScroll}>
-                    <div className="flex flex-col gap-8 max-w-4xl mx-auto pb-4">
+                    <div className="mx-auto flex max-w-[48rem] flex-col gap-8 pb-10 font-sans">
                         {messages.length === 0 && (
                             <div className="flex flex-col items-center justify-center py-16 text-center">
                                 <Avatar className="h-14 w-14 shadow-lg shadow-primary/20">
@@ -1133,20 +1109,18 @@ export function ChatInterface({
                             </div>
                         )}
                         {(() => {
-                            const visibleStart = Math.max(0, messages.length - visibleCount);
-                            const visible = messages.slice(visibleStart);
                             const items: Array<
                                 | { kind: 'message'; msg: Message; showAvatar: boolean; showHeader: boolean; key: string; absoluteIndex: number }
                                 | { kind: 'tool_timeline'; executions: ToolExecution[]; key: string; absoluteIndex: number }
                             > = [];
 
-                            for (let i = 0; i < visible.length; i++) {
-                                const msg = visible[i];
+                            for (let i = 0; i < messages.length; i++) {
+                                const msg = messages[i];
                                 if (msg.type === 'tool' && msg.toolExecution) {
                                     const start = i;
                                     const toolGroup: ToolExecution[] = [];
-                                    while (i < visible.length && visible[i].type === 'tool' && visible[i].toolExecution) {
-                                        toolGroup.push(visible[i].toolExecution as ToolExecution);
+                                    while (i < messages.length && messages[i].type === 'tool' && messages[i].toolExecution) {
+                                        toolGroup.push(messages[i].toolExecution as ToolExecution);
                                         i++;
                                     }
                                     const count = toolGroup.length;
@@ -1155,18 +1129,18 @@ export function ChatInterface({
                                             kind: 'tool_timeline',
                                             executions: toolGroup,
                                             key: `${activeChatId}-tools-${start}`,
-                                            absoluteIndex: visibleStart + start,
+                                            absoluteIndex: start,
                                         });
                                     } else {
                                         for (let j = 0; j < toolGroup.length; j++) {
-                                            const m = visible[start + j];
+                                            const m = messages[start + j];
                                             items.push({
                                                 kind: 'message',
                                                 msg: m,
                                                 showAvatar: j === 0,
                                                 showHeader: j === 0,
                                                 key: `${activeChatId}-${start + j}`,
-                                                absoluteIndex: visibleStart + start + j,
+                                                absoluteIndex: start + j,
                                             });
                                         }
                                     }
@@ -1186,18 +1160,12 @@ export function ChatInterface({
                                     showAvatar,
                                     showHeader,
                                     key: `${activeChatId}-${i}`,
-                                    absoluteIndex: visibleStart + i,
+                                    absoluteIndex: i,
                                 });
                             }
 
-                            const unreadMarkerOutsideVisible =
-                                unreadAnchorIndex !== null && unreadAnchorIndex < visibleStart;
-
                             return (
                                 <>
-                                    {unreadMarkerOutsideVisible && unreadCount > 0 && (
-                                        <UnreadSeparator count={unreadCount} />
-                                    )}
                                     {items.map((item) => (
                                         <div key={item.key} className="contents">
                                             {item.absoluteIndex === unreadAnchorIndex && unreadCount > 0 && (
@@ -1260,7 +1228,7 @@ export function ChatInterface({
 
             {/* Input Area */}
             <div className="p-4 bg-background border-t border-border relative z-20">
-                <div className="max-w-4xl mx-auto relative group">
+                <div className="mx-auto max-w-[48rem] relative group font-sans">
                     <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
                         <StatusChip
                             label="Compose"
@@ -1394,7 +1362,7 @@ export function ChatInterface({
                         </div>
                     )}
                 </div>
-                <div className="max-w-4xl mx-auto mt-2 flex flex-wrap justify-between gap-2 px-1 text-[10px] font-medium text-muted-foreground">
+                <div className="mx-auto mt-2 flex max-w-[48rem] flex-wrap justify-between gap-2 px-1 text-[10px] font-medium text-muted-foreground">
                     <span>
                         {waitingToolCount > 0
                             ? "Pending approvals are handled directly in the tool timeline."
