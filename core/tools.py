@@ -6,7 +6,10 @@ Provides safe, whitelisted, and confirmed interface for file/OS operations.
 import asyncio
 import json
 import os
+import re
 import shutil
+import socket
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -87,8 +90,6 @@ class Toolbox:
 
     def _detect_skill_path(self, command: str):
         """Best-effort detection of a skill directory from a command string."""
-        import re
-
         match = re.search(r"skills[\\/](?P<name>[^\\/\\s]+)", command)
         if not match:
             return None
@@ -108,6 +109,121 @@ class Toolbox:
             }
 
         return {"name": name, "path": Path("skills") / name}
+
+    @staticmethod
+    def _windows_browser_binary(browser_name: str) -> Optional[Path]:
+        candidates = {
+            "opera": [
+                Path.home() / "AppData" / "Local" / "Programs" / "Opera GX" / "opera.exe",
+                Path.home() / "AppData" / "Local" / "Programs" / "Opera" / "opera.exe",
+            ],
+            "msedge": [
+                Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+                Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+            ],
+            "chrome": [
+                Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+                Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+                Path.home()
+                / "AppData"
+                / "Local"
+                / "Google"
+                / "Chrome"
+                / "Application"
+                / "chrome.exe",
+            ],
+        }
+        for candidate in candidates.get(browser_name, []):
+            if candidate.exists():
+                return candidate
+        return None
+
+    @staticmethod
+    def _is_local_port_in_use(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.25)
+            return sock.connect_ex(("127.0.0.1", port)) == 0
+
+    @staticmethod
+    def _extract_remote_debug_port(command: str) -> Optional[int]:
+        match = re.search(
+            r"--remote-debugging-port=(\d+)", command or "", re.IGNORECASE
+        )
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _is_windows_process_running(image_name: str) -> bool:
+        if os.name != "nt":
+            return False
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return False
+        output = (result.stdout or "").strip().lower()
+        return bool(output and "no tasks are running" not in output and image_name.lower() in output)
+
+    def _normalize_browser_launch_command(
+        self, command: str
+    ) -> tuple[str, Optional[str]]:
+        stripped = (command or "").strip()
+        lowered = stripped.lower()
+        if os.name != "nt" or "--remote-debugging-port=" not in lowered:
+            return command, None
+
+        match = re.search(r"--remote-debugging-port=(\d+)", stripped, re.IGNORECASE)
+        port = int(match.group(1)) if match else 9222
+
+        browser_name = None
+        if re.match(r"^(?:start\s+)?opera(?:\s|$)", lowered):
+            browser_name = "opera"
+        elif re.match(r"^(?:start\s+)?msedge(?:\s|$)", lowered):
+            browser_name = "msedge"
+        elif re.match(r"^(?:start\s+)?chrome(?:\s|$)", lowered):
+            browser_name = "chrome"
+
+        if not browser_name:
+            return command, None
+
+        if self._is_local_port_in_use(port):
+            return (
+                command,
+                f"Error: Port {port} is already in use. Close the browser currently exposing that CDP port or choose a different port before launching {browser_name}.",
+            )
+
+        if browser_name == "opera" and "--user-data-dir=" not in lowered:
+            if self._is_windows_process_running("opera.exe"):
+                return (
+                    command,
+                    "Error: Opera is already running. Close all Opera windows before launching it with --remote-debugging-port if you want LimeBot to attach to that session.",
+                )
+
+        browser_binary = self._windows_browser_binary(browser_name)
+        if not browser_binary:
+            return (
+                command,
+                f"Error: Could not find a local {browser_name} binary to launch with remote debugging.",
+            )
+
+        normalized = re.sub(
+            r"^(?:start\s+)?(?:opera|msedge|chrome)\b",
+            lambda _match: f'"{browser_binary}"',
+            stripped,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        return normalized, None
+
+    @staticmethod
+    def _is_browser_remote_debug_launch(command: str) -> bool:
+        lowered = (command or "").lower()
+        return "--remote-debugging-port=" in lowered and any(
+            token in lowered for token in ("opera.exe", "msedge.exe", "chrome.exe")
+        )
 
     async def send_progress(self, message: str):
         """Broadcast tool progress if an agent/bus is available."""
@@ -785,8 +901,6 @@ class Toolbox:
 
     async def run_command(self, command: str) -> str:
         """Execute a terminal command with real-time progress updates."""
-        import re
-
         forbidden_regex = r"(\$\(|\`|;|&&|\|\||>|<|\n)"
 
         unsafe_allowed = False
@@ -804,6 +918,10 @@ class Toolbox:
             return "Error: Command or environment manipulation forbidden."
 
         try:
+            command, browser_launch_error = self._normalize_browser_launch_command(command)
+            if browser_launch_error:
+                return browser_launch_error
+
             # Rewrite bare pip/python commands to use the running interpreter
             # so packages always install into the correct venv.
             import sys as _sys
@@ -824,9 +942,42 @@ class Toolbox:
 
             await self.send_progress(f"💻 Running: {command}")
 
-            import subprocess
             import os
             import time as _time
+
+            if self._is_browser_remote_debug_launch(command):
+                port = self._extract_remote_debug_port(command) or 9222
+                creationflags = 0
+                if os.name == "nt":
+                    creationflags = (
+                        subprocess.DETACHED_PROCESS
+                        | subprocess.CREATE_NEW_PROCESS_GROUP
+                    )
+
+                subprocess.Popen(
+                    command,
+                    shell=True,
+                    cwd=str(self.allowed_paths[0]),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                    close_fds=True,
+                )
+
+                deadline = _time.monotonic() + 10
+                while _time.monotonic() < deadline:
+                    if self._is_local_port_in_use(port):
+                        return (
+                            f"Success: Browser launched for CDP attach on "
+                            f"http://127.0.0.1:{port}"
+                        )
+                    await asyncio.sleep(0.25)
+
+                return (
+                    f"Error: Browser launch command was started, but CDP port {port} "
+                    "did not become available within 10 seconds."
+                )
 
             kwargs = {
                 "stdout": asyncio.subprocess.PIPE,
