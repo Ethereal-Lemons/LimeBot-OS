@@ -23,6 +23,10 @@ except ImportError:
 
 RECURRING_JOB_MAX_LAG_SECONDS = 300
 
+# Per-job in-memory dedup: job_id -> last fired unix timestamp.
+# Prevents duplicate fires when the bot restarts multiple times within a period.
+_job_last_fired: dict[str, float] = {}
+
 
 class CronManager:
     """Manages scheduled tasks and reminders."""
@@ -201,6 +205,8 @@ class CronManager:
                     ]
 
                     for job in due:
+                        job_id = job["id"]
+
                         if job.get("cron_expr"):
                             tz_off = job.get("tz_offset")
                             tz = (
@@ -223,16 +229,38 @@ class CronManager:
 
                             job["trigger"] = next_trigger
                             logger.info(
-                                f"Rescheduled job {job['id']} → {job['trigger']} (tz_offset={tz_off})"
+                                f"Rescheduled job {job_id} → {job['trigger']} (tz_offset={tz_off})"
                             )
                             if skipped_stale:
-                                logger.info(
-                                    f"Skipping stale recurring job {job['id']} (lag={lag:.1f}s)"
+                                # Fire once on startup if the job hasn't run recently,
+                                # then reschedule normally. This prevents jobs from being
+                                # silently skipped after a long bot downtime.
+                                last_fired = _job_last_fired.get(job_id, 0.0)
+                                if last_fired == 0.0:
+                                    logger.info(
+                                        f"Startup catch-up fire for job {job_id} (lag={lag:.1f}s)"
+                                    )
+                                    _job_last_fired[job_id] = now
+                                    asyncio.create_task(self._execute_job(job))
+                                else:
+                                    logger.info(
+                                        f"Skipping stale recurring job {job_id} (lag={lag:.1f}s)"
+                                    )
+                                continue
+
+                            # ── Dedup: skip if already fired in this same period ──
+                            last_fired = _job_last_fired.get(job_id, 0.0)
+                            if (now - last_fired) < lag + 1.0:
+                                logger.debug(
+                                    f"Dedup: skipping duplicate fire for job {job_id} "
+                                    f"(last_fired={last_fired:.1f}, lag={lag:.1f}s)"
                                 )
                                 continue
-                        else:
-                            self.jobs = [j for j in self.jobs if j["id"] != job["id"]]
 
+                        else:
+                            self.jobs = [j for j in self.jobs if j["id"] != job_id]
+
+                        _job_last_fired[job_id] = now
                         asyncio.create_task(self._execute_job(job))
 
                     if due:
