@@ -2761,9 +2761,14 @@ class AgentLoop:
         match_index = 0
         dedup_active = bool(previous_content)
         streamed_to_web: bool = False
+        streamed_to_discord: bool = False
         last_flush = time.monotonic()
         flush_interval_s = 0.08
         flush_min_chars = 256
+        last_discord_flush = time.monotonic()
+        discord_flush_interval_s = 0.45
+        discord_flush_min_chars = 48
+        last_discord_content = ""
         thinking_buffer: str = ""
         extracted_from = "provider_tool_calls"
         chunk_index = 0
@@ -2940,6 +2945,34 @@ class AgentLoop:
                                     close_idx + len(closing) :
                                 ]
 
+                    if (
+                        msg.channel == "discord"
+                        and not is_potential_json
+                        and full_content.strip()
+                    ):
+                        now = time.monotonic()
+                        should_flush_discord = (
+                            len(full_content) - len(last_discord_content)
+                            >= discord_flush_min_chars
+                            or (now - last_discord_flush) >= discord_flush_interval_s
+                        )
+                        if should_flush_discord and full_content != last_discord_content:
+                            await self.bus.publish_outbound(
+                                OutboundMessage(
+                                    channel=msg.channel,
+                                    chat_id=msg.chat_id,
+                                    content=full_content,
+                                    metadata=self._with_trace_metadata(
+                                        {"type": "full_content"},
+                                        turn_id=turn_id,
+                                        message_id=message_id,
+                                    ),
+                                )
+                            )
+                            streamed_to_discord = True
+                            last_discord_flush = now
+                            last_discord_content = full_content
+
                 thinking = getattr(delta, "reasoning_content", None) or getattr(
                     delta, "thinking", None
                 )
@@ -2965,14 +2998,9 @@ class AgentLoop:
                         )
                     )
 
-        streamed_to_discord: bool = False
                 if hasattr(delta, "tool_calls") and delta.tool_calls:
                     self._log_tool_debug(
                         "stream_chunk_tool_delta",
-        last_discord_flush = time.monotonic()
-        discord_flush_interval_s = 0.45
-        discord_flush_min_chars = 48
-        last_discord_content = ""
                         session_key=session_key,
                         chunk_index=chunk_index,
                         tool_delta=str(delta.tool_calls),
@@ -3146,37 +3174,22 @@ class AgentLoop:
                             ),
                         )
                     )
+                elif msg.channel == "discord" and streamed_to_discord:
+                    await self.bus.publish_outbound(
+                        OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=full_content,
+                            metadata=self._with_trace_metadata(
+                                {"type": "full_content"},
+                                turn_id=turn_id,
+                                message_id=message_id,
+                            ),
+                        )
+                    )
 
         if (
             is_potential_json
-                    if (
-                        msg.channel == "discord"
-                        and not is_potential_json
-                        and full_content.strip()
-                    ):
-                        now = time.monotonic()
-                        should_flush_discord = (
-                            len(full_content) - len(last_discord_content)
-                            >= discord_flush_min_chars
-                            or (now - last_discord_flush) >= discord_flush_interval_s
-                        )
-                        if should_flush_discord and full_content != last_discord_content:
-                            await self.bus.publish_outbound(
-                                OutboundMessage(
-                                    channel=msg.channel,
-                                    chat_id=msg.chat_id,
-                                    content=full_content,
-                                    metadata=self._with_trace_metadata(
-                                        {"type": "full_content"},
-                                        turn_id=turn_id,
-                                        message_id=message_id,
-                                    ),
-                                )
-                            )
-                            streamed_to_discord = True
-                            last_discord_flush = now
-                            last_discord_content = full_content
-
             and not tool_calls
             and full_content.strip()
             and msg.channel == "web"
@@ -3203,6 +3216,7 @@ class AgentLoop:
             tool_calls=self._tool_call_debug_rows(tool_calls),
             extracted_from=extracted_from if tool_calls else "none",
             streamed_to_web=streamed_to_web,
+            streamed_to_discord=streamed_to_discord,
             usage=str(usage) if usage else "",
         )
 
@@ -3378,19 +3392,6 @@ class AgentLoop:
                     channel=msg.channel,
                     chat_id=msg.chat_id,
                     content="",
-                elif msg.channel == "discord" and streamed_to_discord:
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content=full_content,
-                            metadata=self._with_trace_metadata(
-                                {"type": "full_content"},
-                                turn_id=turn_id,
-                                message_id=message_id,
-                            ),
-                        )
-                    )
                     metadata=self._with_trace_metadata(
                         {"type": "typing"},
                         turn_id=turn_id,
@@ -3420,7 +3421,6 @@ class AgentLoop:
 
                     # Fast-path: skip RAG for short/casual messages.
                     async def _do_rag() -> Dict[str, Any]:
-            streamed_to_discord=streamed_to_discord,
                         trace: Dict[str, Any] = {
                             "ts": time.time(),
                             "query": content,
