@@ -233,20 +233,9 @@ class CronManager:
                                 f"Rescheduled job {job_id} → {job['trigger']} (tz_offset={tz_off})"
                             )
                             if skipped_stale:
-                                # Fire once on startup if the job hasn't run recently,
-                                # then reschedule normally. This prevents jobs from being
-                                # silently skipped after a long bot downtime.
-                                last_fired = _job_last_fired.get(job_id, 0.0)
-                                if last_fired == 0.0:
-                                    logger.info(
-                                        f"Startup catch-up fire for job {job_id} (lag={lag:.1f}s)"
-                                    )
-                                    _job_last_fired[job_id] = now
-                                    asyncio.create_task(self._execute_job(job))
-                                else:
-                                    logger.info(
-                                        f"Skipping stale recurring job {job_id} (lag={lag:.1f}s)"
-                                    )
+                                logger.info(
+                                    f"Skipping stale recurring job {job_id} (lag={lag:.1f}s)"
+                                )
                                 continue
 
                             # ── Dedup: skip if already fired in this same period ──
