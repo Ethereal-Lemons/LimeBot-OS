@@ -59,6 +59,71 @@ class TestBrowserState(unittest.IsolatedAsyncioTestCase):
         self.assertIs(first, second)
         self.assertEqual(first.mode, "shared")
 
+    async def test_ensure_browser_reconnects_when_attached_browser_disconnects(self):
+        from core.browser import BrowserManager
+
+        profiles_dir = Path("temp") / "test-browser-profiles-attach"
+        screenshots_dir = Path("temp") / "test-browser-screenshots-attach"
+        cfg = SimpleNamespace(
+            browser=SimpleNamespace(mode="attach", cdp_url="http://127.0.0.1:9222")
+        )
+
+        class _StaleBrowser:
+            def is_connected(self):
+                return False
+
+            async def close(self):
+                return None
+
+        class _FakePage:
+            def __init__(self):
+                self.url = "about:blank"
+
+            def is_closed(self):
+                return False
+
+            async def add_init_script(self, *_args, **_kwargs):
+                return None
+
+        class _FakeContext:
+            def __init__(self, page):
+                self.pages = [page]
+
+            def on(self, *_args, **_kwargs):
+                return None
+
+        fake_page = _FakePage()
+        fake_context = _FakeContext(fake_page)
+        connected_browser = SimpleNamespace(
+            contexts=[fake_context],
+            is_connected=lambda: True,
+        )
+        fake_playwright = SimpleNamespace(
+            chromium=SimpleNamespace(
+                connect_over_cdp=AsyncMock(return_value=connected_browser)
+            ),
+            stop=AsyncMock(),
+        )
+        fake_factory = SimpleNamespace(start=AsyncMock(return_value=fake_playwright))
+
+        with patch.object(BrowserManager, "PROFILES_DIR", profiles_dir), patch.object(
+            BrowserManager, "SCREENSHOTS_DIR", screenshots_dir
+        ), patch("core.browser.async_playwright", return_value=fake_factory):
+            manager = BrowserManager("web:attach", config=cfg)
+            manager._browser = _StaleBrowser()
+            manager._attached_browser = True
+            manager._page = object()
+
+            page = await manager._ensure_browser()
+
+        self.assertIs(page, fake_page)
+        fake_playwright.chromium.connect_over_cdp.assert_awaited_once_with(
+            "http://127.0.0.1:9222"
+        )
+        self.assertIs(manager._browser, connected_browser)
+        self.assertIs(manager._context, fake_context)
+        self.assertIs(manager._page, fake_page)
+
     async def test_system_mode_retries_with_profile_snapshot(self):
         from core.browser import BrowserManager
 
