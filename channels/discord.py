@@ -974,13 +974,7 @@ class DiscordChannel(BaseChannel):
 
     async def _send_text(self, target, content: str) -> None:
         """Send text, splitting at word boundaries if it exceeds the Discord limit."""
-        if not content:
-            logger.warning(
-                f"[Discord] Attempted to send empty message to {_target_name(target)}, skipping."
-            )
-            return
-
-        content = self._apply_style(content, target)
+        content = self._apply_style(content, target) if content else ""
 
         import re
         from pathlib import Path
@@ -997,6 +991,12 @@ class DiscordChannel(BaseChannel):
                 files_to_send.append(discord.File(p))
                 # Remove the markdown tag from text
                 content = content.replace(f"![{alt}]({path})", "").strip()
+
+        if not content and not files_to_send:
+            logger.warning(
+                f"[Discord] Attempted to send empty message to {_target_name(target)}, skipping."
+            )
+            return
 
         if content:
             chunks = _split_message(content)
