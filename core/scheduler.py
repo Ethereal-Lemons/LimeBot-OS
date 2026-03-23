@@ -31,8 +31,9 @@ _job_last_fired: dict[str, float] = {}
 class CronManager:
     """Manages scheduled tasks and reminders."""
 
-    def __init__(self, bus: Any):
+    def __init__(self, bus: Any, session_manager: Any | None = None):
         self.bus = bus
+        self.session_manager = session_manager
         self.jobs: List[Dict[str, Any]] = []
         self._running = False
         self.data_file = Path("data/cron.json")
