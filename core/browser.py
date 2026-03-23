@@ -359,6 +359,10 @@ class BrowserManager:
     async def _ensure_browser(self) -> Page:
         """Ensure browser is running and return the active page."""
         async with self._browser_lock:
+            if self._browser is not None and not self._has_live_browser_connection():
+                logger.warning("Browser connection was lost. Reconnecting...")
+                await self._do_close()
+
             if self._page is not None:
                 if not self._page.is_closed():
                     return self._page
@@ -646,6 +650,10 @@ class BrowserManager:
         """Close the browser instance."""
         async with self._action_lock:
             async with self._browser_lock:
+            if self._browser is not None and not self._has_live_browser_connection():
+                logger.warning("Browser connection was lost. Reconnecting...")
+                await self._do_close()
+
                 await self._do_close()
 
     async def _do_close(self) -> None:
@@ -1330,3 +1338,4 @@ async def close_browser(session_key: Optional[str] = None, config: Any = None) -
 
     for manager in managers:
         await manager.close()
+

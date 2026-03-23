@@ -19,6 +19,27 @@ def _missing_deps_message() -> str:
     )
 
 
+def _page_html_output(page) -> str:
+    """Return HTML-ish output from Scrapling pages across response variants."""
+    body = getattr(page, "body", None)
+
+    body_html = getattr(body, "html", None)
+    if body_html is not None:
+        return body_html
+
+    if isinstance(body, (bytes, bytearray)):
+        return body.decode("utf-8", errors="replace")
+
+    if isinstance(body, str):
+        return body
+
+    html = getattr(page, "html", None)
+    if isinstance(html, str):
+        return html
+
+    return str(page)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scrape a webpage using Scrapling")
     parser.add_argument("url", help="URL to scrape")
@@ -61,7 +82,7 @@ def main() -> int:
         if args.text:
             print(page.text)
         else:
-            print(page.body.html)
+            print(_page_html_output(page))
 
     return 0
 
