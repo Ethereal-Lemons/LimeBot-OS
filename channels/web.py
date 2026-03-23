@@ -971,6 +971,17 @@ class WebChannel(BaseChannel):
             cfg = load_config()
             model = cfg.llm.model
             start = time.time()
+            runtime = (
+                self.agent.get_llm_runtime_status()
+                if getattr(self, "agent", None)
+                and hasattr(self.agent, "get_llm_runtime_status")
+                else {
+                    "configured_model": model,
+                    "active_model": model,
+                    "fallback_models": getattr(cfg.llm, "fallback_models", []),
+                    "using_fallback": False,
+                }
+            )
             try:
                 from core.llm_utils import resolve_provider_config
 
@@ -993,6 +1004,7 @@ class WebChannel(BaseChannel):
                     "latency_ms": latency,
                     "model": model,
                     "quota_remaining": "Unknown",
+                    **runtime,
                 }
             except Exception as e:
                 error_msg = str(e)
@@ -1002,7 +1014,25 @@ class WebChannel(BaseChannel):
                     "latency_ms": int((time.time() - start) * 1000),
                     "model": model,
                     "error": error_msg,
+                    **runtime,
                 }
+
+        @self.app.get("/api/llm/runtime", dependencies=[Depends(self.verify_auth)])
+        async def get_llm_runtime():
+            from config import load_config
+
+            cfg = load_config()
+            if getattr(self, "agent", None) and hasattr(
+                self.agent, "get_llm_runtime_status"
+            ):
+                return self.agent.get_llm_runtime_status()
+
+            return {
+                "configured_model": cfg.llm.model,
+                "active_model": cfg.llm.model,
+                "fallback_models": getattr(cfg.llm, "fallback_models", []),
+                "using_fallback": False,
+            }
 
         @self.app.get("/api/config", dependencies=[Depends(self.verify_auth)])
         async def get_config():

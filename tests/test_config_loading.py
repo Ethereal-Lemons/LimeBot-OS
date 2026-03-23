@@ -65,3 +65,23 @@ class TestConfigLoading(unittest.TestCase):
             loaded = config_module.load_config(force_reload=True)
 
         self.assertEqual(loaded.llm.model, "gemini/gemini-2.0-flash")
+
+    def test_fallback_models_are_loaded_from_env_and_deduped_against_primary(self):
+        import config as config_module
+
+        config_module._cached_config = None
+        with patch.dict(
+            "os.environ",
+            {
+                "LLM_MODEL": "openai/gpt-4o-mini",
+                "LLM_FALLBACK_MODELS": "openai/gpt-4o-mini,anthropic/claude-3-5-haiku-latest, gemini/gemini-2.0-flash",
+            },
+            clear=False,
+        ):
+            loaded = config_module.load_config(force_reload=True)
+
+        self.assertEqual(loaded.llm.model, "openai/gpt-4o-mini")
+        self.assertEqual(
+            loaded.llm.fallback_models,
+            ["anthropic/claude-3-5-haiku-latest", "gemini/gemini-2.0-flash"],
+        )

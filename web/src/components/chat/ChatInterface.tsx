@@ -55,6 +55,12 @@ interface ChatInterfaceProps {
     onNewChat?: () => void;
     activeChatId: string;
     autonomousMode?: boolean;
+    llmRuntime?: {
+        configured_model: string;
+        active_model: string;
+        fallback_models: string[];
+        using_fallback: boolean;
+    } | null;
     activityText?: string | null;
 }
 
@@ -509,6 +515,7 @@ export function ChatInterface({
     onNewChat,
     activeChatId,
     autonomousMode,
+    llmRuntime,
     activityText,
 }: ChatInterfaceProps) {
     const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -620,6 +627,7 @@ export function ChatInterface({
     const sessionLabel = activeChatId.slice(0, 8).toUpperCase();
     const waitingExecution = waitingTool?.toolExecution;
     const runningExecution = runningTool?.toolExecution;
+    const runtimeModelLabel = llmRuntime?.active_model?.split('/').pop() || llmRuntime?.active_model || '';
 
     let railTitle = "Ready";
     let railTone: 'default' | 'good' | 'warn' = isConnected ? 'good' : 'default';
@@ -890,6 +898,13 @@ export function ChatInterface({
                         value={autonomousMode ? "Autonomous" : "Guarded"}
                         tone={autonomousMode ? 'warn' : 'default'}
                     />
+                    {llmRuntime?.using_fallback && runtimeModelLabel && (
+                        <StatusChip
+                            label="AI"
+                            value={`Fallback · ${runtimeModelLabel}`}
+                            tone="warn"
+                        />
+                    )}
                     <StatusChip label="Session" value={sessionLabel} />
                     {waitingToolCount > 0 && (
                         <StatusChip label="Approvals" value={String(waitingToolCount)} tone="warn" />

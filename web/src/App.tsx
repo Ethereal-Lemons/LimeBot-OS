@@ -107,6 +107,13 @@ type ShellRuntimeStatus = {
   pendingApprovals: number;
 };
 
+type LlmRuntimeStatus = {
+  configured_model: string;
+  active_model: string;
+  fallback_models: string[];
+  using_fallback: boolean;
+};
+
 // ── Root component ────────────────────────────────────────────────────────────
 
 function App() {
@@ -116,6 +123,7 @@ function App() {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [autonomousMode, setAutonomousMode] = useState(false);
+  const [llmRuntime, setLlmRuntime] = useState<LlmRuntimeStatus | null>(null);
   const [rateLimitAlertOpen, setRateLimitAlertOpen] = useState(false);
   const [activity, setActivity] = useState<{ text: string } | null>(null);
   const [personaSetupPending, setPersonaSetupPending] = useState(false);
@@ -247,6 +255,30 @@ function App() {
       document.removeEventListener('visibilitychange', reapplyScheduledTheme);
     };
   }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchLlmRuntime = async () => {
+      try {
+        const res = await axios.get(`${API_BASE_URL}/api/llm/runtime`);
+        if (!cancelled) {
+          setLlmRuntime(res.data);
+        }
+      } catch {
+        if (!cancelled) {
+          setLlmRuntime(null);
+        }
+      }
+    };
+
+    fetchLlmRuntime();
+    const interval = window.setInterval(fetchLlmRuntime, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isInitialized || forceSetup || !personaSetupPending || !isConnected) return;
@@ -392,6 +424,7 @@ function App() {
               botIdentity={botIdentity}
               activeChatId={sessionId}
               autonomousMode={autonomousMode}
+              llmRuntime={llmRuntime}
               activityText={activity?.text || null}
               onInputChange={setInputValue}
               onSendMessage={handleSendMessage}

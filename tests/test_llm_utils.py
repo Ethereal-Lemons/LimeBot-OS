@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from core.llm_utils import resolve_provider_config
+from core.llm_utils import build_provider_chain, resolve_provider_config
 
 
 class TestLlmUtils(unittest.TestCase):
@@ -33,3 +33,27 @@ class TestLlmUtils(unittest.TestCase):
         self.assertEqual(resolved["base_url"], "https://integrate.api.nvidia.com/v1")
         self.assertEqual(resolved["api_key"], "nvidia-secret")
         self.assertEqual(resolved["custom_llm_provider"], "nvidia_nim")
+
+    def test_build_provider_chain_keeps_order_and_dedupes(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
+        with patch("config.load_config", return_value=cfg), patch.dict(
+            "os.environ",
+            {
+                "OPENAI_API_KEY": "openai-secret",
+                "GEMINI_API_KEY": "gemini-secret",
+            },
+            clear=False,
+        ):
+            chain = build_provider_chain(
+                "openai/gpt-4o-mini",
+                [
+                    "openai/gpt-4o-mini",
+                    "gemini/gemini-2.0-flash",
+                    "gemini/gemini-2.0-flash",
+                ],
+            )
+
+        self.assertEqual(
+            [item[0] for item in chain],
+            ["openai/gpt-4o-mini", "gemini/gemini-2.0-flash"],
+        )
