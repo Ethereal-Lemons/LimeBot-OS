@@ -468,6 +468,20 @@ class BrowserManager:
             logger.info("Browser launched successfully")
             return self._page
 
+    def _has_live_browser_connection(self) -> bool:
+        """Best-effort health check for the active browser transport."""
+        if self._browser is None:
+            return True
+
+        is_connected = getattr(self._browser, "is_connected", None)
+        if not callable(is_connected):
+            return True
+
+        try:
+            return bool(is_connected())
+        except Exception as health_error:
+            logger.debug(f"Browser connection health check failed: {health_error}")
+            return False
     async def _handle_new_page(self, page: Page) -> None:
         """Switch focus to newly opened tabs."""
         logger.info(f"New tab detected: {page.url}. Switching focus.")
@@ -1334,5 +1348,6 @@ async def close_browser(session_key: Optional[str] = None, config: Any = None) -
 
     for manager in managers:
         await manager.close()
+
 
 
