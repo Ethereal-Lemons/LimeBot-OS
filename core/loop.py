@@ -158,6 +158,8 @@ class AgentLoop:
         self.config = cfg
         if cfg.llm.model:
             self.model = cfg.llm.model
+        self.primary_model = self.model
+        self.fallback_models = list(getattr(cfg.llm, "fallback_models", []) or [])
 
         self._provider: Tuple = self._resolve_provider()
 
@@ -327,12 +329,77 @@ class AgentLoop:
             p_cfg["custom_llm_provider"],
         )
 
+    def _resolve_provider_chain(
+        self,
+    ) -> List[Tuple[str, str, Optional[str], Optional[str], Optional[str]]]:
+        from core.llm_utils import build_provider_chain
+
+        chain = build_provider_chain(
+            self.model,
+            getattr(self, "fallback_models", []) or [],
+            default_base_url=self.config.llm.base_url,
+        )
+        return [
+            (
+                source_model,
+                cfg["model"],
+                cfg["base_url"],
+                cfg["api_key"],
+                cfg["custom_llm_provider"],
+            )
+            for source_model, cfg in chain
+        ]
+
     def set_model(self, model: str) -> None:
         """Switch the active model and refresh cached provider config."""
         self.model = model
+        self.primary_model = model
         self._provider = self._resolve_provider()
         self._stable_prompt_cache.clear()
         self._image_input_fallback_sessions.clear()
+
+    def get_llm_runtime_status(self) -> Dict[str, Any]:
+        return {
+            "configured_model": self.primary_model,
+            "active_model": self.model,
+            "fallback_models": list(self.fallback_models),
+            "using_fallback": self.model != self.primary_model,
+        }
+
+    @staticmethod
+    def _should_failover_model(error: Exception) -> bool:
+        if isinstance(
+            error,
+            (
+                AuthenticationError,
+                RateLimitError,
+                InternalServerError,
+                APIConnectionError,
+                ServiceUnavailableError,
+            ),
+        ):
+            return True
+
+        text = str(error or "").lower()
+        return any(
+            marker in text
+            for marker in (
+                "incorrect api key",
+                "invalid api key",
+                "authentication",
+                "auth failed",
+                "rate limit",
+                "service unavailable",
+                "connection error",
+                "timed out",
+                "timeout",
+                "model not found",
+                "does not exist",
+                "not available",
+                "overloaded",
+                "capacity",
+            )
+        )
 
     def _image_input_fallback_key(self, session_key: str) -> str:
         return f"{self.model}::{session_key}"
@@ -1132,17 +1199,21 @@ class AgentLoop:
         message_id: Optional[str] = None,
     ) -> Any:
 
-        model, base_url, api_key, custom_llm_provider = self._provider
         messages = self._sanitize_messages_for_llm(messages, session_key)
         tools = (
             self._get_tool_definitions_for_turn(tool_context_text)
             if include_tools
             else []
         )
+        provider_chain = self._resolve_provider_chain()
+        selected_index = 0
+        active_source_model, model, base_url, api_key, custom_llm_provider = (
+            provider_chain[selected_index]
+        )
         self._log_tool_debug(
             "llm_call_prepare",
             session_key=session_key,
-            model=model,
+            model=active_source_model,
             stream=stream,
             include_tools=include_tools,
             tool_context=tool_context_text,
@@ -1150,9 +1221,11 @@ class AgentLoop:
             tool_count=len(tools),
             tool_names=self._tool_definition_names(tools),
             last_message=messages[-1].get("content", "") if messages else "",
+            fallback_chain=[item[0] for item in provider_chain],
         )
         qwen_auth_failover_attempted: Set[str] = set()
         image_fallback_attempted = False
+        model_failover_announced = False
 
         for attempt in range(max_retries):
             try:
@@ -1176,13 +1249,50 @@ class AgentLoop:
                     "llm_call_error",
                     session_key=session_key,
                     attempt=attempt + 1,
+                    source_model=active_source_model,
                     error_type=type(e).__name__,
                     error=str(e),
                 )
+                next_provider = provider_chain[selected_index + 1 : selected_index + 2]
+                if next_provider:
+                    selected_index += 1
+                    (
+                        active_source_model,
+                        model,
+                        base_url,
+                        api_key,
+                        custom_llm_provider,
+                    ) = provider_chain[selected_index]
+                    self.model = active_source_model
+                    self._provider = (
+                        model,
+                        base_url,
+                        api_key,
+                        custom_llm_provider,
+                    )
+                    qwen_auth_failover_attempted.clear()
+                    logger.warning(
+                        f"LLM auth failed for '{provider_chain[selected_index - 1][0]}'; switching to fallback '{active_source_model}'."
+                    )
+                    if msg and not model_failover_announced:
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                content=f"Switching AI provider to fallback model `{active_source_model}`...",
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                metadata=self._with_trace_metadata(
+                                    {"reply_to": msg.sender_id, "is_warning": True},
+                                    turn_id=turn_id,
+                                    message_id=message_id,
+                                ),
+                            )
+                        )
+                        model_failover_announced = True
+                    continue
                 # DashScope keys can be region-scoped. If auth fails on one endpoint,
                 # try other official compatible endpoints before failing.
                 current_base = (base_url or "").lower()
-                is_qwen = (self.model or "").startswith(
+                is_qwen = (active_source_model or "").startswith(
                     "qwen/"
                 ) or "dashscope" in current_base
                 if is_qwen:
@@ -1218,12 +1328,49 @@ class AgentLoop:
                     "llm_call_error",
                     session_key=session_key,
                     attempt=attempt + 1,
+                    source_model=active_source_model,
                     error_type=type(e).__name__,
                     error=str(e),
                 )
                 is_500 = isinstance(e, InternalServerError)
                 is_conn = isinstance(e, (APIConnectionError, ServiceUnavailableError))
                 wait_time = (2**attempt) * 5
+                next_provider = provider_chain[selected_index + 1 : selected_index + 2]
+                if next_provider:
+                    selected_index += 1
+                    (
+                        active_source_model,
+                        model,
+                        base_url,
+                        api_key,
+                        custom_llm_provider,
+                    ) = provider_chain[selected_index]
+                    self.model = active_source_model
+                    self._provider = (
+                        model,
+                        base_url,
+                        api_key,
+                        custom_llm_provider,
+                    )
+                    qwen_auth_failover_attempted.clear()
+                    logger.warning(
+                        f"LLM provider '{provider_chain[selected_index - 1][0]}' failed; switching to fallback '{active_source_model}'."
+                    )
+                    if msg and not model_failover_announced:
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                content=f"Primary AI is unavailable, switching to fallback model `{active_source_model}`...",
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                metadata=self._with_trace_metadata(
+                                    {"reply_to": msg.sender_id, "is_warning": True},
+                                    turn_id=turn_id,
+                                    message_id=message_id,
+                                ),
+                            )
+                        )
+                        model_failover_announced = True
+                    continue
                 if is_conn:
                     error_type = "Connection error"
                 elif is_500:
@@ -1282,9 +1429,46 @@ class AgentLoop:
                     "llm_call_error",
                     session_key=session_key,
                     attempt=attempt + 1,
+                    source_model=active_source_model,
                     error_type=type(e).__name__,
                     error=str(e),
                 )
+                next_provider = provider_chain[selected_index + 1 : selected_index + 2]
+                if next_provider and self._should_failover_model(e):
+                    selected_index += 1
+                    (
+                        active_source_model,
+                        model,
+                        base_url,
+                        api_key,
+                        custom_llm_provider,
+                    ) = provider_chain[selected_index]
+                    self.model = active_source_model
+                    self._provider = (
+                        model,
+                        base_url,
+                        api_key,
+                        custom_llm_provider,
+                    )
+                    qwen_auth_failover_attempted.clear()
+                    logger.warning(
+                        f"LLM call failed for '{provider_chain[selected_index - 1][0]}'; switching to fallback '{active_source_model}'."
+                    )
+                    if msg and not model_failover_announced:
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                content=f"Retrying with fallback model `{active_source_model}`...",
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                metadata=self._with_trace_metadata(
+                                    {"reply_to": msg.sender_id, "is_warning": True},
+                                    turn_id=turn_id,
+                                    message_id=message_id,
+                                ),
+                            )
+                        )
+                        model_failover_announced = True
+                    continue
                 if (
                     not image_fallback_attempted
                     and self._should_retry_without_images(e, messages)

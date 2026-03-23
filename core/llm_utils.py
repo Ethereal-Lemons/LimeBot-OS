@@ -1,7 +1,7 @@
 import httpx
 import logging
 import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 QWEN_COMPAT_BASE_URLS = [
@@ -248,3 +248,28 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
         "api_key": api_key,
         "custom_llm_provider": custom_llm_provider,
     }
+
+
+def build_provider_chain(
+    primary_model: str,
+    fallback_models: List[str],
+    default_base_url: Optional[str] = None,
+) -> List[Tuple[str, dict]]:
+    """
+    Resolve the primary model plus fallbacks into an ordered provider chain.
+
+    Returns a list of (source_model_name, provider_config_dict).
+    """
+    chain: List[Tuple[str, dict]] = []
+    seen: set[str] = set()
+
+    for raw_model in [primary_model, *(fallback_models or [])]:
+        model = str(raw_model or "").strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        chain.append(
+            (model, resolve_provider_config(model, default_base_url=default_base_url))
+        )
+
+    return chain

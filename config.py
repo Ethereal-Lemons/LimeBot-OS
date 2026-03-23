@@ -120,6 +120,12 @@ def load_config(force_reload=False):
     config.llm = SimpleNamespace()
     default_llm_model = "gemini/gemini-2.0-flash"
     config.llm.model = str(os.getenv("LLM_MODEL") or "").strip() or default_llm_model
+    raw_fallback_models = str(os.getenv("LLM_FALLBACK_MODELS") or "").strip()
+    config.llm.fallback_models = [
+        item.strip()
+        for item in raw_fallback_models.replace(";", ",").split(",")
+        if item.strip()
+    ]
     config.llm.api_key = get_api_key_for_model(config.llm.model)
     config.llm.enable_dynamic_personality = (
         os.getenv("ENABLE_DYNAMIC_PERSONALITY", "false").lower() == "true"
@@ -256,6 +262,11 @@ def load_config(force_reload=False):
         )
         config.llm.model = default_llm_model
     config.llm.api_key = get_api_key_for_model(config.llm.model)
+    config.llm.fallback_models = [
+        model
+        for model in getattr(config.llm, "fallback_models", [])
+        if isinstance(model, str) and model.strip() and model.strip() != config.llm.model
+    ]
 
     _cached_config = config
     return config
