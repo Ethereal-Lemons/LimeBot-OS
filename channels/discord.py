@@ -1,14 +1,17 @@
 """Discord channel implementation."""
 
 import asyncio
+import contextlib
 import io
 import json
 import aiohttp
 import discord
 from discord import app_commands
 import random
+import re
 import time
 import hashlib
+from pathlib import Path
 from typing import Any
 
 from core.bus import MessageBus
@@ -21,6 +24,17 @@ _MAX_MESSAGE_LEN = 2000
 _CHUNK_SIZE = 1900
 _AVATAR_STATE_FILE = "data/discord_avatar_state.json"
 _AVATAR_COOLDOWN_SECS = 24 * 60 * 60
+_DISCORD_MAX_STREAM_LEN = 1900
+_DISCORD_STREAM_SUFFIX = "\n\n... generating"
+_DISCORD_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
+_DISCORD_DOCUMENT_EXTENSIONS = frozenset({".pdf", ".doc", ".docx"})
+_DISCORD_DOCUMENT_MIME_TYPES = frozenset(
+    {
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+)
 
 
 def _session_key(channel: str, chat_id: str) -> str:
@@ -217,6 +231,7 @@ class DiscordChannel(BaseChannel):
         self._tool_messages: dict[str, discord.Message] = {}
         self._stop_messages: dict[str, discord.Message] = {}
         self._typing_tasks: dict[str, asyncio.Task] = {}
+        self._live_messages: dict[str, discord.Message] = {}
         self.agent = None
         self._style_overrides = getattr(self.config, "style_overrides", {}) or {}
         self._signature = getattr(self.config, "signature", "") or ""
@@ -276,8 +291,6 @@ class DiscordChannel(BaseChannel):
     def _apply_style(self, content: str, target) -> str:
         if not content:
             return content
-
-        import re
 
         style = self._get_style_for_target(target)
         text = content.strip()
@@ -616,6 +629,9 @@ class DiscordChannel(BaseChannel):
         image_url, attachment_urls = self._extract_discord_attachment_urls(
             message.attachments
         )
+        attachments = await self._normalize_discord_attachments(
+            chat_id, message.attachments
+        )
         if attachment_urls:
             content_parts.extend(attachment_urls)
         content = "\n".join(part for part in content_parts if part)
@@ -634,6 +650,8 @@ class DiscordChannel(BaseChannel):
         }
         if image_url:
             metadata["image"] = image_url
+        if attachments:
+            metadata["attachments"] = attachments
 
         await self._handle_message(
             sender_id=sender_id,
@@ -826,15 +844,21 @@ class DiscordChannel(BaseChannel):
                     await self._send_text(target, msg.content)
             elif msg_type == "typing":
                 await self._send_typing(target, msg.chat_id)
+                await self._show_stop_control(target, msg.chat_id)
             elif msg_type == "stop_typing":
                 await self._stop_typing(msg.chat_id)
                 await self._clear_stop_control(msg.chat_id)
+            elif msg_type == "full_content":
+                await self._send_streamed_text(target, msg.chat_id, msg.content)
             elif msg_type == "file":
                 await self._send_file(target, metadata)
             elif metadata.get("embed"):
                 await self._send_embed(target, metadata["embed"], metadata, msg.chat_id)
             else:
-                await self._send_text(target, msg.content)
+                if not await self._finalize_live_message(
+                    target, msg.chat_id, msg.content
+                ):
+                    await self._send_text(target, msg.content)
         except discord.Forbidden:
             logger.error(
                 f"[Discord] Missing permissions to send to {_target_name(target)}."
@@ -972,25 +996,190 @@ class DiscordChannel(BaseChannel):
                 f"[Discord] Failed to clear stop control for {session_key}: {e}"
             )
 
-    async def _send_text(self, target, content: str) -> None:
-        """Send text, splitting at word boundaries if it exceeds the Discord limit."""
-        content = self._apply_style(content, target) if content else ""
+    @staticmethod
+    def _preview_stream_content(content: str) -> str:
+        text = (content or "").strip()
+        if not text:
+            return "Thinking..."
 
-        import re
-        from pathlib import Path
+        max_body = _DISCORD_MAX_STREAM_LEN - len(_DISCORD_STREAM_SUFFIX)
+        if len(text) > max_body:
+            text = text[: max(0, max_body - 1)].rstrip() + "…"
+        return f"{text}{_DISCORD_STREAM_SUFFIX}"
 
-        # Extract markdown images: ![alt](path)
+    async def _send_streamed_text(self, target, chat_id: str, content: str) -> None:
+        session_key = _session_key("discord", chat_id)
+        preview = self._preview_stream_content(self._apply_style(content, target))
+        existing = self._live_messages.get(session_key)
+
+        if existing:
+            try:
+                await existing.edit(content=preview)
+                return
+            except discord.NotFound:
+                self._live_messages.pop(session_key, None)
+            except discord.HTTPException as e:
+                logger.warning(
+                    f"[Discord] Failed to update live message for {session_key}: {e}"
+                )
+                self._live_messages.pop(session_key, None)
+
+        message = await target.send(preview)
+        self._live_messages[session_key] = message
+
+    async def _finalize_live_message(
+        self, target, chat_id: str, content: str
+    ) -> bool:
+        session_key = _session_key("discord", chat_id)
+        message = self._live_messages.pop(session_key, None)
+        if not message:
+            return False
+
+        final_text = self._apply_style(content, target) if content else ""
+        files_to_send, clean_text = self._collect_markdown_files(final_text)
+        clean_text = clean_text.strip()
+
+        try:
+            if files_to_send or len(clean_text) > _MAX_MESSAGE_LEN:
+                with contextlib.suppress(Exception):
+                    await message.delete()
+                await self._send_text(target, final_text)
+                return True
+
+            await message.edit(content=clean_text or "(No response)")
+            return True
+        except discord.NotFound:
+            await self._send_text(target, final_text)
+            return True
+        except discord.HTTPException as e:
+            logger.warning(
+                f"[Discord] Failed to finalize live message for {session_key}: {e}"
+            )
+            await self._send_text(target, final_text)
+            return True
+
+    @staticmethod
+    def _collect_markdown_files(content: str) -> tuple[list[discord.File], str]:
         img_pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+        files_to_send: list[discord.File] = []
+        clean = content
 
-        matches = img_pattern.findall(content)
-        files_to_send = []
-
-        for alt, path in matches:
+        for alt, path in img_pattern.findall(content):
             p = Path(path)
             if p.exists() and p.is_file():
                 files_to_send.append(discord.File(p))
-                # Remove the markdown tag from text
-                content = content.replace(f"![{alt}]({path})", "").strip()
+                clean = clean.replace(f"![{alt}]({path})", "").strip()
+
+        return files_to_send, clean
+
+    async def _normalize_discord_attachments(
+        self, chat_id: str, raw_attachments: list[Any]
+    ) -> list[dict[str, Any]]:
+        attachments: list[dict[str, Any]] = []
+        if not raw_attachments:
+            return attachments
+
+        upload_dir = Path.cwd() / "temp" / "discord_uploads" / self._sanitize_component(
+            chat_id
+        )
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        async with aiohttp.ClientSession() as session:
+            for index, attachment in enumerate(raw_attachments[:4]):
+                url = getattr(attachment, "url", None)
+                if not url:
+                    continue
+
+                mime_type = (
+                    str(getattr(attachment, "content_type", "") or "")
+                    .strip()
+                    .lower()
+                )
+                original_name = Path(
+                    str(getattr(attachment, "filename", "") or f"attachment-{index + 1}")
+                ).name
+                suffix = Path(original_name).suffix.lower()
+                is_image = mime_type.startswith("image/")
+                is_document = (
+                    mime_type in _DISCORD_DOCUMENT_MIME_TYPES
+                    or suffix in _DISCORD_DOCUMENT_EXTENSIONS
+                )
+
+                if not is_image and not is_document:
+                    continue
+
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                        if resp.status != 200:
+                            continue
+                        blob = await resp.read()
+                except Exception as e:
+                    logger.warning(
+                        f"[Discord] Failed to download attachment '{original_name}': {e}"
+                    )
+                    continue
+
+                if len(blob) > _DISCORD_ATTACHMENT_MAX_BYTES:
+                    continue
+
+                saved_path = upload_dir / (
+                    f"{int(time.time() * 1000)}_{index}_{self._sanitize_component(Path(original_name).stem)}{suffix or ''}"
+                )
+                saved_path.write_bytes(blob)
+
+                info: dict[str, Any] = {
+                    "name": original_name,
+                    "kind": "image" if is_image else "document",
+                    "mime_type": mime_type or "application/octet-stream",
+                    "mimeType": mime_type or "application/octet-stream",
+                    "path": str(saved_path.relative_to(Path.cwd())).replace("\\", "/"),
+                    "url": url,
+                }
+
+                if is_document:
+                    extracted_text, extraction_note = self._extract_discord_document_text(
+                        saved_path
+                    )
+                    if extracted_text:
+                        info["extracted_text"] = extracted_text
+                    if extraction_note:
+                        info["extraction_note"] = extraction_note
+
+                attachments.append(info)
+
+        return attachments
+
+    @staticmethod
+    def _extract_discord_document_text(path: Path) -> tuple[str, str | None]:
+        from core.tools import Toolbox
+
+        suffix = path.suffix.lower()
+        if suffix == ".doc":
+            return (
+                "",
+                "Legacy .doc files are stored, but automatic text extraction is only available for .docx and .pdf.",
+            )
+
+        try:
+            if suffix == ".docx":
+                extracted = Toolbox._extract_docx_text(path)
+            elif suffix == ".pdf":
+                extracted = Toolbox._extract_pdf_text(path)
+            else:
+                return "", None
+            return Toolbox._slice_text_for_read(extracted, max_chars=12_000), None
+        except Exception as e:
+            return "", str(e)
+
+    @staticmethod
+    def _sanitize_component(value: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "upload")).strip("._")
+        return safe or "upload"
+
+    async def _send_text(self, target, content: str) -> None:
+        """Send text, splitting at word boundaries if it exceeds the Discord limit."""
+        content = self._apply_style(content, target) if content else ""
+        files_to_send, content = self._collect_markdown_files(content)
 
         if not content and not files_to_send:
             logger.warning(
