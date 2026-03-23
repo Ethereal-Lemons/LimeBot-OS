@@ -1,4 +1,7 @@
+import asyncio
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -13,6 +16,31 @@ class DummyTarget:
     def __init__(self, cid: str, guild: DummyGuild | None = None):
         self.id = int(cid)
         self.guild = guild
+
+
+class DummyLiveMessage:
+    def __init__(self, content: str = ""):
+        self.content = content
+        self.edits: list[str] = []
+        self.deleted = False
+
+    async def edit(self, *, content: str):
+        self.content = content
+        self.edits.append(content)
+
+    async def delete(self):
+        self.deleted = True
+
+
+class DummySendTarget(DummyTarget):
+    def __init__(self, cid: str, guild: DummyGuild | None = None):
+        super().__init__(cid, guild=guild)
+        self.sent_messages: list[DummyLiveMessage] = []
+
+    async def send(self, content=None, **kwargs):
+        msg = DummyLiveMessage(content or "")
+        self.sent_messages.append(msg)
+        return msg
 
 
 def make_config(**overrides):
@@ -136,3 +164,74 @@ def test_extract_discord_attachment_urls_promotes_first_image():
         "https://cdn.example.com/document.pdf",
         "https://cdn.example.com/second.jpg",
     ]
+
+
+@pytest.mark.asyncio
+async def test_finalize_live_message_edits_existing_stream_message():
+    from channels.discord import DiscordChannel
+    from core.bus import MessageBus
+
+    channel = DiscordChannel(make_config(), MessageBus())
+    target = DummySendTarget("99")
+    session_key = "discord_99"
+    live = DummyLiveMessage("draft")
+    channel._live_messages[session_key] = live
+
+    handled = await channel._finalize_live_message(target, "99", "Final answer")
+
+    assert handled is True
+    assert live.edits == ["Final answer 🍋"]
+    assert session_key not in channel._live_messages
+    assert target.sent_messages == []
+
+
+@pytest.mark.asyncio
+async def test_normalize_discord_attachments_extracts_document_text():
+    from channels.discord import DiscordChannel
+    from core.bus import MessageBus
+
+    class FakeResponse:
+        status = 200
+
+        async def read(self):
+            return b"%PDF-1.4 fake"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, timeout=None):
+            return FakeResponse()
+
+    channel = DiscordChannel(make_config(), MessageBus())
+    attachments = [
+        SimpleNamespace(
+            url="https://cdn.example.com/report.pdf",
+            content_type="application/pdf",
+            filename="report.pdf",
+        )
+    ]
+
+    with patch("channels.discord.aiohttp.ClientSession", FakeSession), patch.object(
+        DiscordChannel,
+        "_extract_discord_document_text",
+        return_value=("Quarterly metrics", None),
+    ):
+        normalized = await channel._normalize_discord_attachments("chat-7", attachments)
+
+    assert len(normalized) == 1
+    assert normalized[0]["kind"] == "document"
+    assert normalized[0]["extracted_text"] == "Quarterly metrics"
+    assert normalized[0]["path"].endswith(".pdf")
