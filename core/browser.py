@@ -650,10 +650,6 @@ class BrowserManager:
         """Close the browser instance."""
         async with self._action_lock:
             async with self._browser_lock:
-            if self._browser is not None and not self._has_live_browser_connection():
-                logger.warning("Browser connection was lost. Reconnecting...")
-                await self._do_close()
-
                 await self._do_close()
 
     async def _do_close(self) -> None:
@@ -1338,4 +1334,5 @@ async def close_browser(session_key: Optional[str] = None, config: Any = None) -
 
     for manager in managers:
         await manager.close()
+
 
