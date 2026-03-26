@@ -153,7 +153,7 @@ LanceDB-backed semantic memory with automatic provider detection.
 |---------------------|---------------------|
 | `gemini` / `vertex_ai` | `gemini/gemini-embedding-001` |
 | `openai` / `azure` | `text-embedding-3-small` |
-| `nvidia` | `nvidia/NV-Embed-v2` |
+| `nvidia` | `nvidia_nim/NV-Embed-v2` |
 | `ollama` / `local` | `ollama/nomic-embed-text` |
 | `deepseek`, `anthropic`, `xai` | Falls back to `gemini/gemini-embedding-001` |
 
