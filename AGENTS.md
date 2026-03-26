@@ -72,7 +72,7 @@ Builds the system prompt from persona files. Two-part architecture:
 - `validate_and_save_mood(content)` — atomic write, no content minimum
 - `validate_and_save_relationships(content)` — atomic write for `RELATIONSHIPS.md`
 
-**Setup mode** — if `SOUL.md` or `IDENTITY.md` are missing or invalid, `is_setup_complete()` returns False and the entire system prompt is replaced with a setup interview prompt. The agent must emit `<save_soul>` and `<save_identity>` tags with valid content to exit setup mode.
+**Setup mode** — on startup, LimeBot bootstraps local `SOUL.md`, `IDENTITY.md`, and `MEMORY.md` from their `.example` templates when they are missing. If `SOUL.md` or `IDENTITY.md` are still missing or invalid after that, `is_setup_complete()` returns False and the entire system prompt is replaced with a setup interview prompt. The agent must emit `<save_soul>` and `<save_identity>` tags with valid content to exit setup mode.
 
 ---
 
@@ -278,6 +278,8 @@ npm run lime-bot skill install https://github.com/user/skill-repo
 | `persona/users/{sender_id}.md` | Per-user profile (affinity, facts, in-jokes) | Agent via `<save_user>` |
 
 **Backup policy:** Every soul/identity write creates a timestamped `.bak` file (`SOUL.md.1234567890.bak`). The 3 most recent backups are kept; older ones are automatically deleted.
+
+**Template policy:** The repository ships `persona/*.example` starter templates. The live runtime persona files (`SOUL.md`, `IDENTITY.md`, `MEMORY.md`, etc.) are treated as local state and should not be committed.
 
 ---
 

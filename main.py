@@ -13,6 +13,7 @@ from config import load_config
 from core.asyncio_compat import configure_asyncio_runtime
 from core.bus import MessageBus
 from core.loop import AgentLoop
+from core.persona_bootstrap import ensure_persona_bootstrap_files
 from core.scheduler import CronManager
 from core.session_manager import SessionManager
 from core.asyncio_windows import install_windows_asyncio_exception_filter
@@ -179,6 +180,7 @@ async def main():
     loop = asyncio.get_running_loop()
     install_windows_asyncio_exception_filter(loop)
 
+    ensure_persona_bootstrap_files()
     config = load_config()
     logger.info("Starting LimeBot...")
 

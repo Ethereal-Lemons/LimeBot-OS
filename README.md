@@ -33,10 +33,11 @@ Three-tier memory system that persists across sessions:
 Not a hardcoded system prompt. A living identity that evolves:
 - **`SOUL.md`**  core values, personality, and behavioral boundaries
 - **`IDENTITY.md`**  name, emoji, avatar URL, style, catchphrases, interests, birthday
+- **Local-first persona files**  first boot auto-creates starter `SOUL.md`, `IDENTITY.md`, and `MEMORY.md` from shipped `.example` templates so users get a clean bot without committing live persona state
 - **Per-platform styles**  separate voice for Discord, WhatsApp, and Web
 - **Per-user profiles**  builds a relationship profile for each person it talks to, tracking affinity scores, relationship level, in-jokes, and milestones
 - **Dynamic Mood**  optional `MOOD.md` that shifts based on conversations and persists between sessions
-- **Setup Interview**  on first boot with no persona defined, the bot interviews you to build its identity from scratch. It saves the result automatically once it has enough to work with.
+- **Setup Interview**  if the local persona files are missing or invalid, the bot interviews you to rebuild its identity and saves the result automatically once it has enough to work with.
 
 ### 🌐 It Browses the Web
 Full Playwright-powered browser automation:
