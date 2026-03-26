@@ -22,7 +22,7 @@ class VectorService:
         "vertex_ai": "gemini/gemini-embedding-001",
         "openai": "text-embedding-3-small",
         "azure": "azure/text-embedding-3-small",
-        "nvidia": "nvidia/NV-Embed-v2",
+        "nvidia": "nvidia_nim/NV-Embed-v2",
         "deepseek": "gemini/gemini-embedding-001",
         "anthropic": "gemini/gemini-embedding-001",
         "xai": "gemini/gemini-embedding-001",
@@ -36,7 +36,7 @@ class VectorService:
         "vertex_ai": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "openai": ["OPENAI_API_KEY"],
         "azure": ["OPENAI_API_KEY"],
-        "nvidia": ["NVIDIA_API_KEY"],
+        "nvidia": ["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"],
         "deepseek": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "anthropic": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "xai": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
@@ -49,6 +49,7 @@ class VectorService:
         # Some older configs/UI values store this without provider prefix.
         # LiteLLM requires either a provider-prefixed model OR custom_llm_provider.
         "text-embedding-v4": "qwen/text-embedding-v4",
+        "nvidia/NV-Embed-v2": "nvidia_nim/NV-Embed-v2",
     }
 
     _KEY_RE = re.compile(r"\b(sk-[A-Za-z0-9_-]{8,})\b")
@@ -195,8 +196,10 @@ class VectorService:
                 )
                 return None
 
+            resolved_model = self.LEGACY_MODEL_ALIASES.get(self.model, self.model)
+
             kwargs = dict(
-                model=self.model,
+                model=resolved_model,
                 input=[text],
                 api_key=api_key,
             )
