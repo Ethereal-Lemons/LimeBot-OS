@@ -90,6 +90,7 @@ LimeBot is a fully-featured MCP client:
 | **Web Dashboard** | React + Vite UI connecting over WebSocket. Streams tokens as they arrive, shows live tool execution cards, confirmation prompts, thinking traces, and ghost activity indicators. **Includes a Custom CSS editor for global UI personalization.** |
 | **Discord** | Full `discord.py` integration. Responds to DMs and `@mentions`. Configurable allow-list by user ID and channel ID. Custom presence status, activity type, and display name. |
 | **WhatsApp** | Connects to a local `whatsapp-web.js` bridge over WebSocket. Contact approval whitelist with pending/blocked states. QR code displayed in the web dashboard for easy pairing. |
+| **Telegram** | Bot API long-polling scaffold. Supports text send/receive, per-user allow-listing, optional per-chat allow-listing, and startup wiring for future expansion. |
 
 ---
 

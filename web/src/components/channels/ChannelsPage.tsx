@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from "@/lib/api";
-import { MessageCircle, AlertCircle, RefreshCw, User, Activity, Monitor, ShieldCheck, Radio, Wand2 } from 'lucide-react';
+import { MessageCircle, AlertCircle, RefreshCw, User, Activity, Monitor, ShieldCheck, Radio, Send, Wand2 } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,6 +43,12 @@ interface ConfigState {
     DISCORD_STATUS?: string;
     ENABLE_DISCORD?: string;
     DISCORD_TOKEN?: string;
+    ENABLE_TELEGRAM?: string;
+    TELEGRAM_BOT_TOKEN?: string;
+    TELEGRAM_API_BASE?: string;
+    TELEGRAM_ALLOW_FROM?: string;
+    TELEGRAM_ALLOW_CHATS?: string;
+    TELEGRAM_POLL_TIMEOUT?: string;
     PERSONALITY_WHITELIST?: string;
     WHATSAPP_ALLOW_FROM?: string;
     ENABLE_WHATSAPP?: string;
@@ -251,7 +257,7 @@ export function ChannelsPage() {
     const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
     const [discordSaving, setDiscordSaving] = useState(false);
     const [discordStatus, setDiscordStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
-    const [activeTab, setActiveTab] = useState<'discord' | 'whatsapp'>('discord');
+    const [activeTab, setActiveTab] = useState<'discord' | 'telegram' | 'whatsapp'>('discord');
 
     useEffect(() => {
         fetchConfig();
@@ -318,6 +324,12 @@ export function ChannelsPage() {
             DISCORD_ACTIVITY_TEXT: config.DISCORD_ACTIVITY_TEXT,
             ENABLE_DISCORD: config.ENABLE_DISCORD,
             DISCORD_TOKEN: config.DISCORD_TOKEN,
+            ENABLE_TELEGRAM: config.ENABLE_TELEGRAM,
+            TELEGRAM_BOT_TOKEN: config.TELEGRAM_BOT_TOKEN,
+            TELEGRAM_API_BASE: config.TELEGRAM_API_BASE,
+            TELEGRAM_ALLOW_FROM: config.TELEGRAM_ALLOW_FROM,
+            TELEGRAM_ALLOW_CHATS: config.TELEGRAM_ALLOW_CHATS,
+            TELEGRAM_POLL_TIMEOUT: config.TELEGRAM_POLL_TIMEOUT,
             PERSONALITY_WHITELIST: config.PERSONALITY_WHITELIST,
             WHATSAPP_ALLOW_FROM: config.WHATSAPP_ALLOW_FROM,
             ENABLE_WHATSAPP: config.ENABLE_WHATSAPP
@@ -442,7 +454,7 @@ export function ChannelsPage() {
     };
 
     const reloadActive = () => {
-        if ((activeTab === 'discord' && (configDirty || discordDirty)) || (activeTab === 'whatsapp' && configDirty)) {
+        if ((activeTab === 'discord' && (configDirty || discordDirty)) || (activeTab !== 'discord' && configDirty)) {
             if (!window.confirm("Discard unsaved changes for the current view and reload from disk?")) {
                 return;
             }
@@ -454,6 +466,7 @@ export function ChannelsPage() {
     };
 
     const discordEnabled = config.ENABLE_DISCORD !== 'false';
+    const telegramEnabled = config.ENABLE_TELEGRAM === 'true';
     const whatsappEnabled = config.ENABLE_WHATSAPP === 'true';
     const guildOverrideCount = Object.keys(discordConfig.style_overrides?.guilds || {}).length;
     const channelOverrideCount = Object.keys(discordConfig.style_overrides?.channels || {}).length;
@@ -481,7 +494,7 @@ export function ChannelsPage() {
                     </p>
                 </header>
 
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
                     <Card>
                         <CardContent className="p-4">
                             <div className="flex items-center justify-between">
@@ -490,6 +503,17 @@ export function ChannelsPage() {
                                     <div className="mt-1 text-lg font-semibold text-foreground">{discordEnabled ? 'Enabled' : 'Disabled'}</div>
                                 </div>
                                 <ShieldCheck className={`h-5 w-5 ${discordEnabled ? 'text-[#5865F2]' : 'text-muted-foreground'}`} />
+                            </div>
+                        </CardContent>
+                    </Card>
+                    <Card>
+                        <CardContent className="p-4">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Telegram</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">{telegramEnabled ? 'Enabled' : 'Disabled'}</div>
+                                </div>
+                                <Send className={`h-5 w-5 ${telegramEnabled ? 'text-[#229ED9]' : 'text-muted-foreground'}`} />
                             </div>
                         </CardContent>
                     </Card>
@@ -578,10 +602,13 @@ export function ChannelsPage() {
                     </Alert>
                 )}
 
-                <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'discord' | 'whatsapp')} className="w-full">
-                    <TabsList className="grid w-full grid-cols-2 mb-8">
+                <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'discord' | 'telegram' | 'whatsapp')} className="w-full">
+                    <TabsList className="grid w-full grid-cols-3 mb-8">
                         <TabsTrigger value="discord" className="flex items-center gap-2">
                             <DiscordIcon className="h-4 w-4" /> Discord
+                        </TabsTrigger>
+                        <TabsTrigger value="telegram" className="flex items-center gap-2">
+                            <Send className="h-4 w-4" /> Telegram
                         </TabsTrigger>
                         <TabsTrigger value="whatsapp" className="flex items-center gap-2">
                             <WhatsAppIcon className="h-4 w-4" /> WhatsApp
@@ -956,6 +983,118 @@ export function ChannelsPage() {
                                 </Card>
                             </div>
                         )}
+                    </TabsContent>
+
+                    {/* TELEGRAM TAB */}
+                    <TabsContent value="telegram" className="space-y-6">
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2">
+                                    <Send className="h-5 w-5 text-[#229ED9]" />
+                                    Integration Status
+                                </CardTitle>
+                                <CardDescription>
+                                    Configure Telegram Bot API polling and access controls.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-6">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className={`rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${telegramEnabled ? 'border-[#229ED9]/20 bg-[#229ED9]/10 text-[#229ED9]' : 'border-border bg-background/70 text-muted-foreground'}`}>
+                                        {telegramEnabled ? 'Integration live' : 'Integration disabled'}
+                                    </span>
+                                    <span className="rounded-full border border-border bg-background/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                                        {config.TELEGRAM_ALLOW_FROM ? 'Restricted users' : 'Open users'}
+                                    </span>
+                                    <span className="rounded-full border border-border bg-background/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                                        {config.TELEGRAM_ALLOW_CHATS ? 'Restricted chats' : 'All chats'}
+                                    </span>
+                                </div>
+
+                                <div className="flex items-center justify-between">
+                                    <div className="space-y-1">
+                                        <Label htmlFor="enable_telegram" className="text-base">Enable Telegram Integration</Label>
+                                        <p className="text-sm text-muted-foreground">
+                                            When enabled, LimeBot will poll Telegram using the configured bot token.
+                                        </p>
+                                    </div>
+                                    <Switch
+                                        id="enable_telegram"
+                                        checked={telegramEnabled}
+                                        onCheckedChange={(checked) => handleChange('ENABLE_TELEGRAM', checked ? 'true' : 'false')}
+                                    />
+                                </div>
+
+                                <div className="pt-4 border-t border-border/50 space-y-4">
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="telegram_token">Telegram Bot Token</Label>
+                                        <Input
+                                            id="telegram_token"
+                                            type="password"
+                                            value={config.TELEGRAM_BOT_TOKEN || ""}
+                                            onChange={(e) => handleChange("TELEGRAM_BOT_TOKEN", e.target.value)}
+                                            placeholder="123456789:AA..."
+                                            className="font-mono"
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="grid gap-2">
+                                            <Label htmlFor="telegram_api_base">Telegram API Base URL</Label>
+                                            <Input
+                                                id="telegram_api_base"
+                                                value={config.TELEGRAM_API_BASE || ""}
+                                                onChange={(e) => handleChange("TELEGRAM_API_BASE", e.target.value)}
+                                                placeholder="https://api.telegram.org"
+                                                className="font-mono text-sm"
+                                            />
+                                        </div>
+                                        <div className="grid gap-2">
+                                            <Label htmlFor="telegram_poll_timeout">Polling Timeout (seconds)</Label>
+                                            <Input
+                                                id="telegram_poll_timeout"
+                                                type="number"
+                                                min="1"
+                                                value={config.TELEGRAM_POLL_TIMEOUT || "30"}
+                                                onChange={(e) => handleChange("TELEGRAM_POLL_TIMEOUT", e.target.value)}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="grid gap-2">
+                                            <Label htmlFor="telegram_users">Allowed User IDs</Label>
+                                            <Input
+                                                id="telegram_users"
+                                                value={config.TELEGRAM_ALLOW_FROM || ""}
+                                                onChange={(e) => handleChange("TELEGRAM_ALLOW_FROM", e.target.value)}
+                                                placeholder="123456789, 987654321"
+                                                className="font-mono text-sm"
+                                            />
+                                            <p className="text-xs text-muted-foreground">
+                                                Comma-separated Telegram user IDs. Leave empty to allow anyone who can reach the bot.
+                                            </p>
+                                        </div>
+                                        <div className="grid gap-2">
+                                            <Label htmlFor="telegram_chats">Allowed Chat IDs</Label>
+                                            <Input
+                                                id="telegram_chats"
+                                                value={config.TELEGRAM_ALLOW_CHATS || ""}
+                                                onChange={(e) => handleChange("TELEGRAM_ALLOW_CHATS", e.target.value)}
+                                                placeholder="-1001234567890, 123456789"
+                                                className="font-mono text-sm"
+                                            />
+                                            <p className="text-xs text-muted-foreground">
+                                                Restrict delivery to specific chat IDs. This works for both private chats and groups.
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <div className="p-3 rounded bg-[#229ED9]/10 border border-[#229ED9]/20 text-xs text-muted-foreground">
+                                        Telegram currently uses Bot API long polling in the backend, so changes here apply after the backend restarts.
+                                    </div>
+                                </div>
+                            </CardContent>
+                        </Card>
                     </TabsContent>
 
                     {/* WHATSAPP TAB */}
