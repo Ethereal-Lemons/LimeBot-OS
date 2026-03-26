@@ -74,9 +74,13 @@ persona/*.bak
 persona/**/*.bak
 persona/sessions/*.json
 persona/sessions/logs/*.jsonl
+# Runtime persona state is local-only. Fresh installs bootstrap these from
+# shipped .example templates when needed.
 persona/IDENTITY.md
 persona/SOUL.md
 persona/MEMORY.md
+persona/MOOD.md
+persona/RELATIONSHIPS.md
 persona/USER.md
 
 # Logs
