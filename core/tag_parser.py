@@ -74,7 +74,7 @@ async def process_tags(
     Returns:
         TagResult with cleaned reply and update flags.
     """
-    reply = raw_reply or "(Task completed silently.)"
+    reply = raw_reply or ""
     soul_updated = False
     identity_updated = False
     mood_updated = False
