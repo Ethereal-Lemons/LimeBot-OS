@@ -30,6 +30,14 @@ _LEGACY_XML_TOOL_BLOCK_RE = re.compile(
     rf"<(?:{_LEGACY_XML_TOOL_TAG_NAMES})>\s*.*?\s*</(?:{_LEGACY_XML_TOOL_TAG_NAMES})>",
     re.IGNORECASE | re.DOTALL,
 )
+_PIPE_TOOL_OPEN_RE = re.compile(
+    rf"<\|(?:{_LEGACY_XML_TOOL_TAG_NAMES})\|>",
+    re.IGNORECASE,
+)
+_PIPE_TOOL_BLOCK_RE = re.compile(
+    rf"<\|(?:{_LEGACY_XML_TOOL_TAG_NAMES})\|>\s*.*?\s*<\|/(?:{_LEGACY_XML_TOOL_TAG_NAMES})\|>",
+    re.IGNORECASE | re.DOTALL,
+)
 _INLINE_TOOL_CALL_RE = re.compile(
     r"(?::?functions\.\w+(?::\d+)?\s*\{[^}]*\})",
     re.IGNORECASE,
@@ -48,7 +56,12 @@ def _sanitize_assistant_text_content(content: str) -> tuple[str, bool]:
     cleaned = content
     marker_positions = []
 
-    for pattern in (_LEGACY_XML_TOOL_OPEN_RE, _INLINE_TOOL_CALL_RE, _JSON_TOOL_OBJECT_RE):
+    for pattern in (
+        _LEGACY_XML_TOOL_OPEN_RE,
+        _PIPE_TOOL_OPEN_RE,
+        _INLINE_TOOL_CALL_RE,
+        _JSON_TOOL_OBJECT_RE,
+    ):
         match = pattern.search(cleaned)
         if match:
             marker_positions.append(match.start())
@@ -57,6 +70,7 @@ def _sanitize_assistant_text_content(content: str) -> tuple[str, bool]:
         cleaned = cleaned[: min(marker_positions)]
 
     cleaned = _LEGACY_XML_TOOL_BLOCK_RE.sub("", cleaned)
+    cleaned = _PIPE_TOOL_BLOCK_RE.sub("", cleaned)
     cleaned = _INLINE_TOOL_CALL_RE.sub("", cleaned)
     cleaned = _JSON_TOOL_OBJECT_RE.sub("", cleaned)
     cleaned = cleaned.strip()
