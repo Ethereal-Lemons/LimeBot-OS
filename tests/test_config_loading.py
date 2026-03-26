@@ -85,3 +85,26 @@ class TestConfigLoading(unittest.TestCase):
             loaded.llm.fallback_models,
             ["anthropic/claude-3-5-haiku-latest", "gemini/gemini-2.0-flash"],
         )
+
+    def test_telegram_config_is_loaded_from_env(self):
+        import config as config_module
+
+        config_module._cached_config = None
+        with patch.dict(
+            "os.environ",
+            {
+                "ENABLE_TELEGRAM": "true",
+                "TELEGRAM_BOT_TOKEN": "telegram-token",
+                "TELEGRAM_ALLOW_FROM": "123,456",
+                "TELEGRAM_ALLOW_CHATS": "-1001,-1002",
+                "TELEGRAM_POLL_TIMEOUT": "45",
+            },
+            clear=False,
+        ):
+            loaded = config_module.load_config(force_reload=True)
+
+        self.assertTrue(loaded.telegram.enabled)
+        self.assertEqual(loaded.telegram.token, "telegram-token")
+        self.assertEqual(loaded.telegram.allow_from, ["123", "456"])
+        self.assertEqual(loaded.telegram.allow_chats, ["-1001", "-1002"])
+        self.assertEqual(loaded.telegram.poll_timeout, 45)

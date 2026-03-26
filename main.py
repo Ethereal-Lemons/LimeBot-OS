@@ -18,6 +18,7 @@ from core.session_manager import SessionManager
 from core.asyncio_windows import install_windows_asyncio_exception_filter
 from core.runtime_compat import enforce_supported_python_runtime
 from channels.discord import DiscordChannel
+from channels.telegram import TelegramChannel
 from channels.whatsapp import WhatsAppChannel
 from channels.web import WebChannel
 
@@ -193,6 +194,14 @@ async def main():
         bus.subscribe_outbound(discord_channel.name, discord_channel.send)
         logger.info("Discord channel initialized")
 
+    if config.telegram.enabled:
+        telegram_channel = TelegramChannel(config.telegram, bus)
+        channels.append(telegram_channel)
+        bus.subscribe_outbound(telegram_channel.name, telegram_channel.send)
+        logger.info("Telegram channel initialized")
+    else:
+        logger.info("Telegram channel disabled by config")
+
     if config.whatsapp.enabled:
         whatsapp_channel = WhatsAppChannel(config.whatsapp, bus)
         channels.append(whatsapp_channel)
@@ -250,6 +259,14 @@ async def main():
                 else "primary"
             )
             system_channels.append({"channel": "discord", "chat_id": discord_chat_id})
+
+        if config.telegram.enabled:
+            telegram_chat_id = (
+                config.telegram.allow_chats[0]
+                if config.telegram.allow_chats
+                else "primary"
+            )
+            system_channels.append({"channel": "telegram", "chat_id": telegram_chat_id})
 
         if config.whatsapp.enabled:
             system_channels.append({"channel": "whatsapp", "chat_id": "primary"})

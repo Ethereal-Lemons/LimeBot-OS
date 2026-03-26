@@ -27,6 +27,8 @@ interface ConfigState {
     NVIDIA_API_KEY?: string;
     DASHSCOPE_API_KEY?: string;
     DISCORD_TOKEN?: string;
+    TELEGRAM_BOT_TOKEN?: string;
+    TELEGRAM_API_BASE?: string;
     LLM_MODEL?: string;
     ALLOWED_PATHS?: string[];
     APP_API_KEY?: string;
@@ -510,6 +512,35 @@ export function ConfigPage() {
                                             onChange={(e) => handleChange("DASHSCOPE_API_KEY", e.target.value)}
                                             placeholder="ds-..."
                                         />
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="grid gap-2 border p-4 rounded-lg bg-background/30">
+                                        <Label htmlFor="telegram_bot_token">Telegram Bot Token</Label>
+                                        <Input
+                                            id="telegram_bot_token"
+                                            type="password"
+                                            value={config.TELEGRAM_BOT_TOKEN || ""}
+                                            onChange={(e) => handleChange("TELEGRAM_BOT_TOKEN", e.target.value)}
+                                            placeholder="123456789:AA..."
+                                        />
+                                        <p className="text-[10px] text-muted-foreground">
+                                            Used by the Telegram channel tab to connect through the Bot API.
+                                        </p>
+                                    </div>
+                                    <div className="grid gap-2 border p-4 rounded-lg bg-background/30">
+                                        <Label htmlFor="telegram_api_base">Telegram API Base URL</Label>
+                                        <Input
+                                            id="telegram_api_base"
+                                            value={config.TELEGRAM_API_BASE || ""}
+                                            onChange={(e) => handleChange("TELEGRAM_API_BASE", e.target.value)}
+                                            placeholder="https://api.telegram.org"
+                                            className="font-mono text-sm"
+                                        />
+                                        <p className="text-[10px] text-muted-foreground">
+                                            Override this only if you are routing Telegram traffic through a compatible proxy.
+                                        </p>
                                     </div>
                                 </div>
                             </CardContent>

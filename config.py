@@ -75,6 +75,24 @@ def load_config(force_reload=False):
         x for x in os.getenv("WHATSAPP_ALLOW_FROM", "").split(",") if x
     ]
 
+    config.telegram = SimpleNamespace()
+    config.telegram.enabled = os.getenv("ENABLE_TELEGRAM", "false").lower() == "true"
+    config.telegram.token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    config.telegram.api_base = os.getenv(
+        "TELEGRAM_API_BASE", "https://api.telegram.org"
+    ).strip()
+    config.telegram.allow_from = [
+        x.strip() for x in os.getenv("TELEGRAM_ALLOW_FROM", "").split(",") if x.strip()
+    ]
+    config.telegram.allow_chats = [
+        x.strip() for x in os.getenv("TELEGRAM_ALLOW_CHATS", "").split(",") if x.strip()
+    ]
+    try:
+        config.telegram.poll_timeout = int(os.getenv("TELEGRAM_POLL_TIMEOUT", "30"))
+    except ValueError:
+        logger.warning("Invalid TELEGRAM_POLL_TIMEOUT in .env, defaulting to 30.")
+        config.telegram.poll_timeout = 30
+
     config.browser = SimpleNamespace()
     config.browser.mode = os.getenv("BROWSER_MODE", "isolated").strip().lower()
     config.browser.channel = os.getenv("BROWSER_CHANNEL", "").strip()
@@ -244,6 +262,11 @@ def load_config(force_reload=False):
                 ):
                     for k, v in dynamic_config["discord"].items():
                         setattr(config.discord, k, v)
+                if "telegram" in dynamic_config and isinstance(
+                    dynamic_config["telegram"], dict
+                ):
+                    for k, v in dynamic_config["telegram"].items():
+                        setattr(config.telegram, k, v)
                 if "browser" in dynamic_config and isinstance(
                     dynamic_config["browser"], dict
                 ):
