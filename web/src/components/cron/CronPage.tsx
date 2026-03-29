@@ -4,7 +4,7 @@ import { API_BASE_URL } from "@/lib/api";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Trash2, Plus, RefreshCw, Clock, Calendar, MessageSquare, Repeat } from "lucide-react";
+import { Trash2, Plus, RefreshCw, Clock, Calendar, MessageSquare, Repeat, Pause, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -19,6 +19,7 @@ interface Job {
     id: string;
     trigger: number;
     payload: string;
+    active?: boolean;
     cron_expr?: string;
     tz_offset?: number;
     context: {
@@ -72,6 +73,7 @@ export function CronPage() {
     const [chatId, setChatId] = useState("dashboard");
     const [tzOffset, setTzOffset] = useState<string>(String(-new Date().getTimezoneOffset()));
     const [adding, setAdding] = useState(false);
+    const [jobActionId, setJobActionId] = useState<string | null>(null);
 
     const [alertDialog, setAlertDialog] = useState<AlertState>({
         open: false, title: "", description: "",
@@ -148,6 +150,21 @@ export function CronPage() {
             .catch(err => {
                 showAlert("Delete Failed", "Could not delete job: " + (err.response?.data?.detail || err.message));
             });
+    };
+
+    const handleToggleActive = (job: Job) => {
+        setJobActionId(job.id);
+        axios.patch(`${API_BASE_URL}/api/cron/jobs/${job.id}`, {
+            active: !(job.active ?? true),
+        })
+            .then(() => fetchJobs())
+            .catch(err => {
+                showAlert(
+                    job.active === false ? "Resume Failed" : "Pause Failed",
+                    "Could not update job: " + (err.response?.data?.detail || err.message),
+                );
+            })
+            .finally(() => setJobActionId(null));
     };
 
     const browserTzOffset = -new Date().getTimezoneOffset();
@@ -291,7 +308,10 @@ export function CronPage() {
                     ) : (
                         <div className="space-y-4">
                             {jobs.map(job => (
-                                <Card key={job.id} className="overflow-hidden border-l-4 border-l-primary">
+                                <Card
+                                    key={job.id}
+                                    className={`overflow-hidden border-l-4 ${job.active === false ? "border-l-amber-500/80 opacity-80" : "border-l-primary"}`}
+                                >
                                     <div className="flex items-center p-4 gap-4">
                                         <div className="bg-primary/10 p-3 rounded-full text-primary shrink-0">
                                             {job.cron_expr
@@ -305,10 +325,16 @@ export function CronPage() {
                                                 <Badge variant="outline" className="font-mono text-[10px] py-0">
                                                     {job.id}
                                                 </Badge>
+                                                <Badge
+                                                    variant={job.active === false ? "secondary" : "default"}
+                                                    className="text-[10px] py-0"
+                                                >
+                                                    {job.active === false ? "Paused" : "Active"}
+                                                </Badge>
                                                 {/* FIX: uses `now` from the tick timer so this updates every second */}
                                                 <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
                                                     <Clock className="h-3 w-3" />
-                                                    {formatCountdown(job.trigger - now)}
+                                                    {job.active === false ? "Paused" : formatCountdown(job.trigger - now)}
                                                 </span>
                                                 <Badge variant="secondary" className="text-[10px] py-0 capitalize flex items-center gap-1">
                                                     <MessageSquare className="h-3 w-3" />
@@ -324,11 +350,21 @@ export function CronPage() {
                                             </div>
                                             <p className="font-medium truncate text-sm">{job.payload}</p>
                                             <p className="text-[10px] text-muted-foreground mt-1">
-                                                Next: {formatTimestamp(job.trigger)} · Target: {job.context.chat_id}
+                                                {job.active === false ? "Next run frozen while paused" : `Next: ${formatTimestamp(job.trigger)}`} · Target: {job.context.chat_id}
                                             </p>
                                         </div>
 
-                                        <div className="shrink-0">
+                                        <div className="shrink-0 flex items-center gap-1">
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8"
+                                                disabled={jobActionId === job.id}
+                                                onClick={() => handleToggleActive(job)}
+                                                title={job.active === false ? "Resume job" : "Pause job"}
+                                            >
+                                                {job.active === false ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+                                            </Button>
                                             <AlertDialog>
                                                 <AlertDialogTrigger asChild>
                                                     <Button

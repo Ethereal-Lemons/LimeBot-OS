@@ -127,3 +127,75 @@ class TestScheduler(unittest.IsolatedAsyncioTestCase):
             time.time(),
             "Recurring jobs should be rescheduled to a future trigger.",
         )
+
+    async def test_inactive_job_does_not_execute_until_resumed(self):
+        from core.scheduler import CronManager
+
+        class _TestCronManager(CronManager):
+            def __init__(self, bus, data_file):
+                self.bus = bus
+                self.jobs = []
+                self._running = False
+                self.data_file = data_file
+                self.lock = asyncio.Lock()
+
+        bus = _TestBus()
+        scheduler = _TestCronManager(bus, self.temp_dir / "cron_inactive.json")
+        now = time.time()
+        scheduler.jobs = [
+            {
+                "id": "paused123",
+                "trigger": now - 5,
+                "cron_expr": None,
+                "tz_offset": None,
+                "active": False,
+                "payload": "paused reminder",
+                "context": {
+                    "channel": "web",
+                    "chat_id": "dashboard",
+                    "sender_id": "tester",
+                },
+                "created_at": now - 60,
+            }
+        ]
+
+        task = asyncio.create_task(scheduler.run())
+        try:
+            await asyncio.sleep(1.2)
+            self.assertEqual(
+                len(bus.messages),
+                0,
+                "Paused jobs should not execute while inactive.",
+            )
+
+            updated = await scheduler.set_job_active("paused123", True)
+            self.assertIsNotNone(updated)
+            self.assertTrue(updated["active"])
+
+            await asyncio.sleep(1.2)
+        finally:
+            await scheduler.stop()
+            await asyncio.wait_for(task, timeout=2)
+
+        self.assertEqual(
+            len(bus.messages),
+            1,
+            "Resumed jobs should execute again when due.",
+        )
+
+    async def test_loaded_jobs_default_to_active(self):
+        from core.scheduler import CronManager
+
+        data_file = self.temp_dir / "cron_load.json"
+        data_file.write_text(
+            '[{"id":"job1","trigger":123,"cron_expr":null,"tz_offset":null,"payload":"hi","context":{"channel":"web","chat_id":"dashboard"},"created_at":1}]',
+            encoding="utf-8",
+        )
+
+        scheduler = CronManager(_TestBus())
+        scheduler.data_file = data_file
+        scheduler.jobs = []
+        scheduler._load_jobs()
+
+        self.assertEqual(len(scheduler.jobs), 1)
+        self.assertTrue(scheduler.jobs[0]["active"])

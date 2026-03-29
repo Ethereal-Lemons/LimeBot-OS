@@ -1269,7 +1269,10 @@ class Toolbox:
                     else "N/A"
                 )
                 recur = f" (RECURS: {j['cron_expr']})" if j.get("cron_expr") else ""
-                res.append(f" - [{j['id']}] {trigger_str}{recur}: {j['payload']}")
+                status = "PAUSED" if j.get("active") is False else "ACTIVE"
+                res.append(
+                    f" - [{j['id']}] [{status}] {trigger_str}{recur}: {j['payload']}"
+                )
             return "\n".join(res)
         except Exception as e:
             return f"Error listing cron: {e}"
@@ -1284,6 +1287,30 @@ class Toolbox:
             return f"Error: Job {job_id} not found."
         except Exception as e:
             return f"Error removing cron: {e}"
+
+    async def cron_deactivate(self, job_id: str) -> str:
+        """Pause a scheduled task by ID."""
+        if not self.scheduler:
+            return "Error: Scheduler not available."
+        try:
+            updated = await self.scheduler.set_job_active(job_id, False)
+            if updated:
+                return f"Success: Deactivated job {job_id}."
+            return f"Error: Job {job_id} not found."
+        except Exception as e:
+            return f"Error deactivating cron: {e}"
+
+    async def cron_activate(self, job_id: str) -> str:
+        """Resume a scheduled task by ID."""
+        if not self.scheduler:
+            return "Error: Scheduler not available."
+        try:
+            updated = await self.scheduler.set_job_active(job_id, True)
+            if updated:
+                return f"Success: Activated job {job_id}."
+            return f"Error: Job {job_id} not found."
+        except Exception as e:
+            return f"Error activating cron: {e}"
 
     async def create_skill(self, name: str, description: str) -> str:
         """Initialize a new skill directory with a template SKILL.md."""

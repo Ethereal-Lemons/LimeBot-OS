@@ -58,6 +58,8 @@ class CronManager:
                     f"Dropped {len(self.jobs) - len(valid)} jobs with null trigger."
                 )
                 self.jobs = valid
+            for job in self.jobs:
+                job.setdefault("active", True)
             logger.info(f"Loaded {len(self.jobs)} scheduled job(s).")
         except Exception as e:
             logger.error(f"Error loading jobs: {e}")
@@ -123,6 +125,7 @@ class CronManager:
                 "trigger": trigger_time,
                 "cron_expr": cron_expr,
                 "tz_offset": tz_offset,
+                "active": True,
                 "payload": message,
                 "context": context,
                 "created_at": time.time(),
@@ -144,6 +147,20 @@ class CronManager:
                 logger.info(f"Removed job {job_id}")
                 return True
             return False
+
+    async def set_job_active(self, job_id: str, active: bool) -> Optional[Dict[str, Any]]:
+        """Pause or resume a job. Returns the updated job if found."""
+        async with self.lock:
+            for job in self.jobs:
+                if job["id"] != job_id:
+                    continue
+                job["active"] = bool(active)
+                self._save_jobs()
+                logger.info(
+                    f"{'Resumed' if active else 'Paused'} job {job_id}"
+                )
+                return dict(job)
+        return None
 
     async def list_jobs(self) -> List[Dict[str, Any]]:
         """Return a sorted snapshot of all pending jobs."""
@@ -202,7 +219,9 @@ class CronManager:
                     due = [
                         j
                         for j in self.jobs
-                        if j.get("trigger") is not None and j["trigger"] <= now
+                        if j.get("active", True)
+                        and j.get("trigger") is not None
+                        and j["trigger"] <= now
                     ]
 
                     for job in due:
