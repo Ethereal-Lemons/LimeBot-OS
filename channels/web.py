@@ -1937,6 +1937,23 @@ class WebChannel(BaseChannel):
                 return {"status": "success", "message": "Job deleted"}
             raise HTTPException(status_code=404, detail="Job not found")
 
+        @self.app.patch(
+            "/api/cron/jobs/{job_id}", dependencies=[Depends(self.verify_auth)]
+        )
+        async def update_cron_job(job_id: str, data: dict):
+            if not self.scheduler:
+                raise HTTPException(status_code=503, detail="Scheduler not initialized")
+
+            if "active" not in data:
+                raise HTTPException(status_code=400, detail="Missing active flag")
+
+            updated = await self.scheduler.set_job_active(
+                job_id, bool(data.get("active"))
+            )
+            if updated:
+                return {"status": "success", "job": updated}
+            raise HTTPException(status_code=404, detail="Job not found")
+
         @self.app.websocket("/ws")
         async def websocket_root(websocket: WebSocket):
             await self._websocket_handler(websocket)
