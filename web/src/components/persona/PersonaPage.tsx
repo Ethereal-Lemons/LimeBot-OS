@@ -4,31 +4,43 @@ import { API_BASE_URL } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Badge } from "../ui/badge";
-import { User, Sparkles, Link, MessageSquare, Save, RefreshCw, Globe, Heart, Cake, Quote, Users, Bot, Wand2, ShieldCheck, ArrowRight, Radio } from "lucide-react";
+import { User, Sparkles, Link, MessageSquare, Save, RefreshCw, Globe, Heart, Cake, Quote, Users, Bot, Wand2, ShieldCheck, ArrowRight, Radio, Send } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface Relationship { id: string; name: string; affinity: number; level: string; }
 interface PersonaData {
     name: string; emoji: string; pfp_url: string; style: string;
-    discord_style?: string; whatsapp_style?: string; web_style?: string;
+    discord_style?: string; telegram_style?: string; whatsapp_style?: string; web_style?: string;
     reaction_emojis?: string; soul_summary: string; catchphrases?: string;
     interests?: string; birthday?: string; mood?: string;
     enable_dynamic_personality?: boolean; relationships?: Relationship[];
 }
 interface PersonaPageProps { onNavigate?: (view: string) => void; }
-type PreviewChannel = "web" | "discord" | "whatsapp";
+type PreviewChannel = "web" | "discord" | "telegram" | "whatsapp";
+
+interface PersonaPreviewResponse {
+    channel: PreviewChannel;
+    model: string;
+    effective_style: string;
+    style_source: string;
+    system_prompt_excerpt: string;
+    preview_text?: string | null;
+    error?: string | null;
+}
 
 const DEFAULT_PERSONA: PersonaData = {
-    name: "", emoji: "", pfp_url: "", style: "", discord_style: "", whatsapp_style: "", web_style: "",
+    name: "", emoji: "", pfp_url: "", style: "", discord_style: "", telegram_style: "", whatsapp_style: "", web_style: "",
     reaction_emojis: "", soul_summary: "", catchphrases: "", interests: "", birthday: "", mood: "",
     enable_dynamic_personality: false, relationships: []
 };
 const CHANNELS: Array<{ id: PreviewChannel; label: string; accent: string }> = [
     { id: "web", label: "Web", accent: "text-primary" },
     { id: "discord", label: "Discord", accent: "text-[#5865F2]" },
+    { id: "telegram", label: "Telegram", accent: "text-[#229ED9]" },
     { id: "whatsapp", label: "WhatsApp", accent: "text-[#25D366]" },
 ];
 
@@ -38,22 +50,9 @@ const clonePersona = (data?: Partial<PersonaData>): PersonaData =>
 function effectiveStyle(persona: PersonaData, channel: PreviewChannel) {
     const base = (persona.style || "").trim();
     const web = (persona.web_style || "").trim();
-    const discord = (persona.discord_style || "").trim();
-    const whatsapp = (persona.whatsapp_style || "").trim();
+    const platform = (persona[`${channel}_style` as keyof PersonaData] || "").toString().trim();
     if (channel === "web") return { text: web || base, source: web ? "Web override" : "Base style" };
-    if (channel === "discord") return discord ? { text: discord, source: "Discord override" } : web ? { text: web, source: "Web fallback" } : { text: base, source: "Base style" };
-    return whatsapp ? { text: whatsapp, source: "WhatsApp override" } : web ? { text: web, source: "Web fallback" } : { text: base, source: "Base style" };
-}
-
-function previewReply(persona: PersonaData, channel: PreviewChannel) {
-    const name = persona.name?.trim() || "LimeBot";
-    const emoji = persona.emoji?.trim() || "🍋";
-    const { text, source } = effectiveStyle(persona, channel);
-    const style = text || "calm, direct, adaptive";
-    const catchphrase = persona.catchphrases?.split(";")[0]?.trim();
-    if (channel === "discord") return `${emoji} ${name}: short first, then details.\n\nVoice: ${source} • ${style.slice(0, 110)}${style.length > 110 ? "..." : ""}${catchphrase ? `\n\nCloser: ${catchphrase}` : ""}`;
-    if (channel === "whatsapp") return `${emoji} Quick read: warmer and more human.\n\nVoice: ${source} • ${style.slice(0, 105)}${style.length > 105 ? "..." : ""}`;
-    return `${emoji} ${name}\n\nDesk-style reply using ${source.toLowerCase()}.\n\nVoice cues: ${style.slice(0, 120)}${style.length > 120 ? "..." : ""}`;
+    return platform ? { text: platform, source: `${CHANNELS.find((item) => item.id === channel)?.label || channel} override` } : web ? { text: web, source: "Web fallback" } : { text: base, source: "Base style" };
 }
 
 const affinityTone = (affinity: number) => affinity >= 70 ? "bg-emerald-500" : affinity >= 30 ? "bg-amber-500" : "bg-slate-500";
@@ -66,6 +65,10 @@ export function PersonaPage({ onNavigate }: PersonaPageProps) {
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState("");
     const [selectedChannel, setSelectedChannel] = useState<PreviewChannel>("web");
+    const [previewMessage, setPreviewMessage] = useState("Introduce yourself and explain how you'd help me here.");
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [previewResult, setPreviewResult] = useState<PersonaPreviewResponse | null>(null);
+    const [previewRequestKey, setPreviewRequestKey] = useState("");
 
     const fetchPersona = async () => {
         try {
@@ -74,6 +77,8 @@ export function PersonaPage({ onNavigate }: PersonaPageProps) {
             const next = clonePersona(res.data);
             setPersona(next);
             setSavedPersona(next);
+            setPreviewResult(null);
+            setPreviewRequestKey("");
         } catch (err) {
             console.error("Failed to fetch persona:", err);
             setMessage("Error loading persona");
@@ -103,6 +108,29 @@ export function PersonaPage({ onNavigate }: PersonaPageProps) {
     const strongest = relationships[0];
     const avgAffinity = relationships.length ? Math.round(relationships.reduce((sum, rel) => sum + rel.affinity, 0) / relationships.length) : 0;
     const selectedStyle = effectiveStyle(persona, selectedChannel);
+    const previewSignature = useMemo(
+        () => JSON.stringify({ persona, selectedChannel, previewMessage }),
+        [persona, selectedChannel, previewMessage]
+    );
+    const previewIsStale = previewRequestKey !== previewSignature;
+
+    const requestPreview = async () => {
+        try {
+            setPreviewLoading(true);
+            const res = await axios.post<PersonaPreviewResponse>(`${API_BASE_URL}/api/persona/preview`, {
+                persona,
+                channel: selectedChannel,
+                user_message: previewMessage,
+            });
+            setPreviewResult(res.data);
+            setPreviewRequestKey(previewSignature);
+        } catch (err) {
+            console.error("Failed to preview persona:", err);
+            setPreviewResult(null);
+        } finally {
+            setPreviewLoading(false);
+        }
+    };
 
     const handleSave = async () => {
         try {
@@ -193,9 +221,9 @@ export function PersonaPage({ onNavigate }: PersonaPageProps) {
                     </Card>
 
                     <Card className="bg-muted/30">
-                        <CardHeader><CardTitle className="flex items-center gap-2 text-lg"><Wand2 className="h-4 w-4 text-primary" />Voice Preview Studio</CardTitle><CardDescription>See inheritance and read a sample reply for each channel.</CardDescription></CardHeader>
+                        <CardHeader><CardTitle className="flex items-center gap-2 text-lg"><Wand2 className="h-4 w-4 text-primary" />Voice Preview Studio</CardTitle><CardDescription>Run the real prompt builder against a test message for each channel.</CardDescription></CardHeader>
                         <CardContent className="space-y-4">
-                            <div className="grid gap-3 md:grid-cols-3">
+                            <div className="grid gap-3 md:grid-cols-4">
                                 {CHANNELS.map((channel) => {
                                     const current = effectiveStyle(persona, channel.id);
                                     const selected = selectedChannel === channel.id;
@@ -207,17 +235,34 @@ export function PersonaPage({ onNavigate }: PersonaPageProps) {
                                     );
                                 })}
                             </div>
-                            <div className="grid gap-4 lg:grid-cols-[0.95fr_1.05fr]">
-                                <div className="rounded-2xl border border-border bg-background/70 p-4">
-                                    <div className="flex items-center justify-between gap-2"><div><div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Effective style</div><div className="mt-1 text-lg font-semibold text-foreground">{CHANNELS.find((c) => c.id === selectedChannel)?.label}</div></div><Badge variant="secondary">{selectedStyle.source}</Badge></div>
-                                    <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{selectedStyle.text || "This channel is inheriting an empty base voice. Add a base or channel style to make the preview useful."}</p>
+                            <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+                                <div className="space-y-4 rounded-2xl border border-border bg-background/70 p-4">
+                                    <div className="flex items-center justify-between gap-2"><div><div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Effective style</div><div className="mt-1 text-lg font-semibold text-foreground">{CHANNELS.find((c) => c.id === selectedChannel)?.label}</div></div><Badge variant="secondary">{previewResult?.style_source || selectedStyle.source}</Badge></div>
+                                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{previewResult?.effective_style || selectedStyle.text || "This channel is inheriting an empty base voice. Add a base or channel style to make the preview useful."}</p>
+                                    <div className="grid gap-2">
+                                        <Label>Test Message</Label>
+                                        <Textarea value={previewMessage} onChange={(e) => setPreviewMessage(e.target.value)} rows={4} placeholder="What should the bot respond to in this preview?" />
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Button onClick={requestPreview} disabled={previewLoading} className="gap-2">
+                                            <Bot className="h-4 w-4" />
+                                            {previewLoading ? "Generating..." : "Generate Preview"}
+                                        </Button>
+                                        <Badge variant={previewIsStale ? "secondary" : "outline"}>{previewIsStale ? "Preview stale" : "Preview current"}</Badge>
+                                    </div>
+                                    <div className="rounded-xl border border-border bg-card/60 p-4">
+                                        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground"><Bot className="h-4 w-4" />Model reply</div>
+                                        <div className="mt-3 rounded-2xl rounded-tl-none border border-border bg-muted/60 p-4">
+                                            <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-foreground"><span>{persona.name || "LimeBot"}</span><span className="text-base">{persona.emoji || "🍋"}</span><ArrowRight className="h-3 w-3 text-muted-foreground" /><span className="text-muted-foreground">{CHANNELS.find((c) => c.id === selectedChannel)?.label}</span></div>
+                                            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{previewResult?.preview_text || (previewLoading ? "Generating preview..." : "Generate a preview to see a real model response with the current prompt.")}</p>
+                                            {previewResult?.error && <p className="mt-3 text-xs text-destructive">{previewResult.error}</p>}
+                                        </div>
+                                    </div>
                                 </div>
                                 <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
-                                    <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground"><Bot className="h-4 w-4" />Sample reply</div>
-                                    <div className="mt-3 rounded-2xl rounded-tl-none border border-border bg-muted/60 p-4">
-                                        <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-foreground"><span>{persona.name || "LimeBot"}</span><span className="text-base">{persona.emoji || "🍋"}</span><ArrowRight className="h-3 w-3 text-muted-foreground" /><span className="text-muted-foreground">{CHANNELS.find((c) => c.id === selectedChannel)?.label}</span></div>
-                                        <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{previewReply(persona, selectedChannel)}</p>
-                                    </div>
+                                    <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground"><Send className="h-4 w-4" />Prompt excerpt</div>
+                                    <p className="mt-2 text-sm text-muted-foreground">This is the actual stable prompt excerpt sent to the preview model, not a hardcoded sample.</p>
+                                    <pre className="mt-3 max-h-[420px] overflow-auto rounded-2xl border border-border bg-muted/60 p-4 text-xs leading-relaxed text-foreground whitespace-pre-wrap">{previewResult?.system_prompt_excerpt || "Generate a preview to inspect the real prompt path for this channel."}</pre>
                                 </div>
                             </div>
                         </CardContent>
@@ -247,11 +292,10 @@ export function PersonaPage({ onNavigate }: PersonaPageProps) {
                         <CardContent className="grid gap-4">
                             {CHANNELS.map((channel) => {
                                 const current = effectiveStyle(persona, channel.id);
-                                const value = channel.id === "web" ? persona.web_style || "" : channel.id === "discord" ? persona.discord_style || "" : persona.whatsapp_style || "";
+                                const styleKey = `${channel.id}_style` as keyof PersonaData;
+                                const value = (persona[styleKey] || "").toString();
                                 const updateValue = (next: string) => {
-                                    if (channel.id === "web") return setPersona({ ...persona, web_style: next });
-                                    if (channel.id === "discord") return setPersona({ ...persona, discord_style: next });
-                                    setPersona({ ...persona, whatsapp_style: next });
+                                    setPersona({ ...persona, [styleKey]: next });
                                 };
                                 return (
                                     <div key={channel.id} className="rounded-2xl border border-border bg-background/60 p-4">
