@@ -97,3 +97,37 @@ async def test_handle_update_publishes_inbound_message():
     assert msg.content == "hi from telegram"
     assert msg.metadata["source"] == "telegram"
     assert msg.metadata["sender_username"] == "limeuser"
+
+
+@pytest.mark.asyncio
+async def test_refresh_bot_profile_updates_status():
+    from channels.telegram import TelegramChannel
+    from core.bus import MessageBus
+
+    config = SimpleNamespace(
+        token="telegram-token",
+        api_base="https://api.telegram.org",
+        allow_from=[],
+        allow_chats=[],
+        poll_timeout=30,
+    )
+    channel = TelegramChannel(config, MessageBus())
+
+    async def _fake_api_call(method, payload=None):
+        assert method == "getMe"
+        return {
+            "id": 123456,
+            "username": "limebot_test_bot",
+            "first_name": "LimeBot Test",
+            "can_join_groups": True,
+        }
+
+    channel._api_call = _fake_api_call
+    profile = await channel._refresh_bot_profile()
+
+    assert profile["username"] == "limebot_test_bot"
+    status = channel.get_status()
+    assert status["connected"] is True
+    assert status["status"] == "connected"
+    assert status["username"] == "limebot_test_bot"
+    assert status["bot_id"] == 123456

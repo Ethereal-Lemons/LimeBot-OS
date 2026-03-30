@@ -78,6 +78,16 @@ interface DiscordUiConfig {
     avatar_overrides?: { global?: string };
 }
 
+interface TelegramStatus {
+    enabled: boolean;
+    status: string;
+    connected: boolean;
+    username?: string | null;
+    bot_id?: number | null;
+    display_name?: string | null;
+    last_error?: string;
+}
+
 function WhatsAppConnectionSection() {
     const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'scanning'>('disconnected');
     const [resetting, setResetting] = useState(false);
@@ -257,11 +267,13 @@ export function ChannelsPage() {
     const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
     const [discordSaving, setDiscordSaving] = useState(false);
     const [discordStatus, setDiscordStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+    const [telegramStatus, setTelegramStatus] = useState<TelegramStatus | null>(null);
     const [activeTab, setActiveTab] = useState<'discord' | 'telegram' | 'whatsapp'>('discord');
 
     useEffect(() => {
         fetchConfig();
         fetchDiscordConfig();
+        fetchTelegramStatus();
     }, []);
 
     const fetchConfig = () => {
@@ -312,6 +324,19 @@ export function ChannelsPage() {
             });
     };
 
+    const fetchTelegramStatus = () => {
+        axios.get(`${API_BASE_URL}/api/telegram/status`)
+            .then(res => {
+                setTelegramStatus(res.data || null);
+            })
+            .catch(err => {
+                if (err.response?.status !== 401) {
+                    console.error("Failed to load telegram status:", err);
+                }
+                setTelegramStatus(null);
+            });
+    };
+
     const handleSave = () => {
         setSaving(true);
         setStatus(null);
@@ -341,6 +366,7 @@ export function ChannelsPage() {
                 if (data.error) throw new Error(data.error);
                 setStatus({ type: 'success', message: "Access rules saved!" });
                 setSavedConfig(updateData);
+                fetchTelegramStatus();
                 setSaving(false);
             })
             .catch(err => {
@@ -463,6 +489,9 @@ export function ChannelsPage() {
         if (activeTab === 'discord') {
             fetchDiscordConfig();
         }
+        if (activeTab === 'telegram') {
+            fetchTelegramStatus();
+        }
     };
 
     const discordEnabled = config.ENABLE_DISCORD !== 'false';
@@ -511,7 +540,9 @@ export function ChannelsPage() {
                             <div className="flex items-center justify-between">
                                 <div>
                                     <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Telegram</div>
-                                    <div className="mt-1 text-lg font-semibold text-foreground">{telegramEnabled ? 'Enabled' : 'Disabled'}</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">
+                                        {telegramStatus?.connected ? 'Connected' : telegramEnabled ? 'Enabled' : 'Disabled'}
+                                    </div>
                                 </div>
                                 <Send className={`h-5 w-5 ${telegramEnabled ? 'text-[#229ED9]' : 'text-muted-foreground'}`} />
                             </div>
@@ -1000,7 +1031,7 @@ export function ChannelsPage() {
                             <CardContent className="space-y-6">
                                 <div className="flex flex-wrap items-center gap-2">
                                     <span className={`rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${telegramEnabled ? 'border-[#229ED9]/20 bg-[#229ED9]/10 text-[#229ED9]' : 'border-border bg-background/70 text-muted-foreground'}`}>
-                                        {telegramEnabled ? 'Integration live' : 'Integration disabled'}
+                                        {telegramStatus?.connected ? 'Bot connected' : telegramEnabled ? 'Integration enabled' : 'Integration disabled'}
                                     </span>
                                     <span className="rounded-full border border-border bg-background/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                                         {config.TELEGRAM_ALLOW_FROM ? 'Restricted users' : 'Open users'}
@@ -1008,7 +1039,30 @@ export function ChannelsPage() {
                                     <span className="rounded-full border border-border bg-background/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                                         {config.TELEGRAM_ALLOW_CHATS ? 'Restricted chats' : 'All chats'}
                                     </span>
+                                    {telegramStatus?.username && (
+                                        <span className="rounded-full border border-[#229ED9]/20 bg-[#229ED9]/5 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#229ED9]">
+                                            @{telegramStatus.username}
+                                        </span>
+                                    )}
                                 </div>
+
+                                {config.TELEGRAM_BOT_TOKEN && !telegramEnabled && (
+                                    <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-200">
+                                        <AlertCircle className="h-4 w-4" />
+                                        <AlertTitle>Token saved, channel still disabled</AlertTitle>
+                                        <AlertDescription>
+                                            Turn on Telegram integration below before expecting the bot to respond.
+                                        </AlertDescription>
+                                    </Alert>
+                                )}
+
+                                {telegramStatus?.last_error && (
+                                    <Alert className="border-destructive/50 bg-destructive/10 text-destructive">
+                                        <AlertCircle className="h-4 w-4" />
+                                        <AlertTitle>Telegram health check failed</AlertTitle>
+                                        <AlertDescription>{telegramStatus.last_error}</AlertDescription>
+                                    </Alert>
+                                )}
 
                                 <div className="flex items-center justify-between">
                                     <div className="space-y-1">
@@ -1031,10 +1085,36 @@ export function ChannelsPage() {
                                             id="telegram_token"
                                             type="password"
                                             value={config.TELEGRAM_BOT_TOKEN || ""}
-                                            onChange={(e) => handleChange("TELEGRAM_BOT_TOKEN", e.target.value)}
+                                            onChange={(e) => {
+                                                handleChange("TELEGRAM_BOT_TOKEN", e.target.value);
+                                                if (e.target.value.trim() && config.ENABLE_TELEGRAM !== 'true') {
+                                                    handleChange('ENABLE_TELEGRAM', 'true');
+                                                }
+                                            }}
                                             placeholder="123456789:AA..."
                                             className="font-mono"
                                         />
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <div className="rounded-lg border border-border/60 bg-background/30 p-4">
+                                            <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Health</div>
+                                            <div className="mt-2 text-base font-semibold">
+                                                {telegramStatus?.status ? telegramStatus.status.replace('_', ' ') : 'Unknown'}
+                                            </div>
+                                        </div>
+                                        <div className="rounded-lg border border-border/60 bg-background/30 p-4">
+                                            <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Bot Name</div>
+                                            <div className="mt-2 text-base font-semibold">
+                                                {telegramStatus?.display_name || telegramStatus?.username || 'Not checked yet'}
+                                            </div>
+                                        </div>
+                                        <div className="rounded-lg border border-border/60 bg-background/30 p-4">
+                                            <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Bot ID</div>
+                                            <div className="mt-2 text-base font-semibold">
+                                                {telegramStatus?.bot_id || '—'}
+                                            </div>
+                                        </div>
                                     </div>
 
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

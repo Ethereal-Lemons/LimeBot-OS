@@ -1347,6 +1347,9 @@ class WebChannel(BaseChannel):
             channel_stats = []
             for ch in self.channels:
                 ch_status = "Connected"
+                if hasattr(ch, "get_status"):
+                    status_data = ch.get_status()
+                    ch_status = status_data.get("status", ch_status).replace("_", " ").title()
                 if hasattr(ch, "client") and hasattr(ch.client, "is_ready"):
                     if not ch.client.is_ready():
                         ch_status = "Connecting..."
@@ -1867,6 +1870,30 @@ class WebChannel(BaseChannel):
             if not self.scheduler:
                 return []
             return await self.scheduler.list_jobs()
+
+        @self.app.get("/api/telegram/status", dependencies=[Depends(self.verify_auth)])
+        async def get_telegram_status():
+            from config import load_config
+
+            cfg = load_config()
+            telegram_channel = next(
+                (ch for ch in self.channels if getattr(ch, "name", "") == "telegram"),
+                None,
+            )
+            if telegram_channel and hasattr(telegram_channel, "get_status"):
+                return telegram_channel.get_status()
+            return {
+                "enabled": bool(getattr(cfg.telegram, "enabled", False)),
+                "status": "disabled" if not getattr(cfg.telegram, "enabled", False) else "not_running",
+                "connected": False,
+                "username": None,
+                "bot_id": None,
+                "display_name": None,
+                "can_join_groups": None,
+                "can_read_all_group_messages": None,
+                "supports_inline_queries": None,
+                "last_error": "",
+            }
 
         @self.app.post("/api/cron/jobs", dependencies=[Depends(self.verify_auth)])
         async def add_cron_job(data: dict):
