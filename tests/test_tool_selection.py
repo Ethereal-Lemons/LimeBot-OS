@@ -92,6 +92,23 @@ class TestToolSelection(unittest.TestCase):
         self.assertEqual(name, "run_command")
         self.assertEqual(args["command"], "git status")
 
+    def test_agent_normalizes_json_suffixed_read_aliases(self):
+        from core.loop import AgentLoop
+        from core.metrics import MetricsCollector
+
+        agent = object.__new__(AgentLoop)
+        agent.metrics = MetricsCollector()
+
+        name, args = agent._normalize_tool_alias(
+            "read_filejson",
+            {"path": "core/asyncio_compat.py", "line_start": 1, "line_end": 40},
+            "web:test",
+        )
+        self.assertEqual(name, "read_file")
+        self.assertEqual(args["path"], "core/asyncio_compat.py")
+        self.assertEqual(args["start_line"], 1)
+        self.assertEqual(args["end_line"], 40)
+
     def test_agent_uses_full_tool_schema_by_default(self):
         from core.loop import AgentLoop
 

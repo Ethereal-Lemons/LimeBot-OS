@@ -1489,6 +1489,7 @@ class WebChannel(BaseChannel):
                 "traces": self.agent.get_recent_rag_traces(
                     session_key=session_key, limit=limit
                 )
+                or []
             }
 
         @self.app.delete(
