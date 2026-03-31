@@ -39,10 +39,17 @@ type Subagent = {
   tools: string[] | null;
   model: string;
   filename: string;
-  location: "project" | "user";
+  location: string;
+  location_label?: string;
   path: string;
   active: boolean;
   shadowed_by: string | null;
+};
+
+type LocationOption = {
+  value: string;
+  label: string;
+  path: string;
 };
 
 type FormState = {
@@ -52,7 +59,7 @@ type FormState = {
   prompt: string;
   toolsText: string;
   model: string;
-  location: "project" | "user";
+  location: string;
 };
 
 const EMPTY_FORM: FormState = {
@@ -61,7 +68,7 @@ const EMPTY_FORM: FormState = {
   prompt: "",
   toolsText: "",
   model: "inherit",
-  location: "project",
+  location: "project_limebot",
 };
 
 function normalizeTools(text: string): string[] | null {
@@ -87,6 +94,7 @@ function formFromSubagent(subagent: Subagent): FormState {
 export function SubagentsPage() {
   const [subagents, setSubagents] = useState<Subagent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
   const [search, setSearch] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -98,6 +106,7 @@ export function SubagentsPage() {
       setLoading(true);
       const res = await axios.get(`${API_BASE_URL}/api/subagents`);
       setSubagents(res.data.subagents || []);
+      setLocationOptions(res.data.location_options || []);
       setError(null);
     } catch (err: any) {
       console.error("Failed to load subagents:", err);
@@ -159,6 +168,7 @@ export function SubagentsPage() {
         ? await axios.put(url, payload)
         : await axios.post(url, payload);
       setSubagents(res.data.subagents || []);
+      setLocationOptions(res.data.location_options || []);
       setDialogOpen(false);
       setForm(EMPTY_FORM);
     } catch (err: any) {
@@ -171,7 +181,7 @@ export function SubagentsPage() {
 
   const deleteSubagent = async (subagent: Subagent) => {
     const confirmed = window.confirm(
-      `Delete the subagent "${subagent.name}" from ${subagent.location} agents?`
+      `Delete the subagent "${subagent.name}" from ${subagent.location_label || subagent.location}?`
     );
     if (!confirmed) return;
 
@@ -180,6 +190,7 @@ export function SubagentsPage() {
         `${API_BASE_URL}/api/subagents/${encodeURIComponent(subagent.id)}`
       );
       setSubagents(res.data.subagents || []);
+      setLocationOptions(res.data.location_options || []);
       setError(null);
     } catch (err: any) {
       console.error("Failed to delete subagent:", err);
@@ -273,7 +284,7 @@ export function SubagentsPage() {
                           <Badge variant="secondary">Shadowed</Badge>
                         )}
                         <Badge variant="outline">
-                          {subagent.location === "project" ? "Project" : "Personal"}
+                          {subagent.location_label || subagent.location}
                         </Badge>
                       </CardTitle>
                       <CardDescription>{subagent.description}</CardDescription>
@@ -355,7 +366,7 @@ export function SubagentsPage() {
               <Label htmlFor="subagent-location">Location</Label>
               <Select
                 value={form.location}
-                onValueChange={(value: "project" | "user") =>
+                onValueChange={(value) =>
                   setForm((prev) => ({ ...prev, location: value }))
                 }
               >
@@ -363,8 +374,34 @@ export function SubagentsPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="project">Project (.claude/agents)</SelectItem>
-                  <SelectItem value="user">Personal (~/.claude/agents)</SelectItem>
+                  {(locationOptions.length > 0
+                    ? locationOptions
+                    : [
+                        {
+                          value: "project_limebot",
+                          label: "Project (.limebot/agents)",
+                          path: ".limebot/agents",
+                        },
+                        {
+                          value: "project_claude",
+                          label: "Project (.claude/agents)",
+                          path: ".claude/agents",
+                        },
+                        {
+                          value: "user_limebot",
+                          label: "Personal (~/.limebot/agents)",
+                          path: "~/.limebot/agents",
+                        },
+                        {
+                          value: "user_claude",
+                          label: "Personal (~/.claude/agents)",
+                          path: "~/.claude/agents",
+                        },
+                      ]).map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

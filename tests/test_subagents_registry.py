@@ -69,6 +69,23 @@ class TestSubagentsRegistry(unittest.TestCase):
         self.assertEqual(agent["description"], "Project planner")
         self.assertIn("Project prompt", agent["prompt"])
 
+    def test_registry_exposes_claude_and_limebot_location_options(self):
+        from core.subagents import SubagentRegistry
+
+        registry = SubagentRegistry(agent_dirs=[])
+        options = registry.get_location_options()
+        values = {option["value"] for option in options}
+
+        self.assertEqual(
+            values,
+            {
+                "project_limebot",
+                "project_claude",
+                "user_limebot",
+                "user_claude",
+            },
+        )
+
 
 class TestSubagentToolDefinitions(unittest.TestCase):
     def test_spawn_agent_schema_lists_available_named_agents(self):

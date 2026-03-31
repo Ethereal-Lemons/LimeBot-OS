@@ -34,6 +34,30 @@ CLAUDE_TOOL_ALIASES: Dict[str, str] = {
     "webfetch": "browser_get_page_text",
 }
 
+SUBAGENT_LOCATIONS: Dict[str, Dict[str, str]] = {
+    "project_limebot": {
+        "label": "Project (.limebot/agents)",
+        "path": ".limebot/agents",
+    },
+    "project_claude": {
+        "label": "Project (.claude/agents)",
+        "path": ".claude/agents",
+    },
+    "user_limebot": {
+        "label": "Personal (~/.limebot/agents)",
+        "path": str(Path.home() / ".limebot" / "agents"),
+    },
+    "user_claude": {
+        "label": "Personal (~/.claude/agents)",
+        "path": str(Path.home() / ".claude" / "agents"),
+    },
+}
+
+LEGACY_LOCATION_ALIASES: Dict[str, str] = {
+    "project": "project_claude",
+    "user": "user_claude",
+}
+
 
 def normalize_subagent_tool_name(name: str) -> str:
     raw = str(name or "").strip()
@@ -59,28 +83,48 @@ class SubagentRegistry:
     """
 
     def __init__(self, agent_dirs: Optional[List[str]] = None):
-        home_dir = Path.home() / ".claude" / "agents"
-        self.agent_dirs = agent_dirs or ["./.claude/agents", str(home_dir)]
+        self.agent_dirs = agent_dirs or [
+            SUBAGENT_LOCATIONS["project_limebot"]["path"],
+            SUBAGENT_LOCATIONS["project_claude"]["path"],
+            SUBAGENT_LOCATIONS["user_limebot"]["path"],
+            SUBAGENT_LOCATIONS["user_claude"]["path"],
+        ]
         self.subagents: Dict[str, Dict[str, Any]] = {}
 
     def _iter_agent_dirs(self) -> List[tuple[str, Path]]:
         resolved: List[tuple[str, Path]] = []
         for raw_dir in self.agent_dirs:
             agent_dir = Path(raw_dir).expanduser()
-            location = "project"
-            try:
-                if agent_dir.resolve() == (Path.home() / ".claude" / "agents").resolve():
-                    location = "user"
-            except Exception:
-                pass
+            location = self._infer_location_from_path(agent_dir)
             resolved.append((location, agent_dir))
         return resolved
 
     def _resolve_location_dir(self, location: str) -> Path:
-        normalized = str(location or "project").strip().lower()
-        if normalized == "user":
-            return Path.home() / ".claude" / "agents"
-        return Path(".claude/agents")
+        normalized = self._normalize_location(location)
+        return Path(SUBAGENT_LOCATIONS[normalized]["path"]).expanduser()
+
+    def _normalize_location(self, location: Optional[str]) -> str:
+        normalized = str(location or "project_limebot").strip().lower()
+        normalized = LEGACY_LOCATION_ALIASES.get(normalized, normalized)
+        if normalized not in SUBAGENT_LOCATIONS:
+            raise ValueError("Invalid subagent location")
+        return normalized
+
+    def _infer_location_from_path(self, agent_dir: Path) -> str:
+        try:
+            resolved = agent_dir.expanduser().resolve()
+        except Exception:
+            resolved = agent_dir.expanduser()
+
+        for location, meta in SUBAGENT_LOCATIONS.items():
+            candidate = Path(meta["path"]).expanduser()
+            try:
+                if resolved == candidate.resolve():
+                    return location
+            except Exception:
+                if str(resolved) == str(candidate):
+                    return location
+        return "project_limebot"
 
     @staticmethod
     def make_subagent_id(location: str, filename: str) -> str:
@@ -92,22 +136,29 @@ class SubagentRegistry:
         if ":" not in raw:
             raise ValueError("Invalid subagent id")
         location, filename = raw.split(":", 1)
-        if location not in {"project", "user"}:
+        location = LEGACY_LOCATION_ALIASES.get(location, location)
+        if location not in SUBAGENT_LOCATIONS:
             raise ValueError("Invalid subagent location")
         if not filename:
             raise ValueError("Invalid subagent filename")
         return location, filename
 
+    def get_location_options(self) -> List[Dict[str, str]]:
+        return [
+            {"value": key, "label": meta["label"], "path": meta["path"]}
+            for key, meta in SUBAGENT_LOCATIONS.items()
+        ]
+
     def discover_and_load(self) -> Dict[str, Dict[str, Any]]:
         loaded: Dict[str, Dict[str, Any]] = {}
 
-        for _, agent_dir in self._iter_agent_dirs():
+        for location, agent_dir in self._iter_agent_dirs():
             if not agent_dir.exists():
                 continue
 
             for agent_file in sorted(agent_dir.glob("*.md")):
                 try:
-                    subagent = self._load_subagent(agent_file)
+                    subagent = self._load_subagent(agent_file, location=location)
                 except Exception as exc:
                     logger.error(f"Error loading subagent {agent_file}: {exc}")
                     continue
@@ -141,7 +192,7 @@ class SubagentRegistry:
 
         for active_name, agent in self.subagents.items():
             active_ids[active_name] = self.make_subagent_id(
-                str(agent.get("location") or "project"),
+                str(agent.get("location") or "project_limebot"),
                 str(agent.get("filename") or active_name),
             )
 
@@ -168,6 +219,7 @@ class SubagentRegistry:
                         "model": subagent.get("model") or "inherit",
                         "filename": subagent["filename"],
                         "location": location,
+                        "location_label": SUBAGENT_LOCATIONS[location]["label"],
                         "path": subagent.get("source_path"),
                         "active": active,
                         "shadowed_by": None if active else existing_active,
@@ -214,7 +266,7 @@ class SubagentRegistry:
         prompt: str,
         tools: Any = None,
         model: str = "inherit",
-        location: str = "project",
+        location: str = "project_limebot",
         subagent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         name = str(name or "").strip()
@@ -228,15 +280,17 @@ class SubagentRegistry:
         if not prompt:
             raise ValueError("Subagent prompt is required")
 
-        target_dir = self._resolve_location_dir(location)
+        normalized_location = self._normalize_location(location)
+        target_dir = self._resolve_location_dir(normalized_location)
         target_dir.mkdir(parents=True, exist_ok=True)
 
         existing_path: Optional[Path] = None
-        existing_location = location
         if subagent_id:
             existing_location, existing_filename = self.parse_subagent_id(subagent_id)
             existing_path = self._resolve_location_dir(existing_location) / f"{existing_filename}.md"
-            target_dir = self._resolve_location_dir(location or existing_location)
+            target_dir = self._resolve_location_dir(
+                normalized_location or existing_location
+            )
 
         filename = slugify_subagent_filename(name)
         target_path = target_dir / f"{filename}.md"
@@ -257,7 +311,7 @@ class SubagentRegistry:
         target_path.write_text(markdown, encoding="utf-8")
         saved = self._load_subagent(
             target_path,
-            location="user" if target_dir == self._resolve_location_dir("user") else "project",
+            location=self._infer_location_from_path(target_dir),
         )
         if not saved:
             raise ValueError("Failed to load saved subagent")
@@ -324,7 +378,7 @@ class SubagentRegistry:
             "tools": tools,
             "model": model,
             "filename": agent_file.stem,
-            "location": location or "project",
+            "location": location or "project_limebot",
             "source_path": str(agent_file.resolve()),
         }
 
