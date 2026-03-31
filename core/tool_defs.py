@@ -163,6 +163,10 @@ BASE_TOOLS = [
             "task": {
                 "type": "string",
                 "description": "Full description of the task for the sub-agent.",
+            },
+            "background": {
+                "type": "boolean",
+                "description": "If true, start the sub-agent in the background and let it report back later instead of waiting for its result now.",
             }
         },
         "required": ["task"],
@@ -668,6 +672,13 @@ def _build_spawn_agent_definition(
             "type": "string",
             "description": description,
         }
+    base["params"]["background"] = {
+        "type": "boolean",
+        "description": (
+            "Optional background override. If true, start the subagent and return "
+            "immediately. If omitted, the subagent profile decides."
+        ),
+    }
     return base
 
 

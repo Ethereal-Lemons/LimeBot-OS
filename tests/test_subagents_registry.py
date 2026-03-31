@@ -25,7 +25,10 @@ class TestSubagentsRegistry(unittest.TestCase):
             "name: code-reviewer\n"
             "description: Review code for regressions and safety issues.\n"
             "tools: [Read, Grep, Bash]\n"
+            "disallowed_tools: [Write]\n"
             "model: inherit\n"
+            "max_turns: 6\n"
+            "background: true\n"
             "---\n"
             "Focus on bugs, regressions, and missing tests.\n",
             encoding="utf-8",
@@ -37,12 +40,16 @@ class TestSubagentsRegistry(unittest.TestCase):
 
         self.assertIsNotNone(agent)
         self.assertEqual(agent["tools"], ["read_file", "search_files", "run_command"])
+        self.assertEqual(agent["disallowed_tools"], ["write_file"])
         self.assertEqual(agent["model"], "inherit")
+        self.assertEqual(agent["max_turns"], 6)
+        self.assertTrue(agent["background"])
         self.assertIn("missing tests", agent["prompt"])
 
         additions = registry.get_prompt_additions()
         self.assertIn("code-reviewer", additions)
         self.assertIn("read_file, search_files, run_command", additions)
+        self.assertIn("disallowed: write_file", additions)
 
     def test_project_subagent_definition_wins_over_lower_priority_dirs(self):
         from core.subagents import SubagentRegistry
@@ -72,7 +79,7 @@ class TestSubagentsRegistry(unittest.TestCase):
     def test_registry_exposes_claude_and_limebot_location_options(self):
         from core.subagents import SubagentRegistry
 
-        registry = SubagentRegistry(agent_dirs=[])
+        registry = SubagentRegistry()
         options = registry.get_location_options()
         values = {option["value"] for option in options}
 
@@ -85,6 +92,61 @@ class TestSubagentsRegistry(unittest.TestCase):
                 "user_claude",
             },
         )
+
+    def test_builtin_subagents_are_available_and_can_be_selected(self):
+        from core.subagents import SubagentRegistry
+
+        tmp = self._tempdir()
+        empty_dir = tmp / "empty_agents"
+        empty_dir.mkdir(parents=True, exist_ok=True)
+        settings_file = tmp / "subagents.json"
+        registry = SubagentRegistry(
+            agent_dirs=[str(empty_dir)],
+            settings_file=str(settings_file),
+        )
+        registry.discover_and_load()
+
+        explorer = registry.get_subagent("explorer")
+        self.assertIsNotNone(explorer)
+        self.assertTrue(explorer["builtin"])
+
+        registry.set_default_selection("explorer")
+
+        reloaded = SubagentRegistry(
+            agent_dirs=[str(empty_dir)],
+            settings_file=str(settings_file),
+        )
+        reloaded.discover_and_load()
+        self.assertEqual(reloaded.get_default_selection(), "explorer")
+        selector_values = {option["value"] for option in reloaded.get_selector_options()}
+        self.assertIn("auto", selector_values)
+        self.assertIn("explorer", selector_values)
+
+    def test_project_subagent_can_shadow_builtin(self):
+        from core.subagents import SubagentRegistry
+
+        tmp = self._tempdir()
+        project_dir = tmp / "project_agents"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "reviewer.md").write_text(
+            "---\n"
+            "name: reviewer\n"
+            "description: Custom reviewer\n"
+            "---\n"
+            "Project-specific review instructions.\n",
+            encoding="utf-8",
+        )
+
+        registry = SubagentRegistry(agent_dirs=[str(project_dir)])
+        registry.discover_and_load()
+
+        reviewer = registry.get_subagent("reviewer")
+        self.assertEqual(reviewer["description"], "Custom reviewer")
+
+        listed = registry.list_definitions()
+        builtin_entry = next(item for item in listed if item["id"] == "builtin:reviewer")
+        self.assertFalse(builtin_entry["active"])
+        self.assertEqual(builtin_entry["shadowed_by"], "project_limebot:reviewer")
 
 
 class TestSubagentToolDefinitions(unittest.TestCase):
@@ -102,3 +164,7 @@ class TestSubagentToolDefinitions(unittest.TestCase):
 
         self.assertEqual(agent_param["enum"], ["code-reviewer"])
         self.assertIn("Review code for regressions.", agent_param["description"])
+        self.assertIn(
+            "background",
+            spawn_tool["function"]["parameters"]["properties"],
+        )

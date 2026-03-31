@@ -1208,9 +1208,13 @@ class Toolbox:
             return f"Error searching memory: {e}"
 
     async def spawn_agent(
-        self, task: str, session_key: str = None, agent: Optional[str] = None
+        self,
+        task: str,
+        session_key: str = None,
+        agent: Optional[str] = None,
+        background: Optional[bool] = None,
     ) -> str:
-        """Spawn a background agent task and wait for report."""
+        """Spawn a sub-agent and optionally let it report back in the background."""
         if not self.agent:
             return "Error: Agent loop not linked to toolbox."
 
@@ -1223,10 +1227,42 @@ class Toolbox:
         sub_session_key = f"{session_key}_sub_{uuid.uuid4().hex[:6]}"
         logger.info(f"🚀 Spawning sub-agent '{sub_session_key}' for task: {task}")
 
+        subagent_profile = None
         if agent:
             logger.info(f"Using sub-agent profile '{agent}' for '{sub_session_key}'")
+            if self.subagent_registry is not None:
+                try:
+                    subagent_profile = self.subagent_registry.get_subagent(agent)
+                except Exception:
+                    subagent_profile = None
+
+        use_background = bool(background)
+        if background is None and subagent_profile:
+            use_background = bool(subagent_profile.get("background"))
 
         try:
+            if use_background:
+
+                async def _run_in_background() -> None:
+                    try:
+                        await self.agent.run_subagent(
+                            session_key,
+                            sub_session_key,
+                            task,
+                            agent_name=agent,
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            f"Error in background sub-agent '{sub_session_key}': {exc}"
+                        )
+
+                asyncio.create_task(_run_in_background())
+                mode_label = f"'{agent}'" if agent else "generic worker"
+                return (
+                    f"Started background sub-agent {mode_label} as "
+                    f"'{sub_session_key}'. It will report back when finished."
+                )
+
             result = await self.agent.run_subagent(
                 session_key,
                 sub_session_key,

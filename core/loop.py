@@ -315,21 +315,36 @@ class AgentLoop:
         return selected
 
     def _filter_tool_definitions_for_subagent(
-        self, tool_names: Optional[List[str]]
+        self,
+        tool_names: Optional[List[str]],
+        disallowed_tool_names: Optional[List[str]] = None,
     ) -> List[Dict]:
-        if tool_names is None:
-            return list(self._get_tool_definitions())
+        tools = list(self._get_tool_definitions())
+        if tool_names is not None:
+            allowed = {
+                normalize_subagent_tool_name(name)
+                for name in tool_names
+                if normalize_subagent_tool_name(name)
+            }
+            tools = [
+                tool
+                for tool in tools
+                if tool.get("function", {}).get("name") in allowed
+            ]
 
-        allowed = {
-            normalize_subagent_tool_name(name)
-            for name in tool_names
-            if normalize_subagent_tool_name(name)
-        }
-        return [
-            tool
-            for tool in self._get_tool_definitions()
-            if tool.get("function", {}).get("name") in allowed
-        ]
+        if disallowed_tool_names:
+            disallowed = {
+                normalize_subagent_tool_name(name)
+                for name in disallowed_tool_names
+                if normalize_subagent_tool_name(name)
+            }
+            tools = [
+                tool
+                for tool in tools
+                if tool.get("function", {}).get("name") not in disallowed
+            ]
+
+        return tools
 
     def _resolve_provider(
         self,
@@ -1106,16 +1121,25 @@ class AgentLoop:
             subagent_model = (
                 (subagent_profile or {}).get("model") or "inherit"
             ).strip()
+            subagent_max_turns = (subagent_profile or {}).get("max_turns") or 10
             allowed_tools = None
             tool_definitions_override = None
-            if subagent_profile and subagent_profile.get("tools") is not None:
+            disallowed_tools = {
+                normalize_subagent_tool_name(name)
+                for name in ((subagent_profile or {}).get("disallowed_tools") or [])
+                if normalize_subagent_tool_name(name)
+            }
+            if subagent_profile:
                 tool_definitions_override = self._filter_tool_definitions_for_subagent(
-                    subagent_profile.get("tools")
+                    subagent_profile.get("tools"),
+                    subagent_profile.get("disallowed_tools"),
                 )
-                allowed_tools = {
-                    tool.get("function", {}).get("name")
-                    for tool in tool_definitions_override
-                }
+                if subagent_profile.get("tools") is not None:
+                    allowed_tools = {
+                        tool.get("function", {}).get("name")
+                        for tool in tool_definitions_override
+                        if tool.get("function", {}).get("name")
+                    }
 
             session_model = (
                 self.model
@@ -1153,6 +1177,20 @@ class AgentLoop:
                     profile_lines.append(
                         f"Tool access: only use these tools: {listed_tools}."
                     )
+                if disallowed_tools:
+                    profile_lines.append(
+                        "Never use these tools: "
+                        + ", ".join(sorted(disallowed_tools))
+                        + "."
+                    )
+                if subagent_profile.get("background"):
+                    profile_lines.append(
+                        "This profile is intended for background-friendly work when delegated asynchronously."
+                    )
+                if subagent_max_turns:
+                    profile_lines.append(
+                        f"Complete the task within at most {subagent_max_turns} assistant turns."
+                    )
 
             profile_block = "\n".join(line for line in profile_lines if line).strip()
             if profile_block:
@@ -1185,7 +1223,7 @@ class AgentLoop:
             iteration = 0
             final_result = ""
 
-            while iteration < 10:
+            while iteration < subagent_max_turns:
                 iteration += 1
                 logger.info(f"[SUB-AGENT:{sub_session_key}] iteration {iteration}")
 
@@ -1212,8 +1250,10 @@ class AgentLoop:
                 tool_calls_raw = assistant_msg.tool_calls
 
                 sub_history.append(assistant_msg.model_dump())
-                self.session_manager.append_chat_log(
-                    sub_session_key, {"role": "assistant", "content": full_content}
+                asyncio.create_task(
+                    self.session_manager.append_chat_log(
+                        sub_session_key, {"role": "assistant", "content": full_content}
+                    )
                 )
 
                 if not tool_calls_raw:
@@ -1229,7 +1269,9 @@ class AgentLoop:
                             fn, args, sub_session_key
                         )
                         logger.info(f"[SUB-AGENT:{sub_session_key}] {fn}({args})")
-                        if allowed_tools is not None and fn not in allowed_tools:
+                        if (allowed_tools is not None and fn not in allowed_tools) or (
+                            fn in disallowed_tools
+                        ):
                             result = (
                                 f"Error: Tool '{fn}' is not allowed for subagent "
                                 f"'{agent_name}'."
@@ -3771,6 +3813,40 @@ class AgentLoop:
                             injected_files=injected,
                         )
                     )
+
+                    selected_subagent = self.subagent_registry.get_default_selection()
+                    should_route_via_selected_subagent = (
+                        selected_subagent != "auto"
+                        and not msg.metadata.get("is_report")
+                        and not msg.metadata.get("is_confirmation")
+                        and not msg.metadata.get("is_scheduler")
+                    )
+                    if should_route_via_selected_subagent:
+                        routed_task = user_text_content or content or " "
+                        self._log_session_event(
+                            session_key,
+                            {
+                                "type": "subagent_mode_route",
+                                "turn_id": turn_id,
+                                "subagent": selected_subagent,
+                                "task_preview": routed_task[:500],
+                            },
+                        )
+                        await self._publish_activity(
+                            msg,
+                            f"Routing through {selected_subagent} mode...",
+                            turn_id=turn_id,
+                            message_id=assistant_message_id,
+                        )
+                        await self._trim_history(session_key)
+                        asyncio.create_task(self._flush_history(session_key))
+                        await self.run_subagent(
+                            session_key,
+                            f"{session_key}_sub_{uuid.uuid4().hex[:6]}",
+                            routed_task,
+                            agent_name=selected_subagent,
+                        )
+                        return
 
                     await self._trim_history(session_key)
                     asyncio.create_task(self._flush_history(session_key))

@@ -21,6 +21,13 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { API_BASE_URL } from "@/lib/api";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 
 interface SidebarProps {
     className?: string;
@@ -38,9 +45,40 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
     const [activeModel, setActiveModel] = useState("Loading...");
     const [memoryLabel, setMemoryLabel] = useState("Checking...");
     const [memoryTone, setMemoryTone] = useState("text-muted-foreground");
+    const [subagentSelection, setSubagentSelection] = useState("auto");
+    const [subagentOptions, setSubagentOptions] = useState<Array<{ value: string; label: string }>>([
+        { value: "auto", label: "Auto" },
+    ]);
+    const [savingSubagentSelection, setSavingSubagentSelection] = useState(false);
 
     const handleNav = (view: string) => {
         onNavigate?.(view);
+    };
+
+    const handleSubagentSelectionChange = async (value: string) => {
+        const previous = subagentSelection;
+        setSubagentSelection(value);
+        setSavingSubagentSelection(true);
+        try {
+            const res = await axios.put(`${API_BASE_URL}/api/subagents/settings`, {
+                default_selection: value,
+            });
+            setSubagentSelection(res.data?.default_selection || value);
+            const options = Array.isArray(res.data?.selection_options)
+                ? res.data.selection_options.map((option: any) => ({
+                    value: String(option.value),
+                    label: String(option.label || option.value),
+                }))
+                : null;
+            if (options && options.length > 0) {
+                setSubagentOptions(options);
+            }
+        } catch (error) {
+            console.error("Failed to update subagent mode:", error);
+            setSubagentSelection(previous);
+        } finally {
+            setSavingSubagentSelection(false);
+        }
     };
 
     const navItems = [
@@ -71,14 +109,23 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
 
         const refreshRuntimeDetails = async () => {
             try {
-                const [configRes, memoryRes] = await Promise.all([
+                const [configRes, memoryRes, subagentRes] = await Promise.all([
                     axios.get(`${API_BASE_URL}/api/config`),
                     axios.get(`${API_BASE_URL}/api/memory`),
+                    axios.get(`${API_BASE_URL}/api/subagents`),
                 ]);
 
                 if (!isMounted) return;
 
                 setActiveModel(configRes.data?.env?.LLM_MODEL || "Unknown");
+                setSubagentSelection(subagentRes.data?.default_selection || "auto");
+                const options = Array.isArray(subagentRes.data?.selection_options)
+                    ? subagentRes.data.selection_options.map((option: any) => ({
+                        value: String(option.value),
+                        label: String(option.label || option.value),
+                    }))
+                    : [{ value: "auto", label: "Auto" }];
+                setSubagentOptions(options);
 
                 const enabled = memoryRes.data?.enabled;
                 const mode = memoryRes.data?.mode || (enabled ? "vector" : "grep_fallback");
@@ -100,6 +147,7 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
                 setActiveModel("Unavailable");
                 setMemoryLabel("Unavailable");
                 setMemoryTone("text-muted-foreground");
+                setSubagentSelection("auto");
             }
         };
 
@@ -126,6 +174,31 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
                 </a>
             </div>
             <div className="flex-1 overflow-auto py-4 px-3">
+                <div className="mb-5 rounded-xl border border-border/70 bg-background/60 p-3">
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                        Assistant Mode
+                    </div>
+                    <Select
+                        value={subagentSelection}
+                        onValueChange={handleSubagentSelectionChange}
+                        disabled={savingSubagentSelection}
+                    >
+                        <SelectTrigger className="h-9 rounded-lg border-border/70 bg-card/70 text-sm">
+                            <SelectValue placeholder="Choose a mode" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {subagentOptions.map((option) => (
+                                <SelectItem key={option.value} value={option.value}>
+                                    {option.label}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                    <div className="mt-2 text-[11px] text-muted-foreground">
+                        Applies to web, Discord, Telegram, and WhatsApp.
+                    </div>
+                </div>
+
                 <nav className="grid items-start gap-1">
                     <div className="px-3 py-2 text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
                         Chat
