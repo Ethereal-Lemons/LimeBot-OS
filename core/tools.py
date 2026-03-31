@@ -1193,7 +1193,7 @@ class Toolbox:
         if not self.vector_service:
             return "Error: Vector service not available."
         try:
-            results = await self.vector_service.search(query, limit=5)
+            results = await self.vector_service.search(query, limit=5) or []
             if not results:
                 return "No semantic matches found."
 

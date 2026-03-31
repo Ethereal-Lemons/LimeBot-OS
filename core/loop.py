@@ -678,7 +678,7 @@ class AgentLoop:
         """Stable (cached) + volatile (per-message: memory + RAG + timestamp)."""
         stable = await self._get_stable_prompt(sender_id, channel, chat_id, sender_name)
         skills_docs = self.skill_registry.get_relevant_prompt_additions(current_message)
-        subagent_docs = self.subagent_registry.get_prompt_additions()
+        subagent_docs = self.subagent_registry.get_prompt_additions(current_message)
         include_private_memory = prompt_module.should_load_private_context(
             sender_id, channel, self.config
         )
@@ -913,7 +913,9 @@ class AgentLoop:
     def get_recent_rag_traces(
         self, session_key: Optional[str] = None, limit: int = 20
     ) -> List[Dict[str, Any]]:
-        return self.rag.get_recent(session_key, limit)
+        if not getattr(self, "rag", None):
+            return []
+        return self.rag.get_recent(session_key, limit) or []
 
     def _build_rag_result_trace(self, row: Dict[str, Any]) -> Dict[str, Any]:
         return self.rag.build_result_trace(row)
@@ -923,6 +925,35 @@ class AgentLoop:
 
     def _build_delete_preview(self, function_args: dict) -> Dict[str, Any]:
         return self.confirm.build_delete_preview(function_args)
+
+    @staticmethod
+    def _clean_subagent_final_result(result: str) -> str:
+        text = str(result or "").strip()
+        if not text:
+            return ""
+
+        filtered_lines: List[str] = []
+        meta_prefixes = (
+            "the assistant attempted to",
+            "need to produce",
+            "need to finish",
+            "probably need to",
+            "provide final response directly",
+            "within limits",
+            "got truncated due to",
+        )
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            lower = line.lower()
+            if any(lower.startswith(prefix) for prefix in meta_prefixes):
+                continue
+            filtered_lines.append(raw_line)
+
+        cleaned = "\n".join(filtered_lines).strip()
+        if not cleaned:
+            return ""
+        return cleaned
 
     @staticmethod
     def _extract_command_paths(command: str, limit: int = 5) -> List[str]:
@@ -1291,6 +1322,48 @@ class AgentLoop:
                             "content": str(result),
                         }
                     )
+
+            if not str(final_result or "").strip():
+                summary_prompt = (
+                    "Final response only. Do not call any more tools. "
+                    "Do not mention truncation, token limits, tool budgets, or that you are an assistant. "
+                    "Use only the work already completed. "
+                    "If this was a review or verification task, return a concise report with findings or outcome, "
+                    "a short rating if appropriate, and 2-4 concrete suggestions. "
+                    "If anything remains unverified, state that plainly."
+                )
+                sub_history.append({"role": "system", "content": summary_prompt})
+                try:
+                    summary_response = await self._llm_call_with_retry(
+                        messages=sub_history,
+                        session_key=sub_session_key,
+                        msg=None,
+                        stream=False,
+                        include_tools=False,
+                        tool_context_text=task,
+                        model_override=subagent_model,
+                    )
+                    summary_msg = summary_response.choices[0].message
+                    final_result = (
+                        self._clean_subagent_final_result(summary_msg.content or "")
+                        or f"Stopped after reaching max_turns ({subagent_max_turns}) without a final answer."
+                    )
+                    sub_history.append(summary_msg.model_dump())
+                    asyncio.create_task(
+                        self.session_manager.append_chat_log(
+                            sub_session_key,
+                            {"role": "assistant", "content": final_result},
+                        )
+                    )
+                except Exception as summary_error:
+                    logger.warning(
+                        f"[SUB-AGENT:{sub_session_key}] failed to produce final summary after max_turns: {summary_error}"
+                    )
+                    final_result = (
+                        f"Stopped after reaching max_turns ({subagent_max_turns}) without a final answer."
+                    )
+
+            final_result = self._clean_subagent_final_result(final_result)
 
             report_title = (
                 f"--- SUB-AGENT REPORT ({sub_session_key}) [{agent_name}] ---"
@@ -3606,8 +3679,11 @@ class AgentLoop:
                             provider = self.vector_service._get_provider()
                             if provider in ("ollama", "local") or resolved_key:
                                 try:
-                                    semantic_results = await self.vector_service.search(
-                                        content, limit=3
+                                    semantic_results = (
+                                        await self.vector_service.search(
+                                            content, limit=3
+                                        )
+                                        or []
                                     )
                                     results = [
                                         r
@@ -3619,8 +3695,11 @@ class AgentLoop:
                                 except Exception as e:
                                     logger.warning(f"Semantic search failed: {e}")
                             if not results:
-                                results = await self.vector_service.search_grep(
-                                    content, limit=3
+                                results = (
+                                    await self.vector_service.search_grep(
+                                        content, limit=3
+                                    )
+                                    or []
                                 )
                                 if results:
                                     trace["mode"] = "grep_fallback"
@@ -3840,11 +3919,57 @@ class AgentLoop:
                         )
                         await self._trim_history(session_key)
                         asyncio.create_task(self._flush_history(session_key))
-                        await self.run_subagent(
+                        raw_reply = await self.run_subagent(
                             session_key,
                             f"{session_key}_sub_{uuid.uuid4().hex[:6]}",
                             routed_task,
                             agent_name=selected_subagent,
+                        )
+                        tag_result = await process_tags(
+                            raw_reply=raw_reply,
+                            sender_id=sender_id,
+                            validate_soul=prompt_module.validate_and_save_soul,
+                            validate_identity=prompt_module.validate_and_save_identity,
+                            validate_mood=prompt_module.validate_and_save_mood,
+                            validate_relationship=prompt_module.validate_and_save_relationships,
+                            vector_service=self.vector_service,
+                            bus=self.bus,
+                            msg=msg,
+                            config=self.config,
+                        )
+                        reply_to_user = tag_result.clean_reply or raw_reply
+                        self.history[session_key].append(
+                            {"role": "assistant", "content": raw_reply}
+                        )
+                        self._mark_dirty(session_key)
+                        asyncio.create_task(
+                            self.session_manager.append_chat_log(
+                                session_key, {"role": "assistant", "content": raw_reply}
+                            )
+                        )
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content="",
+                                metadata=self._with_trace_metadata(
+                                    {"type": "stop_typing"},
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
+                                ),
+                            )
+                        )
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content=reply_to_user,
+                                metadata=self._with_trace_metadata(
+                                    {"reply_to": msg.sender_id},
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
+                                ),
+                            )
                         )
                         return
 
