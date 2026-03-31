@@ -122,6 +122,46 @@ class TestSubagentsRegistry(unittest.TestCase):
         self.assertIn("auto", selector_values)
         self.assertIn("explorer", selector_values)
 
+    def test_prompt_additions_recommend_matching_builtin_subagent_for_turn(self):
+        from core.subagents import SubagentRegistry
+
+        tmp = self._tempdir()
+        empty_dir = tmp / "empty_agents"
+        empty_dir.mkdir(parents=True, exist_ok=True)
+        registry = SubagentRegistry(agent_dirs=[str(empty_dir)])
+        registry.discover_and_load()
+
+        additions = registry.get_prompt_additions(
+            "Review my auth changes for bugs and missing tests."
+        )
+
+        self.assertIn("`reviewer` is a strong match", additions)
+
+    def test_recommend_subagent_uses_description_overlap_for_custom_agents(self):
+        from core.subagents import SubagentRegistry
+
+        tmp = self._tempdir()
+        agents_dir = tmp / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        (agents_dir / "planner.md").write_text(
+            "---\n"
+            "name: planner\n"
+            "description: Break down implementation plans into steps, risks, and verification tasks.\n"
+            "---\n"
+            "Turn requests into practical execution plans.\n",
+            encoding="utf-8",
+        )
+
+        registry = SubagentRegistry(agent_dirs=[str(agents_dir)])
+        registry.discover_and_load()
+
+        recommendation = registry.recommend_subagent(
+            "Break this implementation into steps and risks before coding."
+        )
+
+        self.assertIsNotNone(recommendation)
+        self.assertEqual(recommendation[0], "planner")
+
     def test_project_subagent_can_shadow_builtin(self):
         from core.subagents import SubagentRegistry
 
@@ -168,3 +208,4 @@ class TestSubagentToolDefinitions(unittest.TestCase):
             "background",
             spawn_tool["function"]["parameters"]["properties"],
         )
+        self.assertIn("matches that specialist's description", agent_param["description"])
