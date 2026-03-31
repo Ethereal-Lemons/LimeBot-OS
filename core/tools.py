@@ -60,6 +60,7 @@ class Toolbox:
         self.bus = bus
         self.config = config
         self.agent = None
+        self.subagent_registry = None
         self.scheduler = None
         self.vector_service = get_vector_service(config)
 
@@ -87,6 +88,10 @@ class Toolbox:
     def set_scheduler(self, scheduler: Any):
         """Set the scheduler instance."""
         self.scheduler = scheduler
+
+    def set_subagent_registry(self, registry: Any):
+        """Set the subagent registry used to enrich delegation tools."""
+        self.subagent_registry = registry
 
     def _detect_skill_path(self, command: str):
         """Best-effort detection of a skill directory from a command string."""
@@ -248,8 +253,17 @@ class Toolbox:
             elif isinstance(self.config, dict) and "skills" in self.config:
                 enabled_skills = self.config["skills"].get("enabled", [])
 
+        available_agents = {}
+        if self.subagent_registry is not None:
+            try:
+                available_agents = self.subagent_registry.get_agent_descriptions()
+            except Exception as e:
+                logger.warning(f"Failed to read subagent registry: {e}")
+
         # Base tools from tool_defs.py
-        tools = build_tool_definitions(enabled_skills)
+        tools = build_tool_definitions(
+            enabled_skills, available_agents=available_agents
+        )
 
         # Load ClawHub tools dynamically
         try:
@@ -1193,7 +1207,9 @@ class Toolbox:
         except Exception as e:
             return f"Error searching memory: {e}"
 
-    async def spawn_agent(self, task: str, session_key: str = None) -> str:
+    async def spawn_agent(
+        self, task: str, session_key: str = None, agent: Optional[str] = None
+    ) -> str:
         """Spawn a background agent task and wait for report."""
         if not self.agent:
             return "Error: Agent loop not linked to toolbox."
@@ -1207,8 +1223,16 @@ class Toolbox:
         sub_session_key = f"{session_key}_sub_{uuid.uuid4().hex[:6]}"
         logger.info(f"🚀 Spawning sub-agent '{sub_session_key}' for task: {task}")
 
+        if agent:
+            logger.info(f"Using sub-agent profile '{agent}' for '{sub_session_key}'")
+
         try:
-            result = await self.agent.run_subagent(session_key, sub_session_key, task)
+            result = await self.agent.run_subagent(
+                session_key,
+                sub_session_key,
+                task,
+                agent_name=agent,
+            )
             return str(result)
         except Exception as e:
             logger.error(f"Error spawning agent: {e}")

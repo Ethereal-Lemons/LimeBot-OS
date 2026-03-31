@@ -55,6 +55,7 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
 
     const agentItems = [
         { id: 'skills', icon: Zap, label: "Skills" },
+        { id: 'subagents', icon: Bot, label: "Subagents" },
         { id: 'mcp', icon: Cpu, label: "MCP" },
         // { icon: Box, label: "Nodes", active: false },
     ];

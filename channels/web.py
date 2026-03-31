@@ -1512,6 +1512,98 @@ class WebChannel(BaseChannel):
 
             return SkillInstaller().list_skills()
 
+        async def _reload_subagents() -> list[dict]:
+            from core.subagents import SubagentRegistry
+
+            if hasattr(self, "agent") and self.agent:
+                registry = self.agent.subagent_registry
+                await asyncio.to_thread(registry.discover_and_load)
+                if hasattr(self.agent, "_refresh_tool_definitions"):
+                    self.agent._refresh_tool_definitions()
+                return registry.list_definitions()
+
+            registry = SubagentRegistry()
+            await asyncio.to_thread(registry.discover_and_load)
+            return registry.list_definitions()
+
+        @self.app.get("/api/subagents", dependencies=[Depends(self.verify_auth)])
+        async def list_subagents():
+            subagents = await _reload_subagents()
+            return {"subagents": subagents}
+
+        @self.app.post("/api/subagents", dependencies=[Depends(self.verify_auth)])
+        async def create_subagent(request: Request):
+            from core.subagents import SubagentRegistry
+
+            body = await request.json()
+            registry = (
+                self.agent.subagent_registry
+                if hasattr(self, "agent") and self.agent
+                else SubagentRegistry()
+            )
+            try:
+                saved = await asyncio.to_thread(
+                    registry.save_subagent,
+                    name=body.get("name", ""),
+                    description=body.get("description", ""),
+                    prompt=body.get("prompt", ""),
+                    tools=body.get("tools"),
+                    model=body.get("model", "inherit"),
+                    location=body.get("location", "project"),
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            subagents = await _reload_subagents()
+            return {"status": "success", "subagent": saved, "subagents": subagents}
+
+        @self.app.put(
+            "/api/subagents/{subagent_id:path}",
+            dependencies=[Depends(self.verify_auth)],
+        )
+        async def update_subagent(subagent_id: str, request: Request):
+            from core.subagents import SubagentRegistry
+
+            body = await request.json()
+            registry = (
+                self.agent.subagent_registry
+                if hasattr(self, "agent") and self.agent
+                else SubagentRegistry()
+            )
+            try:
+                saved = await asyncio.to_thread(
+                    registry.save_subagent,
+                    name=body.get("name", ""),
+                    description=body.get("description", ""),
+                    prompt=body.get("prompt", ""),
+                    tools=body.get("tools"),
+                    model=body.get("model", "inherit"),
+                    location=body.get("location", "project"),
+                    subagent_id=subagent_id,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            subagents = await _reload_subagents()
+            return {"status": "success", "subagent": saved, "subagents": subagents}
+
+        @self.app.delete(
+            "/api/subagents/{subagent_id:path}",
+            dependencies=[Depends(self.verify_auth)],
+        )
+        async def delete_subagent(subagent_id: str):
+            from core.subagents import SubagentRegistry
+
+            registry = (
+                self.agent.subagent_registry
+                if hasattr(self, "agent") and self.agent
+                else SubagentRegistry()
+            )
+            try:
+                await asyncio.to_thread(registry.delete_subagent, subagent_id)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            subagents = await _reload_subagents()
+            return {"status": "success", "subagents": subagents}
+
         @self.app.post("/api/skills/install", dependencies=[Depends(self.verify_auth)])
         async def install_skill(request: Request):
             from core.skill_installer import SkillInstaller
