@@ -1512,6 +1512,13 @@ class WebChannel(BaseChannel):
 
             return SkillInstaller().list_skills()
 
+        def _get_subagent_registry():
+            from core.subagents import SubagentRegistry
+
+            if hasattr(self, "agent") and self.agent:
+                return self.agent.subagent_registry
+            return SubagentRegistry()
+
         async def _reload_subagents() -> list[dict]:
             from core.subagents import SubagentRegistry
 
@@ -1528,26 +1535,19 @@ class WebChannel(BaseChannel):
 
         @self.app.get("/api/subagents", dependencies=[Depends(self.verify_auth)])
         async def list_subagents():
-            from core.subagents import SubagentRegistry
-
+            registry = _get_subagent_registry()
             subagents = await _reload_subagents()
-            location_options = (
-                self.agent.subagent_registry.get_location_options()
-                if hasattr(self, "agent") and self.agent
-                else SubagentRegistry().get_location_options()
-            )
-            return {"subagents": subagents, "location_options": location_options}
+            return {
+                "subagents": subagents,
+                "location_options": registry.get_location_options(),
+                "default_selection": registry.get_default_selection(),
+                "selection_options": registry.get_selector_options(),
+            }
 
         @self.app.post("/api/subagents", dependencies=[Depends(self.verify_auth)])
         async def create_subagent(request: Request):
-            from core.subagents import SubagentRegistry
-
             body = await request.json()
-            registry = (
-                self.agent.subagent_registry
-                if hasattr(self, "agent") and self.agent
-                else SubagentRegistry()
-            )
+            registry = _get_subagent_registry()
             try:
                 saved = await asyncio.to_thread(
                     registry.save_subagent,
@@ -1555,8 +1555,11 @@ class WebChannel(BaseChannel):
                     description=body.get("description", ""),
                     prompt=body.get("prompt", ""),
                     tools=body.get("tools"),
+                    disallowed_tools=body.get("disallowed_tools"),
                     model=body.get("model", "inherit"),
-                    location=body.get("location", "project"),
+                    max_turns=body.get("max_turns"),
+                    background=body.get("background", False),
+                    location=body.get("location", "project_limebot"),
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
@@ -1566,6 +1569,25 @@ class WebChannel(BaseChannel):
                 "subagent": saved,
                 "subagents": subagents,
                 "location_options": registry.get_location_options(),
+                "default_selection": registry.get_default_selection(),
+                "selection_options": registry.get_selector_options(),
+            }
+
+        @self.app.put("/api/subagents/settings", dependencies=[Depends(self.verify_auth)])
+        async def update_subagent_settings(request: Request):
+            registry = _get_subagent_registry()
+            body = await request.json()
+            selection = body.get("default_selection", "auto")
+            try:
+                saved_selection = await asyncio.to_thread(
+                    registry.set_default_selection, selection
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            return {
+                "status": "success",
+                "default_selection": saved_selection,
+                "selection_options": registry.get_selector_options(),
             }
 
         @self.app.put(
@@ -1573,14 +1595,8 @@ class WebChannel(BaseChannel):
             dependencies=[Depends(self.verify_auth)],
         )
         async def update_subagent(subagent_id: str, request: Request):
-            from core.subagents import SubagentRegistry
-
             body = await request.json()
-            registry = (
-                self.agent.subagent_registry
-                if hasattr(self, "agent") and self.agent
-                else SubagentRegistry()
-            )
+            registry = _get_subagent_registry()
             try:
                 saved = await asyncio.to_thread(
                     registry.save_subagent,
@@ -1588,8 +1604,11 @@ class WebChannel(BaseChannel):
                     description=body.get("description", ""),
                     prompt=body.get("prompt", ""),
                     tools=body.get("tools"),
+                    disallowed_tools=body.get("disallowed_tools"),
                     model=body.get("model", "inherit"),
-                    location=body.get("location", "project"),
+                    max_turns=body.get("max_turns"),
+                    background=body.get("background", False),
+                    location=body.get("location", "project_limebot"),
                     subagent_id=subagent_id,
                 )
             except ValueError as e:
@@ -1600,6 +1619,8 @@ class WebChannel(BaseChannel):
                 "subagent": saved,
                 "subagents": subagents,
                 "location_options": registry.get_location_options(),
+                "default_selection": registry.get_default_selection(),
+                "selection_options": registry.get_selector_options(),
             }
 
         @self.app.delete(
@@ -1607,13 +1628,7 @@ class WebChannel(BaseChannel):
             dependencies=[Depends(self.verify_auth)],
         )
         async def delete_subagent(subagent_id: str):
-            from core.subagents import SubagentRegistry
-
-            registry = (
-                self.agent.subagent_registry
-                if hasattr(self, "agent") and self.agent
-                else SubagentRegistry()
-            )
+            registry = _get_subagent_registry()
             try:
                 await asyncio.to_thread(registry.delete_subagent, subagent_id)
             except ValueError as e:
@@ -1623,6 +1638,8 @@ class WebChannel(BaseChannel):
                 "status": "success",
                 "subagents": subagents,
                 "location_options": registry.get_location_options(),
+                "default_selection": registry.get_default_selection(),
+                "selection_options": registry.get_selector_options(),
             }
 
         @self.app.post("/api/skills/install", dependencies=[Depends(self.verify_auth)])

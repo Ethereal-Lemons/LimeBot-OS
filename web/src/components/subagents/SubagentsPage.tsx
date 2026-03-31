@@ -29,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 
 type Subagent = {
@@ -37,13 +38,17 @@ type Subagent = {
   description: string;
   prompt: string;
   tools: string[] | null;
+  disallowed_tools: string[];
   model: string;
+  max_turns: number | null;
+  background: boolean;
   filename: string;
   location: string;
   location_label?: string;
   path: string;
   active: boolean;
   shadowed_by: string | null;
+  builtin: boolean;
 };
 
 type LocationOption = {
@@ -58,7 +63,10 @@ type FormState = {
   description: string;
   prompt: string;
   toolsText: string;
+  disallowedToolsText: string;
   model: string;
+  maxTurns: string;
+  background: boolean;
   location: string;
 };
 
@@ -67,7 +75,10 @@ const EMPTY_FORM: FormState = {
   description: "",
   prompt: "",
   toolsText: "",
+  disallowedToolsText: "",
   model: "inherit",
+  maxTurns: "",
+  background: false,
   location: "project_limebot",
 };
 
@@ -79,6 +90,13 @@ function normalizeTools(text: string): string[] | null {
   return values.length > 0 ? values : null;
 }
 
+function normalizeMaxTurns(text: string): number | null {
+  const value = text.trim();
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 function formFromSubagent(subagent: Subagent): FormState {
   return {
     id: subagent.id,
@@ -86,7 +104,10 @@ function formFromSubagent(subagent: Subagent): FormState {
     description: subagent.description,
     prompt: subagent.prompt,
     toolsText: subagent.tools?.join(", ") || "",
+    disallowedToolsText: subagent.disallowed_tools?.join(", ") || "",
     model: subagent.model || "inherit",
+    maxTurns: subagent.max_turns ? String(subagent.max_turns) : "",
+    background: Boolean(subagent.background),
     location: subagent.location,
   };
 }
@@ -158,7 +179,10 @@ export function SubagentsPage() {
         description: form.description,
         prompt: form.prompt,
         tools: normalizeTools(form.toolsText),
+        disallowed_tools: normalizeTools(form.disallowedToolsText),
         model: form.model || "inherit",
+        max_turns: normalizeMaxTurns(form.maxTurns),
+        background: form.background,
         location: form.location,
       };
       const url = form.id
@@ -286,27 +310,32 @@ export function SubagentsPage() {
                         <Badge variant="outline">
                           {subagent.location_label || subagent.location}
                         </Badge>
+                        {subagent.builtin && (
+                          <Badge variant="secondary">Built-in</Badge>
+                        )}
                       </CardTitle>
                       <CardDescription>{subagent.description}</CardDescription>
                     </div>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={() => openEditDialog(subagent)}
-                        title="Edit subagent"
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={() => deleteSubagent(subagent)}
-                        title="Delete subagent"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
+                    {!subagent.builtin && (
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          onClick={() => openEditDialog(subagent)}
+                          title="Edit subagent"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          onClick={() => deleteSubagent(subagent)}
+                          title="Delete subagent"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -316,6 +345,12 @@ export function SubagentsPage() {
 
                   <div className="flex flex-wrap gap-2">
                     <Badge variant="outline">model: {subagent.model || "inherit"}</Badge>
+                    {subagent.max_turns ? (
+                      <Badge variant="outline">max_turns: {subagent.max_turns}</Badge>
+                    ) : null}
+                    {subagent.background ? (
+                      <Badge variant="outline">background</Badge>
+                    ) : null}
                     {subagent.tools === null ? (
                       <Badge variant="outline">tools: inherit</Badge>
                     ) : subagent.tools.length === 0 ? (
@@ -327,6 +362,11 @@ export function SubagentsPage() {
                         </Badge>
                       ))
                     )}
+                    {subagent.disallowed_tools?.map((tool) => (
+                      <Badge key={`blocked-${tool}`} variant="outline">
+                        blocked: {tool}
+                      </Badge>
+                    ))}
                   </div>
 
                   <div className="pt-4 border-t border-border text-xs text-muted-foreground font-mono space-y-1">
@@ -444,6 +484,20 @@ export function SubagentsPage() {
               </div>
 
               <div className="grid gap-2">
+                <Label htmlFor="subagent-disallowed-tools">Disallowed Tools</Label>
+                <Input
+                  id="subagent-disallowed-tools"
+                  value={form.disallowedToolsText}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, disallowedToolsText: e.target.value }))
+                  }
+                  placeholder="Delete, Write"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid gap-2">
                 <Label htmlFor="subagent-model">Model</Label>
                 <Input
                   id="subagent-model"
@@ -452,7 +506,34 @@ export function SubagentsPage() {
                   placeholder="inherit"
                 />
               </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="subagent-max-turns">Max Turns</Label>
+                <Input
+                  id="subagent-max-turns"
+                  value={form.maxTurns}
+                  onChange={(e) => setForm((prev) => ({ ...prev, maxTurns: e.target.value }))}
+                  placeholder="8"
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="subagent-background">Background</Label>
+                <div className="flex h-10 items-center justify-between rounded-md border border-input bg-background px-3">
+                  <span className="text-sm text-muted-foreground">
+                    Return later
+                  </span>
+                  <Switch
+                    id="subagent-background"
+                    checked={form.background}
+                    onCheckedChange={(checked) =>
+                      setForm((prev) => ({ ...prev, background: checked }))
+                    }
+                  />
+                </div>
+              </div>
             </div>
+
           </div>
 
           <DialogFooter>

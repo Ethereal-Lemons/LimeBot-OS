@@ -82,6 +82,10 @@ persona/MEMORY.md
 persona/MOOD.md
 persona/RELATIONSHIPS.md
 persona/USER.md
+.claude/agents/*
+!.claude/agents/.gitkeep
+.limebot/agents/*
+!.limebot/agents/.gitkeep
 
 # Logs
 /logs/
