@@ -158,7 +158,7 @@ BASE_TOOLS = [
     },
     {
         "name": "spawn_agent",
-        "description": "Delegate a long, parallelizable, or self-contained task to a sub-agent. Prefer direct tools first for short tasks. Use this when the work can proceed independently and report back.",
+        "description": "Delegate a long, parallelizable, or specialized task to a sub-agent. Prefer direct tools for tiny tasks, but use this when the work clearly matches a specialist's description, such as codebase exploration, review, or verification. Avoid duplicating work that the sub-agent can do independently and report back.",
         "params": {
             "task": {
                 "type": "string",
@@ -654,6 +654,7 @@ def _build_spawn_agent_definition(
     )
     description = (
         "Optional named subagent profile to use. "
+        "Choose one when the task clearly matches that specialist's description. "
         "If omitted, LimeBot uses the generic built-in worker."
     )
     if available_agents:
