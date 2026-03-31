@@ -37,7 +37,7 @@ The heart of the system. Manages:
 - **Stable prompt cache** — the rarely-changing part of the system prompt (soul + identity + user context) is cached for 30 seconds per `(sender_id, channel)` pair. Only the volatile suffix (memory, RAG results, timestamp) is rebuilt each message.
 - **Auto-RAG** — before every LLM call, runs semantic vector search (falls back to grep if embeddings are unavailable). Injects matching memories into the prompt automatically.
 - **Tool execution loop** — after each LLM response, if tool calls are returned, executes them in parallel and loops back to the LLM (up to 30 iterations). Sensitive tools require user confirmation.
-- **Sub-agent delegation** — `spawn_agent` tool creates an isolated session that runs its own tool loop and reports back.
+- **Sub-agent delegation** — `spawn_agent` creates an isolated session that runs its own tool loop, can use named specialist profiles, and reports back to the parent session.
 - **Per-session dedup** — identical consecutive messages within 2 seconds are silently dropped, keyed per session (not globally).
 - **History summarization** — when token count exceeds limit, older messages are summarized by the LLM and squashed; large tool outputs from old turns are truncated in-place.
 
@@ -73,6 +73,20 @@ Builds the system prompt from persona files. Two-part architecture:
 - `validate_and_save_relationships(content)` — atomic write for `RELATIONSHIPS.md`
 
 **Setup mode** — on startup, LimeBot bootstraps local `SOUL.md`, `IDENTITY.md`, and `MEMORY.md` from their `.example` templates when they are missing. If `SOUL.md` or `IDENTITY.md` are still missing or invalid after that, `is_setup_complete()` returns False and the entire system prompt is replaced with a setup interview prompt. The agent must emit `<save_soul>` and `<save_identity>` tags with valid content to exit setup mode.
+
+---
+
+### `core/subagents.py` — Subagent Registry
+
+Discovers, loads, and describes named subagent profiles from built-ins and writable project/user locations.
+
+- **Built-in specialists** — ships with named profiles such as `reviewer`, `verifier`, and `explorer`
+- **Turn-level recommendation** — `recommend_subagent(task)` matches the current request against built-in intent keywords first, then against token overlap in custom subagent descriptions
+- **Prompt injection** — `get_prompt_additions(current_message)` adds available subagents to the prompt and can call out the strongest match for the current turn
+- **Selection-aware routing** — if a global default specialist is selected, the prompt nudges the model to prefer that specialist unless the user asks otherwise
+- **Project shadowing** — project-defined subagents can override built-in ones with the same name
+
+This registry is what makes `spawn_agent` more than a generic worker launcher: the model now gets explicit guidance about when a specialist is a strong fit.
 
 ---
 
@@ -119,7 +133,7 @@ Sandboxed OS interface. All methods check `_is_path_allowed()` before touching t
 | `cron_add(message, context, time_expr, cron_expr)` | No | Schedule a one-time or repeating job |
 | `cron_list()` | No | List all pending scheduled jobs |
 | `cron_remove(job_id)` | **Yes** | Cancel a scheduled job |
-| `spawn_agent(task)` | No | Delegate a task to a background sub-agent |
+| `spawn_agent(task)` | No | Delegate a long, parallelizable, or specialist-matched task to a sub-agent |
 
 **`run_command` security filter:** Blocks `;`, `&&`, `||`, `|`, `>`, `<`, `` ` ``, `$()`, `\n`, `sudo`, `chmod`, `chown`, `ifs=`, `pythonpath=`.
 
@@ -222,6 +236,7 @@ FastAPI application serving:
 - **REST API** — persona, config, sessions, cron, skills, logs, metrics, LLM health
 - WebSocket auth: `api_key` query param checked against `APP_API_KEY`
 - Caches the WhatsApp QR code and re-sends it to new WebSocket connections
+- Chat UI renders `SUB-AGENT REPORT` replies as structured cards and suppresses adjacent empty orchestration thoughts/tool groups when they only describe `spawn_agent` handoff noise
 
 ### Discord Channel (`channels/discord.py`)
 - Responds to DMs and `@mentions` only (ignores ambient channel messages)
