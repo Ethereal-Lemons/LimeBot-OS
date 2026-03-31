@@ -11,6 +11,7 @@ To add a new tool:
   Done — no 20-line JSON blob needed.
 """
 
+import copy
 import re
 from typing import Any, Dict, List
 
@@ -639,7 +640,41 @@ def _inflate_tool(tool_def: dict) -> dict:
     }
 
 
-def build_tool_definitions(enabled_skills: List[str]) -> List[Dict[str, Any]]:
+def _build_spawn_agent_definition(
+    available_agents: Dict[str, str] | None = None,
+) -> Dict[str, Any]:
+    base = next(
+        copy.deepcopy(tool_def)
+        for tool_def in BASE_TOOLS
+        if tool_def["name"] == "spawn_agent"
+    )
+    description = (
+        "Optional named subagent profile to use. "
+        "If omitted, LimeBot uses the generic built-in worker."
+    )
+    if available_agents:
+        summary = "; ".join(
+            f"{name}: {text}"
+            for name, text in sorted(available_agents.items())
+        )
+        description += f" Available subagents: {summary}"
+        base["params"]["agent"] = {
+            "type": "string",
+            "description": description,
+            "enum": sorted(available_agents),
+        }
+    else:
+        base["params"]["agent"] = {
+            "type": "string",
+            "description": description,
+        }
+    return base
+
+
+def build_tool_definitions(
+    enabled_skills: List[str],
+    available_agents: Dict[str, str] | None = None,
+) -> List[Dict[str, Any]]:
     """
     Build the full list of tool definitions for the LLM.
 
@@ -649,7 +684,16 @@ def build_tool_definitions(enabled_skills: List[str]) -> List[Dict[str, Any]]:
     Returns:
         List of OpenAI-compatible tool definition dicts.
     """
-    tools = [_inflate_tool(t) for t in BASE_TOOLS]
+    tools: List[Dict[str, Any]] = []
+    for tool_def in BASE_TOOLS:
+        if tool_def["name"] == "spawn_agent":
+            tools.append(
+                _inflate_tool(
+                    _build_spawn_agent_definition(available_agents=available_agents)
+                )
+            )
+        else:
+            tools.append(_inflate_tool(tool_def))
 
     if "browser" in enabled_skills:
         tools.extend(_inflate_tool(t) for t in BROWSER_TOOLS)
