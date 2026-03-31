@@ -1528,8 +1528,15 @@ class WebChannel(BaseChannel):
 
         @self.app.get("/api/subagents", dependencies=[Depends(self.verify_auth)])
         async def list_subagents():
+            from core.subagents import SubagentRegistry
+
             subagents = await _reload_subagents()
-            return {"subagents": subagents}
+            location_options = (
+                self.agent.subagent_registry.get_location_options()
+                if hasattr(self, "agent") and self.agent
+                else SubagentRegistry().get_location_options()
+            )
+            return {"subagents": subagents, "location_options": location_options}
 
         @self.app.post("/api/subagents", dependencies=[Depends(self.verify_auth)])
         async def create_subagent(request: Request):
@@ -1554,7 +1561,12 @@ class WebChannel(BaseChannel):
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             subagents = await _reload_subagents()
-            return {"status": "success", "subagent": saved, "subagents": subagents}
+            return {
+                "status": "success",
+                "subagent": saved,
+                "subagents": subagents,
+                "location_options": registry.get_location_options(),
+            }
 
         @self.app.put(
             "/api/subagents/{subagent_id:path}",
@@ -1583,7 +1595,12 @@ class WebChannel(BaseChannel):
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             subagents = await _reload_subagents()
-            return {"status": "success", "subagent": saved, "subagents": subagents}
+            return {
+                "status": "success",
+                "subagent": saved,
+                "subagents": subagents,
+                "location_options": registry.get_location_options(),
+            }
 
         @self.app.delete(
             "/api/subagents/{subagent_id:path}",
@@ -1602,7 +1619,11 @@ class WebChannel(BaseChannel):
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             subagents = await _reload_subagents()
-            return {"status": "success", "subagents": subagents}
+            return {
+                "status": "success",
+                "subagents": subagents,
+                "location_options": registry.get_location_options(),
+            }
 
         @self.app.post("/api/skills/install", dependencies=[Depends(self.verify_auth)])
         async def install_skill(request: Request):
