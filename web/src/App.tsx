@@ -53,6 +53,11 @@ const SkillsPage = lazy(() =>
     default: module.SkillsPage,
   }))
 );
+const SubagentsPage = lazy(() =>
+  import("@/components/subagents/SubagentsPage").then((module) => ({
+    default: module.SubagentsPage,
+  }))
+);
 const AppearancePage = lazy(() =>
   import("@/components/config/AppearancePage").then((module) => ({
     default: module.AppearancePage,
@@ -95,6 +100,7 @@ const VIEW_META: Record<string, { title: string; description: string }> = {
   instances: { title: "Instances", description: "Active sessions, sub-agents, and context state." },
   cron: { title: "Cron Jobs", description: "Scheduled automations and recurring tasks." },
   skills: { title: "Skills", description: "Installed capabilities and tool bundles." },
+  subagents: { title: "Subagents", description: "Specialized helper profiles Claude-style, kept lightweight." },
   mcp: { title: "MCP", description: "External Model Context Protocol servers." },
   persona: { title: "Persona", description: "Identity, style, and adaptive behavior." },
   appearance: { title: "Appearance", description: "Themes, wallpaper, and visual settings." },
@@ -404,6 +410,8 @@ function App() {
             <LogsPage />
           ) : currentView === 'skills' ? (
             <SkillsPage />
+          ) : currentView === 'subagents' ? (
+            <SubagentsPage />
           ) : currentView === 'persona' ? (
             <PersonaPage onNavigate={setCurrentView} />
           ) : currentView === 'appearance' ? (
