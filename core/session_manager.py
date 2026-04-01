@@ -176,6 +176,7 @@ class SessionManager:
         injected_files: Optional[list] = None,
         parent_id: Optional[str] = None,
         task: Optional[str] = None,
+        subagent_name: Optional[str] = None,
     ):
 
         current_time = time.time()
@@ -193,6 +194,7 @@ class SessionManager:
                 "history_file": f"persona/sessions/logs/{session_key}.jsonl",
                 "parent_id": parent_id,
                 "task": task,
+                "subagent_name": subagent_name,
             }
 
         session = self.sessions[session_key]
@@ -203,6 +205,8 @@ class SessionManager:
             session["parent_id"] = parent_id
         if task:
             session["task"] = task
+        if subagent_name:
+            session["subagent_name"] = subagent_name
 
         if injected_files:
             existing = set(session.get("injected_files", []))

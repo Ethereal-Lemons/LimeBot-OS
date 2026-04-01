@@ -1644,6 +1644,7 @@ class WebChannel(BaseChannel):
                 "traces": self.agent.get_recent_rag_traces(
                     session_key=session_key, limit=limit
                 )
+                or []
             }
 
         @self.app.delete(
@@ -1666,6 +1667,136 @@ class WebChannel(BaseChannel):
             from core.skill_installer import SkillInstaller
 
             return SkillInstaller().list_skills()
+
+        def _get_subagent_registry():
+            from core.subagents import SubagentRegistry
+
+            if hasattr(self, "agent") and self.agent:
+                return self.agent.subagent_registry
+            return SubagentRegistry()
+
+        async def _reload_subagents() -> list[dict]:
+            from core.subagents import SubagentRegistry
+
+            if hasattr(self, "agent") and self.agent:
+                registry = self.agent.subagent_registry
+                await asyncio.to_thread(registry.discover_and_load)
+                if hasattr(self.agent, "_refresh_tool_definitions"):
+                    self.agent._refresh_tool_definitions()
+                return registry.list_definitions()
+
+            registry = SubagentRegistry()
+            await asyncio.to_thread(registry.discover_and_load)
+            return registry.list_definitions()
+
+        @self.app.get("/api/subagents", dependencies=[Depends(self.verify_auth)])
+        async def list_subagents():
+            registry = _get_subagent_registry()
+            subagents = await _reload_subagents()
+            return {
+                "subagents": subagents,
+                "location_options": registry.get_location_options(),
+                "default_selection": registry.get_default_selection(),
+                "selection_options": registry.get_selector_options(),
+            }
+
+        @self.app.post("/api/subagents", dependencies=[Depends(self.verify_auth)])
+        async def create_subagent(request: Request):
+            body = await request.json()
+            registry = _get_subagent_registry()
+            try:
+                saved = await asyncio.to_thread(
+                    registry.save_subagent,
+                    name=body.get("name", ""),
+                    description=body.get("description", ""),
+                    prompt=body.get("prompt", ""),
+                    tools=body.get("tools"),
+                    disallowed_tools=body.get("disallowed_tools"),
+                    model=body.get("model", "inherit"),
+                    max_turns=body.get("max_turns"),
+                    background=body.get("background", False),
+                    location=body.get("location", "project_limebot"),
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            subagents = await _reload_subagents()
+            return {
+                "status": "success",
+                "subagent": saved,
+                "subagents": subagents,
+                "location_options": registry.get_location_options(),
+                "default_selection": registry.get_default_selection(),
+                "selection_options": registry.get_selector_options(),
+            }
+
+        @self.app.put("/api/subagents/settings", dependencies=[Depends(self.verify_auth)])
+        async def update_subagent_settings(request: Request):
+            registry = _get_subagent_registry()
+            body = await request.json()
+            selection = body.get("default_selection", "auto")
+            try:
+                saved_selection = await asyncio.to_thread(
+                    registry.set_default_selection, selection
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            return {
+                "status": "success",
+                "default_selection": saved_selection,
+                "selection_options": registry.get_selector_options(),
+            }
+
+        @self.app.put(
+            "/api/subagents/{subagent_id:path}",
+            dependencies=[Depends(self.verify_auth)],
+        )
+        async def update_subagent(subagent_id: str, request: Request):
+            body = await request.json()
+            registry = _get_subagent_registry()
+            try:
+                saved = await asyncio.to_thread(
+                    registry.save_subagent,
+                    name=body.get("name", ""),
+                    description=body.get("description", ""),
+                    prompt=body.get("prompt", ""),
+                    tools=body.get("tools"),
+                    disallowed_tools=body.get("disallowed_tools"),
+                    model=body.get("model", "inherit"),
+                    max_turns=body.get("max_turns"),
+                    background=body.get("background", False),
+                    location=body.get("location", "project_limebot"),
+                    subagent_id=subagent_id,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            subagents = await _reload_subagents()
+            return {
+                "status": "success",
+                "subagent": saved,
+                "subagents": subagents,
+                "location_options": registry.get_location_options(),
+                "default_selection": registry.get_default_selection(),
+                "selection_options": registry.get_selector_options(),
+            }
+
+        @self.app.delete(
+            "/api/subagents/{subagent_id:path}",
+            dependencies=[Depends(self.verify_auth)],
+        )
+        async def delete_subagent(subagent_id: str):
+            registry = _get_subagent_registry()
+            try:
+                await asyncio.to_thread(registry.delete_subagent, subagent_id)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            subagents = await _reload_subagents()
+            return {
+                "status": "success",
+                "subagents": subagents,
+                "location_options": registry.get_location_options(),
+                "default_selection": registry.get_default_selection(),
+                "selection_options": registry.get_selector_options(),
+            }
 
         @self.app.post("/api/skills/install", dependencies=[Depends(self.verify_auth)])
         async def install_skill(request: Request):

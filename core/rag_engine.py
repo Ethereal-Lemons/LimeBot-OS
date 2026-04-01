@@ -57,12 +57,17 @@ class RagEngine:
         Otherwise merge and sort all sessions by timestamp.
         """
         if session_key:
-            rows = list(self._recent_rag_traces.get(session_key, []))[-limit:]
+            traces = self._recent_rag_traces.get(session_key) or []
+            if not isinstance(traces, list):
+                return []
+            rows = list(traces)[-limit:]
             rows.reverse()
             return rows
 
         merged: List[Dict[str, Any]] = []
         for key, traces in self._recent_rag_traces.items():
+            if not traces or not isinstance(traces, list):
+                continue
             for trace in traces:
                 row = dict(trace)
                 row.setdefault("session_key", key)
