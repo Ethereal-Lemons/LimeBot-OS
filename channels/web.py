@@ -1675,24 +1675,25 @@ class WebChannel(BaseChannel):
                 return self.agent.subagent_registry
             return SubagentRegistry()
 
-        async def _reload_subagents() -> list[dict]:
-            from core.subagents import SubagentRegistry
-
-            if hasattr(self, "agent") and self.agent:
-                registry = self.agent.subagent_registry
-                await asyncio.to_thread(registry.discover_and_load)
-                if hasattr(self.agent, "_refresh_tool_definitions"):
-                    self.agent._refresh_tool_definitions()
-                return registry.list_definitions()
-
-            registry = SubagentRegistry()
+        async def _load_subagent_registry(refresh_tools: bool = True):
+            registry = _get_subagent_registry()
             await asyncio.to_thread(registry.discover_and_load)
-            return registry.list_definitions()
+            if (
+                refresh_tools
+                and hasattr(self, "agent")
+                and self.agent
+                and hasattr(self.agent, "_refresh_tool_definitions")
+            ):
+                self.agent._refresh_tool_definitions()
+            return registry
+
+        async def _reload_subagents() -> tuple[Any, list[dict]]:
+            registry = await _load_subagent_registry()
+            return registry, registry.list_definitions()
 
         @self.app.get("/api/subagents", dependencies=[Depends(self.verify_auth)])
         async def list_subagents():
-            registry = _get_subagent_registry()
-            subagents = await _reload_subagents()
+            registry, subagents = await _reload_subagents()
             return {
                 "subagents": subagents,
                 "location_options": registry.get_location_options(),
@@ -1719,7 +1720,7 @@ class WebChannel(BaseChannel):
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
-            subagents = await _reload_subagents()
+            registry, subagents = await _reload_subagents()
             return {
                 "status": "success",
                 "subagent": saved,
@@ -1731,7 +1732,7 @@ class WebChannel(BaseChannel):
 
         @self.app.put("/api/subagents/settings", dependencies=[Depends(self.verify_auth)])
         async def update_subagent_settings(request: Request):
-            registry = _get_subagent_registry()
+            registry = await _load_subagent_registry(refresh_tools=False)
             body = await request.json()
             selection = body.get("default_selection", "auto")
             try:
@@ -1769,7 +1770,7 @@ class WebChannel(BaseChannel):
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
-            subagents = await _reload_subagents()
+            registry, subagents = await _reload_subagents()
             return {
                 "status": "success",
                 "subagent": saved,
@@ -1789,7 +1790,7 @@ class WebChannel(BaseChannel):
                 await asyncio.to_thread(registry.delete_subagent, subagent_id)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
-            subagents = await _reload_subagents()
+            registry, subagents = await _reload_subagents()
             return {
                 "status": "success",
                 "subagents": subagents,

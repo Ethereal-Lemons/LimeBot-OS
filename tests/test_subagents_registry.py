@@ -188,6 +188,38 @@ class TestSubagentsRegistry(unittest.TestCase):
         self.assertFalse(builtin_entry["active"])
         self.assertEqual(builtin_entry["shadowed_by"], "project_limebot:reviewer")
 
+    def test_explicit_empty_tools_list_means_no_tools_not_inherit(self):
+        from core.subagents import SubagentRegistry
+
+        tmp = self._tempdir()
+        agents_dir = tmp / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+
+        registry = SubagentRegistry(agent_dirs=[str(agents_dir)])
+        agent_file = agents_dir / "silent-runner.md"
+        agent_file.write_text(
+            registry.render_subagent_markdown(
+                name="silent-runner",
+                description="Runs without inherited tools.",
+                prompt="Do not use tools unless explicitly provided elsewhere.",
+                tools=[],
+            ),
+            encoding="utf-8",
+        )
+
+        registry.discover_and_load()
+        saved = registry.get_subagent("silent-runner")
+
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["tools"], [])
+
+        loaded = registry._load_subagent(agent_file, location="project_limebot")
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["tools"], [])
+
+        additions = registry.get_prompt_additions()
+        self.assertIn("no tools", additions)
+
 
 class TestSubagentToolDefinitions(unittest.TestCase):
     def test_spawn_agent_schema_lists_available_named_agents(self):
