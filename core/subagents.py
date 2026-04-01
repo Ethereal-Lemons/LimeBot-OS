@@ -734,16 +734,22 @@ class SubagentRegistry:
         return result
 
     def _normalize_tools(self, value: Any) -> Optional[List[str]]:
-        if value in (None, "", []):
+        if value is None:
             return None
 
         items: List[str]
         if isinstance(value, list):
+            if len(value) == 0:
+                return []
             items = [str(item).strip() for item in value]
         else:
             text = str(value).strip()
+            if not text:
+                return None
             if text.startswith("[") and text.endswith("]"):
                 text = text[1:-1]
+                if not text.strip():
+                    return []
             items = [part.strip().strip("'\"") for part in text.split(",")]
 
         normalized: List[str] = []

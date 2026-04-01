@@ -228,9 +228,24 @@ export function PersonaPage({ onNavigate }: PersonaPageProps) {
                                     const current = effectiveStyle(persona, channel.id);
                                     const selected = selectedChannel === channel.id;
                                     return (
-                                        <button key={channel.id} type="button" onClick={() => setSelectedChannel(channel.id)} className={`rounded-2xl border p-4 text-left transition-colors ${selected ? "border-primary bg-primary/5" : "border-border bg-background/70 hover:border-primary/30"}`}>
-                                            <div className="flex items-center justify-between gap-2"><span className={`font-semibold ${channel.accent}`}>{channel.label}</span><Badge variant={selected ? "secondary" : "outline"}>{current.source}</Badge></div>
-                                            <p className="mt-2 text-sm text-muted-foreground">{current.text ? `${current.text.slice(0, 110)}${current.text.length > 110 ? "..." : ""}` : "No explicit style text yet."}</p>
+                                        <button
+                                            key={channel.id}
+                                            type="button"
+                                            onClick={() => setSelectedChannel(channel.id)}
+                                            className={`h-full rounded-2xl border p-4 text-left transition-colors ${selected ? "border-primary bg-primary/5" : "border-border bg-background/70 hover:border-primary/30"}`}
+                                        >
+                                            <div className="flex flex-wrap items-start justify-between gap-2">
+                                                <span className={`min-w-0 text-base font-semibold ${channel.accent}`}>{channel.label}</span>
+                                                <Badge
+                                                    variant={selected ? "secondary" : "outline"}
+                                                    className="shrink-0 whitespace-nowrap self-start"
+                                                >
+                                                    {current.source}
+                                                </Badge>
+                                            </div>
+                                            <p className="mt-2 line-clamp-4 text-sm leading-relaxed text-muted-foreground">
+                                                {current.text ? `${current.text.slice(0, 110)}${current.text.length > 110 ? "..." : ""}` : "No explicit style text yet."}
+                                            </p>
                                         </button>
                                     );
                                 })}
