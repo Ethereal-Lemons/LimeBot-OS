@@ -46,6 +46,7 @@ from core import prompt as prompt_module
 from core.metrics import MetricsCollector
 from core.session_manager import SessionManager
 from core.skills import SkillRegistry
+from core.subagents import SubagentRegistry, normalize_subagent_tool_name
 from core.tag_parser import process_tags
 from core.tool_defs import shortlist_tool_definitions
 from core.tools import Toolbox
@@ -187,6 +188,8 @@ class AgentLoop:
         }
 
         self.skill_registry = SkillRegistry(skill_dirs=["./skills"], config=cfg)
+        self.subagent_registry = SubagentRegistry()
+        self.toolbox.set_subagent_registry(self.subagent_registry)
 
         # ── Sub-module managers ──────────────────────────────────────────
         self.confirm = ConfirmationManager(
@@ -212,6 +215,7 @@ class AgentLoop:
     async def _init_skills_and_tools(self) -> None:
         """Background: discover skills, build tool definitions, then warm up slow services."""
         await asyncio.to_thread(self.skill_registry.discover_and_load)
+        await asyncio.to_thread(self.subagent_registry.discover_and_load)
         asyncio.create_task(self._cleanup_persisted_histories())
 
         # Initialize MCP servers if available
@@ -309,6 +313,38 @@ class AgentLoop:
             selected_tools=selected_names,
         )
         return selected
+
+    def _filter_tool_definitions_for_subagent(
+        self,
+        tool_names: Optional[List[str]],
+        disallowed_tool_names: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        tools = list(self._get_tool_definitions())
+        if tool_names is not None:
+            allowed = {
+                normalize_subagent_tool_name(name)
+                for name in tool_names
+                if normalize_subagent_tool_name(name)
+            }
+            tools = [
+                tool
+                for tool in tools
+                if tool.get("function", {}).get("name") in allowed
+            ]
+
+        if disallowed_tool_names:
+            disallowed = {
+                normalize_subagent_tool_name(name)
+                for name in disallowed_tool_names
+                if normalize_subagent_tool_name(name)
+            }
+            tools = [
+                tool
+                for tool in tools
+                if tool.get("function", {}).get("name") not in disallowed
+            ]
+
+        return tools
 
     def _resolve_provider(
         self,
@@ -642,6 +678,7 @@ class AgentLoop:
         """Stable (cached) + volatile (per-message: memory + RAG + timestamp)."""
         stable = await self._get_stable_prompt(sender_id, channel, chat_id, sender_name)
         skills_docs = self.skill_registry.get_relevant_prompt_additions(current_message)
+        subagent_docs = self.subagent_registry.get_prompt_additions(current_message)
         include_private_memory = prompt_module.should_load_private_context(
             sender_id, channel, self.config
         )
@@ -650,7 +687,12 @@ class AgentLoop:
             include_private_memory=include_private_memory,
             current_message=current_message,
         )
-        return stable + (skills_docs + "\n" if skills_docs else "") + volatile
+        return (
+            stable
+            + (skills_docs + "\n" if skills_docs else "")
+            + (subagent_docs + "\n" if subagent_docs else "")
+            + volatile
+        )
 
     async def _cleanup_persisted_histories(self) -> None:
         """Best-effort cleanup of malformed assistant residue in persisted sessions."""
@@ -871,7 +913,9 @@ class AgentLoop:
     def get_recent_rag_traces(
         self, session_key: Optional[str] = None, limit: int = 20
     ) -> List[Dict[str, Any]]:
-        return self.rag.get_recent(session_key, limit)
+        if not getattr(self, "rag", None):
+            return []
+        return self.rag.get_recent(session_key, limit) or []
 
     def _build_rag_result_trace(self, row: Dict[str, Any]) -> Dict[str, Any]:
         return self.rag.build_result_trace(row)
@@ -881,6 +925,35 @@ class AgentLoop:
 
     def _build_delete_preview(self, function_args: dict) -> Dict[str, Any]:
         return self.confirm.build_delete_preview(function_args)
+
+    @staticmethod
+    def _clean_subagent_final_result(result: str) -> str:
+        text = str(result or "").strip()
+        if not text:
+            return ""
+
+        filtered_lines: List[str] = []
+        meta_prefixes = (
+            "the assistant attempted to",
+            "need to produce",
+            "need to finish",
+            "probably need to",
+            "provide final response directly",
+            "within limits",
+            "got truncated due to",
+        )
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            lower = line.lower()
+            if any(lower.startswith(prefix) for prefix in meta_prefixes):
+                continue
+            filtered_lines.append(raw_line)
+
+        cleaned = "\n".join(filtered_lines).strip()
+        if not cleaned:
+            return ""
+        return cleaned
 
     @staticmethod
     def _extract_command_paths(command: str, limit: int = 5) -> List[str]:
@@ -1063,17 +1136,54 @@ class AgentLoop:
         self._last_history_flush[session_key] = now
 
     async def run_subagent(
-        self, parent_session_key: str, sub_session_key: str, task: str
+        self,
+        parent_session_key: str,
+        sub_session_key: str,
+        task: str,
+        agent_name: Optional[str] = None,
     ) -> str:
         try:
             logger.info(f"[SUB-AGENT] {sub_session_key} ← {parent_session_key}: {task}")
 
+            subagent_profile = self.subagent_registry.get_subagent(agent_name)
+            if agent_name and not subagent_profile:
+                return f"Error: Unknown subagent '{agent_name}'"
+
+            subagent_model = (
+                (subagent_profile or {}).get("model") or "inherit"
+            ).strip()
+            subagent_max_turns = (subagent_profile or {}).get("max_turns") or 10
+            allowed_tools = None
+            tool_definitions_override = None
+            disallowed_tools = {
+                normalize_subagent_tool_name(name)
+                for name in ((subagent_profile or {}).get("disallowed_tools") or [])
+                if normalize_subagent_tool_name(name)
+            }
+            if subagent_profile:
+                tool_definitions_override = self._filter_tool_definitions_for_subagent(
+                    subagent_profile.get("tools"),
+                    subagent_profile.get("disallowed_tools"),
+                )
+                if subagent_profile.get("tools") is not None:
+                    allowed_tools = {
+                        tool.get("function", {}).get("name")
+                        for tool in tool_definitions_override
+                        if tool.get("function", {}).get("name")
+                    }
+
+            session_model = (
+                self.model
+                if not subagent_model or subagent_model == "inherit"
+                else subagent_model
+            )
             await self.session_manager.update_session(
                 session_key=sub_session_key,
-                model=self.model,
+                model=session_model,
                 origin=f"subagent:{parent_session_key}",
                 parent_id=parent_session_key,
                 task=task,
+                subagent_name=agent_name or "",
             )
 
             try:
@@ -1083,11 +1193,51 @@ class AgentLoop:
                 soul = "You are a helpful assistant."
                 identity = "Name: LimeBot Sub-Agent"
 
+            profile_lines = []
+            if subagent_profile:
+                description = (subagent_profile.get("description") or "").strip()
+                prompt = (subagent_profile.get("prompt") or "").strip()
+                if description:
+                    profile_lines.append(f"Profile: {description}")
+                if prompt:
+                    profile_lines.append(prompt)
+                if allowed_tools is None:
+                    profile_lines.append("Tool access: inherit the main toolset.")
+                else:
+                    listed_tools = ", ".join(sorted(allowed_tools)) or "none"
+                    profile_lines.append(
+                        f"Tool access: only use these tools: {listed_tools}."
+                    )
+                if disallowed_tools:
+                    profile_lines.append(
+                        "Never use these tools: "
+                        + ", ".join(sorted(disallowed_tools))
+                        + "."
+                    )
+                if subagent_profile.get("background"):
+                    profile_lines.append(
+                        "This profile is intended for background-friendly work when delegated asynchronously."
+                    )
+                if subagent_max_turns:
+                    profile_lines.append(
+                        f"Complete the task within at most {subagent_max_turns} assistant turns."
+                    )
+
+            profile_block = "\n".join(line for line in profile_lines if line).strip()
+            if profile_block:
+                profile_block += "\n"
+
             sub_system = (
                 f"{soul}\n\n{identity}\n\n"
                 "--- SUB-AGENT INSTRUCTIONS ---\n"
-                f"You are a sub-agent spawned to complete: '{task}'.\n"
-                "Use all available tools. Deliver a clear result when done.\n"
+                + (
+                    f"You are the '{agent_name}' subagent.\n"
+                    if agent_name and subagent_profile
+                    else "You are a generic sub-agent.\n"
+                )
+                + profile_block
+                + f"Primary task: {task}\n"
+                + "Work independently, use tools when needed, and return a concise final result.\n" +
                 "DO NOT start a conversation — JUST COMPLETE THE TASK.\n"
             )
 
@@ -1104,7 +1254,7 @@ class AgentLoop:
             iteration = 0
             final_result = ""
 
-            while iteration < 10:
+            while iteration < subagent_max_turns:
                 iteration += 1
                 logger.info(f"[SUB-AGENT:{sub_session_key}] iteration {iteration}")
 
@@ -1114,12 +1264,14 @@ class AgentLoop:
                     msg=None,
                     stream=False,
                     tool_context_text=task,
+                    tool_definitions_override=tool_definitions_override,
+                    model_override=subagent_model,
                 )
 
                 if hasattr(response, "usage"):
                     await self.session_manager.update_session(
                         session_key=sub_session_key,
-                        model=self.model,
+                        model=session_model,
                         origin=f"subagent:{parent_session_key}",
                         usage=response.usage,
                     )
@@ -1129,8 +1281,10 @@ class AgentLoop:
                 tool_calls_raw = assistant_msg.tool_calls
 
                 sub_history.append(assistant_msg.model_dump())
-                self.session_manager.append_chat_log(
-                    sub_session_key, {"role": "assistant", "content": full_content}
+                asyncio.create_task(
+                    self.session_manager.append_chat_log(
+                        sub_session_key, {"role": "assistant", "content": full_content}
+                    )
                 )
 
                 if not tool_calls_raw:
@@ -1141,9 +1295,22 @@ class AgentLoop:
                     tc_id = tc.id
                     fn = tc.function.name
                     try:
-                        args = json.loads(tc.function.arguments)
+                        args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                        fn, args = self._normalize_tool_alias(
+                            fn, args, sub_session_key
+                        )
                         logger.info(f"[SUB-AGENT:{sub_session_key}] {fn}({args})")
-                        result = await self._execute_tool(fn, args, sub_session_key)
+                        if (allowed_tools is not None and fn not in allowed_tools) or (
+                            fn in disallowed_tools
+                        ):
+                            result = (
+                                f"Error: Tool '{fn}' is not allowed for subagent "
+                                f"'{agent_name}'."
+                            )
+                        else:
+                            result = await self._execute_tool(
+                                fn, args, sub_session_key
+                            )
                     except Exception as e:
                         result = f"Error: {e}"
 
@@ -1156,8 +1323,55 @@ class AgentLoop:
                         }
                     )
 
+            if not str(final_result or "").strip():
+                summary_prompt = (
+                    "Final response only. Do not call any more tools. "
+                    "Do not mention truncation, token limits, tool budgets, or that you are an assistant. "
+                    "Use only the work already completed. "
+                    "If this was a review or verification task, return a concise report with findings or outcome, "
+                    "a short rating if appropriate, and 2-4 concrete suggestions. "
+                    "If anything remains unverified, state that plainly."
+                )
+                sub_history.append({"role": "system", "content": summary_prompt})
+                try:
+                    summary_response = await self._llm_call_with_retry(
+                        messages=sub_history,
+                        session_key=sub_session_key,
+                        msg=None,
+                        stream=False,
+                        include_tools=False,
+                        tool_context_text=task,
+                        model_override=subagent_model,
+                    )
+                    summary_msg = summary_response.choices[0].message
+                    final_result = (
+                        self._clean_subagent_final_result(summary_msg.content or "")
+                        or f"Stopped after reaching max_turns ({subagent_max_turns}) without a final answer."
+                    )
+                    sub_history.append(summary_msg.model_dump())
+                    asyncio.create_task(
+                        self.session_manager.append_chat_log(
+                            sub_session_key,
+                            {"role": "assistant", "content": final_result},
+                        )
+                    )
+                except Exception as summary_error:
+                    logger.warning(
+                        f"[SUB-AGENT:{sub_session_key}] failed to produce final summary after max_turns: {summary_error}"
+                    )
+                    final_result = (
+                        f"Stopped after reaching max_turns ({subagent_max_turns}) without a final answer."
+                    )
+
+            final_result = self._clean_subagent_final_result(final_result)
+
+            report_title = (
+                f"--- SUB-AGENT REPORT ({sub_session_key}) [{agent_name}] ---"
+                if agent_name
+                else f"--- SUB-AGENT REPORT ({sub_session_key}) ---"
+            )
             report = (
-                f"--- SUB-AGENT REPORT ({sub_session_key}) ---\n"
+                f"{report_title}\n"
                 f"Task: {task}\n"
                 f"Result:\n{final_result or '(Silently completed)'}\n"
             )
@@ -1197,15 +1411,34 @@ class AgentLoop:
         tool_context_text: str = "",
         turn_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        tool_definitions_override: Optional[List[Dict[str, Any]]] = None,
+        model_override: Optional[str] = None,
     ) -> Any:
 
         messages = self._sanitize_messages_for_llm(messages, session_key)
-        tools = (
-            self._get_tool_definitions_for_turn(tool_context_text)
-            if include_tools
-            else []
-        )
-        provider_chain = self._resolve_provider_chain()
+        if not include_tools:
+            tools = []
+        elif tool_definitions_override is not None:
+            tools = tool_definitions_override
+        else:
+            tools = self._get_tool_definitions_for_turn(tool_context_text)
+        if model_override and model_override != "inherit":
+            from core.llm_utils import resolve_provider_config
+
+            cfg = resolve_provider_config(
+                model_override, default_base_url=self.config.llm.base_url
+            )
+            provider_chain = [
+                (
+                    model_override,
+                    cfg["model"],
+                    cfg["base_url"],
+                    cfg["api_key"],
+                    cfg["custom_llm_provider"],
+                )
+            ]
+        else:
+            provider_chain = self._resolve_provider_chain()
         selected_index = 0
         active_source_model, model, base_url, api_key, custom_llm_provider = (
             provider_chain[selected_index]
@@ -3446,8 +3679,11 @@ class AgentLoop:
                             provider = self.vector_service._get_provider()
                             if provider in ("ollama", "local") or resolved_key:
                                 try:
-                                    semantic_results = await self.vector_service.search(
-                                        content, limit=3
+                                    semantic_results = (
+                                        await self.vector_service.search(
+                                            content, limit=3
+                                        )
+                                        or []
                                     )
                                     results = [
                                         r
@@ -3459,8 +3695,11 @@ class AgentLoop:
                                 except Exception as e:
                                     logger.warning(f"Semantic search failed: {e}")
                             if not results:
-                                results = await self.vector_service.search_grep(
-                                    content, limit=3
+                                results = (
+                                    await self.vector_service.search_grep(
+                                        content, limit=3
+                                    )
+                                    or []
                                 )
                                 if results:
                                     trace["mode"] = "grep_fallback"
@@ -3653,6 +3892,86 @@ class AgentLoop:
                             injected_files=injected,
                         )
                     )
+
+                    selected_subagent = self.subagent_registry.get_default_selection()
+                    should_route_via_selected_subagent = (
+                        selected_subagent != "auto"
+                        and not msg.metadata.get("is_report")
+                        and not msg.metadata.get("is_confirmation")
+                        and not msg.metadata.get("is_scheduler")
+                    )
+                    if should_route_via_selected_subagent:
+                        routed_task = user_text_content or content or " "
+                        self._log_session_event(
+                            session_key,
+                            {
+                                "type": "subagent_mode_route",
+                                "turn_id": turn_id,
+                                "subagent": selected_subagent,
+                                "task_preview": routed_task[:500],
+                            },
+                        )
+                        await self._publish_activity(
+                            msg,
+                            f"Routing through {selected_subagent} mode...",
+                            turn_id=turn_id,
+                            message_id=assistant_message_id,
+                        )
+                        await self._trim_history(session_key)
+                        asyncio.create_task(self._flush_history(session_key))
+                        raw_reply = await self.run_subagent(
+                            session_key,
+                            f"{session_key}_sub_{uuid.uuid4().hex[:6]}",
+                            routed_task,
+                            agent_name=selected_subagent,
+                        )
+                        tag_result = await process_tags(
+                            raw_reply=raw_reply,
+                            sender_id=sender_id,
+                            validate_soul=prompt_module.validate_and_save_soul,
+                            validate_identity=prompt_module.validate_and_save_identity,
+                            validate_mood=prompt_module.validate_and_save_mood,
+                            validate_relationship=prompt_module.validate_and_save_relationships,
+                            vector_service=self.vector_service,
+                            bus=self.bus,
+                            msg=msg,
+                            config=self.config,
+                        )
+                        reply_to_user = tag_result.clean_reply or raw_reply
+                        self.history[session_key].append(
+                            {"role": "assistant", "content": raw_reply}
+                        )
+                        self._mark_dirty(session_key)
+                        asyncio.create_task(
+                            self.session_manager.append_chat_log(
+                                session_key, {"role": "assistant", "content": raw_reply}
+                            )
+                        )
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content="",
+                                metadata=self._with_trace_metadata(
+                                    {"type": "stop_typing"},
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
+                                ),
+                            )
+                        )
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content=reply_to_user,
+                                metadata=self._with_trace_metadata(
+                                    {"reply_to": msg.sender_id},
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
+                                ),
+                            )
+                        )
+                        return
 
                     await self._trim_history(session_key)
                     asyncio.create_task(self._flush_history(session_key))
