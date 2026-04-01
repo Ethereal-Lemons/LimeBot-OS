@@ -32,21 +32,32 @@ class TelegramChannel(BaseChannel):
         }
         self._session: aiohttp.ClientSession | None = None
         self._offset: int | None = None
+        self._bot_profile: dict[str, Any] | None = None
+        self._status = "disconnected"
+        self._last_error = ""
 
     async def start(self) -> None:
         """Start polling Telegram for updates."""
         if not self.token:
             logger.warning("[Telegram] Channel enabled without TELEGRAM_BOT_TOKEN.")
+            self._status = "error"
+            self._last_error = "Missing TELEGRAM_BOT_TOKEN"
             return
 
         self._running = True
+        self._status = "connecting"
+        self._last_error = ""
         timeout = aiohttp.ClientTimeout(total=self.poll_timeout + 15)
         self._session = aiohttp.ClientSession(timeout=timeout)
         backoff = 2
 
         while self._running:
             try:
+                if self._bot_profile is None:
+                    await self._refresh_bot_profile()
                 updates = await self._get_updates()
+                self._status = "connected"
+                self._last_error = ""
                 backoff = 2
                 for update in updates:
                     if not self._running:
@@ -55,6 +66,8 @@ class TelegramChannel(BaseChannel):
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                self._status = "error"
+                self._last_error = str(e)
                 logger.error(f"[Telegram] Polling error: {e}")
                 if self._running:
                     await asyncio.sleep(backoff)
@@ -63,6 +76,7 @@ class TelegramChannel(BaseChannel):
     async def stop(self) -> None:
         """Stop polling and close the HTTP session."""
         self._running = False
+        self._status = "disconnected"
         if self._session:
             await self._session.close()
             self._session = None
@@ -176,6 +190,30 @@ class TelegramChannel(BaseChannel):
             description = data.get("description") or f"HTTP {response.status}"
             raise RuntimeError(f"Telegram API {method} failed: {description}")
         return data.get("result")
+
+    async def _refresh_bot_profile(self) -> dict[str, Any]:
+        profile = await self._api_call("getMe")
+        self._bot_profile = profile if isinstance(profile, dict) else None
+        self._status = "connected"
+        self._last_error = ""
+        return self._bot_profile or {}
+
+    def get_status(self) -> dict[str, Any]:
+        profile = self._bot_profile or {}
+        return {
+            "enabled": True,
+            "status": self._status,
+            "connected": self._status == "connected",
+            "username": profile.get("username"),
+            "bot_id": profile.get("id"),
+            "display_name": profile.get("first_name"),
+            "can_join_groups": profile.get("can_join_groups"),
+            "can_read_all_group_messages": profile.get(
+                "can_read_all_group_messages"
+            ),
+            "supports_inline_queries": profile.get("supports_inline_queries"),
+            "last_error": self._last_error,
+        }
 
     @staticmethod
     def _flatten_embed(embed: dict[str, Any]) -> str:

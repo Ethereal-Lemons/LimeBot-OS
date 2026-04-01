@@ -54,6 +54,7 @@ _IDENTITY_FIELDS = [
     ("interests", r"Interests", "Interests", ""),
     ("birthday", r"Birthday", "Birthday", ""),
     ("discord_style", r"Discord Style", "Discord Style", ""),
+    ("telegram_style", r"Telegram Style", "Telegram Style", ""),
     ("whatsapp_style", r"WhatsApp Style", "WhatsApp Style", ""),
     ("web_style", r"Web Style", "Web Style", ""),
     ("reaction_emojis", r"Reaction Emojis", "Reaction Emojis", ""),
@@ -387,6 +388,7 @@ def get_identity_data(identity_content: Optional[str] = None) -> dict:
         "pfp_url": None,
         "style": "",
         "discord_style": None,
+        "telegram_style": None,
         "whatsapp_style": None,
         "web_style": None,
         "reaction_emojis": "",
@@ -456,6 +458,7 @@ def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
         f"*   **Interests:** [Optional: topics you get genuinely excited about]\n"
         f"*   **Birthday:** [Optional: your birthday, so you can acknowledge your age]\n"
         f"*   **Discord Style:** [Optional: how you behave on Discord specifically]\n"
+        f"*   **Telegram Style:** [Optional: how you behave on Telegram specifically]\n"
         f"*   **WhatsApp Style:** [Optional: how you behave on WhatsApp specifically]\n"
         f"</save_identity>\n\n"
         f"Note: Channel styles are optional. If not provided, your default Style applies everywhere.\n\n"
@@ -585,7 +588,7 @@ def build_stable_system_prompt(
         f"<save_identity>...new markdown content...</save_identity>\n"
         f"If the user gives you a direct avatar/profile image URL, do NOT browse, search, or download it. "
         f"Copy that exact URL into `**Pfp_URL:**` inside `<save_identity>`.\n"
-        f"For identity, you can specify platform styles using: `**Discord Style:** ...`, `**WhatsApp Style:** ...`, `**Web Style:** ...` and `**Reaction Emojis:** bucket:emoji,emoji;...`\n"
+        f"For identity, you can specify platform styles using: `**Discord Style:** ...`, `**Telegram Style:** ...`, `**WhatsApp Style:** ...`, `**Web Style:** ...` and `**Reaction Emojis:** bucket:emoji,emoji;...`\n"
         f"--- SELF-EVOLUTION ---\n"
         f"Your SOUL.md defines your core personality. If you realize your current Soul no longer fits the user's needs "
         f"or the relationship has evolved significantly, you MUST auto-update it using <save_soul>. "

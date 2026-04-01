@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Activity, Zap, Globe, Cpu, RefreshCw, Power, RotateCcw, Download, Upload, User, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { type ConfigApiResponse } from "@/lib/config-secrets";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -42,11 +43,29 @@ interface ConfirmActionState {
     onConfirm: () => void | Promise<void>;
 }
 
+interface PersonaStatus {
+    mood?: string;
+    enable_dynamic_personality?: boolean;
+    relationships?: Array<{ name: string; affinity: number; level: string }>;
+    telegram_style?: string;
+    discord_style?: string;
+    whatsapp_style?: string;
+    web_style?: string;
+}
+
+interface SetupStatus {
+    persona_ready?: boolean;
+    persona_missing?: string[];
+}
+
 export function OverviewPage() {
     const [identity, setIdentity] = useState<{ name: string, avatar: string | null } | null>(null);
+    const [personaStatus, setPersonaStatus] = useState<PersonaStatus | null>(null);
+    const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
     const [stats, setStats] = useState<Stats | null>(null);
     const [llmHealth, setLlmHealth] = useState<LLMHealth | null>(null);
-    const [gatewayToken, setGatewayToken] = useState("");
+    const [gatewayTokenLabel, setGatewayTokenLabel] = useState("");
+    const [gatewayTokenValue, setGatewayTokenValue] = useState("");
     const [loading, setLoading] = useState(true);
     const [checkingLLM, setCheckingLLM] = useState(false);
     const [actionBusy, setActionBusy] = useState<null | "connect" | "token">(null);
@@ -90,9 +109,30 @@ export function OverviewPage() {
     };
 
     const fetchGatewayConfig = () => {
-        axios.get(`${API_BASE_URL}/api/config`)
-            .then(res => setGatewayToken(res?.data?.env?.APP_API_KEY || ""))
-            .catch(() => setGatewayToken(""));
+        axios.get<ConfigApiResponse>(`${API_BASE_URL}/api/config`)
+            .then(res => {
+                const storedKey = localStorage.getItem("limebot_api_key") || "";
+                setGatewayTokenLabel(res?.data?.secrets?.APP_API_KEY?.masked || "");
+                setGatewayTokenValue(storedKey);
+            })
+            .catch(() => {
+                setGatewayTokenLabel("");
+                setGatewayTokenValue(localStorage.getItem("limebot_api_key") || "");
+            });
+    };
+
+    const fetchPersonaStatus = () => {
+        axios.get(`${API_BASE_URL}/api/persona`)
+            .then(res => setPersonaStatus(res.data))
+            .catch(err => {
+                if (err.response?.status !== 401) {
+                    console.error("Failed to fetch persona status:", err);
+                }
+            });
+
+        axios.get(`${API_BASE_URL}/api/setup/status`)
+            .then(res => setSetupStatus(res.data))
+            .catch(() => setSetupStatus(null));
     };
 
     const openConfirm = (action: ConfirmActionState) => setConfirmAction(action);
@@ -125,9 +165,28 @@ export function OverviewPage() {
     const connectClient = async () => {
         if (!stats?.gateway_url) return;
         setActionBusy("connect");
-        const wsWithKey = gatewayToken
-            ? `${stats.gateway_url}?api_key=${encodeURIComponent(gatewayToken)}`
-            : stats.gateway_url;
+        const storedKey = gatewayTokenValue || localStorage.getItem("limebot_api_key") || "";
+        const requiresGatewayKey = Boolean(gatewayTokenLabel);
+
+        if (requiresGatewayKey && !storedKey) {
+            toast.error("Gateway token required", {
+                description: "This server requires APP_API_KEY, but this browser has no cached token. Generate or re-enter a token before copying the client URL.",
+            });
+            setActionBusy(null);
+            return;
+        }
+
+        let wsWithKey = stats.gateway_url;
+        if (storedKey) {
+            try {
+                const url = new URL(stats.gateway_url);
+                url.searchParams.set("api_key", storedKey);
+                wsWithKey = url.toString();
+            } catch {
+                const separator = stats.gateway_url.includes("?") ? "&" : "?";
+                wsWithKey = `${stats.gateway_url}${separator}api_key=${encodeURIComponent(storedKey)}`;
+            }
+        }
         try {
             await navigator.clipboard.writeText(wsWithKey);
             toast.success("Client URL copied", { description: "WebSocket endpoint copied to clipboard." });
@@ -151,7 +210,8 @@ export function OverviewPage() {
                     .then(() => {
                         localStorage.setItem("limebot_api_key", newToken);
                         axios.defaults.headers.common["X-API-Key"] = newToken;
-                        setGatewayToken(newToken);
+                        setGatewayTokenValue(newToken);
+                        setGatewayTokenLabel(`••••${newToken.slice(-4)}`);
                         toast.success("Token generated", { description: "APP_API_KEY updated. Backend is restarting." });
                     })
                     .catch(err => toast.error("Failed to generate token", { description: str(err) }))
@@ -181,6 +241,7 @@ export function OverviewPage() {
         fetchStats();
         fetchIdentity();
         fetchGatewayConfig();
+        fetchPersonaStatus();
         // Initial LLM check
         checkLLM();
 
@@ -203,6 +264,14 @@ export function OverviewPage() {
         return parts.join(' ');
     };
 
+    const strongestRelationship = personaStatus?.relationships?.[0];
+    const styleCoverage = [
+        personaStatus?.web_style,
+        personaStatus?.discord_style,
+        personaStatus?.telegram_style,
+        personaStatus?.whatsapp_style,
+    ].filter(Boolean).length;
+
     if (loading && !stats) {
         return (
             <div className="flex items-center justify-center h-full min-h-[50vh]">
@@ -222,7 +291,7 @@ export function OverviewPage() {
                         </div>
                         <div className="flex items-center gap-2">
                             <button
-                                onClick={() => { fetchStats(); checkLLM(); fetchIdentity(); fetchGatewayConfig(); }}
+                                onClick={() => { fetchStats(); checkLLM(); fetchIdentity(); fetchGatewayConfig(); fetchPersonaStatus(); }}
                                 className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground bg-card hover:bg-muted border border-border rounded-full transition-all"
                             >
                                 <RefreshCw className={cn("w-3.5 h-3.5", (loading || checkingLLM) && "animate-spin")} />
@@ -254,6 +323,20 @@ export function OverviewPage() {
                         <span className="w-1.5 h-1.5 rounded-full bg-primary/40"></span>
                         Verified Identity from <code className="text-primary/70">persona/IDENTITY.md</code>
                     </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                        <span className="rounded-full border border-border bg-background/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                            {setupStatus?.persona_ready ? "Persona ready" : "Setup incomplete"}
+                        </span>
+                        <span className="rounded-full border border-border bg-background/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                            Dynamic {personaStatus?.enable_dynamic_personality ? "on" : "off"}
+                        </span>
+                        <span className="rounded-full border border-border bg-background/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                            {styleCoverage} channel styles
+                        </span>
+                        <span className="rounded-full border border-border bg-background/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                            Mood {personaStatus?.mood ? "tracked" : "empty"}
+                        </span>
+                    </div>
                 </div>
             </div>
 
@@ -330,6 +413,37 @@ export function OverviewPage() {
                 </div>
             </div>
 
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <Card className="border-border/70 bg-card/60">
+                        <CardContent className="p-4">
+                            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Mood</div>
+                            <div className="mt-2 text-sm font-semibold text-foreground">{personaStatus?.mood?.trim() || "Not set"}</div>
+                        </CardContent>
+                    </Card>
+                    <Card className="border-border/70 bg-card/60">
+                        <CardContent className="p-4">
+                            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Strongest Tie</div>
+                            <div className="mt-2 text-sm font-semibold text-foreground">{strongestRelationship?.name || "None yet"}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">{strongestRelationship ? `${strongestRelationship.level} • ${strongestRelationship.affinity}` : "No relationship data yet"}</div>
+                        </CardContent>
+                    </Card>
+                    <Card className="border-border/70 bg-card/60">
+                        <CardContent className="p-4">
+                            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Missing Setup</div>
+                            <div className="mt-2 text-sm font-semibold text-foreground">
+                                {setupStatus?.persona_missing?.length ? setupStatus.persona_missing.join(", ") : "Nothing missing"}
+                            </div>
+                        </CardContent>
+                    </Card>
+                    <Card className="border-border/70 bg-card/60">
+                        <CardContent className="p-4">
+                            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Voice Coverage</div>
+                            <div className="mt-2 text-sm font-semibold text-foreground">{styleCoverage}/4 channel overrides</div>
+                            <div className="mt-1 text-xs text-muted-foreground">Web, Discord, Telegram, WhatsApp</div>
+                        </CardContent>
+                    </Card>
+                </div>
+
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                     <div className="lg:col-span-2 space-y-6">
                     <Card className="border-muted bg-card/50">
@@ -352,21 +466,16 @@ export function OverviewPage() {
 
                                 <div className="space-y-2">
                                     <label className="text-xs font-medium text-muted-foreground uppercase">Gateway Token</label>
-                                    <div className="relative group">
-                                        <div className="p-2.5 bg-background rounded-md border border-input font-mono text-sm leading-none text-muted-foreground blur-sm group-hover:blur-none transition-all duration-300 select-all cursor-text overflow-hidden text-ellipsis">
-                                            {gatewayToken || "Not configured"}
-                                        </div>
-                                        <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground/50 group-hover:hidden pointer-events-none">
-                                            Hover to reveal
-                                        </div>
+                                    <div className="p-2.5 bg-background rounded-md border border-input font-mono text-sm leading-none text-muted-foreground overflow-hidden text-ellipsis">
+                                        {gatewayTokenLabel || "Configured locally in this browser only"}
                                     </div>
                                 </div>
 
                                 <div className="space-y-2">
                                     <label className="text-xs font-medium text-muted-foreground uppercase">Auth System</label>
                                     <div className="flex items-center gap-2 text-sm text-foreground/80">
-                                        <span className={cn("w-2 h-2 rounded-full", gatewayToken ? "bg-green-500" : "bg-yellow-500")}></span>
-                                        {gatewayToken ? "API Key (APP_API_KEY)" : "None (Local Network)"}
+                                        <span className={cn("w-2 h-2 rounded-full", gatewayTokenLabel ? "bg-green-500" : "bg-yellow-500")}></span>
+                                        {gatewayTokenLabel ? "API Key configured" : "No token cached in browser"}
                                     </div>
                                 </div>
 

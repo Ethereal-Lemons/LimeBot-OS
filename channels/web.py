@@ -43,6 +43,67 @@ _DOCUMENT_MIME_TYPES = frozenset(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }
 )
+_SECRET_CONFIG_KEYS = frozenset(
+    {
+        "APP_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "XAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "NVIDIA_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "DISCORD_TOKEN",
+        "TELEGRAM_BOT_TOKEN",
+    }
+)
+
+
+def _mask_secret(value: str) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) <= 4:
+        return "•" * len(cleaned)
+    return f"{'•' * max(4, min(len(cleaned) - 4, 12))}{cleaned[-4:]}"
+
+
+def _serialize_secret(value: str) -> dict[str, Any]:
+    cleaned = (value or "").strip()
+    return {
+        "configured": bool(cleaned),
+        "masked": _mask_secret(cleaned),
+        "last4": cleaned[-4:] if len(cleaned) > 4 else "",
+    }
+
+
+def _build_identity_markdown(data: dict[str, Any]) -> str:
+    lines = ["# IDENTITY.md - Who I Am", ""]
+    lines.append(f"*   **Name:** {data.get('name', '')}")
+    lines.append(f"*   **Emoji:** {data.get('emoji', '')}")
+    lines.append(f"*   **Pfp_URL:** {data.get('pfp_url', '')}")
+    lines.append(f"*   **Style:** {data.get('style', '')}")
+    lines.append(f"*   **Catchphrases:** {data.get('catchphrases', '')}")
+    lines.append(f"*   **Interests:** {data.get('interests', '')}")
+    lines.append(f"*   **Birthday:** {data.get('birthday', '')}")
+    lines.append(f"*   **Discord Style:** {data.get('discord_style', '')}")
+    lines.append(f"*   **Telegram Style:** {data.get('telegram_style', '')}")
+    lines.append(f"*   **WhatsApp Style:** {data.get('whatsapp_style', '')}")
+    lines.append(f"*   **Web Style:** {data.get('web_style', '')}")
+    lines.append(f"*   **Reaction Emojis:** {data.get('reaction_emojis', '')}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _resolve_channel_style(identity_data: dict[str, Any], channel: str) -> tuple[str, str]:
+    platform_style = (identity_data.get(f"{channel}_style") or "").strip()
+    web_style = (identity_data.get("web_style") or "").strip()
+    general_style = (identity_data.get("style") or "").strip()
+    if platform_style:
+        return platform_style, f"{channel.title()} override"
+    if web_style:
+        return web_style, "Web fallback"
+    return general_style, "Base style"
 
 
 def _contacts_path():
@@ -483,25 +544,7 @@ class WebChannel(BaseChannel):
                 persona_dir = Path("persona")
                 identity_file = persona_dir / "IDENTITY.md"
                 mood_file = persona_dir / "MOOD.md"
-
-                lines = ["# IDENTITY.md - Who I Am", ""]
-                lines.append(f"*   **Name:** {data.get('name', '')}")
-                lines.append(f"*   **Emoji:** {data.get('emoji', '')}")
-                lines.append(f"*   **Pfp_URL:** {data.get('pfp_url', '')}")
-                lines.append(f"*   **Style:** {data.get('style', '')}")
-                lines.append(f"*   **Catchphrases:** {data.get('catchphrases', '')}")
-                lines.append(f"*   **Interests:** {data.get('interests', '')}")
-                lines.append(f"*   **Birthday:** {data.get('birthday', '')}")
-                lines.append(f"*   **Discord Style:** {data.get('discord_style', '')}")
-                lines.append(
-                    f"*   **WhatsApp Style:** {data.get('whatsapp_style', '')}"
-                )
-                lines.append(f"*   **Web Style:** {data.get('web_style', '')}")
-                lines.append(
-                    f"*   **Reaction Emojis:** {data.get('reaction_emojis', '')}"
-                )
-                lines.append("")
-                await self._write_text(identity_file, "\n".join(lines))
+                await self._write_text(identity_file, _build_identity_markdown(data))
 
                 mood_value = data.get("mood")
                 if mood_value:
@@ -513,6 +556,94 @@ class WebChannel(BaseChannel):
                 return {"status": "success", "message": "Persona updated"}
             except Exception as e:
                 logger.error(f"Error updating persona: {e}")
+                return {"error": str(e)}
+
+        @self.app.post("/api/persona/preview", dependencies=[Depends(self.verify_auth)])
+        async def preview_persona(data: dict):
+            try:
+                from config import load_config
+                from core.llm_utils import resolve_provider_config
+                from core.prompt import (
+                    SOUL_FILE,
+                    build_stable_system_prompt,
+                    get_identity_data,
+                )
+
+                cfg = load_config()
+                draft = data.get("persona") or {}
+                if not isinstance(draft, dict):
+                    return {"error": "persona must be an object"}
+
+                channel = str(data.get("channel") or "web").strip().lower()
+                if channel not in {"web", "discord", "telegram", "whatsapp"}:
+                    return {"error": "Unsupported preview channel"}
+
+                user_message = (
+                    str(data.get("user_message") or "").strip()
+                    or "Introduce yourself and explain how you would help me on this platform."
+                )
+                identity_content = _build_identity_markdown(draft)
+                identity_data = get_identity_data(identity_content=identity_content)
+                effective_style, style_source = _resolve_channel_style(identity_data, channel)
+                soul_content = ""
+                if SOUL_FILE.exists():
+                    soul_content = SOUL_FILE.read_text(encoding="utf-8")
+                system_prompt = build_stable_system_prompt(
+                    sender_id="preview-user",
+                    channel=channel,
+                    chat_id="preview-chat",
+                    model=cfg.llm.model,
+                    allowed_paths=cfg.whitelist.allowed_paths,
+                    skill_registry=getattr(self, "_skill_registry", None),
+                    config=cfg,
+                    soul=soul_content,
+                    identity_raw=identity_content,
+                    sender_name="Preview User",
+                )
+
+                provider_cfg = resolve_provider_config(
+                    cfg.llm.model, default_base_url=cfg.llm.base_url
+                )
+                preview_text = None
+                preview_error = None
+                try:
+                    response = await asyncio.to_thread(
+                        completion,
+                        model=provider_cfg["model"],
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_message},
+                        ],
+                        max_tokens=180,
+                        api_key=provider_cfg["api_key"],
+                        base_url=provider_cfg["base_url"],
+                        custom_llm_provider=provider_cfg["custom_llm_provider"],
+                    )
+                    choices = getattr(response, "choices", None) or response.get("choices", [])
+                    if choices:
+                        message = choices[0].message if hasattr(choices[0], "message") else choices[0].get("message", {})
+                        if hasattr(message, "content"):
+                            preview_text = message.content
+                        elif isinstance(message, dict):
+                            preview_text = message.get("content")
+                except Exception as preview_exc:
+                    preview_error = str(preview_exc)
+
+                excerpt = system_prompt
+                if len(excerpt) > 1800:
+                    excerpt = excerpt[:1800].rstrip() + "\n... [truncated]"
+
+                return {
+                    "channel": channel,
+                    "model": cfg.llm.model,
+                    "effective_style": effective_style,
+                    "style_source": style_source,
+                    "system_prompt_excerpt": excerpt,
+                    "preview_text": preview_text,
+                    "error": preview_error,
+                }
+            except Exception as e:
+                logger.error(f"Error previewing persona: {e}")
                 return {"error": str(e)}
 
         @self.app.get("/api/persona/export", dependencies=[Depends(self.verify_auth)])
@@ -1041,15 +1172,12 @@ class WebChannel(BaseChannel):
             cfg = load_config()
             env_dict = {
                 "LLM_MODEL": cfg.llm.model,
-                "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),
-                "DISCORD_TOKEN": cfg.discord.token,
                 "DISCORD_ALLOW_FROM": ",".join(cfg.discord.allow_from),
                 "DISCORD_ALLOW_CHANNELS": ",".join(cfg.discord.allow_channels),
                 "DISCORD_ACTIVITY_TYPE": cfg.discord.activity_type,
                 "DISCORD_ACTIVITY_TEXT": cfg.discord.activity_text,
                 "DISCORD_STATUS": cfg.discord.status,
                 "ENABLE_TELEGRAM": str(cfg.telegram.enabled).lower(),
-                "TELEGRAM_BOT_TOKEN": cfg.telegram.token,
                 "TELEGRAM_API_BASE": cfg.telegram.api_base,
                 "TELEGRAM_ALLOW_FROM": ",".join(cfg.telegram.allow_from),
                 "TELEGRAM_ALLOW_CHATS": ",".join(cfg.telegram.allow_chats),
@@ -1085,20 +1213,26 @@ class WebChannel(BaseChannel):
                     cfg.browser, "profile_directory", ""
                 ),
             }
+            secret_dict = {
+                "APP_API_KEY": _serialize_secret(cfg.whitelist.api_key or ""),
+                "GEMINI_API_KEY": _serialize_secret(os.getenv("GEMINI_API_KEY", "")),
+                "OPENAI_API_KEY": _serialize_secret(os.getenv("OPENAI_API_KEY", "")),
+                "ANTHROPIC_API_KEY": _serialize_secret(os.getenv("ANTHROPIC_API_KEY", "")),
+                "XAI_API_KEY": _serialize_secret(os.getenv("XAI_API_KEY", "")),
+                "DEEPSEEK_API_KEY": _serialize_secret(os.getenv("DEEPSEEK_API_KEY", "")),
+                "NVIDIA_API_KEY": _serialize_secret(os.getenv("NVIDIA_API_KEY", "")),
+                "DASHSCOPE_API_KEY": _serialize_secret(os.getenv("DASHSCOPE_API_KEY", "")),
+                "DISCORD_TOKEN": _serialize_secret(cfg.discord.token or ""),
+                "TELEGRAM_BOT_TOKEN": _serialize_secret(cfg.telegram.token or ""),
+            }
             for key in [
-                "OPENAI_API_KEY",
-                "ANTHROPIC_API_KEY",
-                "XAI_API_KEY",
-                "DEEPSEEK_API_KEY",
-                "NVIDIA_API_KEY",
-                "DASHSCOPE_API_KEY",
                 "LLM_BASE_URL",
                 "LLM_PROXY_URL",
             ]:
                 val = os.getenv(key)
                 if val:
                     env_dict[key] = val
-            return {"env": env_dict}
+            return {"env": env_dict, "secrets": secret_dict}
 
         @self.app.get("/api/discord/config", dependencies=[Depends(self.verify_auth)])
         async def get_discord_config():
@@ -1146,7 +1280,15 @@ class WebChannel(BaseChannel):
 
                 env_file = Path(".env")
                 new_env = data.get("env", {})
+                clear_secrets = {
+                    str(key).strip()
+                    for key in data.get("clear_secrets", []) or []
+                    if str(key).strip()
+                }
                 cfg_json_file = Path("limebot.json")
+
+                if not isinstance(new_env, dict):
+                    return {"error": "env must be an object"}
 
                 if "LLM_MODEL" in new_env:
                     model_value = str(new_env["LLM_MODEL"] or "").strip()
@@ -1203,6 +1345,9 @@ class WebChannel(BaseChannel):
                         if key in new_env:
                             final_lines.append(f"{key}={new_env[key]}")
                             processed_keys.add(key)
+                        elif key in clear_secrets and key in _SECRET_CONFIG_KEYS:
+                            final_lines.append(f"{key}=")
+                            processed_keys.add(key)
                         else:
                             final_lines.append(line)
                     else:
@@ -1212,6 +1357,10 @@ class WebChannel(BaseChannel):
                     if key not in processed_keys:
                         final_lines.append(f"{key}={val}")
 
+                for key in clear_secrets:
+                    if key in _SECRET_CONFIG_KEYS and key not in processed_keys:
+                        final_lines.append(f"{key}=")
+
                 await self._write_text(env_file, "\n".join(final_lines))
 
                 # Update os.environ so the child process inherits
@@ -1220,6 +1369,9 @@ class WebChannel(BaseChannel):
                 # in the inherited environment).
                 for key, val in new_env.items():
                     os.environ[key] = str(val)
+                for key in clear_secrets:
+                    if key in _SECRET_CONFIG_KEYS:
+                        os.environ[key] = ""
 
                 # Clear the cached config so it's rebuilt on next access
                 from config import reload_config
@@ -1347,6 +1499,9 @@ class WebChannel(BaseChannel):
             channel_stats = []
             for ch in self.channels:
                 ch_status = "Connected"
+                if hasattr(ch, "get_status"):
+                    status_data = ch.get_status()
+                    ch_status = status_data.get("status", ch_status).replace("_", " ").title()
                 if hasattr(ch, "client") and hasattr(ch.client, "is_ready"):
                     if not ch.client.is_ready():
                         ch_status = "Connecting..."
@@ -1520,24 +1675,25 @@ class WebChannel(BaseChannel):
                 return self.agent.subagent_registry
             return SubagentRegistry()
 
-        async def _reload_subagents() -> list[dict]:
-            from core.subagents import SubagentRegistry
-
-            if hasattr(self, "agent") and self.agent:
-                registry = self.agent.subagent_registry
-                await asyncio.to_thread(registry.discover_and_load)
-                if hasattr(self.agent, "_refresh_tool_definitions"):
-                    self.agent._refresh_tool_definitions()
-                return registry.list_definitions()
-
-            registry = SubagentRegistry()
+        async def _load_subagent_registry(refresh_tools: bool = True):
+            registry = _get_subagent_registry()
             await asyncio.to_thread(registry.discover_and_load)
-            return registry.list_definitions()
+            if (
+                refresh_tools
+                and hasattr(self, "agent")
+                and self.agent
+                and hasattr(self.agent, "_refresh_tool_definitions")
+            ):
+                self.agent._refresh_tool_definitions()
+            return registry
+
+        async def _reload_subagents() -> tuple[Any, list[dict]]:
+            registry = await _load_subagent_registry()
+            return registry, registry.list_definitions()
 
         @self.app.get("/api/subagents", dependencies=[Depends(self.verify_auth)])
         async def list_subagents():
-            registry = _get_subagent_registry()
-            subagents = await _reload_subagents()
+            registry, subagents = await _reload_subagents()
             return {
                 "subagents": subagents,
                 "location_options": registry.get_location_options(),
@@ -1564,7 +1720,7 @@ class WebChannel(BaseChannel):
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
-            subagents = await _reload_subagents()
+            registry, subagents = await _reload_subagents()
             return {
                 "status": "success",
                 "subagent": saved,
@@ -1576,7 +1732,7 @@ class WebChannel(BaseChannel):
 
         @self.app.put("/api/subagents/settings", dependencies=[Depends(self.verify_auth)])
         async def update_subagent_settings(request: Request):
-            registry = _get_subagent_registry()
+            registry = await _load_subagent_registry(refresh_tools=False)
             body = await request.json()
             selection = body.get("default_selection", "auto")
             try:
@@ -1614,7 +1770,7 @@ class WebChannel(BaseChannel):
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
-            subagents = await _reload_subagents()
+            registry, subagents = await _reload_subagents()
             return {
                 "status": "success",
                 "subagent": saved,
@@ -1634,7 +1790,7 @@ class WebChannel(BaseChannel):
                 await asyncio.to_thread(registry.delete_subagent, subagent_id)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
-            subagents = await _reload_subagents()
+            registry, subagents = await _reload_subagents()
             return {
                 "status": "success",
                 "subagents": subagents,
@@ -1998,6 +2154,30 @@ class WebChannel(BaseChannel):
             if not self.scheduler:
                 return []
             return await self.scheduler.list_jobs()
+
+        @self.app.get("/api/telegram/status", dependencies=[Depends(self.verify_auth)])
+        async def get_telegram_status():
+            from config import load_config
+
+            cfg = load_config()
+            telegram_channel = next(
+                (ch for ch in self.channels if getattr(ch, "name", "") == "telegram"),
+                None,
+            )
+            if telegram_channel and hasattr(telegram_channel, "get_status"):
+                return telegram_channel.get_status()
+            return {
+                "enabled": bool(getattr(cfg.telegram, "enabled", False)),
+                "status": "disabled" if not getattr(cfg.telegram, "enabled", False) else "not_running",
+                "connected": False,
+                "username": None,
+                "bot_id": None,
+                "display_name": None,
+                "can_join_groups": None,
+                "can_read_all_group_messages": None,
+                "supports_inline_queries": None,
+                "last_error": "",
+            }
 
         @self.app.post("/api/cron/jobs", dependencies=[Depends(self.verify_auth)])
         async def add_cron_job(data: dict):
