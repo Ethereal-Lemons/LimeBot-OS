@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.8 - 2026-03-31
+### Added
+- Lightweight subagent system with built-in specialist profiles such as reviewer, verifier, and explorer.
+- New Subagents dashboard page to create, edit, delete, and manage specialist profiles visually.
+- Sidebar assistant mode selector for choosing the default subagent behavior.
+- Structured subagent report cards in chat so delegated results are easier to read than raw orchestration text.
+- Support for project and user subagent directories in both `.limebot/agents` and `.claude/agents`.
+- Unit coverage for subagent registry loading, shadowing, selection, and tool schema behavior.
+
+### Changed
+- `spawn_agent` can now target named specialist profiles and optionally run in the background.
+- Prompt guidance now includes subagent recommendations so delegation is more intentional and task-matched.
+- Tool definitions now advertise available named subagents to the model.
+- Chat UI suppresses noisy empty orchestration traces around delegated subagent work.
+- RAG trace handling is more defensive when trace buckets are missing or malformed.
+
+### Fixed
+- Subagent API responses now use the same loaded registry instance for definitions, default selection, and selector options.
+- Explicit `tools: []` for subagents now correctly means “no tools” instead of falling back to inherited tools.
+- Tool alias normalization now handles `read_filejson`-style names more safely.
+- Voice Preview Studio channel cards no longer overflow when labels and badges get tight on smaller widths.
+
 ## 1.0.7 - 2026-03-29
 ### Added
 - Telegram channel scaffold with Bot API long polling, config loading, startup wiring, and tests.
