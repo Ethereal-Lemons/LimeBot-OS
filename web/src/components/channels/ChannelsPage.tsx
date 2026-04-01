@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from "@/lib/api";
-import { MessageCircle, AlertCircle, RefreshCw, User, Activity, Monitor, ShieldCheck, Radio, Send, Wand2 } from 'lucide-react';
+import { MessageCircle, AlertCircle, RefreshCw, User, Activity, Monitor, ShieldCheck, Radio, Send, Wand2, Plus, Trash2 } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +20,7 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { type ConfigApiResponse, type ConfigSecretsMap, getSecretInfo, getSecretPlaceholder } from "@/lib/config-secrets";
 
 const DiscordIcon = (props: React.SVGProps<SVGSVGElement>) => (
     <svg viewBox="0 0 127.14 96.36" fill="currentColor" {...props}>
@@ -42,9 +43,7 @@ interface ConfigState {
     DISCORD_ACTIVITY_TEXT?: string;
     DISCORD_STATUS?: string;
     ENABLE_DISCORD?: string;
-    DISCORD_TOKEN?: string;
     ENABLE_TELEGRAM?: string;
-    TELEGRAM_BOT_TOKEN?: string;
     TELEGRAM_API_BASE?: string;
     TELEGRAM_ALLOW_FROM?: string;
     TELEGRAM_ALLOW_CHATS?: string;
@@ -77,6 +76,155 @@ interface DiscordUiConfig {
     nickname_templates?: { default?: string; guilds?: Record<string, string> };
     avatar_overrides?: { global?: string };
 }
+
+interface TelegramStatus {
+    enabled: boolean;
+    status: string;
+    connected: boolean;
+    username?: string | null;
+    bot_id?: number | null;
+    display_name?: string | null;
+    last_error?: string;
+}
+
+interface PersonaDraft {
+    name?: string;
+    emoji?: string;
+    pfp_url?: string;
+    style?: string;
+    discord_style?: string;
+    telegram_style?: string;
+    whatsapp_style?: string;
+    web_style?: string;
+    reaction_emojis?: string;
+    soul_summary?: string;
+    catchphrases?: string;
+    interests?: string;
+    birthday?: string;
+    mood?: string;
+    enable_dynamic_personality?: boolean;
+    relationships?: Array<{ id: string; name: string; affinity: number; level: string }>;
+}
+
+interface StyleOverrideRow {
+    id: string;
+    target: string;
+    tone: string;
+    verbosity: string;
+    emoji_usage: string;
+    signature: string;
+    prefix: string;
+    max_length: string;
+}
+
+interface ValueOverrideRow {
+    id: string;
+    target: string;
+    value: string;
+}
+
+interface TelegramVoiceDraft {
+    tone: string;
+    verbosity: string;
+    emojiUsage: string;
+    signoff: string;
+    notes: string;
+}
+
+type SecretDrafts = Record<string, string>;
+
+const createStyleOverrideRow = (target = "", source?: any): StyleOverrideRow => ({
+    id: `${target || "row"}-${Math.random().toString(36).slice(2, 8)}`,
+    target,
+    tone: source?.tone || "friendly",
+    verbosity: source?.verbosity || "medium",
+    emoji_usage: source?.emoji_usage || "light",
+    signature: source?.signature || "",
+    prefix: source?.prefix || "",
+    max_length: source?.max_length ? String(source.max_length) : "",
+});
+
+const createValueOverrideRow = (target = "", value = ""): ValueOverrideRow => ({
+    id: `${target || "row"}-${Math.random().toString(36).slice(2, 8)}`,
+    target,
+    value,
+});
+
+const objectToStyleRows = (source?: Record<string, any>): StyleOverrideRow[] =>
+    Object.entries(source || {}).map(([target, value]) => createStyleOverrideRow(target, value));
+
+const styleRowsToObject = (rows: StyleOverrideRow[]) =>
+    rows.reduce<Record<string, any>>((acc, row) => {
+        const target = row.target.trim();
+        if (!target) return acc;
+        acc[target] = {
+            tone: row.tone,
+            verbosity: row.verbosity,
+            emoji_usage: row.emoji_usage,
+            signature: row.signature.trim() || undefined,
+            prefix: row.prefix.trim() || undefined,
+            max_length: row.max_length.trim() ? Number(row.max_length) : undefined,
+        };
+        return acc;
+    }, {});
+
+const objectToValueRows = (source?: Record<string, string>): ValueOverrideRow[] =>
+    Object.entries(source || {}).map(([target, value]) => createValueOverrideRow(target, value));
+
+const valueRowsToObject = (rows: ValueOverrideRow[]) =>
+    rows.reduce<Record<string, string>>((acc, row) => {
+        const target = row.target.trim();
+        const value = row.value.trim();
+        if (!target || !value) return acc;
+        acc[target] = value;
+        return acc;
+    }, {});
+
+const DEFAULT_TELEGRAM_VOICE: TelegramVoiceDraft = {
+    tone: "friendly",
+    verbosity: "medium",
+    emojiUsage: "light",
+    signoff: "",
+    notes: "",
+};
+
+const DEFAULT_PERSONA_DRAFT: PersonaDraft = {
+    name: "",
+    emoji: "",
+    pfp_url: "",
+    style: "",
+    discord_style: "",
+    telegram_style: "",
+    whatsapp_style: "",
+    web_style: "",
+    reaction_emojis: "",
+    soul_summary: "",
+    catchphrases: "",
+    interests: "",
+    birthday: "",
+    mood: "",
+    enable_dynamic_personality: false,
+    relationships: [],
+};
+
+const clonePersonaDraft = (data?: Partial<PersonaDraft>): PersonaDraft =>
+    JSON.parse(JSON.stringify({ ...DEFAULT_PERSONA_DRAFT, ...(data || {}) }));
+
+const buildTelegramStyle = (draft: TelegramVoiceDraft) => {
+    const lines = [
+        `Tone: ${draft.tone}.`,
+        `Verbosity: ${draft.verbosity}.`,
+        `Emoji usage: ${draft.emojiUsage}.`,
+        "Optimize for fast mobile reading, short paragraphs, and clear next steps.",
+    ];
+    if (draft.signoff.trim()) {
+        lines.push(`Signoff preference: ${draft.signoff.trim()}.`);
+    }
+    if (draft.notes.trim()) {
+        lines.push(draft.notes.trim());
+    }
+    return lines.join(" ");
+};
 
 function WhatsAppConnectionSection() {
     const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'scanning'>('disconnected');
@@ -236,42 +384,50 @@ function WhatsAppConnectionSection() {
 export function ChannelsPage() {
     const [config, setConfig] = useState<ConfigState>({});
     const [savedConfig, setSavedConfig] = useState<ConfigState>({});
+    const [secretMeta, setSecretMeta] = useState<ConfigSecretsMap>({});
+    const [secretDrafts, setSecretDrafts] = useState<SecretDrafts>({});
+    const [clearedSecrets, setClearedSecrets] = useState<string[]>([]);
     const [discordConfig, setDiscordConfig] = useState<DiscordUiConfig>({});
     const [savedDiscordConfig, setSavedDiscordConfig] = useState<DiscordUiConfig>({});
-    const [discordJson, setDiscordJson] = useState({
-        styleGuilds: "{}",
-        styleChannels: "{}",
-        nickGuilds: "{}",
-        themeGuilds: "{}",
-    });
-    const [savedDiscordJson, setSavedDiscordJson] = useState({
-        styleGuilds: "{}",
-        styleChannels: "{}",
-        nickGuilds: "{}",
-        themeGuilds: "{}",
-    });
+    const [guildStyleRows, setGuildStyleRows] = useState<StyleOverrideRow[]>([]);
+    const [savedGuildStyleRows, setSavedGuildStyleRows] = useState<StyleOverrideRow[]>([]);
+    const [channelStyleRows, setChannelStyleRows] = useState<StyleOverrideRow[]>([]);
+    const [savedChannelStyleRows, setSavedChannelStyleRows] = useState<StyleOverrideRow[]>([]);
+    const [nicknameRows, setNicknameRows] = useState<ValueOverrideRow[]>([]);
+    const [savedNicknameRows, setSavedNicknameRows] = useState<ValueOverrideRow[]>([]);
+    const [themeRows, setThemeRows] = useState<ValueOverrideRow[]>([]);
+    const [savedThemeRows, setSavedThemeRows] = useState<ValueOverrideRow[]>([]);
     const [globalAvatarUrl, setGlobalAvatarUrl] = useState("");
     const [savedGlobalAvatarUrl, setSavedGlobalAvatarUrl] = useState("");
+    const [personaDraft, setPersonaDraft] = useState<PersonaDraft>(clonePersonaDraft());
+    const [telegramVoiceDraft, setTelegramVoiceDraft] = useState<TelegramVoiceDraft>(DEFAULT_TELEGRAM_VOICE);
+    const [savedTelegramVoiceDraft, setSavedTelegramVoiceDraft] = useState<TelegramVoiceDraft>(DEFAULT_TELEGRAM_VOICE);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
     const [discordSaving, setDiscordSaving] = useState(false);
     const [discordStatus, setDiscordStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+    const [telegramStatus, setTelegramStatus] = useState<TelegramStatus | null>(null);
     const [activeTab, setActiveTab] = useState<'discord' | 'telegram' | 'whatsapp'>('discord');
 
     useEffect(() => {
         fetchConfig();
         fetchDiscordConfig();
+        fetchTelegramStatus();
+        fetchPersonaDraft();
     }, []);
 
     const fetchConfig = () => {
         setLoading(true);
-        axios.get(`${API_BASE_URL}/api/config`)
+        axios.get<ConfigApiResponse<ConfigState>>(`${API_BASE_URL}/api/config`)
             .then(res => {
                 if (res.data.env) {
                     setConfig(res.data.env);
                     setSavedConfig(res.data.env);
                 }
+                setSecretMeta(res.data.secrets || {});
+                setSecretDrafts({});
+                setClearedSecrets([]);
                 setLoading(false);
             })
             .catch(err => {
@@ -288,19 +444,19 @@ export function ChannelsPage() {
             .then(res => {
                 const dc = res.data.discord || {};
                 setDiscordConfig(dc);
-                setDiscordJson({
-                    styleGuilds: JSON.stringify(dc.style_overrides?.guilds || {}, null, 2),
-                    styleChannels: JSON.stringify(dc.style_overrides?.channels || {}, null, 2),
-                    nickGuilds: JSON.stringify(dc.nickname_templates?.guilds || {}, null, 2),
-                    themeGuilds: JSON.stringify(dc.embed_theme?.guilds || {}, null, 2),
-                });
                 setSavedDiscordConfig(dc);
-                setSavedDiscordJson({
-                    styleGuilds: JSON.stringify(dc.style_overrides?.guilds || {}, null, 2),
-                    styleChannels: JSON.stringify(dc.style_overrides?.channels || {}, null, 2),
-                    nickGuilds: JSON.stringify(dc.nickname_templates?.guilds || {}, null, 2),
-                    themeGuilds: JSON.stringify(dc.embed_theme?.guilds || {}, null, 2),
-                });
+                const nextGuildRows = objectToStyleRows(dc.style_overrides?.guilds);
+                const nextChannelRows = objectToStyleRows(dc.style_overrides?.channels);
+                const nextNicknameRows = objectToValueRows(dc.nickname_templates?.guilds);
+                const nextThemeRows = objectToValueRows(dc.embed_theme?.guilds);
+                setGuildStyleRows(nextGuildRows);
+                setSavedGuildStyleRows(nextGuildRows);
+                setChannelStyleRows(nextChannelRows);
+                setSavedChannelStyleRows(nextChannelRows);
+                setNicknameRows(nextNicknameRows);
+                setSavedNicknameRows(nextNicknameRows);
+                setThemeRows(nextThemeRows);
+                setSavedThemeRows(nextThemeRows);
                 setGlobalAvatarUrl(dc.avatar_overrides?.global || "");
                 setSavedGlobalAvatarUrl(dc.avatar_overrides?.global || "");
             })
@@ -309,6 +465,38 @@ export function ChannelsPage() {
                     console.error("Failed to load discord config:", err);
                     setDiscordStatus({ type: 'error', message: "Failed to load Discord personalization." });
                 }
+            });
+    };
+
+    const fetchPersonaDraft = () => {
+        axios.get(`${API_BASE_URL}/api/persona`)
+            .then(res => {
+                const nextPersona = clonePersonaDraft(res.data);
+                const nextVoice = {
+                    ...DEFAULT_TELEGRAM_VOICE,
+                    notes: nextPersona.telegram_style || "",
+                };
+                setPersonaDraft(nextPersona);
+                setTelegramVoiceDraft(nextVoice);
+                setSavedTelegramVoiceDraft(nextVoice);
+            })
+            .catch(err => {
+                if (err.response?.status !== 401) {
+                    console.error("Failed to load persona draft:", err);
+                }
+            });
+    };
+
+    const fetchTelegramStatus = () => {
+        axios.get(`${API_BASE_URL}/api/telegram/status`)
+            .then(res => {
+                setTelegramStatus(res.data || null);
+            })
+            .catch(err => {
+                if (err.response?.status !== 401) {
+                    console.error("Failed to load telegram status:", err);
+                }
+                setTelegramStatus(null);
             });
     };
 
@@ -323,9 +511,7 @@ export function ChannelsPage() {
             DISCORD_STATUS: config.DISCORD_STATUS,
             DISCORD_ACTIVITY_TEXT: config.DISCORD_ACTIVITY_TEXT,
             ENABLE_DISCORD: config.ENABLE_DISCORD,
-            DISCORD_TOKEN: config.DISCORD_TOKEN,
             ENABLE_TELEGRAM: config.ENABLE_TELEGRAM,
-            TELEGRAM_BOT_TOKEN: config.TELEGRAM_BOT_TOKEN,
             TELEGRAM_API_BASE: config.TELEGRAM_API_BASE,
             TELEGRAM_ALLOW_FROM: config.TELEGRAM_ALLOW_FROM,
             TELEGRAM_ALLOW_CHATS: config.TELEGRAM_ALLOW_CHATS,
@@ -335,12 +521,38 @@ export function ChannelsPage() {
             ENABLE_WHATSAPP: config.ENABLE_WHATSAPP
         };
 
-        axios.post(`${API_BASE_URL}/api/config`, { env: updateData })
+        const secretUpdates = Object.fromEntries(
+            Object.entries(secretDrafts).filter(([, value]) => value.trim() !== "")
+        );
+
+        axios.post(`${API_BASE_URL}/api/config`, {
+            env: { ...updateData, ...secretUpdates },
+            clear_secrets: clearedSecrets,
+        })
             .then(res => {
                 const data = res.data;
                 if (data.error) throw new Error(data.error);
+                if (secretDrafts.APP_API_KEY?.trim()) {
+                    localStorage.setItem("limebot_api_key", secretDrafts.APP_API_KEY.trim());
+                    axios.defaults.headers.common["X-API-Key"] = secretDrafts.APP_API_KEY.trim();
+                }
                 setStatus({ type: 'success', message: "Access rules saved!" });
                 setSavedConfig(updateData);
+                setSecretMeta((prev) => {
+                    const next = { ...prev };
+                    for (const key of ["DISCORD_TOKEN", "TELEGRAM_BOT_TOKEN"] as const) {
+                        if (clearedSecrets.includes(key)) {
+                            next[key] = { configured: false, masked: "", last4: "" };
+                        } else if (secretDrafts[key]?.trim()) {
+                            const val = secretDrafts[key].trim();
+                            next[key] = { configured: true, masked: `••••${val.slice(-4)}`, last4: val.slice(-4) };
+                        }
+                    }
+                    return next;
+                });
+                setSecretDrafts({});
+                setClearedSecrets([]);
+                fetchTelegramStatus();
                 setSaving(false);
             })
             .catch(err => {
@@ -354,27 +566,24 @@ export function ChannelsPage() {
         setConfig(prev => ({ ...prev, [key]: value }));
     };
 
-    const updateDiscordField = (key: keyof DiscordUiConfig, value: any) => {
-        setDiscordConfig(prev => ({ ...prev, [key]: value }));
+    const handleSecretChange = (key: string, value: string) => {
+        setSecretDrafts(prev => ({ ...prev, [key]: value }));
+        setClearedSecrets(prev => prev.filter((item) => item !== key));
     };
 
-    const parseJson = (label: string, value: string) => {
-        try {
-            return JSON.parse(value);
-        } catch (e) {
-            throw new Error(`${label} must be valid JSON`);
-        }
+    const clearSecret = (key: string) => {
+        setSecretDrafts(prev => ({ ...prev, [key]: "" }));
+        setClearedSecrets(prev => prev.includes(key) ? prev : [...prev, key]);
+    };
+
+    const updateDiscordField = (key: keyof DiscordUiConfig, value: any) => {
+        setDiscordConfig(prev => ({ ...prev, [key]: value }));
     };
 
     const handleDiscordSave = () => {
         setDiscordSaving(true);
         setDiscordStatus(null);
         try {
-            const styleGuilds = parseJson("Style overrides (guilds)", discordJson.styleGuilds);
-            const styleChannels = parseJson("Style overrides (channels)", discordJson.styleChannels);
-            const nickGuilds = parseJson("Nickname templates (guilds)", discordJson.nickGuilds);
-            const themeGuilds = parseJson("Embed theme (guilds)", discordJson.themeGuilds);
-
             const payload: DiscordUiConfig = {
                 signature: discordConfig.signature || "",
                 emoji_set: discordConfig.emoji_set || [],
@@ -382,16 +591,16 @@ export function ChannelsPage() {
                 tone_prefixes: discordConfig.tone_prefixes || {},
                 style_overrides: {
                     default: discordConfig.style_overrides?.default || {},
-                    guilds: styleGuilds,
-                    channels: styleChannels,
+                    guilds: styleRowsToObject(guildStyleRows),
+                    channels: styleRowsToObject(channelStyleRows),
                 },
                 embed_theme: {
                     default: discordConfig.embed_theme?.default || "",
-                    guilds: themeGuilds,
+                    guilds: valueRowsToObject(themeRows),
                 },
                 nickname_templates: {
                     default: discordConfig.nickname_templates?.default || "",
-                    guilds: nickGuilds,
+                    guilds: valueRowsToObject(nicknameRows),
                 },
                 avatar_overrides: {
                     global: globalAvatarUrl.trim(),
@@ -403,7 +612,10 @@ export function ChannelsPage() {
                     if (res.data.error) throw new Error(res.data.error);
                     setDiscordStatus({ type: 'success', message: "Discord personalization saved. Restarting..." });
                     setSavedDiscordConfig(payload);
-                    setSavedDiscordJson({ ...discordJson });
+                    setSavedGuildStyleRows(guildStyleRows);
+                    setSavedChannelStyleRows(channelStyleRows);
+                    setSavedNicknameRows(nicknameRows);
+                    setSavedThemeRows(themeRows);
                     setSavedGlobalAvatarUrl(globalAvatarUrl.trim());
                     setDiscordSaving(false);
                 })
@@ -413,22 +625,66 @@ export function ChannelsPage() {
                     setDiscordSaving(false);
                 });
         } catch (e: any) {
-            setDiscordStatus({ type: 'error', message: e.message || "Invalid JSON input." });
+            setDiscordStatus({ type: 'error', message: e.message || "Failed to save Discord personalization." });
             setDiscordSaving(false);
         }
     };
 
+    const handleTelegramStyleSave = () => {
+        const nextStyle = buildTelegramStyle(telegramVoiceDraft);
+        const payload = clonePersonaDraft({
+            ...personaDraft,
+            telegram_style: nextStyle,
+        });
+        setDiscordSaving(true);
+        setDiscordStatus(null);
+        axios.put(`${API_BASE_URL}/api/persona`, payload)
+            .then(res => {
+                if (res.data.error) throw new Error(res.data.error);
+                setPersonaDraft(payload);
+                setSavedTelegramVoiceDraft(telegramVoiceDraft);
+                setDiscordStatus({ type: 'success', message: "Telegram voice saved." });
+            })
+            .catch(err => {
+                console.error("Failed to save Telegram voice:", err);
+                setDiscordStatus({ type: 'error', message: "Failed to save Telegram voice." });
+            })
+            .finally(() => setDiscordSaving(false));
+    };
+
     const configDirty = useMemo(
-        () => JSON.stringify(config) !== JSON.stringify(savedConfig),
-        [config, savedConfig]
+        () =>
+            JSON.stringify(config) !== JSON.stringify(savedConfig) ||
+            JSON.stringify(secretDrafts) !== JSON.stringify({}) ||
+            clearedSecrets.length > 0,
+        [config, savedConfig, secretDrafts, clearedSecrets]
     );
 
     const discordDirty = useMemo(
         () =>
             JSON.stringify(discordConfig) !== JSON.stringify(savedDiscordConfig) ||
-            JSON.stringify(discordJson) !== JSON.stringify(savedDiscordJson) ||
+            JSON.stringify(guildStyleRows) !== JSON.stringify(savedGuildStyleRows) ||
+            JSON.stringify(channelStyleRows) !== JSON.stringify(savedChannelStyleRows) ||
+            JSON.stringify(nicknameRows) !== JSON.stringify(savedNicknameRows) ||
+            JSON.stringify(themeRows) !== JSON.stringify(savedThemeRows) ||
+            JSON.stringify(telegramVoiceDraft) !== JSON.stringify(savedTelegramVoiceDraft) ||
             globalAvatarUrl.trim() !== savedGlobalAvatarUrl.trim(),
-        [discordConfig, savedDiscordConfig, discordJson, savedDiscordJson, globalAvatarUrl, savedGlobalAvatarUrl]
+        [
+            discordConfig,
+            savedDiscordConfig,
+            guildStyleRows,
+            savedGuildStyleRows,
+            channelStyleRows,
+            savedChannelStyleRows,
+            nicknameRows,
+            savedNicknameRows,
+            themeRows,
+            savedThemeRows,
+            telegramVoiceDraft,
+            savedTelegramVoiceDraft,
+            globalAvatarUrl,
+            savedGlobalAvatarUrl,
+        ]
     );
 
     useEffect(() => {
@@ -443,13 +699,19 @@ export function ChannelsPage() {
 
     const discardConfigChanges = () => {
         setConfig(savedConfig);
+        setSecretDrafts({});
+        setClearedSecrets([]);
         setStatus(null);
     };
 
     const discardDiscordChanges = () => {
         setDiscordConfig(savedDiscordConfig);
-        setDiscordJson(savedDiscordJson);
+        setGuildStyleRows(savedGuildStyleRows);
+        setChannelStyleRows(savedChannelStyleRows);
+        setNicknameRows(savedNicknameRows);
+        setThemeRows(savedThemeRows);
         setGlobalAvatarUrl(savedGlobalAvatarUrl);
+        setTelegramVoiceDraft(savedTelegramVoiceDraft);
         setDiscordStatus(null);
     };
 
@@ -463,15 +725,53 @@ export function ChannelsPage() {
         if (activeTab === 'discord') {
             fetchDiscordConfig();
         }
+        if (activeTab === 'telegram') {
+            fetchTelegramStatus();
+            fetchPersonaDraft();
+        }
     };
 
     const discordEnabled = config.ENABLE_DISCORD !== 'false';
     const telegramEnabled = config.ENABLE_TELEGRAM === 'true';
     const whatsappEnabled = config.ENABLE_WHATSAPP === 'true';
-    const guildOverrideCount = Object.keys(discordConfig.style_overrides?.guilds || {}).length;
-    const channelOverrideCount = Object.keys(discordConfig.style_overrides?.channels || {}).length;
-    const nicknameOverrideCount = Object.keys(discordConfig.nickname_templates?.guilds || {}).length;
-    const themeOverrideCount = Object.keys(discordConfig.embed_theme?.guilds || {}).length;
+    const guildOverrideCount = guildStyleRows.filter((row) => row.target.trim()).length;
+    const channelOverrideCount = channelStyleRows.filter((row) => row.target.trim()).length;
+    const nicknameOverrideCount = nicknameRows.filter((row) => row.target.trim() && row.value.trim()).length;
+    const themeOverrideCount = themeRows.filter((row) => row.target.trim() && row.value.trim()).length;
+    const telegramTokenConfigured = !!secretDrafts.TELEGRAM_BOT_TOKEN || getSecretInfo(secretMeta, 'TELEGRAM_BOT_TOKEN').configured;
+
+    const renderSecretField = (key: "DISCORD_TOKEN" | "TELEGRAM_BOT_TOKEN", label: string, placeholder: string) => {
+        const info = getSecretInfo(secretMeta, key);
+        const isClearing = clearedSecrets.includes(key);
+        return (
+            <div className="grid gap-2">
+                <div className="flex items-center justify-between gap-2">
+                    <Label htmlFor={key.toLowerCase()}>{label}</Label>
+                    <span className="text-[10px] text-muted-foreground">
+                        {isClearing ? 'Will be cleared' : info.configured ? `Stored ${info.masked}` : 'Not configured'}
+                    </span>
+                </div>
+                <div className="flex gap-2">
+                    <Input
+                        id={key.toLowerCase()}
+                        type="password"
+                        value={secretDrafts[key] || ""}
+                        onChange={(e) => {
+                            handleSecretChange(key, e.target.value);
+                            if (key === "TELEGRAM_BOT_TOKEN" && e.target.value.trim() && config.ENABLE_TELEGRAM !== 'true') {
+                                handleChange('ENABLE_TELEGRAM', 'true');
+                            }
+                        }}
+                        placeholder={getSecretPlaceholder(secretMeta, key, placeholder)}
+                        className="font-mono"
+                    />
+                    <Button type="button" variant="outline" size="icon" onClick={() => clearSecret(key)} title={`Clear ${label}`}>
+                        <Trash2 className="h-4 w-4" />
+                    </Button>
+                </div>
+            </div>
+        );
+    };
 
     if (loading) {
         return (
@@ -511,7 +811,9 @@ export function ChannelsPage() {
                             <div className="flex items-center justify-between">
                                 <div>
                                     <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Telegram</div>
-                                    <div className="mt-1 text-lg font-semibold text-foreground">{telegramEnabled ? 'Enabled' : 'Disabled'}</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">
+                                        {telegramStatus?.connected ? 'Connected' : telegramEnabled ? 'Enabled' : 'Disabled'}
+                                    </div>
                                 </div>
                                 <Send className={`h-5 w-5 ${telegramEnabled ? 'text-[#229ED9]' : 'text-muted-foreground'}`} />
                             </div>
@@ -570,6 +872,16 @@ export function ChannelsPage() {
                                     <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={discardDiscordChanges} disabled={!discordDirty || discordSaving}>Discard draft</Button>
                                     <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={handleDiscordSave} disabled={!discordDirty || discordSaving}>
                                         {discordSaving ? 'Saving…' : 'Save personalization'}
+                                    </Button>
+                                    <Button size="sm" className="h-8 px-3 text-xs" onClick={handleSave} disabled={!configDirty || saving}>
+                                        {saving ? 'Saving…' : 'Save channel config'}
+                                    </Button>
+                                </>
+                            ) : activeTab === 'telegram' ? (
+                                <>
+                                    <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={discardDiscordChanges} disabled={!discordDirty || discordSaving}>Discard voice draft</Button>
+                                    <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={handleTelegramStyleSave} disabled={!discordDirty || discordSaving}>
+                                        {discordSaving ? 'Saving…' : 'Save Telegram voice'}
                                     </Button>
                                     <Button size="sm" className="h-8 px-3 text-xs" onClick={handleSave} disabled={!configDirty || saving}>
                                         {saving ? 'Saving…' : 'Save channel config'}
@@ -655,17 +967,7 @@ export function ChannelsPage() {
                                 </div>
 
                                 <div className="pt-4 border-t border-border/50 space-y-4">
-                                    <div className="grid gap-2">
-                                        <Label htmlFor="discord_token">Discord Bot Token</Label>
-                                        <Input
-                                            id="discord_token"
-                                            type="password"
-                                            value={config.DISCORD_TOKEN || ""}
-                                            onChange={(e) => handleChange("DISCORD_TOKEN", e.target.value)}
-                                            placeholder="MT..."
-                                            className="font-mono"
-                                        />
-                                    </div>
+                                    {renderSecretField("DISCORD_TOKEN", "Discord Bot Token", "MT...")}
 
                                     <div className="grid gap-2">
                                         <div className="flex items-center gap-2">
@@ -915,57 +1217,127 @@ export function ChannelsPage() {
                                             </div>
                                         </div>
 
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                            <div className="space-y-2">
-                                                <Label>Per‑Guild Style Overrides (JSON)</Label>
-                                                <p className="text-[10px] text-muted-foreground">
-                                                    Map guild ID → style. Example: <span className="font-mono">{"{\"123\":{\"tone\":\"direct\",\"verbosity\":\"short\",\"emoji_usage\":\"none\"}}"}</span>
-                                                </p>
-                                                <textarea
-                                                    className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
-                                                    value={discordJson.styleGuilds}
-                                                    onChange={(e) => setDiscordJson(prev => ({ ...prev, styleGuilds: e.target.value }))}
-                                                    placeholder='{"123456789012345678":{"tone":"direct","verbosity":"short","emoji_usage":"none"}}'
-                                                />
+                                        <div className="space-y-4">
+                                            <div className="flex items-center justify-between">
+                                                <div>
+                                                    <Label>Per‑Guild Style Overrides</Label>
+                                                    <p className="text-[10px] text-muted-foreground">Create guided style profiles instead of editing raw JSON.</p>
+                                                </div>
+                                                <Button type="button" variant="outline" size="sm" onClick={() => setGuildStyleRows((prev) => [...prev, createStyleOverrideRow()])}>
+                                                    <Plus className="mr-2 h-4 w-4" /> Add guild rule
+                                                </Button>
                                             </div>
-                                            <div className="space-y-2">
-                                                <Label>Per‑Channel Style Overrides (JSON)</Label>
-                                                <p className="text-[10px] text-muted-foreground">
-                                                    Map channel ID → style. Example: <span className="font-mono">{"{\"222\":{\"tone\":\"formal\",\"verbosity\":\"long\"}}"}</span>
-                                                </p>
-                                                <textarea
-                                                    className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
-                                                    value={discordJson.styleChannels}
-                                                    onChange={(e) => setDiscordJson(prev => ({ ...prev, styleChannels: e.target.value }))}
-                                                    placeholder='{"222222222222222222":{"tone":"formal","verbosity":"long","emoji_usage":"none"}}'
-                                                />
+                                            <div className="space-y-3">
+                                                {guildStyleRows.length === 0 && <div className="rounded-lg border border-dashed border-border/70 p-4 text-sm text-muted-foreground">No guild-specific overrides yet.</div>}
+                                                {guildStyleRows.map((row) => (
+                                                    <div key={row.id} className="grid gap-3 rounded-xl border border-border/70 bg-background/40 p-4 md:grid-cols-6">
+                                                        <Input value={row.target} onChange={(e) => setGuildStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, target: e.target.value } : item))} placeholder="Guild ID" className="md:col-span-2 font-mono text-sm" />
+                                                        <Select value={row.tone} onValueChange={(value) => setGuildStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, tone: value } : item))}>
+                                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                                            <SelectContent><SelectItem value="neutral">Neutral</SelectItem><SelectItem value="friendly">Friendly</SelectItem><SelectItem value="direct">Direct</SelectItem><SelectItem value="formal">Formal</SelectItem></SelectContent>
+                                                        </Select>
+                                                        <Select value={row.verbosity} onValueChange={(value) => setGuildStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, verbosity: value } : item))}>
+                                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                                            <SelectContent><SelectItem value="short">Short</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="long">Long</SelectItem></SelectContent>
+                                                        </Select>
+                                                        <Select value={row.emoji_usage} onValueChange={(value) => setGuildStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, emoji_usage: value } : item))}>
+                                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                                            <SelectContent><SelectItem value="none">None</SelectItem><SelectItem value="light">Light</SelectItem><SelectItem value="heavy">Heavy</SelectItem></SelectContent>
+                                                        </Select>
+                                                        <Button type="button" variant="ghost" size="icon" onClick={() => setGuildStyleRows((prev) => prev.filter((item) => item.id !== row.id))}>
+                                                            <Trash2 className="h-4 w-4" />
+                                                        </Button>
+                                                        <Input value={row.signature} onChange={(e) => setGuildStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, signature: e.target.value } : item))} placeholder="Signature override" className="md:col-span-2" />
+                                                        <Input value={row.prefix} onChange={(e) => setGuildStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, prefix: e.target.value } : item))} placeholder="Prefix" />
+                                                        <Input value={row.max_length} onChange={(e) => setGuildStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, max_length: e.target.value } : item))} placeholder="Max length" type="number" min="1" />
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-4">
+                                            <div className="flex items-center justify-between">
+                                                <div>
+                                                    <Label>Per‑Channel Style Overrides</Label>
+                                                    <p className="text-[10px] text-muted-foreground">Use channel-specific rules when one Discord room needs a different tone.</p>
+                                                </div>
+                                                <Button type="button" variant="outline" size="sm" onClick={() => setChannelStyleRows((prev) => [...prev, createStyleOverrideRow()])}>
+                                                    <Plus className="mr-2 h-4 w-4" /> Add channel rule
+                                                </Button>
+                                            </div>
+                                            <div className="space-y-3">
+                                                {channelStyleRows.length === 0 && <div className="rounded-lg border border-dashed border-border/70 p-4 text-sm text-muted-foreground">No channel-specific overrides yet.</div>}
+                                                {channelStyleRows.map((row) => (
+                                                    <div key={row.id} className="grid gap-3 rounded-xl border border-border/70 bg-background/40 p-4 md:grid-cols-6">
+                                                        <Input value={row.target} onChange={(e) => setChannelStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, target: e.target.value } : item))} placeholder="Channel ID" className="md:col-span-2 font-mono text-sm" />
+                                                        <Select value={row.tone} onValueChange={(value) => setChannelStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, tone: value } : item))}>
+                                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                                            <SelectContent><SelectItem value="neutral">Neutral</SelectItem><SelectItem value="friendly">Friendly</SelectItem><SelectItem value="direct">Direct</SelectItem><SelectItem value="formal">Formal</SelectItem></SelectContent>
+                                                        </Select>
+                                                        <Select value={row.verbosity} onValueChange={(value) => setChannelStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, verbosity: value } : item))}>
+                                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                                            <SelectContent><SelectItem value="short">Short</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="long">Long</SelectItem></SelectContent>
+                                                        </Select>
+                                                        <Select value={row.emoji_usage} onValueChange={(value) => setChannelStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, emoji_usage: value } : item))}>
+                                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                                            <SelectContent><SelectItem value="none">None</SelectItem><SelectItem value="light">Light</SelectItem><SelectItem value="heavy">Heavy</SelectItem></SelectContent>
+                                                        </Select>
+                                                        <Button type="button" variant="ghost" size="icon" onClick={() => setChannelStyleRows((prev) => prev.filter((item) => item.id !== row.id))}>
+                                                            <Trash2 className="h-4 w-4" />
+                                                        </Button>
+                                                        <Input value={row.signature} onChange={(e) => setChannelStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, signature: e.target.value } : item))} placeholder="Signature override" className="md:col-span-2" />
+                                                        <Input value={row.prefix} onChange={(e) => setChannelStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, prefix: e.target.value } : item))} placeholder="Prefix" />
+                                                        <Input value={row.max_length} onChange={(e) => setChannelStyleRows((prev) => prev.map((item) => item.id === row.id ? { ...item, max_length: e.target.value } : item))} placeholder="Max length" type="number" min="1" />
+                                                    </div>
+                                                ))}
                                             </div>
                                         </div>
 
                                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                            <div className="space-y-2">
-                                                <Label>Per‑Guild Nicknames (JSON)</Label>
-                                                <p className="text-[10px] text-muted-foreground">
-                                                    Map guild ID → nickname template. Example: <span className="font-mono">{"{\"123\":\"LimeBot • DevOps\"}"}</span>
-                                                </p>
-                                                <textarea
-                                                    className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
-                                                    value={discordJson.nickGuilds}
-                                                    onChange={(e) => setDiscordJson(prev => ({ ...prev, nickGuilds: e.target.value }))}
-                                                    placeholder='{"123456789012345678":"LimeBot • DevOps"}'
-                                                />
-                                            </div>
-                                            <div className="space-y-2">
-                                                <Label>Per‑Guild Embed Theme (JSON)</Label>
-                                                <p className="text-[10px] text-muted-foreground">
-                                                    Map guild ID → hex color. Example: <span className="font-mono">{"{\"123\":\"#F4D03F\"}"}</span>
-                                                </p>
-                                                <textarea
-                                                    className="w-full min-h-[120px] rounded-md border border-border bg-background p-2 text-xs font-mono"
-                                                    value={discordJson.themeGuilds}
-                                                    onChange={(e) => setDiscordJson(prev => ({ ...prev, themeGuilds: e.target.value }))}
-                                                    placeholder='{"123456789012345678":"#F4D03F"}'
-                                                />
+                                            <div className="space-y-4 md:col-span-2">
+                                                <div className="flex items-center justify-between">
+                                                    <div>
+                                                        <Label>Per‑Guild Nicknames</Label>
+                                                        <p className="text-[10px] text-muted-foreground">Map guild IDs to nickname templates with simple rows.</p>
+                                                    </div>
+                                                    <Button type="button" variant="outline" size="sm" onClick={() => setNicknameRows((prev) => [...prev, createValueOverrideRow()])}>
+                                                        <Plus className="mr-2 h-4 w-4" /> Add nickname
+                                                    </Button>
+                                                </div>
+                                                <div className="space-y-3">
+                                                    {nicknameRows.length === 0 && <div className="rounded-lg border border-dashed border-border/70 p-4 text-sm text-muted-foreground">No nickname overrides yet.</div>}
+                                                    {nicknameRows.map((row) => (
+                                                        <div key={row.id} className="grid gap-3 rounded-xl border border-border/70 bg-background/40 p-4 md:grid-cols-[0.9fr_1.2fr_auto]">
+                                                            <Input value={row.target} onChange={(e) => setNicknameRows((prev) => prev.map((item) => item.id === row.id ? { ...item, target: e.target.value } : item))} placeholder="Guild ID" className="font-mono text-sm" />
+                                                            <Input value={row.value} onChange={(e) => setNicknameRows((prev) => prev.map((item) => item.id === row.id ? { ...item, value: e.target.value } : item))} placeholder="LimeBot • DevOps" />
+                                                            <Button type="button" variant="ghost" size="icon" onClick={() => setNicknameRows((prev) => prev.filter((item) => item.id !== row.id))}>
+                                                                <Trash2 className="h-4 w-4" />
+                                                            </Button>
+                                                        </div>
+                                                    ))}
+                                                </div>
+
+                                                <div className="flex items-center justify-between">
+                                                    <div>
+                                                        <Label>Per‑Guild Embed Theme</Label>
+                                                        <p className="text-[10px] text-muted-foreground">Assign a default embed color per guild without touching JSON.</p>
+                                                    </div>
+                                                    <Button type="button" variant="outline" size="sm" onClick={() => setThemeRows((prev) => [...prev, createValueOverrideRow()])}>
+                                                        <Plus className="mr-2 h-4 w-4" /> Add theme
+                                                    </Button>
+                                                </div>
+                                                <div className="space-y-3">
+                                                    {themeRows.length === 0 && <div className="rounded-lg border border-dashed border-border/70 p-4 text-sm text-muted-foreground">No theme overrides yet.</div>}
+                                                    {themeRows.map((row) => (
+                                                        <div key={row.id} className="grid gap-3 rounded-xl border border-border/70 bg-background/40 p-4 md:grid-cols-[0.9fr_1.2fr_auto]">
+                                                            <Input value={row.target} onChange={(e) => setThemeRows((prev) => prev.map((item) => item.id === row.id ? { ...item, target: e.target.value } : item))} placeholder="Guild ID" className="font-mono text-sm" />
+                                                            <Input value={row.value} onChange={(e) => setThemeRows((prev) => prev.map((item) => item.id === row.id ? { ...item, value: e.target.value } : item))} placeholder="#57F287" />
+                                                            <Button type="button" variant="ghost" size="icon" onClick={() => setThemeRows((prev) => prev.filter((item) => item.id !== row.id))}>
+                                                                <Trash2 className="h-4 w-4" />
+                                                            </Button>
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
                                             <div className="space-y-2">
                                                 <Label>Global Avatar URL</Label>
@@ -1000,7 +1372,7 @@ export function ChannelsPage() {
                             <CardContent className="space-y-6">
                                 <div className="flex flex-wrap items-center gap-2">
                                     <span className={`rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${telegramEnabled ? 'border-[#229ED9]/20 bg-[#229ED9]/10 text-[#229ED9]' : 'border-border bg-background/70 text-muted-foreground'}`}>
-                                        {telegramEnabled ? 'Integration live' : 'Integration disabled'}
+                                        {telegramStatus?.connected ? 'Bot connected' : telegramEnabled ? 'Integration enabled' : 'Integration disabled'}
                                     </span>
                                     <span className="rounded-full border border-border bg-background/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                                         {config.TELEGRAM_ALLOW_FROM ? 'Restricted users' : 'Open users'}
@@ -1008,7 +1380,30 @@ export function ChannelsPage() {
                                     <span className="rounded-full border border-border bg-background/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                                         {config.TELEGRAM_ALLOW_CHATS ? 'Restricted chats' : 'All chats'}
                                     </span>
+                                    {telegramStatus?.username && (
+                                        <span className="rounded-full border border-[#229ED9]/20 bg-[#229ED9]/5 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#229ED9]">
+                                            @{telegramStatus.username}
+                                        </span>
+                                    )}
                                 </div>
+
+                                {telegramTokenConfigured && !telegramEnabled && (
+                                    <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-200">
+                                        <AlertCircle className="h-4 w-4" />
+                                        <AlertTitle>Token saved, channel still disabled</AlertTitle>
+                                        <AlertDescription>
+                                            Turn on Telegram integration below before expecting the bot to respond.
+                                        </AlertDescription>
+                                    </Alert>
+                                )}
+
+                                {telegramStatus?.last_error && (
+                                    <Alert className="border-destructive/50 bg-destructive/10 text-destructive">
+                                        <AlertCircle className="h-4 w-4" />
+                                        <AlertTitle>Telegram health check failed</AlertTitle>
+                                        <AlertDescription>{telegramStatus.last_error}</AlertDescription>
+                                    </Alert>
+                                )}
 
                                 <div className="flex items-center justify-between">
                                     <div className="space-y-1">
@@ -1025,17 +1420,82 @@ export function ChannelsPage() {
                                 </div>
 
                                 <div className="pt-4 border-t border-border/50 space-y-4">
-                                    <div className="grid gap-2">
-                                        <Label htmlFor="telegram_token">Telegram Bot Token</Label>
-                                        <Input
-                                            id="telegram_token"
-                                            type="password"
-                                            value={config.TELEGRAM_BOT_TOKEN || ""}
-                                            onChange={(e) => handleChange("TELEGRAM_BOT_TOKEN", e.target.value)}
-                                            placeholder="123456789:AA..."
-                                            className="font-mono"
-                                        />
+                                    {renderSecretField("TELEGRAM_BOT_TOKEN", "Telegram Bot Token", "123456789:AA...")}
+
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <div className="rounded-lg border border-border/60 bg-background/30 p-4">
+                                            <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Health</div>
+                                            <div className="mt-2 text-base font-semibold">
+                                                {telegramStatus?.status ? telegramStatus.status.replace('_', ' ') : 'Unknown'}
+                                            </div>
+                                        </div>
+                                        <div className="rounded-lg border border-border/60 bg-background/30 p-4">
+                                            <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Bot Name</div>
+                                            <div className="mt-2 text-base font-semibold">
+                                                {telegramStatus?.display_name || telegramStatus?.username || 'Not checked yet'}
+                                            </div>
+                                        </div>
+                                        <div className="rounded-lg border border-border/60 bg-background/30 p-4">
+                                            <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Bot ID</div>
+                                            <div className="mt-2 text-base font-semibold">
+                                                {telegramStatus?.bot_id || '—'}
+                                            </div>
+                                        </div>
                                     </div>
+
+                                    <Card className="border-[#229ED9]/20 bg-[#229ED9]/5">
+                                        <CardHeader>
+                                            <CardTitle className="flex items-center gap-2 text-base">
+                                                <Wand2 className="h-4 w-4 text-[#229ED9]" />
+                                                Telegram Voice Builder
+                                            </CardTitle>
+                                            <CardDescription>
+                                                Guided controls for the Telegram-specific voice that feeds the real persona prompt.
+                                            </CardDescription>
+                                        </CardHeader>
+                                        <CardContent className="space-y-4">
+                                            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                                <div className="space-y-2">
+                                                    <Label>Tone</Label>
+                                                    <Select value={telegramVoiceDraft.tone} onValueChange={(value) => setTelegramVoiceDraft((prev) => ({ ...prev, tone: value }))}>
+                                                        <SelectTrigger><SelectValue /></SelectTrigger>
+                                                        <SelectContent><SelectItem value="friendly">Friendly</SelectItem><SelectItem value="direct">Direct</SelectItem><SelectItem value="formal">Formal</SelectItem><SelectItem value="playful">Playful</SelectItem></SelectContent>
+                                                    </Select>
+                                                </div>
+                                                <div className="space-y-2">
+                                                    <Label>Verbosity</Label>
+                                                    <Select value={telegramVoiceDraft.verbosity} onValueChange={(value) => setTelegramVoiceDraft((prev) => ({ ...prev, verbosity: value }))}>
+                                                        <SelectTrigger><SelectValue /></SelectTrigger>
+                                                        <SelectContent><SelectItem value="short">Short</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="long">Long</SelectItem></SelectContent>
+                                                    </Select>
+                                                </div>
+                                                <div className="space-y-2">
+                                                    <Label>Emoji Usage</Label>
+                                                    <Select value={telegramVoiceDraft.emojiUsage} onValueChange={(value) => setTelegramVoiceDraft((prev) => ({ ...prev, emojiUsage: value }))}>
+                                                        <SelectTrigger><SelectValue /></SelectTrigger>
+                                                        <SelectContent><SelectItem value="none">None</SelectItem><SelectItem value="light">Light</SelectItem><SelectItem value="heavy">Heavy</SelectItem></SelectContent>
+                                                    </Select>
+                                                </div>
+                                                <div className="space-y-2">
+                                                    <Label>Signoff</Label>
+                                                    <Input value={telegramVoiceDraft.signoff} onChange={(e) => setTelegramVoiceDraft((prev) => ({ ...prev, signoff: e.target.value }))} placeholder="Optional closer" />
+                                                </div>
+                                            </div>
+                                            <div className="grid gap-2">
+                                                <Label>Extra Guidance</Label>
+                                                <textarea
+                                                    className="min-h-[110px] w-full rounded-md border border-border bg-background p-3 text-sm"
+                                                    value={telegramVoiceDraft.notes}
+                                                    onChange={(e) => setTelegramVoiceDraft((prev) => ({ ...prev, notes: e.target.value }))}
+                                                    placeholder="Optional notes for Telegram-specific delivery..."
+                                                />
+                                            </div>
+                                            <div className="rounded-lg border border-border/60 bg-background/60 p-4">
+                                                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Generated Telegram Style</div>
+                                                <p className="mt-2 text-sm leading-relaxed text-foreground">{buildTelegramStyle(telegramVoiceDraft)}</p>
+                                            </div>
+                                        </CardContent>
+                                    </Card>
 
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <div className="grid gap-2">

@@ -56,5 +56,12 @@ class TestVectorProviderResolution(unittest.TestCase):
 
         self.assertEqual(vector, [0.1, 0.2, 0.3])
         self.assertEqual(
-            mock_embedding.call_args.kwargs["model"], "nvidia_nim/NV-Embed-v2"
+            mock_embedding.call_args.kwargs["model"], "NV-Embed-v2"
+        )
+        self.assertEqual(
+            mock_embedding.call_args.kwargs["base_url"],
+            "https://integrate.api.nvidia.com/v1",
+        )
+        self.assertEqual(
+            mock_embedding.call_args.kwargs["custom_llm_provider"], "nvidia_nim"
         )

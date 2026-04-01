@@ -130,5 +130,6 @@ skills/daily_briefing/*
 temp_tasks.json
 skills/linkedin_scout/*
 allowed_paths.txt
+tests/test_x_quick_post_cli.py
 data/cron_runs/*
 data/cron_runs
