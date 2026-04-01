@@ -41,6 +41,8 @@ interface Message {
     attachments?: ChatAttachment[];
     toolExecution?: ToolExecution;
     variant?: 'default' | 'destructive' | 'warning';
+    messageId?: string;
+    turnId?: string;
 }
 
 interface ChatInterfaceProps {
@@ -234,6 +236,36 @@ function isSubagentReportMessage(msg?: Message | null): boolean {
 
 function isSpawnAgentToolMessage(msg?: Message | null): boolean {
     return msg?.type === 'tool' && msg.toolExecution?.tool === 'spawn_agent';
+}
+
+function isBotTextLikeMessage(msg?: Message | null): boolean {
+    return !!msg && msg.sender === 'bot' && msg.type !== 'tool' && !msg.isStreaming;
+}
+
+type ToolExecutionWithTurn = ToolExecution & {
+    turnId?: string;
+};
+
+function shouldHideSpawnAgentGroup(toolGroup: ToolExecutionWithTurn[], nextMessage?: Message | null): boolean {
+    if (!toolGroup.length || !toolGroup.every((execution) => execution.tool === 'spawn_agent')) {
+        return false;
+    }
+    if (isSubagentReportMessage(nextMessage)) {
+        return true;
+    }
+    if (!isBotTextLikeMessage(nextMessage)) {
+        return false;
+    }
+
+    const nextTurnId = String(nextMessage?.turnId || '').trim();
+    if (!nextTurnId) {
+        return false;
+    }
+
+    return toolGroup.some((execution) => {
+        const executionTurnId = String(execution.turnId || '').trim();
+        return executionTurnId && executionTurnId === nextTurnId;
+    });
 }
 
 function isSubagentOrchestrationThought(
@@ -1253,14 +1285,16 @@ export function ChatInterface({
 
                                 if (msg.type === 'tool' && msg.toolExecution) {
                                     const start = i;
-                                    const toolGroup: ToolExecution[] = [];
+                                    const toolGroup: ToolExecutionWithTurn[] = [];
                                     while (i < messages.length && messages[i].type === 'tool' && messages[i].toolExecution) {
-                                        toolGroup.push(messages[i].toolExecution as ToolExecution);
+                                        toolGroup.push({
+                                            ...(messages[i].toolExecution as ToolExecution),
+                                            turnId: messages[i].turnId,
+                                        });
                                         i++;
                                     }
                                     const nextMessage = i < messages.length ? messages[i] : null;
-                                    const onlySpawnAgentTools = toolGroup.every((execution) => execution.tool === 'spawn_agent');
-                                    if (onlySpawnAgentTools && isSubagentReportMessage(nextMessage)) {
+                                    if (shouldHideSpawnAgentGroup(toolGroup, nextMessage)) {
                                         i -= 1;
                                         continue;
                                     }
