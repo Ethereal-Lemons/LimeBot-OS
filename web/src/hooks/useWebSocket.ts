@@ -339,6 +339,8 @@ export function useWebSocket({
                             }
                             newMessages[existingIndex] = {
                                 ...newMessages[existingIndex],
+                                messageId: eventMessageId || newMessages[existingIndex].messageId,
+                                turnId: eventTurnId || newMessages[existingIndex].turnId,
                                 toolExecution: {
                                     ...existingExec,
                                     status: toolData.status === 'progress' ? existingExec.status : toolData.status,
@@ -354,6 +356,8 @@ export function useWebSocket({
                                 sender: 'bot',
                                 type: 'tool',
                                 content: '',
+                                messageId: eventMessageId || undefined,
+                                turnId: eventTurnId || undefined,
                                 toolExecution: {
                                     tool: toolData.tool,
                                     status: toolData.status,
