@@ -73,7 +73,7 @@ def _serialize_secret(value: str) -> dict[str, Any]:
     return {
         "configured": bool(cleaned),
         "masked": _mask_secret(cleaned),
-        "last4": cleaned[-4:] if len(cleaned) >= 4 else cleaned,
+        "last4": cleaned[-4:] if len(cleaned) > 4 else "",
     }
 
 

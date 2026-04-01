@@ -165,9 +165,28 @@ export function OverviewPage() {
     const connectClient = async () => {
         if (!stats?.gateway_url) return;
         setActionBusy("connect");
-        const wsWithKey = gatewayTokenValue
-            ? `${stats.gateway_url}?api_key=${encodeURIComponent(gatewayTokenValue || localStorage.getItem("limebot_api_key") || "")}`
-            : stats.gateway_url;
+        const storedKey = gatewayTokenValue || localStorage.getItem("limebot_api_key") || "";
+        const requiresGatewayKey = Boolean(gatewayTokenLabel);
+
+        if (requiresGatewayKey && !storedKey) {
+            toast.error("Gateway token required", {
+                description: "This server requires APP_API_KEY, but this browser has no cached token. Generate or re-enter a token before copying the client URL.",
+            });
+            setActionBusy(null);
+            return;
+        }
+
+        let wsWithKey = stats.gateway_url;
+        if (storedKey) {
+            try {
+                const url = new URL(stats.gateway_url);
+                url.searchParams.set("api_key", storedKey);
+                wsWithKey = url.toString();
+            } catch {
+                const separator = stats.gateway_url.includes("?") ? "&" : "?";
+                wsWithKey = `${stats.gateway_url}${separator}api_key=${encodeURIComponent(storedKey)}`;
+            }
+        }
         try {
             await navigator.clipboard.writeText(wsWithKey);
             toast.success("Client URL copied", { description: "WebSocket endpoint copied to clipboard." });

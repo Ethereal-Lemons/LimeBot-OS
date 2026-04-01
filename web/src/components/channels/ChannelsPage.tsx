@@ -88,7 +88,22 @@ interface TelegramStatus {
 }
 
 interface PersonaDraft {
+    name?: string;
+    emoji?: string;
+    pfp_url?: string;
+    style?: string;
+    discord_style?: string;
     telegram_style?: string;
+    whatsapp_style?: string;
+    web_style?: string;
+    reaction_emojis?: string;
+    soul_summary?: string;
+    catchphrases?: string;
+    interests?: string;
+    birthday?: string;
+    mood?: string;
+    enable_dynamic_personality?: boolean;
+    relationships?: Array<{ id: string; name: string; affinity: number; level: string }>;
 }
 
 interface StyleOverrideRow {
@@ -172,6 +187,28 @@ const DEFAULT_TELEGRAM_VOICE: TelegramVoiceDraft = {
     signoff: "",
     notes: "",
 };
+
+const DEFAULT_PERSONA_DRAFT: PersonaDraft = {
+    name: "",
+    emoji: "",
+    pfp_url: "",
+    style: "",
+    discord_style: "",
+    telegram_style: "",
+    whatsapp_style: "",
+    web_style: "",
+    reaction_emojis: "",
+    soul_summary: "",
+    catchphrases: "",
+    interests: "",
+    birthday: "",
+    mood: "",
+    enable_dynamic_personality: false,
+    relationships: [],
+};
+
+const clonePersonaDraft = (data?: Partial<PersonaDraft>): PersonaDraft =>
+    JSON.parse(JSON.stringify({ ...DEFAULT_PERSONA_DRAFT, ...(data || {}) }));
 
 const buildTelegramStyle = (draft: TelegramVoiceDraft) => {
     const lines = [
@@ -362,7 +399,7 @@ export function ChannelsPage() {
     const [savedThemeRows, setSavedThemeRows] = useState<ValueOverrideRow[]>([]);
     const [globalAvatarUrl, setGlobalAvatarUrl] = useState("");
     const [savedGlobalAvatarUrl, setSavedGlobalAvatarUrl] = useState("");
-    const [personaDraft, setPersonaDraft] = useState<PersonaDraft>({});
+    const [personaDraft, setPersonaDraft] = useState<PersonaDraft>(clonePersonaDraft());
     const [telegramVoiceDraft, setTelegramVoiceDraft] = useState<TelegramVoiceDraft>(DEFAULT_TELEGRAM_VOICE);
     const [savedTelegramVoiceDraft, setSavedTelegramVoiceDraft] = useState<TelegramVoiceDraft>(DEFAULT_TELEGRAM_VOICE);
     const [loading, setLoading] = useState(true);
@@ -434,7 +471,7 @@ export function ChannelsPage() {
     const fetchPersonaDraft = () => {
         axios.get(`${API_BASE_URL}/api/persona`)
             .then(res => {
-                const nextPersona = { telegram_style: res.data?.telegram_style || "" };
+                const nextPersona = clonePersonaDraft(res.data);
                 const nextVoice = {
                     ...DEFAULT_TELEGRAM_VOICE,
                     notes: nextPersona.telegram_style || "",
@@ -595,10 +632,10 @@ export function ChannelsPage() {
 
     const handleTelegramStyleSave = () => {
         const nextStyle = buildTelegramStyle(telegramVoiceDraft);
-        const payload = {
+        const payload = clonePersonaDraft({
             ...personaDraft,
             telegram_style: nextStyle,
-        };
+        });
         setDiscordSaving(true);
         setDiscordStatus(null);
         axios.put(`${API_BASE_URL}/api/persona`, payload)
