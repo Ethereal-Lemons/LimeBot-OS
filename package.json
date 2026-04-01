@@ -1,6 +1,6 @@
 {
   "name": "lime-bot",
-  "version": "1.0.0",
+  "version": "1.0.8",
   "description": "LimeBot - The elegant and powerful agentic bot",
   "main": "bin/cli.js",
   "bin": {
