@@ -1,6 +1,8 @@
 import asyncio
 import ast
+import base64
 import json
+import mimetypes
 import os
 import re
 import time
@@ -54,10 +56,9 @@ from core.vectors import get_vector_service
 
 
 TOOL_BROADCAST_MAX_CHARS = 500
-_TOOL_MEDIA_PAYLOAD_PATTERN = re.compile(
-    r"<limebot-tool-payload>\s*(\{.*?\})\s*</limebot-tool-payload>",
-    re.DOTALL | re.IGNORECASE,
-)
+_TOOL_LOCAL_IMAGE_MAX_BYTES = 4 * 1024 * 1024
+_TOOL_MEDIA_PAYLOAD_START = "<limebot-tool-payload>"
+_TOOL_MEDIA_PAYLOAD_END = "</limebot-tool-payload>"
 
 
 # Tool result limits and browser cacheability are now in core/tool_dispatcher.py
@@ -215,6 +216,7 @@ class AgentLoop:
         self._history_flush_interval = 5.0
         self._last_history_flush: Dict[str, float] = {}
         self._image_input_fallback_sessions: Set[str] = set()
+        self._sessions_pending_tool_image_reply: Set[str] = set()
 
     async def _init_skills_and_tools(self) -> None:
         """Background: discover skills, build tool definitions, then warm up slow services."""
@@ -532,44 +534,175 @@ class AgentLoop:
         return "\n\n".join(section for section in sections if section.strip())
 
     @staticmethod
+    def _inline_local_tool_image(
+        path_value: str,
+        *,
+        mime_type: str = "",
+        name: str = "",
+        source: str = "",
+    ) -> Optional[Dict[str, str]]:
+        raw_path = str(path_value or "").strip()
+        if not raw_path:
+            return None
+
+        try:
+            cwd = Path.cwd().resolve()
+            candidate = Path(raw_path)
+            resolved = (
+                candidate.resolve()
+                if candidate.is_absolute()
+                else (cwd / candidate).resolve()
+            )
+            resolved.relative_to(cwd)
+        except Exception:
+            return None
+
+        if not resolved.exists() or not resolved.is_file():
+            return None
+
+        inferred_mime = str(mime_type or "").strip() or (
+            mimetypes.guess_type(resolved.name)[0] or ""
+        )
+        if not inferred_mime.lower().startswith("image/"):
+            return None
+
+        try:
+            if resolved.stat().st_size > _TOOL_LOCAL_IMAGE_MAX_BYTES:
+                return None
+            encoded = base64.b64encode(resolved.read_bytes()).decode("ascii")
+        except Exception:
+            return None
+
+        return {
+            "url": f"data:{inferred_mime};base64,{encoded}",
+            "name": str(name or resolved.name).strip(),
+            "source": str(source or raw_path).strip(),
+        }
+
+    @classmethod
+    def _extract_local_tool_images(cls, raw_text: str) -> List[Dict[str, str]]:
+        raw = str(raw_text or "")
+        parsed_candidates: List[Any] = []
+        try:
+            parsed_candidates.append(json.loads(raw))
+        except Exception:
+            pass
+
+        if not parsed_candidates:
+            for line in raw.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("{") or not stripped.endswith("}"):
+                    continue
+                try:
+                    parsed_candidates.append(json.loads(stripped))
+                except Exception:
+                    continue
+
+        if not parsed_candidates:
+            return []
+
+        images: List[Dict[str, str]] = []
+        seen_paths: Set[str] = set()
+
+        def _visit(node: Any, source_hint: str = "") -> None:
+            if isinstance(node, dict):
+                path_value = str(
+                    node.get("saved_path")
+                    or node.get("path")
+                    or node.get("local_path")
+                    or node.get("file_path")
+                    or ""
+                ).strip()
+                if path_value and path_value not in seen_paths:
+                    seen_paths.add(path_value)
+                    image = cls._inline_local_tool_image(
+                        path_value,
+                        mime_type=str(
+                            node.get("mime_type") or node.get("mimeType") or ""
+                        ).strip(),
+                        name=str(node.get("filename") or node.get("name") or "").strip(),
+                        source=source_hint or "tool-downloaded local image",
+                    )
+                    if image:
+                        images.append(image)
+
+                next_source = source_hint
+                issue_key = str(node.get("issue_key") or "").strip()
+                if issue_key:
+                    next_source = f"Jira attachment on {issue_key.upper()}"
+
+                for value in node.values():
+                    _visit(value, next_source)
+                return
+
+            if isinstance(node, list):
+                for item in node:
+                    _visit(item, source_hint)
+
+        for parsed in parsed_candidates:
+            _visit(parsed)
+        return images
+
+    @staticmethod
     def _extract_tool_media_payload(result: Any) -> Tuple[str, List[Dict[str, str]]]:
         raw_text = str(result or "")
         images: List[Dict[str, str]] = []
         summaries: List[str] = []
 
-        def _replace(match: re.Match[str]) -> str:
+        cleaned_parts: List[str] = []
+        cursor = 0
+        while True:
+            start = raw_text.find(_TOOL_MEDIA_PAYLOAD_START, cursor)
+            if start < 0:
+                cleaned_parts.append(raw_text[cursor:])
+                break
+
+            cleaned_parts.append(raw_text[cursor:start])
+            payload_start = start + len(_TOOL_MEDIA_PAYLOAD_START)
+            end = raw_text.find(_TOOL_MEDIA_PAYLOAD_END, payload_start)
+            if end < 0:
+                cleaned_parts.append(raw_text[start:])
+                break
+
+            payload_text = raw_text[payload_start:end].strip()
             try:
-                payload = json.loads(match.group(1))
+                payload = json.loads(payload_text)
             except Exception:
-                return ""
+                payload = None
 
-            if not isinstance(payload, dict):
-                return ""
+            if isinstance(payload, dict):
+                summary = str(
+                    payload.get("text") or payload.get("summary") or ""
+                ).strip()
+                if summary:
+                    summaries.append(summary)
 
-            summary = str(
-                payload.get("text") or payload.get("summary") or ""
-            ).strip()
-            if summary:
-                summaries.append(summary)
+                for item in payload.get("images") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    url = str(item.get("url") or "").strip()
+                    if not url:
+                        continue
+                    images.append(
+                        {
+                            "url": url,
+                            "name": str(item.get("name") or "").strip(),
+                            "source": str(item.get("source") or "").strip(),
+                        }
+                    )
 
-            for item in payload.get("images") or []:
-                if not isinstance(item, dict):
-                    continue
-                url = str(item.get("url") or "").strip()
-                if not url:
-                    continue
-                images.append(
-                    {
-                        "url": url,
-                        "name": str(item.get("name") or "").strip(),
-                        "source": str(item.get("source") or "").strip(),
-                    }
-                )
+                if summary:
+                    cleaned_parts.append(summary)
+            else:
+                cleaned_parts.append(raw_text[start : end + len(_TOOL_MEDIA_PAYLOAD_END)])
 
-            return summary
+            cursor = end + len(_TOOL_MEDIA_PAYLOAD_END)
 
-        cleaned = _TOOL_MEDIA_PAYLOAD_PATTERN.sub(_replace, raw_text)
+        cleaned = "".join(cleaned_parts)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+        if not images:
+            images.extend(AgentLoop._extract_local_tool_images(cleaned or raw_text))
 
         if not cleaned and summaries:
             cleaned = "\n".join(summaries)
@@ -596,7 +729,10 @@ class AgentLoop:
         intro = (
             f"Internal tool-fetched image context from `{function_name}`. "
             "These images were retrieved during tool execution for the current task. "
-            "Inspect them before continuing, and do not treat this as a new user request."
+            "Inspect them directly with your own vision before continuing. "
+            "Do not treat this as a new user request, and do not call OCR or "
+            "file-reading tools unless the user specifically asks for extraction "
+            "or the image is unreadable."
         )
         if names:
             intro += f" Retrieved: {', '.join(names)}."
@@ -2638,6 +2774,7 @@ class AgentLoop:
                     }
                 )
                 self._mark_dirty(session_key)
+                self._sessions_pending_tool_image_reply.add(session_key)
 
         return any_blocked
 
@@ -4192,16 +4329,23 @@ class AgentLoop:
                                     self._mark_dirty(session_key)
                                     break
 
+                                force_tool_image_reply = (
+                                    session_key in self._sessions_pending_tool_image_reply
+                                )
                                 nxt_stream = await self._llm_call_with_retry(
                                     messages=self.history[session_key],
                                     session_key=session_key,
                                     msg=msg,
                                     stream=True,
-                                    include_tools=True,
+                                    include_tools=not force_tool_image_reply,
                                     tool_context_text=content,
                                     turn_id=turn_id,
                                     message_id=assistant_message_id,
                                 )
+                                if force_tool_image_reply:
+                                    self._sessions_pending_tool_image_reply.discard(
+                                        session_key
+                                    )
                                 nxt_consume_result = await self._consume_stream(
                                     nxt_stream,
                                     msg,
