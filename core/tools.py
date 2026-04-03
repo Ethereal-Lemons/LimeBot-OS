@@ -902,10 +902,22 @@ class Toolbox:
     async def run_command(self, command: str) -> str:
         """Execute a terminal command with real-time progress updates."""
         forbidden_regex = r"(\$\(|\`|;|&&|\|\||>|<|\n)"
+        pseudo_call_match = re.match(
+            r"^\s*([A-Za-z_][\w\.]*)\s*\((.*)\)\s*$", str(command or ""), re.DOTALL
+        )
 
         unsafe_allowed = False
         if self.config:
             unsafe_allowed = getattr(self.config, "allow_unsafe_commands", False)
+
+        if pseudo_call_match:
+            call_name = pseudo_call_match.group(1)
+            return (
+                f"Error: '{call_name}(...)' looks like a pseudo tool or skill-manual example, "
+                "not a shell command. SKILL.md examples are documentation only. "
+                "Use an explicit CLI command with run_command instead, such as "
+                "`python skills/<skill>/main.py ...`."
+            )
 
         if not unsafe_allowed and re.search(forbidden_regex, command):
             match = re.search(forbidden_regex, command).group(0)

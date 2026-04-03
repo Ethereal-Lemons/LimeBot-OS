@@ -53,6 +53,10 @@ from core.vectors import get_vector_service
 
 
 TOOL_BROADCAST_MAX_CHARS = 500
+_TOOL_MEDIA_PAYLOAD_PATTERN = re.compile(
+    r"<limebot-tool-payload>\s*(\{.*?\})\s*</limebot-tool-payload>",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 # Tool result limits and browser cacheability are now in core/tool_dispatcher.py
@@ -490,6 +494,88 @@ class AgentLoop:
             sections.append("\n".join(parts))
 
         return "\n\n".join(section for section in sections if section.strip())
+
+    @staticmethod
+    def _extract_tool_media_payload(result: Any) -> Tuple[str, List[Dict[str, str]]]:
+        raw_text = str(result or "")
+        images: List[Dict[str, str]] = []
+        summaries: List[str] = []
+
+        def _replace(match: re.Match[str]) -> str:
+            try:
+                payload = json.loads(match.group(1))
+            except Exception:
+                return ""
+
+            if not isinstance(payload, dict):
+                return ""
+
+            summary = str(
+                payload.get("text") or payload.get("summary") or ""
+            ).strip()
+            if summary:
+                summaries.append(summary)
+
+            for item in payload.get("images") or []:
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("url") or "").strip()
+                if not url:
+                    continue
+                images.append(
+                    {
+                        "url": url,
+                        "name": str(item.get("name") or "").strip(),
+                        "source": str(item.get("source") or "").strip(),
+                    }
+                )
+
+            return summary
+
+        cleaned = _TOOL_MEDIA_PAYLOAD_PATTERN.sub(_replace, raw_text)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+        if not cleaned and summaries:
+            cleaned = "\n".join(summaries)
+        if not cleaned and images:
+            cleaned = f"Tool returned {len(images)} image attachment(s) for inspection."
+
+        deduped_images: List[Dict[str, str]] = []
+        seen_urls: Set[str] = set()
+        for image in images:
+            url = image.get("url", "")
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            deduped_images.append(image)
+
+        return cleaned, deduped_images
+
+    @staticmethod
+    def _build_tool_image_followup_content(
+        function_name: str, images: List[Dict[str, str]]
+    ) -> List[Dict[str, Any]]:
+        selected = images[:3]
+        names = [image.get("name", "").strip() for image in selected if image.get("name")]
+        intro = (
+            f"Internal tool-fetched image context from `{function_name}`. "
+            "These images were retrieved during tool execution for the current task. "
+            "Inspect them before continuing, and do not treat this as a new user request."
+        )
+        if names:
+            intro += f" Retrieved: {', '.join(names)}."
+        if len(images) > len(selected):
+            intro += f" Showing {len(selected)} of {len(images)} images."
+
+        content: List[Dict[str, Any]] = [{"type": "text", "text": intro}]
+        for image in selected:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image["url"]},
+                }
+            )
+        return content
 
     @staticmethod
     def _should_suppress_web_final_reply(
@@ -2266,6 +2352,10 @@ class AgentLoop:
             if is_blocked:
                 any_blocked = True
 
+            clean_result, tool_images = self._extract_tool_media_payload(result)
+            if clean_result:
+                result = clean_result
+
             if not is_internal:
                 tool_status = (
                     "error"
@@ -2304,6 +2394,17 @@ class AgentLoop:
                 }
             )
             self._mark_dirty(session_key)
+
+            if tool_images and not is_internal:
+                self.history[session_key].append(
+                    {
+                        "role": "user",
+                        "content": self._build_tool_image_followup_content(
+                            function_name, tool_images
+                        ),
+                    }
+                )
+                self._mark_dirty(session_key)
 
         return any_blocked
 
@@ -2713,9 +2814,9 @@ class AgentLoop:
             cleaned,
             flags=re.MULTILINE,
         )
-        # Strip bare JSON tool-call objects: {"name": "...", "arguments": {...}}
+        # Strip bare JSON tool-call objects: {"name": "...", "arguments|parameters": {...}}
         cleaned = re.sub(
-            r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}',
+            r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|parameters)"\s*:\s*\{[^}]*\}\s*\}',
             "",
             cleaned,
         )
