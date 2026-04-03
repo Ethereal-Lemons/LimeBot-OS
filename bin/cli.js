@@ -339,6 +339,50 @@ function writeUpdateCheckCache(status) {
     writeJsonSafe(UPDATE_CHECK_CACHE_PATH, status);
 }
 
+function readLocalPackageInfo() {
+    const pkg = readJsonSafe(path.join(rootDir, 'package.json'));
+    if (!pkg || typeof pkg !== 'object') {
+        return { packageName: null, currentVersion: null };
+    }
+    return {
+        packageName: typeof pkg.name === 'string' ? pkg.name.trim() : null,
+        currentVersion: typeof pkg.version === 'string' ? pkg.version.trim() : null,
+    };
+}
+
+function parseSemver(version) {
+    const match = String(version || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i);
+    if (!match) return null;
+    return match.slice(1, 4).map((part) => Number.parseInt(part, 10));
+}
+
+function compareSemver(a, b) {
+    const parsedA = parseSemver(a);
+    const parsedB = parseSemver(b);
+    if (!parsedA || !parsedB) return null;
+    for (let i = 0; i < 3; i++) {
+        if (parsedA[i] > parsedB[i]) return 1;
+        if (parsedA[i] < parsedB[i]) return -1;
+    }
+    return 0;
+}
+
+function normalizeVersion(version) {
+    const raw = String(version || '').trim();
+    if (!raw) return null;
+    const parsed = parseSemver(raw);
+    if (!parsed) return raw;
+    return `${parsed[0]}.${parsed[1]}.${parsed[2]}`;
+}
+
+function selectNewerVersion(current, candidate) {
+    if (!candidate) return current;
+    if (!current) return candidate;
+    const cmp = compareSemver(candidate, current);
+    if (cmp === null) return current;
+    return cmp > 0 ? candidate : current;
+}
+
 async function getLocalGitSnapshot() {
     const inRepo = await runGit(['rev-parse', '--is-inside-work-tree']);
     if (inRepo.code !== 0 || inRepo.stdout !== 'true') return null;
@@ -367,23 +411,110 @@ async function getLocalGitSnapshot() {
     };
 }
 
-async function getGitUpdateStatus() {
+async function getRemotePackageVersion(ref = 'FETCH_HEAD') {
+    const result = await runGit(['show', `${ref}:package.json`]);
+    if (result.code !== 0 || !result.stdout) return null;
+    try {
+        const pkg = JSON.parse(result.stdout);
+        return normalizeVersion(pkg?.version);
+    } catch {
+        return null;
+    }
+}
+
+async function getLatestGitTagVersion(remoteName) {
+    const result = await runGit(['ls-remote', '--tags', '--refs', remoteName], UPDATE_CHECK_TIMEOUT_MS);
+    if (result.code !== 0 || !result.stdout) return null;
+
+    let latest = null;
+    for (const line of result.stdout.split(/\r?\n/)) {
+        const ref = line.trim().split(/\s+/)[1] || '';
+        const tagName = ref.replace(/^refs\/tags\//, '');
+        const version = normalizeVersion(tagName);
+        if (!parseSemver(version)) continue;
+        latest = selectNewerVersion(latest, version);
+    }
+    return latest;
+}
+
+function npmExecutable() {
+    return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+}
+
+async function getLatestNpmVersion(packageName) {
+    if (!packageName || !await commandExists('npm')) return null;
+
+    return new Promise((resolve) => {
+        exec(
+            `${npmExecutable()} view "${packageName}" version --json`,
+            { cwd: rootDir, windowsHide: true, timeout: UPDATE_CHECK_TIMEOUT_MS },
+            (err, stdout) => {
+                if (err || !stdout) return resolve(null);
+
+                try {
+                    const parsed = JSON.parse(stdout);
+                    if (typeof parsed === 'string') return resolve(normalizeVersion(parsed));
+                    if (Array.isArray(parsed)) {
+                        let latest = null;
+                        for (const item of parsed) {
+                            const version = normalizeVersion(item);
+                            if (parseSemver(version)) latest = selectNewerVersion(latest, version);
+                        }
+                        return resolve(latest);
+                    }
+                } catch {
+                    return resolve(normalizeVersion(stdout.trim()));
+                }
+
+                resolve(null);
+            }
+        );
+    });
+}
+
+function buildLatestVersionSummary(currentVersion, sources) {
+    let latestVersion = null;
+    let latestVersionSource = null;
+
+    for (const source of sources) {
+        if (!source?.version || !parseSemver(source.version)) continue;
+        const nextVersion = selectNewerVersion(latestVersion, source.version);
+        if (nextVersion !== latestVersion) {
+            latestVersion = nextVersion;
+            latestVersionSource = source.label;
+        }
+    }
+
+    const hasVersionUpdate = Boolean(
+        latestVersion &&
+        currentVersion &&
+        compareSemver(latestVersion, currentVersion) > 0
+    );
+
+    return { latestVersion, latestVersionSource, hasVersionUpdate };
+}
+
+async function getUpdateStatus({ forceRefresh = false } = {}) {
     if (isTruthyEnv(process.env.LIMEBOT_DISABLE_UPDATE_CHECK)) return null;
     if (!fs.existsSync(path.join(rootDir, '.git'))) return null;
     if (!await commandExists('git')) return null;
 
     const snapshot = await getLocalGitSnapshot();
     if (!snapshot) return null;
+    const packageInfo = readLocalPackageInfo();
 
     const now = Date.now();
     const cached = readUpdateCheckCache();
     if (
+        !forceRefresh &&
         cached &&
         Number.isFinite(cached.checkedAt) &&
         cached.localHead === snapshot.localHead &&
         cached.branchName === snapshot.branchName &&
         cached.remoteName === snapshot.remoteName &&
         cached.remoteBranch === snapshot.remoteBranch &&
+        cached.currentVersion === packageInfo.currentVersion &&
+        cached.packageName === packageInfo.packageName &&
         (now - cached.checkedAt) < UPDATE_CHECK_TTL_MS
     ) {
         return cached;
@@ -403,6 +534,15 @@ async function getGitUpdateStatus() {
     const behind = Number.parseInt(behindRaw, 10);
     if (!Number.isInteger(ahead) || !Number.isInteger(behind)) return null;
 
+    const remotePackageVersion = await getRemotePackageVersion();
+    const latestTagVersion = await getLatestGitTagVersion(snapshot.remoteName);
+    const latestNpmVersion = await getLatestNpmVersion(packageInfo.packageName);
+    const latestVersionSummary = buildLatestVersionSummary(packageInfo.currentVersion, [
+        { label: 'remote package.json', version: remotePackageVersion },
+        { label: 'git tag', version: latestTagVersion },
+        { label: 'npm registry', version: latestNpmVersion },
+    ]);
+
     const status = {
         checkedAt: now,
         localHead: snapshot.localHead,
@@ -412,23 +552,60 @@ async function getGitUpdateStatus() {
         remoteBranch: snapshot.remoteBranch,
         ahead,
         behind,
-        hasUpdate: behind > 0,
+        packageName: packageInfo.packageName,
+        currentVersion: packageInfo.currentVersion,
+        remotePackageVersion,
+        latestTagVersion,
+        latestNpmVersion,
+        latestVersion: latestVersionSummary.latestVersion,
+        latestVersionSource: latestVersionSummary.latestVersionSource,
+        hasVersionUpdate: latestVersionSummary.hasVersionUpdate,
+        hasUpdate: behind > 0 || latestVersionSummary.hasVersionUpdate,
     };
     writeUpdateCheckCache(status);
     return status;
 }
 
-async function maybeShowGitUpdateNotice(command) {
-    const commandSet = new Set(['start', 'status', 'doctor', 'skill', 'install-browser']);
-    if (!commandSet.has(command)) return;
+function printUpdateStatus(status, { alwaysShowSummary = false } = {}) {
+    if (!status) {
+        if (alwaysShowSummary) warning('Update status unavailable.');
+        return;
+    }
 
-    const status = await getGitUpdateStatus();
-    if (!status || !status.hasUpdate) return;
+    const currentVersion = status.currentVersion || 'unknown';
+    const latestVersion = status.latestVersion || status.remotePackageVersion || currentVersion;
+    if (alwaysShowSummary) {
+        info(`Current version: ${currentVersion}`);
+        if (latestVersion && latestVersion !== 'unknown') {
+            const sourceSuffix = status.latestVersionSource ? ` via ${status.latestVersionSource}` : '';
+            info(`Latest version: ${latestVersion}${sourceSuffix}`);
+        } else {
+            info('Latest version: unavailable');
+        }
+        info(`Git state: ${status.branchName} @ ${shortSha(status.localHead)} (ahead ${status.ahead}, behind ${status.behind})`);
+    }
 
-    const commitWord = status.behind === 1 ? 'commit' : 'commits';
-    warning(`Update available: ${status.behind} ${commitWord} behind ${status.remoteName}/${status.remoteBranch}.`);
-    info(`Current ${shortSha(status.localHead)} -> latest ${shortSha(status.remoteHead)}.`);
-    info(`Run 'git pull --ff-only ${status.remoteName} ${status.remoteBranch}' to update.`);
+    if (status.hasVersionUpdate) {
+        warning(`New version available: ${currentVersion} -> ${status.latestVersion}.`);
+    } else if (alwaysShowSummary) {
+        success(`Version is current at ${currentVersion}.`);
+    }
+
+    if (status.behind > 0) {
+        const commitWord = status.behind === 1 ? 'commit' : 'commits';
+        warning(`Git update available: ${status.behind} ${commitWord} behind ${status.remoteName}/${status.remoteBranch}.`);
+        info(`Current ${shortSha(status.localHead)} -> latest ${shortSha(status.remoteHead)}.`);
+    } else if (alwaysShowSummary) {
+        success(`Git branch is up to date with ${status.remoteName}/${status.remoteBranch}.`);
+    }
+
+    if (status.behind > 0) {
+        info(`Run 'git pull --ff-only ${status.remoteName} ${status.remoteBranch}' to update.`);
+    } else if (status.hasVersionUpdate && status.latestVersionSource === 'npm registry' && status.packageName) {
+        info(`Run 'npm install -g ${status.packageName}@latest' if you use the published package.`);
+    } else if (status.hasVersionUpdate) {
+        info('Pull the latest source or checkout the newest release tag to update.');
+    }
 }
 
 function readEnvValue(key) {
@@ -785,6 +962,7 @@ ${colors.reset}
     ${colors.cyan}start${colors.reset}            Start LimeBot (backend + frontend)
     ${colors.cyan}stop${colors.reset}             Stop all running LimeBot processes
     ${colors.cyan}status${colors.reset}           Check if LimeBot services are running
+    ${colors.cyan}update-check${colors.reset}     Check current version, latest version, and git update status
     ${colors.cyan}skill${colors.reset}            Manage skills (install, uninstall, update, list)
     ${colors.cyan}doctor${colors.reset}           Diagnose common issues + run tests
     ${colors.cyan}logs${colors.reset}             Show recent logs
@@ -809,12 +987,22 @@ ${colors.reset}
 
   ${colors.bright}Examples:${colors.reset}
     ${colors.dim}limebot start${colors.reset}
+    ${colors.dim}limebot update-check${colors.reset}
     ${colors.dim}limebot start --quick${colors.reset}
     ${colors.dim}limebot doctor${colors.reset}
     ${colors.dim}limebot doctor --skip-tests${colors.reset}
     ${colors.dim}limebot doctor --skip-perf${colors.reset}
     ${colors.dim}limebot install-browser${colors.reset}
 `);
+}
+
+async function cmdUpdateCheck(args = []) {
+    const forceRefresh = !args.includes('--cached');
+
+    console.log(`${colors.lime}${colors.bright}\n  🍋 LimeBot Update Check${colors.reset}\n`);
+    const status = await getUpdateStatus({ forceRefresh });
+    printUpdateStatus(status, { alwaysShowSummary: true });
+    console.log('');
 }
 
 async function cmdDoctor(args = []) {
@@ -1242,7 +1430,7 @@ WantedBy=default.target
     console.log('');
 }
 
-async function cmdStart(args) {
+async function cmdStart(args, updateStatus = null) {
     process.stdout.write(LOGO);
     const quickMode = args.includes('--quick') || args.includes('-q');
     const backendOnly = args.includes('--backend-only');
@@ -1255,6 +1443,7 @@ async function cmdStart(args) {
 
     console.log(`${colors.lime}${colors.bright}\n  🍋 Starting LimeBot${colors.reset}\n`);
     log(colors.gray, `  ${colors.bright}Tip:${colors.reset} Run ${colors.cyan}npm run lime-bot help${colors.reset} to see all available CLI commands.`);
+    printUpdateStatus(updateStatus, { alwaysShowSummary: true });
     if (quickMode) info('Quick mode: Skipping dependency checks...');
 
     const envFile = path.join(rootDir, '.env');
@@ -1512,12 +1701,19 @@ async function cmdStart(args) {
 async function main() {
     const args = process.argv.slice(2);
     const command = args[0]?.toLowerCase() || 'help';
-    await maybeShowGitUpdateNotice(command);
+    const updateStatusCommands = new Set(['start', 'status', 'doctor', 'skill', 'install-browser']);
+    const updateStatus = updateStatusCommands.has(command)
+        ? await getUpdateStatus()
+        : null;
+    if (command !== 'start' && updateStatusCommands.has(command)) {
+        printUpdateStatus(updateStatus);
+    }
 
     switch (command) {
-        case 'start': await cmdStart(args.slice(1)); break;
+        case 'start': await cmdStart(args.slice(1), updateStatus); break;
         case 'stop': await cmdStop(); break;
         case 'status': await cmdStatus(); break;
+        case 'update-check': await cmdUpdateCheck(args.slice(1)); break;
         case 'doctor': await cmdDoctor(args.slice(1)); break;
         case 'logs': await cmdLogs(args.slice(1)); break;
         case 'install-browser': await cmdInstallBrowser(); break;

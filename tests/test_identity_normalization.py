@@ -12,6 +12,7 @@ class TestIdentityNormalization(unittest.TestCase):
 **Name:** Lisa
 **Emoji:** 👑
 **Style:** Charismatic, playful, confident.
+**Telegram Style:** Fast, warm, mobile-friendly.
 **Web Style:** Soft but sharp.
 **Reaction Emojis:** 👑, ✨
 """.strip()
@@ -21,6 +22,7 @@ class TestIdentityNormalization(unittest.TestCase):
         self.assertEqual(identity["name"], "Lisa")
         self.assertEqual(identity["emoji"], "👑")
         self.assertEqual(identity["style"], "Charismatic, playful, confident.")
+        self.assertEqual(identity["telegram_style"], "Fast, warm, mobile-friendly.")
         self.assertEqual(identity["web_style"], "Soft but sharp.")
         self.assertEqual(identity["reaction_emojis"], "👑, ✨")
 

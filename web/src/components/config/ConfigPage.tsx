@@ -17,21 +17,11 @@ import {
     CardTitle,
 } from "@/components/ui/card";
 import { getAdditionalModels, getInitialModelForProvider, getModelProvider, getRecommendedModels, PROVIDER_LABELS, type LlmModelOption } from "@/lib/llm-models";
+import { type ConfigApiResponse, type ConfigSecretsMap, getSecretInfo, getSecretPlaceholder } from "@/lib/config-secrets";
 
 interface ConfigState {
-    OPENAI_API_KEY?: string;
-    GEMINI_API_KEY?: string;
-    ANTHROPIC_API_KEY?: string;
-    XAI_API_KEY?: string;
-    DEEPSEEK_API_KEY?: string;
-    NVIDIA_API_KEY?: string;
-    DASHSCOPE_API_KEY?: string;
-    DISCORD_TOKEN?: string;
-    TELEGRAM_BOT_TOKEN?: string;
-    TELEGRAM_API_BASE?: string;
     LLM_MODEL?: string;
     ALLOWED_PATHS?: string[];
-    APP_API_KEY?: string;
     AUTONOMOUS_MODE?: string;
     MAX_ITERATIONS?: string;
     WEB_PORT?: string;
@@ -44,12 +34,28 @@ interface ConfigState {
     [key: string]: any;
 }
 
+type SecretDrafts = Record<string, string>;
+
+const SECRET_KEYS = [
+    "APP_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "XAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "NVIDIA_API_KEY",
+    "DASHSCOPE_API_KEY",
+] as const;
+
 
 export function ConfigPage() {
     const [config, setConfig] = useState<ConfigState>({});
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [status, setStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+    const [secretMeta, setSecretMeta] = useState<ConfigSecretsMap>({});
+    const [secretDrafts, setSecretDrafts] = useState<SecretDrafts>({});
+    const [clearedSecrets, setClearedSecrets] = useState<string[]>([]);
 
     const [availableModels, setAvailableModels] = useState<LlmModelOption[]>([]);
     const [modelsLoading, setModelsLoading] = useState(false);
@@ -75,13 +81,13 @@ export function ConfigPage() {
     const getFilteredModels = () => {
         if (!config) return [];
         return availableModels.filter(model => {
-            if (model.provider === 'gemini') return !!config.GEMINI_API_KEY;
-            if (model.provider === 'openai') return !!config.OPENAI_API_KEY;
-            if (model.provider === 'anthropic') return !!config.ANTHROPIC_API_KEY;
-            if (model.provider === 'xai') return !!config.XAI_API_KEY;
-            if (model.provider === 'deepseek') return !!config.DEEPSEEK_API_KEY;
-            if (model.provider === 'nvidia') return !!config.NVIDIA_API_KEY;
-            if (model.provider === 'qwen') return !!config.DASHSCOPE_API_KEY;
+            if (model.provider === 'gemini') return !!secretDrafts.GEMINI_API_KEY || getSecretInfo(secretMeta, 'GEMINI_API_KEY').configured;
+            if (model.provider === 'openai') return !!secretDrafts.OPENAI_API_KEY || getSecretInfo(secretMeta, 'OPENAI_API_KEY').configured;
+            if (model.provider === 'anthropic') return !!secretDrafts.ANTHROPIC_API_KEY || getSecretInfo(secretMeta, 'ANTHROPIC_API_KEY').configured;
+            if (model.provider === 'xai') return !!secretDrafts.XAI_API_KEY || getSecretInfo(secretMeta, 'XAI_API_KEY').configured;
+            if (model.provider === 'deepseek') return !!secretDrafts.DEEPSEEK_API_KEY || getSecretInfo(secretMeta, 'DEEPSEEK_API_KEY').configured;
+            if (model.provider === 'nvidia') return !!secretDrafts.NVIDIA_API_KEY || getSecretInfo(secretMeta, 'NVIDIA_API_KEY').configured;
+            if (model.provider === 'qwen') return !!secretDrafts.DASHSCOPE_API_KEY || getSecretInfo(secretMeta, 'DASHSCOPE_API_KEY').configured;
             return true;
         });
     };
@@ -90,8 +96,12 @@ export function ConfigPage() {
         setLoading(true);
         // ... existing fetchConfig logic ...
         try {
-            const res = await axios.get(`${API_BASE_URL}/api/config`);
-            if (res.data.env) setConfig(res.data.env);
+            const res = await axios.get<ConfigApiResponse<ConfigState>>(`${API_BASE_URL}/api/config`);
+            const nextEnv = res.data.env || {};
+            setConfig(nextEnv);
+            setSecretMeta(res.data.secrets || {});
+            setSecretDrafts({});
+            setClearedSecrets([]);
         } catch (err) {
             console.error("Failed to load settings:", err);
             setStatus({ type: 'error', message: "Failed to load configuration." });
@@ -115,8 +125,39 @@ export function ConfigPage() {
         }
 
         try {
-            const res = await axios.post(`${API_BASE_URL}/api/config`, { env: config });
+            const secretUpdates = Object.fromEntries(
+                Object.entries(secretDrafts).filter(([, value]) => value.trim() !== "")
+            );
+            const res = await axios.post(`${API_BASE_URL}/api/config`, {
+                env: {
+                    ...config,
+                    ...secretUpdates,
+                },
+                clear_secrets: clearedSecrets,
+            });
             if (res.data.error) throw new Error(res.data.error);
+            if (secretDrafts.APP_API_KEY?.trim()) {
+                localStorage.setItem("limebot_api_key", secretDrafts.APP_API_KEY.trim());
+                axios.defaults.headers.common["X-API-Key"] = secretDrafts.APP_API_KEY.trim();
+            }
+            setSecretMeta((prev) => {
+                const next = { ...prev };
+                for (const key of SECRET_KEYS) {
+                    if (clearedSecrets.includes(key)) {
+                        next[key] = { configured: false, masked: "", last4: "" };
+                    } else if (secretDrafts[key]?.trim()) {
+                        const val = secretDrafts[key].trim();
+                        next[key] = {
+                            configured: true,
+                            masked: `••••${val.slice(-4)}`,
+                            last4: val.slice(-4),
+                        };
+                    }
+                }
+                return next;
+            });
+            setSecretDrafts({});
+            setClearedSecrets([]);
             setStatus({ type: 'success', message: "Configuration saved!" });
         } catch (err) {
             console.error("Failed to save config:", err);
@@ -128,6 +169,49 @@ export function ConfigPage() {
 
     const handleChange = (key: string, value: any) => {
         setConfig(prev => ({ ...prev, [key]: value }));
+    };
+
+    const handleSecretChange = (key: string, value: string) => {
+        setSecretDrafts(prev => ({ ...prev, [key]: value }));
+        setClearedSecrets(prev => prev.filter((item) => item !== key));
+    };
+
+    const markSecretForClear = (key: string) => {
+        setSecretDrafts(prev => ({ ...prev, [key]: "" }));
+        setClearedSecrets(prev => prev.includes(key) ? prev : [...prev, key]);
+    };
+
+    const renderSecretInput = (key: typeof SECRET_KEYS[number], label: string, placeholder: string) => {
+        const info = getSecretInfo(secretMeta, key);
+        const isCleared = clearedSecrets.includes(key);
+        return (
+            <div className="grid gap-2">
+                <div className="flex items-center justify-between gap-2">
+                    <Label htmlFor={key.toLowerCase()}>{label}</Label>
+                    <span className="text-[10px] text-muted-foreground">
+                        {isCleared ? 'Will be cleared' : info.configured ? `Stored ${info.masked}` : 'Not configured'}
+                    </span>
+                </div>
+                <div className="flex gap-2">
+                    <Input
+                        id={key.toLowerCase()}
+                        type="password"
+                        value={secretDrafts[key] || ""}
+                        onChange={(e) => handleSecretChange(key, e.target.value)}
+                        placeholder={getSecretPlaceholder(secretMeta, key, placeholder)}
+                    />
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => markSecretForClear(key)}
+                        title={`Clear ${label}`}
+                    >
+                        <Trash className="h-4 w-4" />
+                    </Button>
+                </div>
+            </div>
+        );
     };
 
     if (loading) {
@@ -414,22 +498,39 @@ export function ConfigPage() {
                             <CardContent className="space-y-6">
                                 <div className="grid gap-2 p-4 bg-primary/5 rounded-lg border border-primary/10">
                                     <Label htmlFor="app_api_key" className="text-foreground/90 font-semibold">LimeBot Access Key</Label>
+                                    <div className="text-[10px] text-muted-foreground">
+                                        {clearedSecrets.includes('APP_API_KEY')
+                                            ? 'Will be cleared on save'
+                                            : getSecretInfo(secretMeta, 'APP_API_KEY').configured
+                                                ? `Stored ${getSecretInfo(secretMeta, 'APP_API_KEY').masked}`
+                                                : 'Not configured'}
+                                    </div>
                                     <div className="flex gap-2">
                                         <Input
                                             id="app_api_key"
                                             type="password"
-                                            value={config.APP_API_KEY || ""}
-                                            onChange={(e) => handleChange("APP_API_KEY", e.target.value)}
-                                            placeholder="Secure Key..."
+                                            value={secretDrafts.APP_API_KEY || ""}
+                                            onChange={(e) => handleSecretChange("APP_API_KEY", e.target.value)}
+                                            placeholder={getSecretPlaceholder(secretMeta, 'APP_API_KEY', 'Secure Key...')}
                                             className="bg-background/50 flex-1"
                                         />
                                         <Button
+                                            type="button"
                                             variant="outline"
                                             size="icon"
-                                            onClick={() => handleChange("APP_API_KEY", crypto.randomUUID())}
+                                            onClick={() => handleSecretChange("APP_API_KEY", crypto.randomUUID())}
                                             title="Regenerate Key"
                                         >
                                             <RefreshCw className="h-4 w-4" />
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="icon"
+                                            onClick={() => markSecretForClear("APP_API_KEY")}
+                                            title="Clear Key"
+                                        >
+                                            <Trash className="h-4 w-4" />
                                         </Button>
                                     </div>
                                     <p className="text-[10px] text-muted-foreground">
@@ -439,109 +540,21 @@ export function ConfigPage() {
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="grid gap-4 border p-4 rounded-lg bg-background/30">
-
-                                        <div className="grid gap-2">
-                                            <Label htmlFor="gemini_key">Google Gemini API Key</Label>
-                                            <Input
-                                                id="gemini_key"
-                                                type="password"
-                                                value={config.GEMINI_API_KEY || ""}
-                                                onChange={(e) => handleChange("GEMINI_API_KEY", e.target.value)}
-                                                placeholder="sk-..."
-                                            />
-                                        </div>
+                                        {renderSecretInput("GEMINI_API_KEY", "Google Gemini API Key", "sk-...")}
                                     </div>
-                                    <div className="grid gap-2">
-                                        <Label htmlFor="openai_key">OpenAI API Key</Label>
-                                        <Input
-                                            id="openai_key"
-                                            type="password"
-                                            value={config.OPENAI_API_KEY || ""}
-                                            onChange={(e) => handleChange("OPENAI_API_KEY", e.target.value)}
-                                            placeholder="sk-..."
-                                        />
-                                    </div>
-                                    <div className="grid gap-2">
-                                        <Label htmlFor="anthropic_key">Anthropic API Key</Label>
-                                        <Input
-                                            id="anthropic_key"
-                                            type="password"
-                                            value={config.ANTHROPIC_API_KEY || ""}
-                                            onChange={(e) => handleChange("ANTHROPIC_API_KEY", e.target.value)}
-                                            placeholder="sk-ant-..."
-                                        />
-                                    </div>
-                                    <div className="grid gap-2">
-                                        <Label htmlFor="xai_key">xAI (Grok) API Key</Label>
-                                        <Input
-                                            id="xai_key"
-                                            type="password"
-                                            value={config.XAI_API_KEY || ""}
-                                            onChange={(e) => handleChange("XAI_API_KEY", e.target.value)}
-                                            placeholder="xai-..."
-                                        />
-                                    </div>
-                                    <div className="grid gap-2">
-                                        <Label htmlFor="deepseek_key">DeepSeek API Key</Label>
-                                        <Input
-                                            id="deepseek_key"
-                                            type="password"
-                                            value={config.DEEPSEEK_API_KEY || ""}
-                                            onChange={(e) => handleChange("DEEPSEEK_API_KEY", e.target.value)}
-                                            placeholder="sk-..."
-                                        />
-                                    </div>
-
-                                    <div className="grid gap-2">
-                                        <Label htmlFor="nvidia_key">NVIDIA API Key</Label>
-                                        <Input
-                                            id="nvidia_key"
-                                            type="password"
-                                            value={config.NVIDIA_API_KEY || ""}
-                                            onChange={(e) => handleChange("NVIDIA_API_KEY", e.target.value)}
-                                            placeholder="nvapi-..."
-                                        />
-                                    </div>
-
-                                    <div className="grid gap-2">
-                                        <Label htmlFor="dashscope_key">Qwen (DashScope) API Key</Label>
-                                        <Input
-                                            id="dashscope_key"
-                                            type="password"
-                                            value={config.DASHSCOPE_API_KEY || ""}
-                                            onChange={(e) => handleChange("DASHSCOPE_API_KEY", e.target.value)}
-                                            placeholder="ds-..."
-                                        />
-                                    </div>
+                                    {renderSecretInput("OPENAI_API_KEY", "OpenAI API Key", "sk-...")}
+                                    {renderSecretInput("ANTHROPIC_API_KEY", "Anthropic API Key", "sk-ant-...")}
+                                    {renderSecretInput("XAI_API_KEY", "xAI (Grok) API Key", "xai-...")}
+                                    {renderSecretInput("DEEPSEEK_API_KEY", "DeepSeek API Key", "sk-...")}
+                                    {renderSecretInput("NVIDIA_API_KEY", "NVIDIA API Key", "nvapi-...")}
+                                    {renderSecretInput("DASHSCOPE_API_KEY", "Qwen (DashScope) API Key", "ds-...")}
                                 </div>
 
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="grid gap-2 border p-4 rounded-lg bg-background/30">
-                                        <Label htmlFor="telegram_bot_token">Telegram Bot Token</Label>
-                                        <Input
-                                            id="telegram_bot_token"
-                                            type="password"
-                                            value={config.TELEGRAM_BOT_TOKEN || ""}
-                                            onChange={(e) => handleChange("TELEGRAM_BOT_TOKEN", e.target.value)}
-                                            placeholder="123456789:AA..."
-                                        />
-                                        <p className="text-[10px] text-muted-foreground">
-                                            Used by the Telegram channel tab to connect through the Bot API.
-                                        </p>
-                                    </div>
-                                    <div className="grid gap-2 border p-4 rounded-lg bg-background/30">
-                                        <Label htmlFor="telegram_api_base">Telegram API Base URL</Label>
-                                        <Input
-                                            id="telegram_api_base"
-                                            value={config.TELEGRAM_API_BASE || ""}
-                                            onChange={(e) => handleChange("TELEGRAM_API_BASE", e.target.value)}
-                                            placeholder="https://api.telegram.org"
-                                            className="font-mono text-sm"
-                                        />
-                                        <p className="text-[10px] text-muted-foreground">
-                                            Override this only if you are routing Telegram traffic through a compatible proxy.
-                                        </p>
-                                    </div>
+                                <div className="rounded-lg border border-border/60 bg-background/30 p-4">
+                                    <p className="text-sm font-medium">Channel credentials live under Channels & Presence</p>
+                                    <p className="mt-1 text-[11px] text-muted-foreground">
+                                        Telegram, Discord, and WhatsApp connection settings are managed in their channel tabs so tokens and enable switches stay together.
+                                    </p>
                                 </div>
                             </CardContent>
                         </Card>

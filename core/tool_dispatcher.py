@@ -115,6 +115,9 @@ def normalize_tool_alias(
     (canonical_name, normalized_args)
     """
     normalized_name = TOOL_NAME_ALIASES.get(function_name, function_name)
+    if normalized_name == function_name and function_name.endswith("json"):
+        trimmed_name = function_name[: -len("json")]
+        normalized_name = TOOL_NAME_ALIASES.get(trimmed_name, trimmed_name)
     normalized_args = dict(function_args or {})
 
     if normalized_name != function_name:
@@ -150,10 +153,14 @@ def normalize_tool_alias(
                 or normalized_args.get("file")
                 or normalized_args.get("filename")
                 or "",
+                "start_line": normalized_args.get("start_line")
+                or normalized_args.get("line_start"),
+                "end_line": normalized_args.get("end_line")
+                or normalized_args.get("line_end"),
                 **{
                     k: v
                     for k, v in normalized_args.items()
-                    if k in {"max_chars", "start_line", "end_line"}
+                    if k in {"max_chars"}
                 },
             }
         elif normalized_name == "search_files":

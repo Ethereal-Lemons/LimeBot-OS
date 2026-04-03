@@ -72,7 +72,10 @@ Persistent cron system:
 ### 🤖 It Can Spawn Sub-Agents
 For complex multi-step tasks, LimeBot can delegate work to an isolated background agent:
 - Sub-agent runs in its own session with its own tool loop
+- Built-in specialist profiles like `reviewer`, `verifier`, and `explorer` can be recommended automatically when the request wording matches the task
+- Custom subagents can also be suggested when their descriptions overlap strongly with the current request
 - Reports back to the parent session when complete
+- The web chat renders delegated results as a dedicated sub-agent report card instead of raw trace text
 - Useful for long-running research, file processing, or anything that shouldn't block the main conversation
 
 ### 🔌 Model Context Protocol (MCP) Support
