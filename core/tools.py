@@ -116,6 +116,37 @@ class Toolbox:
         return {"name": name, "path": Path("skills") / name}
 
     @staticmethod
+    def _preferred_python_executable() -> str:
+        """Prefer the project's venv Python when available, then fall back to the running interpreter."""
+        import sys as _sys
+
+        candidates = []
+        cwd = Path.cwd().resolve()
+        if os.name == "nt":
+            candidates.extend(
+                [
+                    cwd / ".venv" / "Scripts" / "python.exe",
+                    cwd / "venv" / "Scripts" / "python.exe",
+                ]
+            )
+        else:
+            candidates.extend(
+                [
+                    cwd / ".venv" / "bin" / "python",
+                    cwd / "venv" / "bin" / "python",
+                ]
+            )
+
+        running = Path(_sys.executable).resolve()
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    return str(candidate)
+            except Exception:
+                continue
+        return str(running)
+
+    @staticmethod
     def _windows_browser_binary(browser_name: str) -> Optional[Path]:
         candidates = {
             "opera": [
@@ -950,9 +981,7 @@ class Toolbox:
 
             # Rewrite bare pip/python commands to use the running interpreter
             # so packages always install into the correct venv.
-            import sys as _sys
-
-            _this_python = _sys.executable
+            _this_python = self._preferred_python_executable()
             _rewrites = [
                 ("pip install ", f'"{_this_python}" -m pip install '),
                 ("pip3 install ", f'"{_this_python}" -m pip install '),
