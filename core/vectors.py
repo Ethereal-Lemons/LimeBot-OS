@@ -53,6 +53,7 @@ class VectorService:
     }
 
     _KEY_RE = re.compile(r"\b(sk-[A-Za-z0-9_-]{8,})\b")
+    _NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
     def __init__(
         self, db_path: str = "data/vectors", model: str = "gemini/gemini-embedding-001"
@@ -205,6 +206,12 @@ class VectorService:
             )
             if provider in ("ollama", "local") and cfg.llm.base_url:
                 kwargs["base_url"] = cfg.llm.base_url
+            if provider == "nvidia":
+                kwargs["model"] = (
+                    resolved_model.removeprefix("nvidia_nim/").removeprefix("nvidia/")
+                )
+                kwargs["base_url"] = cfg.llm.base_url or self._NVIDIA_BASE_URL
+                kwargs["custom_llm_provider"] = "nvidia_nim"
             if provider == "qwen":
                 kwargs["model"] = self.model.removeprefix("qwen/")
                 kwargs["base_url"] = (

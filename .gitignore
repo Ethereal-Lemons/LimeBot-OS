@@ -82,6 +82,10 @@ persona/MEMORY.md
 persona/MOOD.md
 persona/RELATIONSHIPS.md
 persona/USER.md
+.claude/agents/*
+!.claude/agents/.gitkeep
+.limebot/agents/*
+!.limebot/agents/.gitkeep
 
 # Logs
 /logs/
@@ -126,3 +130,6 @@ skills/daily_briefing/*
 temp_tasks.json
 skills/linkedin_scout/*
 allowed_paths.txt
+tests/test_x_quick_post_cli.py
+data/cron_runs/*
+data/cron_runs
