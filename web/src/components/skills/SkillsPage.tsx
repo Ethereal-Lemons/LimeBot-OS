@@ -6,12 +6,15 @@ import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 
 interface Skill {
     id: string;
     name: string;
     description: string;
     path: string;
+    enabled: boolean;
     active: boolean;
     type?: "limebot" | "clawhub";
     deps_ok?: boolean;
@@ -31,35 +34,72 @@ export function SkillsPage() {
     const [skills, setSkills] = useState<Skill[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState("");
+    const [installingSkillId, setInstallingSkillId] = useState<string | null>(null);
+
+    const loadSkills = async () => {
+        try {
+            const res = await axios.get(`${API_BASE_URL}/api/skills`);
+            setSkills(res.data.skills || []);
+            setLoading(false);
+        } catch (err) {
+            console.error("Failed to load skills:", err);
+            setLoading(false);
+        }
+    };
 
     useEffect(() => {
-        const loadSkills = async () => {
-            try {
-                const res = await axios.get(`${API_BASE_URL}/api/skills`);
-                setSkills(res.data.skills || []);
-                setLoading(false);
-            } catch (err) {
-                console.error("Failed to load skills:", err);
-                setLoading(false);
-            }
-        };
         loadSkills();
     }, []);
 
     const toggleSkill = async (skill: Skill, enable: boolean) => {
         if (skill.deps_ok === false && enable) {
+            toast.error(`Install dependencies for ${skill.name} before enabling it.`);
             return;
         }
         // Optimistic update
-        setSkills(skills.map(s => s.id === skill.id ? { ...s, active: enable } : s));
+        setSkills(skills.map(s => s.id === skill.id ? {
+            ...s,
+            enabled: enable,
+            active: enable && s.deps_ok !== false,
+        } : s));
 
         try {
-            await axios.post(`${API_BASE_URL}/api/skills/${skill.id}/toggle`, { enable });
+            const res = await axios.post(`${API_BASE_URL}/api/skills/${skill.id}/toggle`, { enable });
+            if (res.data?.status !== "success") {
+                throw new Error(res.data?.message || "Failed to toggle skill");
+            }
+            toast.success(enable ? `${skill.name} enabled` : `${skill.name} disabled`);
             // The backend restarts, so we might lose connection briefly
         } catch (err) {
             console.error("Failed to toggle skill:", err);
             // Revert on error
-            setSkills(skills.map(s => s.id === skill.id ? { ...s, active: !enable } : s));
+            setSkills(skills.map(s => s.id === skill.id ? {
+                ...s,
+                enabled: skill.enabled,
+                active: skill.active,
+            } : s));
+            toast.error(`Failed to ${enable ? "enable" : "disable"} ${skill.name}`);
+        }
+    };
+
+    const installDeps = async (skill: Skill) => {
+        setInstallingSkillId(skill.id);
+        try {
+            const res = await axios.post(`${API_BASE_URL}/api/skills/${skill.id}/deps`);
+            const status = res.data?.status;
+            if (status === "success") {
+                toast.success(`Dependencies installed for ${skill.name}`);
+            } else if (status === "partial") {
+                toast.warning(`Some dependencies for ${skill.name} are still missing`);
+            } else {
+                throw new Error(res.data?.message || "Failed to install dependencies");
+            }
+            await loadSkills();
+        } catch (err) {
+            console.error("Failed to install skill deps:", err);
+            toast.error(`Failed to install dependencies for ${skill.name}`);
+        } finally {
+            setInstallingSkillId(null);
         }
     };
 
@@ -98,9 +138,11 @@ export function SkillsPage() {
     const SkillCard = ({ skill }: { skill: Skill }) => {
         const missingDeps = skill.deps_ok === false;
         const missingSummary = missingDeps ? formatMissingDeps(skill) : "";
-        const disableEnable = missingDeps && !skill.active;
+        const disableEnable = missingDeps && !skill.enabled;
         const requiredSummary = formatRequiredDeps(skill);
         const hasRequired = !!requiredSummary;
+        const isConfigured = skill.enabled;
+        const isRunnable = skill.active;
 
         return (
         <Card className="border-border hover:border-primary/30 transition-colors group">
@@ -135,7 +177,7 @@ export function SkillsPage() {
                         </div>
                     </div>
                     <Switch
-                        checked={skill.active}
+                        checked={skill.enabled}
                         disabled={disableEnable}
                         onCheckedChange={(checked) => toggleSkill(skill, checked)}
                     />
@@ -151,13 +193,34 @@ export function SkillsPage() {
                         <div className="whitespace-pre-wrap break-words">{requiredSummary}</div>
                     </div>
                 )}
+                {missingDeps && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
+                        <div className="min-w-0 text-[11px] text-red-200/90">
+                            <div className="font-medium text-red-300">Dependency install required</div>
+                            <div className="break-words text-red-200/70">{missingSummary}</div>
+                        </div>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="shrink-0"
+                            disabled={installingSkillId === skill.id}
+                            onClick={() => installDeps(skill)}
+                        >
+                            {installingSkillId === skill.id ? "Installing..." : "Install Deps"}
+                        </Button>
+                    </div>
+                )}
                 <div className="mt-4 pt-4 border-t border-border flex items-center justify-between text-xs text-muted-foreground font-mono">
                     <span className="truncate max-w-[150px] opacity-70">
                         {skill.type === 'clawhub' ? 'clawhub/' : 'skills/'}{skill.id}
                     </span>
-                    {skill.active ? (
+                    {isRunnable ? (
                         <span className={`flex items-center gap-1 ${skill.type === 'clawhub' ? 'text-purple-500' : 'text-primary'}`}>
                             <CheckCircle2 className="h-3 w-3" /> Enabled
+                        </span>
+                    ) : isConfigured ? (
+                        <span className="flex items-center gap-1 text-amber-400">
+                            <AlertCircle className="h-3 w-3" /> Needs Deps
                         </span>
                     ) : (
                         <span className="flex items-center gap-1">

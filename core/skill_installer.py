@@ -576,6 +576,29 @@ print(json.dumps(missing))
 
     def enable(self, skill_name: str) -> dict:
         """Enable an installed skill."""
+        skill_dir = SKILLS_DIR / skill_name
+        if not skill_dir.exists():
+            skill_dir = CLAW_SKILLS_DIR / skill_name
+        if not skill_dir.exists():
+            return {
+                "status": "error",
+                "message": f"Skill '{skill_name}' not found.",
+            }
+
+        meta = self._read_metadata(skill_dir / "SKILL.md")
+        deps_ok, missing, required = self._evaluate_skill_deps(skill_dir, meta)
+        if not deps_ok:
+            return {
+                "status": "error",
+                "code": "deps_missing",
+                "message": (
+                    f"Skill '{skill_name}' is missing dependencies. "
+                    "Install them before enabling the skill."
+                ),
+                "missing_deps": missing,
+                "required_deps": required,
+            }
+
         enabled: list = self.config["skills"].setdefault("enabled", [])
         if skill_name not in enabled:
             enabled.append(skill_name)
@@ -710,7 +733,7 @@ print(json.dumps(missing))
                         "type": "limebot",
                         "source": source,
                         "enabled": name in enabled,
-                        "active": name in enabled,
+                        "active": (name in enabled) and deps_ok,
                         "version": version,
                         "description": meta.get("description", "Core LimeBot Skill"),
                         "repo": repo,
@@ -742,7 +765,7 @@ print(json.dumps(missing))
                         "type": "clawhub",
                         "source": "clawhub",
                         "enabled": is_enabled,
-                        "active": is_enabled,
+                        "active": is_enabled and deps_ok,
                         "version": meta.get("version", "1.0.0"),
                         "description": meta.get("description", "ClawHub Skill"),
                         "repo": "",  # Managed by clawhub CLI
