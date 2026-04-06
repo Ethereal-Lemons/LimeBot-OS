@@ -1828,6 +1828,14 @@ class WebChannel(BaseChannel):
             return SkillInstaller().update(skill_name)
 
         @self.app.post(
+            "/api/skills/{skill_name}/deps", dependencies=[Depends(self.verify_auth)]
+        )
+        async def install_skill_deps(skill_name: str):
+            from core.skill_installer import SkillInstaller
+
+            return SkillInstaller().install_skill_deps(skill_name)
+
+        @self.app.post(
             "/api/skills/{skill_name}/toggle", dependencies=[Depends(self.verify_auth)]
         )
         async def toggle_skill(skill_name: str, request: Request):

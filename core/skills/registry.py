@@ -10,6 +10,18 @@ from loguru import logger
 from .loader import SkillLoader
 
 
+_SKILL_INVENTORY_PATTERNS = (
+    "what skills do you have",
+    "what skill do you have",
+    "look at your current skills",
+    "current skills",
+    "available skills",
+    "what are your skills",
+    "show skills",
+    "list skills",
+)
+
+
 class SkillRegistry:
     """
     Central registry for all loaded skills.
@@ -116,12 +128,18 @@ class SkillRegistry:
             "for",
             "with",
             "from",
+            "are",
             "that",
             "this",
             "into",
             "your",
+            "current",
+            "currently",
             "have",
+            "has",
             "will",
+            "right",
+            "now",
             "when",
             "using",
             "use",
@@ -129,6 +147,26 @@ class SkillRegistry:
             "all",
             "new",
             "get",
+            "skill",
+            "skills",
+            "available",
+            "show",
+            "list",
+            "tell",
+            "what",
+            "look",
+            "about",
+            "connected",
+            "correctly",
+            "does",
+            "need",
+            "please",
+            "agent",
+            "bot",
+            "their",
+            "them",
+            "they",
+            "you",
         }
         tokens = {
             tok
@@ -139,6 +177,24 @@ class SkillRegistry:
         for token in tokens:
             expanded.update(part for part in re.split(r"[_/-]+", token) if len(part) >= 3)
         return expanded
+
+    def _skill_aliases(self, name: str, skill: Dict[str, Any]) -> set[str]:
+        metadata = skill.get("metadata") or {}
+        aliases = self._tokenize(name)
+
+        explicit_aliases = metadata.get("aliases", [])
+        if isinstance(explicit_aliases, list):
+            aliases.update(self._tokenize(" ".join(str(x) for x in explicit_aliases)))
+        elif explicit_aliases:
+            aliases.update(self._tokenize(str(explicit_aliases)))
+
+        explicit_keywords = metadata.get("keywords", [])
+        if isinstance(explicit_keywords, list):
+            aliases.update(self._tokenize(" ".join(str(x) for x in explicit_keywords)))
+        elif explicit_keywords:
+            aliases.update(self._tokenize(str(explicit_keywords)))
+
+        return aliases
 
     def _skill_keywords(self, name: str, skill: Dict[str, Any]) -> set[str]:
         metadata = skill.get("metadata") or {}
@@ -157,11 +213,45 @@ class SkillRegistry:
             "download_image": {"image", "photo", "wallpaper", "download"},
             "filesystem": {"file", "folder", "directory", "path", "read", "write"},
             "github": {"github", "repo", "repository", "pull", "pr", "branch"},
+            "jira": {"jira", "ticket", "issue", "attachment", "attachments"},
+            "manage_cafeteria_credit": {
+                "cafeteria",
+                "credit",
+                "badge",
+                "ftps",
+                "ftp",
+                "cafeteria_credit",
+            },
+            "manage_vendor_charges": {"vendor", "charges", "charge", "mysql", "cuota"},
             "scrapling": {"scrape", "scraping", "selector", "html", "extract"},
             "whatsapp": {"whatsapp", "jid", "media", "send"},
         }
         keywords.update(hints.get(name, set()))
         return keywords
+
+    @staticmethod
+    def _looks_like_skill_inventory_request(text: str) -> bool:
+        lowered = (text or "").strip().lower()
+        return any(pattern in lowered for pattern in _SKILL_INVENTORY_PATTERNS)
+
+    def _format_active_skill_summary(self, skills: Dict[str, Dict[str, Any]]) -> str:
+        if not skills:
+            return ""
+
+        sections = ["\n## Active Skills\n"]
+        sections.append(
+            "These are the skills currently enabled for this session. "
+            "If one sounds relevant, use its manual or the matching `run_command` workflow.\n"
+        )
+        for name, skill in skills.items():
+            description = str(skill.get("description") or "").strip()
+            sections.append(f"- `{name}`: {description}")
+        sections.append("")
+        return "\n".join(sections)
+
+    @staticmethod
+    def _normalized_name(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", (text or "").lower()).strip("_")
 
     def _format_prompt_additions(self, skills: Dict[str, Dict[str, Any]]) -> str:
         if not skills:
@@ -221,21 +311,33 @@ class SkillRegistry:
         if cached is not None:
             return cached
 
+        if self._looks_like_skill_inventory_request(text):
+            additions = self._format_active_skill_summary(active_skills)
+            self._skill_prompt_cache[cache_key] = additions
+            return additions
+
         tokens = self._tokenize(text)
         lowered = text.lower()
+        normalized_lowered = self._normalized_name(lowered)
         scored: list[tuple[int, str, Dict[str, Any]]] = []
 
         for name, skill in active_skills.items():
+            aliases = self._skill_aliases(name, skill)
             keywords = self._skill_keywords(name, skill)
-            score = len(tokens & keywords)
+            alias_overlap = len(tokens & aliases)
+            keyword_overlap = len(tokens & keywords)
+            score = keyword_overlap + alias_overlap * 6
 
-            explicit_name = name.lower() in lowered.replace("-", "_")
+            explicit_name = self._normalized_name(name) in normalized_lowered
             if explicit_name:
                 score += 50
 
             if "http" in lowered or "www." in lowered:
                 if name in {"browser", "scrapling", "download_image"}:
                     score += 3
+
+            if alias_overlap > 0:
+                score += 2
 
             if score > 0:
                 scored.append((score, name, skill))
