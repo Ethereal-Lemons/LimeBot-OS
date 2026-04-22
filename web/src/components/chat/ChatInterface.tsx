@@ -411,9 +411,9 @@ const MarkdownMessage = memo(({
 
     return (
         <div className={cn(
-            "prose dark:prose-invert max-w-none break-words font-sans text-[15px] leading-[1.72] text-inherit",
-            "prose-p:my-0 prose-p:leading-[1.72] prose-headings:mb-2 prose-headings:mt-5",
-            "prose-li:my-0.5 prose-ul:my-2.5 prose-ol:my-2.5 prose-pre:my-0 prose-code:before:hidden prose-code:after:hidden",
+            "prose dark:prose-invert max-w-none break-words font-sans text-[15px] leading-[1.55] text-inherit",
+            "prose-p:my-0 prose-p:leading-[1.55] prose-headings:mb-1.5 prose-headings:mt-3",
+            "prose-li:my-0 prose-ul:my-1.5 prose-ol:my-1.5 prose-pre:my-0 prose-code:before:hidden prose-code:after:hidden",
             isStreaming && "streaming-markdown"
         )}>
             <ReactMarkdown
@@ -424,10 +424,10 @@ const MarkdownMessage = memo(({
                             {...props}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="font-bold underline text-primary decoration-primary/30 hover:decoration-primary"
+                            className="font-bold underline text-primary decoration-primary/60 underline-offset-2 hover:decoration-primary hover:brightness-125 transition-all"
                         />
                     ),
-                    p: ({ node, ...props }) => <p {...props} className="mb-2.5 last:mb-0" />,
+                    p: ({ node, ...props }) => <p {...props} className="mb-1.5 last:mb-0" />,
                     code: ({ node, className, children, ...props }: any) => {
                         const codeContent = String(children || '').trim();
                         if (!codeContent) return null;
