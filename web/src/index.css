@@ -797,6 +797,16 @@
     color: white;
   }
 
+  /* Emerald Depths — make links pop against the dark green background */
+  [data-theme='emerald-depths'] a {
+    color: hsl(188, 90%, 62%) !important;
+    text-decoration-color: hsla(188, 90%, 62%, 0.5) !important;
+  }
+  [data-theme='emerald-depths'] a:hover {
+    color: hsl(188, 95%, 72%) !important;
+    text-decoration-color: hsl(188, 95%, 72%) !important;
+  }
+
   /* Override User Bubble for Sakura to match theme */
   [data-theme='sakura'] .bg-zinc-800 {
     background-color: hsl(330, 80%, 60%);
