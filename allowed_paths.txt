@@ -1,0 +1,3 @@
+./persona
+./logs
+C:\Users\brite\OneDrive\Imágenes\LimeBot-OS
