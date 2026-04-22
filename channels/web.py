@@ -30,6 +30,7 @@ from loguru import logger
 from channels.base import BaseChannel
 from core.bus import MessageBus
 from core.events import OutboundMessage
+from core.oauth_profiles import get_codex_oauth_status
 from core.session_manager import SessionManager
 from core.tools import Toolbox
 
@@ -607,18 +608,30 @@ class WebChannel(BaseChannel):
                 preview_text = None
                 preview_error = None
                 try:
-                    response = await asyncio.to_thread(
-                        completion,
-                        model=provider_cfg["model"],
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_message},
-                        ],
-                        max_tokens=180,
-                        api_key=provider_cfg["api_key"],
-                        base_url=provider_cfg["base_url"],
-                        custom_llm_provider=provider_cfg["custom_llm_provider"],
-                    )
+                    preview_messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ]
+                    if str(cfg.llm.model or "").startswith("openai-codex/"):
+                        from core.codex_bridge import complete_codex_response
+
+                        response = await asyncio.to_thread(
+                            complete_codex_response,
+                            cfg.llm.model,
+                            preview_messages,
+                            None,
+                            "persona-preview",
+                        )
+                    else:
+                        response = await asyncio.to_thread(
+                            completion,
+                            model=provider_cfg["model"],
+                            messages=preview_messages,
+                            max_tokens=180,
+                            api_key=provider_cfg["api_key"],
+                            base_url=provider_cfg["base_url"],
+                            custom_llm_provider=provider_cfg["custom_llm_provider"],
+                        )
                     choices = getattr(response, "choices", None) or response.get("choices", [])
                     if choices:
                         message = choices[0].message if hasattr(choices[0], "message") else choices[0].get("message", {})
@@ -786,6 +799,7 @@ class WebChannel(BaseChannel):
 
         @self.app.get("/api/llm/models")
         async def get_llm_models():
+            codex_status = get_codex_oauth_status()
             models = [
                 # ── Google Gemini ─────────────────────────────────────────────
                 {
@@ -1020,6 +1034,27 @@ class WebChannel(BaseChannel):
                 },
             ]
 
+            if codex_status.get("configured"):
+                models.extend(
+                    [
+                        {
+                            "id": "openai-codex/gpt-5.4",
+                            "name": "GPT-5.4 (Codex OAuth)",
+                            "provider": "openai-codex",
+                        },
+                        {
+                            "id": "openai-codex/gpt-5.4-mini",
+                            "name": "GPT-5.4 Mini (Codex OAuth)",
+                            "provider": "openai-codex",
+                        },
+                        {
+                            "id": "openai-codex/gpt-5.4-pro",
+                            "name": "GPT-5.4 Pro (Codex OAuth)",
+                            "provider": "openai-codex",
+                        },
+                    ]
+                )
+
             from core.llm_utils import (
                 fetch_openai_compatible_models,
                 fetch_anthropic_models,
@@ -1093,7 +1128,7 @@ class WebChannel(BaseChannel):
                         models.append(cm)
                         existing_ids.add(cm["id"])
 
-            return {"models": models}
+            return {"models": models, "codexAuth": codex_status}
 
         @self.app.get("/api/llm/health", dependencies=[Depends(self.verify_auth)])
         async def check_llm_health():
@@ -1120,15 +1155,26 @@ class WebChannel(BaseChannel):
                     model, default_base_url=self.config.llm.base_url
                 )
 
-                await asyncio.to_thread(
-                    completion,
-                    model=p_cfg["model"],
-                    messages=[{"role": "user", "content": "hi"}],
-                    max_tokens=5,
-                    api_key=p_cfg["api_key"],
-                    base_url=p_cfg["base_url"],
-                    custom_llm_provider=p_cfg["custom_llm_provider"],
-                )
+                if str(model or "").startswith("openai-codex/"):
+                    from core.codex_bridge import complete_codex_response
+
+                    await asyncio.to_thread(
+                        complete_codex_response,
+                        model,
+                        [{"role": "user", "content": "hi"}],
+                        None,
+                        "llm-health",
+                    )
+                else:
+                    await asyncio.to_thread(
+                        completion,
+                        model=p_cfg["model"],
+                        messages=[{"role": "user", "content": "hi"}],
+                        max_tokens=5,
+                        api_key=p_cfg["api_key"],
+                        base_url=p_cfg["base_url"],
+                        custom_llm_provider=p_cfg["custom_llm_provider"],
+                    )
                 latency = int((time.time() - start) * 1000)
                 return {
                     "status": "Healthy",
@@ -1233,6 +1279,17 @@ class WebChannel(BaseChannel):
                 if val:
                     env_dict[key] = val
             return {"env": env_dict, "secrets": secret_dict}
+
+        @self.app.get("/api/auth/codex/status", dependencies=[Depends(self.verify_auth)])
+        async def get_codex_auth_status():
+            from config import load_config
+
+            cfg = load_config()
+            status_payload = get_codex_oauth_status()
+            status_payload["selected_model_uses_codex_auth"] = str(
+                getattr(cfg.llm, "model", "") or ""
+            ).startswith("openai-codex/")
+            return status_payload
 
         @self.app.get("/api/discord/config", dependencies=[Depends(self.verify_auth)])
         async def get_discord_config():

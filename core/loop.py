@@ -42,6 +42,11 @@ from config import load_config
 from core.browser import get_browser_manager
 from core.bus import MessageBus
 from core.cache import ToolCache
+from core.codex_bridge import (
+    complete_codex_response,
+    is_codex_model_name,
+    stream_codex_response,
+)
 from core.context import tool_context
 from core.events import InboundMessage, OutboundMessage
 from core import prompt as prompt_module
@@ -267,6 +272,17 @@ class AgentLoop:
 
         # 3. Warm the chat LLM HTTP connection with a minimal 1-token call
         try:
+            if is_codex_model_name(self.primary_model):
+                await asyncio.to_thread(
+                    complete_codex_response,
+                    self.primary_model,
+                    [{"role": "user", "content": "hi"}],
+                    None,
+                    "__warmup__",
+                )
+                logger.info("✅ Codex connection warmed.")
+                return
+
             model, base_url, api_key, custom_llm_provider = self._provider
             await acompletion(
                 model=model,
@@ -766,7 +782,17 @@ class AgentLoop:
             return False
         if iterations_limit_reached or not web_streamed_reply or force_direct_reply:
             return False
-        return str(reply_to_user or "").strip() == str(raw_reply or "").strip()
+        # Compare tag-stripped versions so that embedded <log_memory> etc.
+        # tags in raw_reply don't defeat the match.
+        raw_cleaned = _GHOST_TAG_RE.sub("", str(raw_reply or ""))
+        raw_cleaned = re.sub(
+            r"<(?:" + "|".join(_GHOST_TAG_NAMES) + r")[^>]*>.*?</(?:"
+            + "|".join(_GHOST_TAG_NAMES) + r")>",
+            "",
+            raw_cleaned,
+            flags=re.DOTALL,
+        ).strip()
+        return str(reply_to_user or "").strip() == raw_cleaned
 
     @staticmethod
     def _messages_have_image_inputs(messages: List[Dict[str, Any]]) -> bool:
@@ -1219,12 +1245,19 @@ class AgentLoop:
     def _dedup_overlap(accumulated: str, new_content: str) -> str:
         """Return the portion of *new_content* that doesn't overlap with the
         tail of *accumulated*.  Used after tool-call continuations where the
-        LLM may repeat previously-streamed text."""
+        LLM may repeat previously-streamed text.
+
+        Two-stage approach:
+          A) Literal tail-prefix overlap (extended window up to 300 chars).
+          B) Paragraph-level dedup — drops paragraphs from *new_content*
+             that already appear in *accumulated*.
+        """
         acc_s, nxt_s = accumulated.strip(), new_content.strip()
         if not (acc_s and nxt_s):
             return new_content
 
-        max_overlap = min(len(acc_s), len(nxt_s), 100)
+        # Stage A: tail-prefix overlap (extended window)
+        max_overlap = min(len(acc_s), len(nxt_s), 300)
         for length in range(max_overlap, 4, -1):
             suffix = acc_s[-length:]
             if nxt_s.lower().startswith(suffix.lower()):
@@ -1232,6 +1265,28 @@ class AgentLoop:
                 if match:
                     clean = new_content[match.start() + length :].lstrip()
                     return clean if clean.strip() else ""
+
+        # Stage B: paragraph-level dedup
+        acc_paras = [p.strip() for p in re.split(r"\n\s*\n", acc_s) if p.strip()]
+        nxt_paras = [p.strip() for p in re.split(r"\n\s*\n", nxt_s) if p.strip()]
+
+        if not nxt_paras:
+            return ""
+
+        # Build a set of normalized accumulated paragraphs for fast lookup
+        acc_set = {p.lower() for p in acc_paras}
+
+        # Keep only paragraphs from new_content that are genuinely new
+        novel = [p for p in nxt_paras if p.lower() not in acc_set]
+
+        # If everything was a duplicate, return empty
+        if not novel:
+            return ""
+
+        # If some but not all were dupes, return only the novel ones
+        if len(novel) < len(nxt_paras):
+            return "\n\n".join(novel)
+
         return new_content
 
     @staticmethod
@@ -1684,6 +1739,23 @@ class AgentLoop:
 
         for attempt in range(max_retries):
             try:
+                if is_codex_model_name(active_source_model):
+                    if stream:
+                        return await asyncio.to_thread(
+                            stream_codex_response,
+                            active_source_model,
+                            messages,
+                            tools,
+                            session_key,
+                        )
+                    return await asyncio.to_thread(
+                        complete_codex_response,
+                        active_source_model,
+                        messages,
+                        tools,
+                        session_key,
+                    )
+
                 kwargs: Dict[str, Any] = dict(
                     model=model,
                     messages=messages,
@@ -1985,20 +2057,30 @@ class AgentLoop:
             to_summarise.append(remaining.pop(0))
 
         try:
-            resp = await asyncio.to_thread(
-                completion,
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Summarise in ≤200 words: key decisions, user facts, task state.",
-                    },
-                    {"role": "user", "content": json.dumps(to_summarise)},
-                ],
-                max_tokens=300,
-                base_url=self.config.llm.base_url,
-                api_key=self.config.llm.api_key,
-            )
+            summary_messages = [
+                {
+                    "role": "system",
+                    "content": "Summarise in ≤200 words: key decisions, user facts, task state.",
+                },
+                {"role": "user", "content": json.dumps(to_summarise)},
+            ]
+            if is_codex_model_name(self.model):
+                resp = await asyncio.to_thread(
+                    complete_codex_response,
+                    self.model,
+                    summary_messages,
+                    None,
+                    f"{session_key}::history-summary",
+                )
+            else:
+                resp = await asyncio.to_thread(
+                    completion,
+                    model=self.model,
+                    messages=summary_messages,
+                    max_tokens=300,
+                    base_url=self.config.llm.base_url,
+                    api_key=self.config.llm.api_key,
+                )
             summary_text = resp.choices[0].message.content
             summary_msg = {
                 "role": "system",
@@ -4486,12 +4568,21 @@ class AgentLoop:
                             if p.strip()
                         ]
                         _n = len(_paras)
+                        # Exact-half repetition (even paragraph count)
                         if _n >= 4 and _n % 2 == 0:
                             if _paras[: _n // 2] == _paras[_n // 2 :]:
                                 logger.info(
                                     "✂ Self-repetition detected — trimming duplicate."
                                 )
                                 reply_to_user = "\n\n".join(_paras[: _n // 2])
+                        # Trailing-repeat (odd count or partial overlap)
+                        if _n >= 3:
+                            _half = _n // 2
+                            if _half >= 2 and _paras[:_half] == _paras[-_half:]:
+                                logger.info(
+                                    "✂ Self-repetition detected (trailing) — trimming."
+                                )
+                                reply_to_user = "\n\n".join(_paras[: _n - _half])
 
                     if soul_updated or identity_updated:
                         self._invalidate_stable_prompt(sender_id)

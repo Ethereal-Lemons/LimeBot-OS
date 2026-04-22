@@ -3,6 +3,8 @@ import logging
 import os
 from typing import List, Dict, Any, Optional, Tuple
 
+from core.oauth_profiles import resolve_codex_oauth_api_key
+
 logger = logging.getLogger(__name__)
 QWEN_COMPAT_BASE_URLS = [
     "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -153,6 +155,13 @@ def get_api_key_for_model(model: str) -> Optional[str]:
 
     if model.startswith("gemini/") or model.startswith("google/"):
         return os.getenv("GEMINI_API_KEY")
+    elif model.startswith("openai-codex/"):
+        # Codex OAuth is managed locally via the CLI helper, not .env secrets.
+        try:
+            return resolve_codex_oauth_api_key()
+        except Exception as exc:
+            logger.warning(f"Codex OAuth key unavailable: {exc}")
+            return None
     elif model.startswith("openai/"):
         return os.getenv("OPENAI_API_KEY")
     elif model.startswith("anthropic/"):
@@ -231,6 +240,11 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
                 or "https://api.moonshot.ai/v1"
             )
         target_model = normalized_model.removeprefix("moonshot/")
+        custom_llm_provider = "openai"
+    elif normalized_model.startswith("openai-codex/"):
+        if not base_url:
+            base_url = "https://chatgpt.com/backend-api/codex"
+        target_model = normalized_model.removeprefix("openai-codex/")
         custom_llm_provider = "openai"
     elif normalized_model.startswith("gemini/"):
         target_model = normalized_model.removeprefix("gemini/")
