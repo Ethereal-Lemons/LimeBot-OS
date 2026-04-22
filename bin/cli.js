@@ -2,7 +2,7 @@
 
 import { spawn, exec, execSync, execFile } from 'child_process';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import fs from 'fs';
 import net from 'net';
 
@@ -963,6 +963,7 @@ ${colors.reset}
     ${colors.cyan}stop${colors.reset}             Stop all running LimeBot processes
     ${colors.cyan}status${colors.reset}           Check if LimeBot services are running
     ${colors.cyan}update-check${colors.reset}     Check current version, latest version, and git update status
+    ${colors.cyan}auth${colors.reset}             Manage CLI-only auth providers like Codex OAuth
     ${colors.cyan}skill${colors.reset}            Manage skills (install, uninstall, update, list)
     ${colors.cyan}doctor${colors.reset}           Diagnose common issues + run tests
     ${colors.cyan}logs${colors.reset}             Show recent logs
@@ -979,6 +980,12 @@ ${colors.reset}
     ${colors.dim}limebot autorun enable${colors.reset}
     ${colors.dim}limebot autorun disable${colors.reset}
 
+  ${colors.bright}Auth Commands:${colors.reset}
+    ${colors.dim}limebot auth codex login${colors.reset}
+    ${colors.dim}limebot auth codex import${colors.reset}
+    ${colors.dim}limebot auth codex status${colors.reset}
+    ${colors.dim}limebot auth codex logout${colors.reset}
+
   ${colors.bright}Skill Commands:${colors.reset}
     ${colors.dim}limebot skill list${colors.reset}
     ${colors.dim}limebot skill install <repo-url> [--ref v2.0]${colors.reset}
@@ -988,12 +995,91 @@ ${colors.reset}
   ${colors.bright}Examples:${colors.reset}
     ${colors.dim}limebot start${colors.reset}
     ${colors.dim}limebot update-check${colors.reset}
+    ${colors.dim}limebot auth codex login${colors.reset}
     ${colors.dim}limebot start --quick${colors.reset}
     ${colors.dim}limebot doctor${colors.reset}
     ${colors.dim}limebot doctor --skip-tests${colors.reset}
     ${colors.dim}limebot doctor --skip-perf${colors.reset}
     ${colors.dim}limebot install-browser${colors.reset}
 `);
+}
+
+async function loadCodexAuthHelper() {
+    const helperPath = path.join(rootDir, 'scripts', 'codex-oauth.mjs');
+    if (!fs.existsSync(helperPath)) {
+        throw new Error(`Codex auth helper not found at ${helperPath}`);
+    }
+    return import(pathToFileURL(helperPath).href);
+}
+
+function printCodexAuthStatus(status) {
+    if (!status?.configured) {
+        warning('Codex OAuth is not configured.');
+        info('Run `limebot auth codex login` to sign in with ChatGPT OAuth.');
+        info('Run `limebot auth codex import` to import an existing Codex CLI login.');
+        return;
+    }
+
+    success(`Codex OAuth is configured${status.email ? ` for ${status.email}` : ''}.`);
+    info(`Store: ${status.storePath}`);
+    if (status.displayName) info(`Display name: ${status.displayName}`);
+    if (status.source) info(`Source: ${status.source}`);
+    if (status.updatedAt) info(`Updated: ${status.updatedAt}`);
+    if (status.importedFrom) info(`Imported from: ${status.importedFrom}`);
+    if (status.expiresAt) {
+        const expiryLabel = status.expired ? 'Expired' : 'Expires';
+        info(`${expiryLabel}: ${status.expiresAt}`);
+    } else {
+        info('Expires: unknown');
+    }
+}
+
+async function cmdAuth(args = []) {
+    const provider = args[0]?.toLowerCase();
+    const action = args[1]?.toLowerCase() || 'status';
+
+    if (provider !== 'codex') {
+        error('Usage: limebot auth codex <login|import|status|logout>');
+        process.exit(1);
+    }
+
+    console.log(`${colors.lime}${colors.bright}\n  🍋 LimeBot Codex Auth${colors.reset}\n`);
+    const helper = await loadCodexAuthHelper();
+
+    switch (action) {
+        case 'login': {
+            const status = await helper.loginCodexAuth();
+            success('Codex OAuth login complete.');
+            printCodexAuthStatus(status);
+            break;
+        }
+        case 'import': {
+            const status = await helper.importCodexCliAuth();
+            success('Imported Codex CLI login.');
+            printCodexAuthStatus(status);
+            break;
+        }
+        case 'status': {
+            const status = await helper.getCodexAuthStatus();
+            printCodexAuthStatus(status);
+            break;
+        }
+        case 'logout': {
+            const removed = await helper.logoutCodexAuth();
+            if (removed) {
+                success('Removed stored Codex OAuth profile.');
+            } else {
+                info('No stored Codex OAuth profile was present.');
+            }
+            break;
+        }
+        default:
+            error(`Unknown auth action '${action}'.`);
+            info('Usage: limebot auth codex <login|import|status|logout>');
+            process.exit(1);
+    }
+
+    console.log('');
 }
 
 async function cmdUpdateCheck(args = []) {
@@ -1714,6 +1800,7 @@ async function main() {
         case 'stop': await cmdStop(); break;
         case 'status': await cmdStatus(); break;
         case 'update-check': await cmdUpdateCheck(args.slice(1)); break;
+        case 'auth': await cmdAuth(args.slice(1)); break;
         case 'doctor': await cmdDoctor(args.slice(1)); break;
         case 'logs': await cmdLogs(args.slice(1)); break;
         case 'install-browser': await cmdInstallBrowser(); break;

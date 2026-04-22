@@ -352,6 +352,7 @@ npm run lime-bot <command> [options]
 | `start -- --quick` | Fast boot, skip dependency checks |
 | `stop` | Kill all LimeBot processes |
 | `status` | Check active ports (8000 backend, 5173 frontend) |
+| `auth codex <login\|import\|status\|logout>` | Manage local ChatGPT Codex OAuth from the CLI |
 | `doctor` | Validate Python, Node, `.env` config |
 | `logs` | Tail `logs/limebot.log` |
 | `skill list` | List installed skills |
@@ -360,6 +361,11 @@ npm run lime-bot <command> [options]
 | `skill enable <name>` | Enable a disabled skill |
 | `skill disable <name>` | Disable without uninstalling |
 | `install-browser` | Install Chromium for Playwright |
+
+**Codex OAuth notes:**
+- The OAuth sign-in flow is intentionally CLI-only (`limebot auth codex ...`), not browser-dashboard driven.
+- Stored Codex credentials live in local runtime state at `data/oauth_profiles.json` and should not be committed.
+- Importing an existing Codex CLI login reads `%USERPROFILE%\.codex\auth.json` (or `CODEX_HOME/auth.json` if set).
 
 **Global install** (run once in project root):
 ```bash

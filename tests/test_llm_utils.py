@@ -2,10 +2,36 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from core.llm_utils import build_provider_chain, resolve_provider_config
+from core.llm_utils import build_provider_chain, get_api_key_for_model, resolve_provider_config
 
 
 class TestLlmUtils(unittest.TestCase):
+    def test_codex_models_do_not_fall_back_to_unrelated_env_keys(self):
+        with patch("core.llm_utils.resolve_codex_oauth_api_key", return_value="codex-secret"), patch.dict(
+            "os.environ",
+            {
+                "GEMINI_API_KEY": "gemini-secret",
+                "OPENAI_API_KEY": "openai-secret",
+            },
+            clear=False,
+        ):
+            api_key = get_api_key_for_model("openai-codex/gpt-5.4")
+
+        self.assertEqual(api_key, "codex-secret")
+
+    def test_resolve_provider_config_uses_codex_base_url_and_model_id(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
+        with patch("config.load_config", return_value=cfg), patch(
+            "core.llm_utils.resolve_codex_oauth_api_key",
+            return_value="codex-secret",
+        ):
+            resolved = resolve_provider_config("openai-codex/gpt-5.4")
+
+        self.assertEqual(resolved["model"], "gpt-5.4")
+        self.assertEqual(resolved["base_url"], "https://chatgpt.com/backend-api/codex")
+        self.assertEqual(resolved["api_key"], "codex-secret")
+        self.assertEqual(resolved["custom_llm_provider"], "openai")
+
     def test_resolve_provider_config_uses_nvidia_nim_provider_for_kimi_alias(self):
         cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
         with patch("config.load_config", return_value=cfg), patch.dict(

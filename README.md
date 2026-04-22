@@ -213,6 +213,21 @@ cd web && npm install && npm run dev
 docker-compose up --build
 ```
 
+### Codex OAuth (CLI-only)
+LimeBot can now store and manage ChatGPT Codex OAuth locally through the CLI without putting the login flow in the web dashboard.
+
+```bash
+limebot auth codex login
+limebot auth codex import
+limebot auth codex status
+limebot auth codex logout
+```
+
+- `login` starts the browser-based ChatGPT OAuth flow using the local CLI
+- `import` pulls an existing login from `%USERPROFILE%\.codex\auth.json` (or `CODEX_HOME/auth.json`)
+- credentials are stored locally in `data/oauth_profiles.json`
+- the dashboard can read status, but sign-in itself stays CLI-only
+
 ---
 
 ## ⚙️ Configuration
