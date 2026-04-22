@@ -21,7 +21,9 @@
     "web:dev": "cd web && npm run dev -- --host 0.0.0.0",
     "backend:dev": "python main.py"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@mariozechner/pi-ai": "^0.68.1"
+  },
   "workspaces": [
     "web",
     "bridge"
