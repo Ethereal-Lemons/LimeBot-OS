@@ -560,6 +560,119 @@
       url("data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%2388a070' fill-opacity='0.06' fill-rule='evenodd'%3E%3Ccircle cx='10' cy='10' r='2'/%3E%3Ccircle cx='30' cy='30' r='2'/%3E%3C/g%3E%3C/svg%3E"),
       linear-gradient(180deg, #fdf8f0 0%, #f5efe4 40%, #eee8d8 100%);
   }
+
+  [data-theme='noir-dossier'] {
+    --primary: 38 82% 56%;
+    --primary-foreground: 24 18% 10%;
+    --accent: 2 66% 52%;
+    --accent-foreground: 0 0% 100%;
+    --ring: 38 82% 56%;
+
+    --foreground: 42 24% 88%;
+    --card-foreground: 42 24% 88%;
+    --popover-foreground: 42 24% 88%;
+    --muted-foreground: 38 16% 62%;
+
+    --background: 30 12% 8%;
+    --card: 30 12% 11% / 0.84;
+    --popover: 30 12% 10% / 0.94;
+    --secondary: 28 12% 14%;
+    --muted: 28 10% 16%;
+    --border: 38 46% 35% / 0.34;
+    --input: 28 10% 14%;
+    --radius: 0.35rem;
+
+    --bg-image:
+      linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+      radial-gradient(circle at 18% 18%, rgba(180, 83, 9, 0.18) 0%, transparent 32%),
+      linear-gradient(145deg, #0e0c0a 0%, #191512 46%, #100d0b 100%);
+    background-size: 24px 24px, 24px 24px, auto, auto;
+  }
+
+  [data-theme='solar-flare'] {
+    --primary: 14 92% 54%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 45 96% 54%;
+    --accent-foreground: 24 80% 16%;
+    --ring: 14 92% 54%;
+
+    --foreground: 24 46% 18%;
+    --card-foreground: 24 46% 18%;
+    --popover-foreground: 24 46% 18%;
+    --muted-foreground: 22 28% 42%;
+
+    --background: 42 100% 97%;
+    --card: 0 0% 100% / 0.76;
+    --popover: 0 0% 100% / 0.9;
+    --secondary: 35 100% 91%;
+    --muted: 35 92% 93%;
+    --border: 20 88% 78%;
+    --input: 35 100% 96%;
+    --radius: 0.9rem;
+
+    --bg-image:
+      radial-gradient(circle at 18% 20%, rgba(250, 204, 21, 0.58) 0%, transparent 30%),
+      radial-gradient(circle at 78% 10%, rgba(251, 113, 133, 0.42) 0%, transparent 34%),
+      linear-gradient(150deg, #fffbeb 0%, #fed7aa 48%, #fecdd3 100%);
+  }
+
+  [data-theme='circuit-board'] {
+    --primary: 84 86% 56%;
+    --primary-foreground: 150 40% 8%;
+    --accent: 166 84% 48%;
+    --accent-foreground: 150 40% 8%;
+    --ring: 84 86% 56%;
+
+    --foreground: 142 48% 91%;
+    --card-foreground: 142 48% 91%;
+    --popover-foreground: 142 48% 91%;
+    --muted-foreground: 142 22% 64%;
+
+    --background: 160 36% 8%;
+    --card: 160 34% 11% / 0.78;
+    --popover: 160 34% 10% / 0.94;
+    --secondary: 158 28% 15%;
+    --muted: 158 24% 16%;
+    --border: 84 70% 45% / 0.28;
+    --input: 158 24% 14%;
+    --radius: 0.45rem;
+
+    --bg-image:
+      linear-gradient(90deg, rgba(163, 230, 53, 0.08) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(45, 212, 191, 0.06) 1px, transparent 1px),
+      radial-gradient(circle at 80% 20%, rgba(45, 212, 191, 0.16) 0%, transparent 30%),
+      linear-gradient(160deg, #06110f 0%, #06231d 55%, #0b2a16 100%);
+    background-size: 34px 34px, 34px 34px, auto, auto;
+  }
+
+  [data-theme='prism-desk'] {
+    --primary: 190 86% 42%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 319 72% 62%;
+    --accent-foreground: 0 0% 100%;
+    --ring: 190 86% 42%;
+
+    --foreground: 230 24% 18%;
+    --card-foreground: 230 24% 18%;
+    --popover-foreground: 230 24% 18%;
+    --muted-foreground: 230 14% 46%;
+
+    --background: 210 100% 98%;
+    --card: 0 0% 100% / 0.72;
+    --popover: 0 0% 100% / 0.92;
+    --secondary: 190 72% 93%;
+    --muted: 260 54% 95%;
+    --border: 200 56% 82%;
+    --input: 0 0% 100%;
+    --radius: 0.75rem;
+
+    --bg-image:
+      radial-gradient(circle at 16% 18%, rgba(34, 211, 238, 0.32) 0%, transparent 28%),
+      radial-gradient(circle at 82% 16%, rgba(217, 70, 239, 0.24) 0%, transparent 30%),
+      radial-gradient(circle at 60% 82%, rgba(129, 140, 248, 0.22) 0%, transparent 32%),
+      linear-gradient(145deg, #f8fbff 0%, #ecfeff 48%, #fdf4ff 100%);
+  }
 }
 
 @layer base {
@@ -670,6 +783,80 @@
   [data-theme='coffee-shop'] aside {
     box-shadow: 4px 4px 10px rgba(62, 39, 35, 0.15);
     border: 1px solid rgba(121, 85, 72, 0.2);
+  }
+
+  [data-theme='noir-dossier'] .bg-card,
+  [data-theme='noir-dossier'] .bg-popover,
+  [data-theme='noir-dossier'] aside {
+    backdrop-filter: blur(9px);
+    -webkit-backdrop-filter: blur(9px);
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.18);
+    background: linear-gradient(145deg, rgba(33, 28, 23, 0.82), rgba(18, 15, 13, 0.88));
+  }
+
+  [data-theme='noir-dossier'] .bg-zinc-800 {
+    background: linear-gradient(120deg, hsl(38, 82%, 42%), hsl(2, 66%, 38%));
+    color: white;
+  }
+
+  [data-theme='solar-flare'] .bg-card,
+  [data-theme='solar-flare'] .bg-popover,
+  [data-theme='solar-flare'] aside {
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 12px 30px rgba(251, 146, 60, 0.22), inset 0 0 0 1px rgba(255, 255, 255, 0.38);
+    border: 1px solid rgba(251, 146, 60, 0.28);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(255, 247, 237, 0.66));
+  }
+
+  [data-theme='solar-flare'] .bg-zinc-800 {
+    background: linear-gradient(120deg, hsl(14, 92%, 54%), hsl(45, 96%, 54%));
+    color: white;
+  }
+
+  [data-theme='circuit-board'] .bg-card,
+  [data-theme='circuit-board'] .bg-popover,
+  [data-theme='circuit-board'] aside {
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 12px 30px rgba(2, 44, 34, 0.48), inset 0 0 0 1px rgba(163, 230, 53, 0.12);
+    border: 1px solid rgba(163, 230, 53, 0.18);
+    background:
+      linear-gradient(90deg, rgba(163, 230, 53, 0.045) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(45, 212, 191, 0.035) 1px, transparent 1px),
+      linear-gradient(145deg, rgba(6, 35, 29, 0.82), rgba(5, 22, 19, 0.9));
+    background-size: 18px 18px, 18px 18px, auto;
+  }
+
+  [data-theme='circuit-board'] .bg-zinc-800 {
+    background: linear-gradient(120deg, hsl(84, 86%, 38%), hsl(166, 84%, 34%));
+    color: white;
+  }
+
+  [data-theme='circuit-board'] a {
+    color: hsl(84, 86%, 68%) !important;
+    text-decoration-color: hsla(84, 86%, 68%, 0.5) !important;
+  }
+
+  [data-theme='prism-desk'] .bg-card,
+  [data-theme='prism-desk'] .bg-popover,
+  [data-theme='prism-desk'] aside {
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 16px 36px rgba(15, 23, 42, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+    border: 1px solid rgba(14, 165, 233, 0.2);
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(236, 254, 255, 0.62));
+  }
+
+  [data-theme='prism-desk'] .bg-zinc-800 {
+    background: linear-gradient(120deg, hsl(190, 86%, 42%), hsl(319, 72%, 62%));
+    color: white;
+  }
+
+  [data-theme='prism-desk'] a {
+    color: hsl(190, 86%, 36%) !important;
+    text-decoration-color: hsla(319, 72%, 62%, 0.45) !important;
   }
 
   /* Sakura Theme */
