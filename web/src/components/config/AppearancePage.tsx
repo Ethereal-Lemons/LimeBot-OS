@@ -79,6 +79,10 @@ const specialThemes = [
     { id: 'windows-95', name: 'Windows 95', color: 'bg-[#c0c0c0] border-2 border-t-white border-l-white border-b-[#808080] border-r-[#808080]', tag: 'full' },
     { id: 'evangelion', name: 'Evangelion', color: 'bg-gradient-to-br from-orange-500 via-orange-600 to-purple-800', tag: 'full' },
     { id: 'ghibli-garden', name: 'Ghibli Garden', color: 'bg-gradient-to-br from-green-300 via-lime-200 to-amber-100 border border-green-700/30', tag: 'full' },
+    { id: 'noir-dossier', name: 'Noir Dossier', color: 'bg-gradient-to-br from-zinc-950 via-stone-800 to-amber-900 border border-amber-400/50', tag: 'dark' },
+    { id: 'solar-flare', name: 'Solar Flare', color: 'bg-gradient-to-br from-yellow-300 via-orange-400 to-rose-500', tag: 'light' },
+    { id: 'circuit-board', name: 'Circuit Board', color: 'bg-gradient-to-br from-slate-950 via-emerald-950 to-lime-700 border border-lime-400/50', tag: 'dark' },
+    { id: 'prism-desk', name: 'Prism Desk', color: 'bg-gradient-to-br from-white via-cyan-100 to-fuchsia-200 border border-cyan-300/60', tag: 'light' },
 ];
 
 const allThemeOptions = [...standardThemes, ...specialThemes];

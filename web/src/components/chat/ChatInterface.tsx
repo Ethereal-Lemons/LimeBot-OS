@@ -1,6 +1,4 @@
 import { useRef, useEffect, useState, memo } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import axios from 'axios';
 import { API_BASE_URL } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -8,9 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
-import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, Check, Copy, ArrowDown, ShieldAlert, Wifi, WifiOff, FileText, ExternalLink } from "lucide-react";
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, ArrowDown, ShieldAlert, Wifi, WifiOff } from "lucide-react";
 import {
     AlertDialog,
     AlertDialogCancel,
@@ -30,6 +26,9 @@ import type { ChatAttachment } from "@/lib/chat-state";
 
 
 import { ToolTimeline } from './ToolTimeline';
+import { AttachmentPreview } from './AttachmentPreview';
+import { MarkdownMessage } from './MarkdownMessage';
+import { parseSubagentReport, SubagentReportCard } from './SubagentReportCard';
 
 interface Message {
     sender: 'user' | 'bot';
@@ -88,26 +87,6 @@ const WORD_DOCUMENT_MIME_TYPES = new Set([
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
 
-const resolveAttachmentUrl = (url: string) => {
-    if (!url) return "";
-    if (url.startsWith("data:") || /^https?:\/\//i.test(url)) return url;
-    return `${API_BASE_URL}${url}`;
-};
-
-const isPdfAttachment = (attachment: ChatAttachment) =>
-    attachment.mimeType === "application/pdf" || attachment.name.toLowerCase().endsWith(".pdf");
-
-const attachmentLabel = (attachment: ChatAttachment) => {
-    if (attachment.kind === "image") return "Image";
-    if (isPdfAttachment(attachment)) return "PDF";
-    if (WORD_DOCUMENT_MIME_TYPES.has(attachment.mimeType) || /\.(doc|docx)$/i.test(attachment.name)) {
-        return "Word";
-    }
-    return "Document";
-};
-
-
-
 function StatusChip({
     label,
     value,
@@ -128,103 +107,6 @@ function StatusChip({
         >
             <span>{label}</span>
             <span className="normal-case tracking-normal text-foreground">{value}</span>
-        </div>
-    );
-}
-
-function ChatImage({ src, alt }: { src: string, alt: string }) {
-    const [error, setError] = useState(false);
-
-    if (error) return null;
-
-    return (
-        <img
-            src={src}
-            alt={alt}
-            className="max-w-full rounded-lg mb-2 max-h-64 object-cover"
-            onError={() => setError(true)}
-        />
-    );
-}
-
-type ParsedSubagentReport = {
-    sessionId?: string;
-    agentName?: string;
-    task: string;
-    result: string;
-};
-
-function formatSubagentTitle(agentName?: string): string {
-    const raw = String(agentName || '').trim();
-    if (!raw) return 'Subagent';
-    return raw
-        .split(/[-_\s]+/)
-        .filter(Boolean)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(' ');
-}
-
-function parseSubagentReport(content: string): ParsedSubagentReport | null {
-    const raw = String(content || '').trim();
-    if (!raw.startsWith('--- SUB-AGENT REPORT')) return null;
-
-    const match = raw.match(
-        /^--- SUB-AGENT REPORT \(([^)]+)\)(?: \[([^\]]+)\])? ---\s*Task:\s*([\s\S]*?)\s*Result:\s*([\s\S]*)$/i
-    );
-    if (!match) return null;
-
-    return {
-        sessionId: match[1]?.trim() || undefined,
-        agentName: match[2]?.trim() || undefined,
-        task: match[3]?.trim() || '',
-        result: match[4]?.trim() || '',
-    };
-}
-
-function SubagentReportCard({
-    report,
-}: {
-    report: ParsedSubagentReport;
-}) {
-    const title = formatSubagentTitle(report.agentName);
-    const result = report.result || 'No result returned.';
-
-    return (
-        <div className="w-full overflow-hidden rounded-2xl border border-border/70 bg-card/70 shadow-sm">
-            <div className="flex items-center gap-2 border-b border-border/70 bg-muted/30 px-4 py-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                    <Bot className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-foreground">{title}</span>
-                        <span className="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-primary">
-                            Subagent
-                        </span>
-                    </div>
-                    <div className="text-[11px] text-muted-foreground">
-                        Specialized delegated result
-                    </div>
-                </div>
-            </div>
-
-            <div className="space-y-4 px-4 py-4">
-                {report.task ? (
-                    <div className="space-y-1">
-                        <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                            Task
-                        </div>
-                        <div className="text-sm text-foreground">{report.task}</div>
-                    </div>
-                ) : null}
-
-                <div className="space-y-1">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                        Result
-                    </div>
-                    <MarkdownMessage content={result} isUser={false} />
-                </div>
-            </div>
         </div>
     );
 }
@@ -284,199 +166,6 @@ function isSubagentOrchestrationThought(
         isSubagentReportMessage(nextMsg)
     );
 }
-
-function AttachmentPreview({
-    attachment,
-    compact = false,
-}: {
-    attachment: ChatAttachment;
-    compact?: boolean;
-}) {
-    const resolvedUrl = resolveAttachmentUrl(attachment.url);
-    const label = attachmentLabel(attachment);
-
-    if (attachment.kind === "image") {
-        return <ChatImage src={resolvedUrl} alt={attachment.name || "Uploaded image"} />;
-    }
-
-    if (isPdfAttachment(attachment) && !compact) {
-        return (
-            <div className="mb-2 overflow-hidden rounded-xl border border-border bg-background/80 shadow-sm">
-                <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
-                    <div className="min-w-0">
-                        <div className="truncate text-xs font-semibold text-foreground">{attachment.name}</div>
-                        <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
-                    </div>
-                    <a
-                        href={resolvedUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-2 py-1 text-[10px] font-semibold text-muted-foreground transition-colors hover:border-primary/30 hover:text-foreground"
-                    >
-                        <ExternalLink className="h-3 w-3" />
-                        Open
-                    </a>
-                </div>
-                <iframe
-                    src={resolvedUrl}
-                    title={attachment.name}
-                    className="h-64 w-full bg-white"
-                />
-            </div>
-        );
-    }
-
-    return (
-        <a
-            href={resolvedUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mb-2 flex items-center gap-3 rounded-xl border border-border bg-background/80 px-3 py-2 text-left shadow-sm transition-colors hover:border-primary/30 hover:bg-background"
-        >
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <FileText className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-semibold text-foreground">{attachment.name}</div>
-                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
-            </div>
-            <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground" />
-        </a>
-    );
-}
-
-const normalizeStreamingMarkdown = (content: string) => {
-    const value = content || "";
-    const fenceCount = (value.match(/```/g) || []).length;
-    return fenceCount % 2 === 1 ? `${value}\n\`\`\`` : value;
-};
-
-const MemoizedCodeBlock = memo(({ language, value }: { language: string; value: string }) => {
-    const [copied, setCopied] = useState(false);
-
-    const handleCopy = () => {
-        navigator.clipboard.writeText(value);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-    };
-
-    return (
-        <div className="rounded-lg my-3 border border-border overflow-hidden text-sm shadow-sm group">
-            <div className="bg-zinc-900 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-zinc-800 flex justify-between items-center">
-                <span>{language}</span>
-                <button
-                    onClick={handleCopy}
-                    className="opacity-0 group-hover:opacity-100 transition-all duration-200 hover:text-foreground flex items-center gap-1.5 bg-zinc-800/50 px-2 py-0.5 rounded border border-white/5"
-                >
-                    {copied ? (
-                        <>
-                            <Check className="h-3 w-3 text-green-500" />
-                            <span className="text-green-500">Copied!</span>
-                        </>
-                    ) : (
-                        <>
-                            <Copy className="h-3 w-3" />
-                            <span>Copy</span>
-                        </>
-                    )}
-                </button>
-            </div>
-            <div className="max-h-[450px] overflow-x-auto overflow-y-auto custom-scrollbar">
-                <SyntaxHighlighter
-                    style={vscDarkPlus}
-                    language={language}
-                    PreTag="div"
-                    wrapLongLines={true}
-                    customStyle={{ margin: 0, padding: '1.1rem 1.25rem', background: '#09090b', fontSize: '13.5px', lineHeight: '1.7' }}
-                >
-                    {value}
-                </SyntaxHighlighter>
-            </div>
-        </div>
-    );
-});
-
-const MarkdownMessage = memo(({
-    content,
-    isUser,
-    isStreaming,
-}: {
-    content: string;
-    isUser: boolean;
-    isStreaming?: boolean;
-}) => {
-    if (!content) return null;
-
-    const renderedContent = isStreaming ? normalizeStreamingMarkdown(content) : content;
-
-    return (
-        <div className={cn(
-            "prose dark:prose-invert max-w-none break-words font-sans text-[15px] leading-[1.55] text-inherit",
-            "prose-p:my-0 prose-p:leading-[1.55] prose-headings:mb-1.5 prose-headings:mt-3",
-            "prose-li:my-0 prose-ul:my-1.5 prose-ol:my-1.5 prose-pre:my-0 prose-code:before:hidden prose-code:after:hidden",
-            isStreaming && "streaming-markdown"
-        )}>
-            <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                    a: ({ node, ...props }) => (
-                        <a
-                            {...props}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="font-bold underline text-primary decoration-primary/60 underline-offset-2 hover:decoration-primary hover:brightness-125 transition-all"
-                        />
-                    ),
-                    p: ({ node, ...props }) => <p {...props} className="mb-1.5 last:mb-0" />,
-                    code: ({ node, className, children, ...props }: any) => {
-                        const codeContent = String(children || '').trim();
-                        if (!codeContent) return null;
-                        const match = /language-(\w+)/.exec(className || '');
-
-                        return !match ? (
-                            <code
-                                className={cn(
-                                    "rounded-md px-1.5 py-0.5 font-mono text-[12.5px] break-all",
-                                    isUser ? "bg-black/30 text-white" : "bg-muted text-foreground"
-                                )}
-                                {...props}
-                            >
-                                {children}
-                            </code>
-                        ) : (
-                            <MemoizedCodeBlock language={match[1]} value={codeContent} />
-                        );
-                    },
-                    table: ({ node, ...props }) => (
-                        <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-card/30 backdrop-blur-sm shadow-sm">
-                            <table className="w-full text-left text-[13px]" {...props} />
-                        </div>
-                    ),
-                    thead: ({ node, ...props }) => <thead className="bg-muted/50 text-muted-foreground border-b border-border" {...props} />,
-                    tbody: ({ node, ...props }) => <tbody className="divide-y divide-border/30" {...props} />,
-                    tr: ({ node, ...props }) => <tr className="hover:bg-muted/20 transition-colors" {...props} />,
-                    th: ({ node, ...props }) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...props} />,
-                    td: ({ node, ...props }) => <td className="px-4 py-3 align-top" {...props} />,
-                    h1: ({ node, ...props }) => <h1 className="text-2xl font-semibold tracking-tight" {...props} />,
-                    h2: ({ node, ...props }) => <h2 className="text-xl font-semibold tracking-tight" {...props} />,
-                    h3: ({ node, ...props }) => <h3 className="text-lg font-semibold tracking-tight" {...props} />,
-                    blockquote: ({ node, ...props }) => (
-                        <blockquote className="my-4 rounded-2xl border border-border/70 bg-muted/35 px-4 py-3 text-muted-foreground" {...props} />
-                    ),
-                    img: ({ node, ...props }: any) => <ChatImage src={props.src || ''} alt={props.alt || ''} />,
-                }}
-            >
-                {renderedContent}
-            </ReactMarkdown>
-            {isStreaming && (
-                <span
-                    aria-hidden="true"
-                    className="ml-1 inline-block h-4 w-1.5 rounded-full bg-current/35 align-middle animate-pulse"
-                />
-            )}
-        </div>
-    );
-});
 
 const UnreadSeparator = ({ count }: { count: number }) => (
     <div className="flex items-center gap-3 py-1">
