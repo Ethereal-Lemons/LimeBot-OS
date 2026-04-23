@@ -4,7 +4,9 @@ from typing import Optional, Any
 from litellm import completion
 from loguru import logger
 from config import load_config
+from core.codex_bridge import complete_codex_response, is_codex_model_name
 from core.events import InboundMessage
+from core.llm_utils import resolve_provider_config
 
 
 from core.paths import MEMORY_DIR, LONG_TERM_MEMORY_FILE
@@ -80,13 +82,26 @@ class ReflectiveService:
             ]
 
             logger.info("Generating reflected memory distillation...")
-            response = await asyncio.to_thread(
-                completion,
-                model=self.model,
-                messages=prompt,
-                base_url=cfg.llm.base_url,
-                api_key=cfg.llm.api_key,
-            )
+            if is_codex_model_name(self.model):
+                response = await asyncio.to_thread(
+                    complete_codex_response,
+                    self.model,
+                    prompt,
+                    None,
+                    "reflection-cycle",
+                )
+            else:
+                provider_cfg = resolve_provider_config(
+                    self.model, default_base_url=cfg.llm.base_url
+                )
+                response = await asyncio.to_thread(
+                    completion,
+                    model=provider_cfg["model"],
+                    messages=prompt,
+                    base_url=provider_cfg["base_url"],
+                    api_key=provider_cfg["api_key"],
+                    custom_llm_provider=provider_cfg["custom_llm_provider"],
+                )
 
             result_text = response.choices[0].message.content
             return result_text
