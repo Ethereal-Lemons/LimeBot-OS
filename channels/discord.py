@@ -28,6 +28,11 @@ _DISCORD_MAX_STREAM_LEN = 1900
 _DISCORD_STREAM_SUFFIX = "\n\n... generating"
 _DISCORD_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
 _DISCORD_DOCUMENT_EXTENSIONS = frozenset({".pdf", ".doc", ".docx"})
+_DISCORD_SEND_MAX_ATTEMPTS = 3
+_DISCORD_SEND_BACKOFF_BASE_SECS = 0.75
+_DISCORD_CHAT_ROUTE_SEP = ":"
+_DISCORD_UPLOAD_ROOT = Path("temp") / "discord_uploads"
+_DISCORD_UPLOAD_RETENTION_HOURS = 72
 _DISCORD_DOCUMENT_MIME_TYPES = frozenset(
     {
         "application/pdf",
@@ -232,6 +237,7 @@ class DiscordChannel(BaseChannel):
         self._stop_messages: dict[str, discord.Message] = {}
         self._typing_tasks: dict[str, asyncio.Task] = {}
         self._live_messages: dict[str, discord.Message] = {}
+        self._send_tasks: set[asyncio.Task] = set()
         self.agent = None
         self._style_overrides = getattr(self.config, "style_overrides", {}) or {}
         self._signature = getattr(self.config, "signature", "") or ""
@@ -526,6 +532,7 @@ class DiscordChannel(BaseChannel):
 
             await self._set_presence()
             await self._apply_guild_profile_overrides()
+            asyncio.create_task(self._cleanup_discord_uploads())
 
         @self.client.event
         async def on_message(message: discord.Message):
@@ -608,7 +615,9 @@ class DiscordChannel(BaseChannel):
             return
 
         sender_id = str(message.author.id)
-        chat_id = str(message.channel.id)
+        route_chat_id = str(message.channel.id)
+        session_id = self._conversation_session_id(message)
+        chat_id = self._pack_chat_id(route_chat_id, session_id)
         is_dm = isinstance(message.channel, discord.DMChannel)
         is_mentioned = self.client.user in message.mentions or is_dm
 
@@ -618,7 +627,7 @@ class DiscordChannel(BaseChannel):
         if (
             self._allowed_channels
             and not is_dm
-            and chat_id not in self._allowed_channels
+            and route_chat_id not in self._allowed_channels
         ):
             return
 
@@ -632,9 +641,20 @@ class DiscordChannel(BaseChannel):
         attachments = await self._normalize_discord_attachments(
             chat_id, message.attachments
         )
+        image_urls = [
+            str(attachment.get("url") or "").strip()
+            for attachment in attachments
+            if attachment.get("kind") == "image"
+            and str(attachment.get("url") or "").strip()
+        ]
+        if image_url and image_url not in image_urls:
+            image_urls.insert(0, image_url)
         if attachment_urls:
             content_parts.extend(attachment_urls)
         content = "\n".join(part for part in content_parts if part)
+        reply_context = await self._get_reply_context(message)
+        if reply_context:
+            content = self._join_discord_context(reply_context, content)
 
         if not content and not image_url:
             return
@@ -647,9 +667,16 @@ class DiscordChannel(BaseChannel):
             "mentioned": is_mentioned,
             "is_dm": is_dm,
             "message_id": str(message.id),
+            "route_chat_id": route_chat_id,
+            "session_id": chat_id,
+            "conversation_id": session_id,
+            "discord_conversation": self._conversation_metadata(message, session_id),
         }
-        if image_url:
-            metadata["image"] = image_url
+        if reply_context:
+            metadata["reply_context"] = reply_context
+        if image_urls:
+            metadata["image"] = image_urls[0]
+            metadata["images"] = image_urls
         if attachments:
             metadata["attachments"] = attachments
 
@@ -746,13 +773,27 @@ class DiscordChannel(BaseChannel):
 
     async def stop(self) -> None:
         """Stop the Discord bot gracefully."""
+        await self._drain_send_tasks()
+        await self._cancel_typing_tasks()
         if not self.client.is_closed():
             await self.client.close()
             logger.info("[Discord] Client closed.")
 
     async def send(self, msg: OutboundMessage) -> None:
         """Schedule a message send without blocking the caller."""
-        asyncio.create_task(self._send_impl(msg))
+        task = asyncio.create_task(self._send_impl(msg))
+        self._send_tasks.add(task)
+
+        def _discard_done(done: asyncio.Task) -> None:
+            self._send_tasks.discard(done)
+            try:
+                done.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.exception(f"[Discord] Send task failed unexpectedly: {e}")
+
+        task.add_done_callback(_discard_done)
 
     async def _handle_tool_execution(self, target, metadata: dict) -> None:
         tc_id = metadata.get("tool_call_id")
@@ -794,6 +835,37 @@ class DiscordChannel(BaseChannel):
                 await message.edit(embed=embed)
 
     async def _send_impl(self, msg: OutboundMessage) -> None:
+        for attempt in range(1, _DISCORD_SEND_MAX_ATTEMPTS + 1):
+            try:
+                await self._send_impl_once(msg)
+                return
+            except discord.Forbidden:
+                logger.error(
+                    f"[Discord] Missing permissions to send to chat_id={msg.chat_id} "
+                    f"metadata={_metadata_preview(msg.metadata)}."
+                )
+                return
+            except discord.HTTPException as e:
+                if attempt >= _DISCORD_SEND_MAX_ATTEMPTS or not _is_retryable_http(e):
+                    logger.error(
+                        f"[Discord] HTTP error while sending to chat_id={msg.chat_id} "
+                        f"metadata={_metadata_preview(msg.metadata)}: {e}"
+                    )
+                    return
+                delay = _DISCORD_SEND_BACKOFF_BASE_SECS * (2 ** (attempt - 1))
+                logger.warning(
+                    f"[Discord] Transient HTTP error while sending to chat_id={msg.chat_id}; "
+                    f"retrying in {delay:.2f}s ({attempt}/{_DISCORD_SEND_MAX_ATTEMPTS}): {e}"
+                )
+                await asyncio.sleep(delay)
+            except Exception as e:
+                logger.exception(
+                    f"[Discord] Unexpected error sending to chat_id={msg.chat_id} "
+                    f"metadata={_metadata_preview(msg.metadata)}: {e}"
+                )
+                return
+
+    async def _send_impl_once(self, msg: OutboundMessage) -> None:
         """Core send logic: resolve target, then dispatch based on message type."""
         target = await self._resolve_target(msg.chat_id)
         if target is None:
@@ -828,54 +900,42 @@ class DiscordChannel(BaseChannel):
         except Exception as e:
             logger.error(f"[Discord] Error during auto-threading evaluation: {e}")
 
-        try:
-            if msg_type == "tool_execution":
-                status = metadata.get("status")
-                if status == "waiting_confirmation" and metadata.get("embed"):
-                    await self._send_embed(
-                        target, metadata["embed"], metadata, msg.chat_id
-                    )
-                else:
-                    await self._handle_tool_execution(target, metadata)
-            elif msg_type == "notification":
-                if metadata.get("kind") == "github_pr" and metadata.get("data"):
-                    await self._send_github_pr_embed(target, msg.content, metadata)
-                else:
-                    await self._send_text(target, msg.content)
-            elif msg_type == "typing":
-                await self._send_typing(target, msg.chat_id)
-                await self._show_stop_control(target, msg.chat_id)
-            elif msg_type == "stop_typing":
-                await self._stop_typing(msg.chat_id)
-                await self._clear_stop_control(msg.chat_id)
-            elif msg_type == "full_content":
-                await self._send_streamed_text(target, msg.chat_id, msg.content)
-            elif msg_type == "file":
-                await self._send_file(target, metadata)
-            elif metadata.get("embed"):
-                await self._send_embed(target, metadata["embed"], metadata, msg.chat_id)
+        if msg_type == "tool_execution":
+            status = metadata.get("status")
+            if status == "waiting_confirmation" and metadata.get("embed"):
+                await self._send_embed(
+                    target, metadata["embed"], metadata, msg.chat_id
+                )
             else:
-                if not await self._finalize_live_message(
-                    target, msg.chat_id, msg.content
-                ):
-                    await self._send_text(target, msg.content)
-        except discord.Forbidden:
-            logger.error(
-                f"[Discord] Missing permissions to send to {_target_name(target)}."
-            )
-        except discord.HTTPException as e:
-            logger.error(
-                f"[Discord] HTTP error while sending to {_target_name(target)}: {e}"
-            )
-        except Exception as e:
-            logger.exception(
-                f"[Discord] Unexpected error sending to {_target_name(target)}: {e}"
-            )
+                await self._handle_tool_execution(target, metadata)
+        elif msg_type == "notification":
+            if metadata.get("kind") == "github_pr" and metadata.get("data"):
+                await self._send_github_pr_embed(target, msg.content, metadata)
+            else:
+                await self._send_text(target, msg.content)
+        elif msg_type == "typing":
+            await self._send_typing(target, msg.chat_id)
+            await self._show_stop_control(target, msg.chat_id)
+        elif msg_type == "stop_typing":
+            await self._stop_typing(msg.chat_id)
+            await self._clear_stop_control(msg.chat_id)
+        elif msg_type == "full_content":
+            await self._send_streamed_text(target, msg.chat_id, msg.content)
+        elif msg_type == "file":
+            await self._send_file(target, metadata)
+        elif metadata.get("embed"):
+            await self._send_embed(target, metadata["embed"], metadata, msg.chat_id)
+        else:
+            if not await self._finalize_live_message(
+                target, msg.chat_id, msg.content
+            ):
+                await self._send_text(target, msg.content)
 
     async def _resolve_target(
         self, chat_id: str
     ) -> discord.TextChannel | discord.DMChannel | discord.User | None:
         """Resolve a channel ID or user ID to a sendable target."""
+        chat_id = self._route_chat_id(chat_id)
         try:
             target_int = int(chat_id)
         except ValueError:
@@ -902,6 +962,121 @@ class DiscordChannel(BaseChannel):
             logger.error(f"[Discord] Failed to resolve target {chat_id}: {e}")
 
         return None
+
+    @staticmethod
+    def _pack_chat_id(route_chat_id: str, session_id: str) -> str:
+        if not session_id or session_id == route_chat_id:
+            return route_chat_id
+        return f"{route_chat_id}{_DISCORD_CHAT_ROUTE_SEP}{session_id}"
+
+    @staticmethod
+    def _route_chat_id(chat_id: str) -> str:
+        return str(chat_id).split(_DISCORD_CHAT_ROUTE_SEP, 1)[0]
+
+    def _conversation_session_id(self, message: discord.Message) -> str:
+        channel_id = str(message.channel.id)
+        if isinstance(message.channel, discord.DMChannel):
+            return f"dm:{channel_id}"
+        if isinstance(message.channel, discord.Thread):
+            return f"thread:{channel_id}"
+
+        reference = getattr(message, "reference", None)
+        referenced_id = getattr(reference, "message_id", None)
+        if referenced_id:
+            return f"reply:{channel_id}:{referenced_id}"
+
+        return f"channel:{channel_id}"
+
+    @staticmethod
+    def _conversation_metadata(
+        message: discord.Message, session_id: str
+    ) -> dict[str, Any]:
+        channel = message.channel
+        metadata: dict[str, Any] = {
+            "session_id": session_id,
+            "channel_id": str(getattr(channel, "id", "")),
+            "kind": "channel",
+        }
+        if isinstance(channel, discord.DMChannel):
+            metadata["kind"] = "dm"
+        elif isinstance(channel, discord.Thread):
+            metadata["kind"] = "thread"
+            metadata["thread_id"] = str(channel.id)
+            if getattr(channel, "parent_id", None):
+                metadata["parent_channel_id"] = str(channel.parent_id)
+        elif getattr(message, "reference", None):
+            metadata["kind"] = "reply"
+            metadata["reply_to_message_id"] = str(message.reference.message_id)
+        return metadata
+
+    async def _get_reply_context(self, message: discord.Message) -> dict[str, str] | None:
+        reference = getattr(message, "reference", None)
+        if not reference or not getattr(reference, "message_id", None):
+            return None
+
+        referenced = getattr(reference, "resolved", None)
+        if not isinstance(referenced, discord.Message):
+            try:
+                referenced = await message.channel.fetch_message(reference.message_id)
+            except Exception as e:
+                logger.debug(
+                    f"[Discord] Could not fetch reply context for {reference.message_id}: {e}"
+                )
+                referenced = None
+
+        if not isinstance(referenced, discord.Message):
+            return {"message_id": str(reference.message_id)}
+
+        author = getattr(referenced.author, "display_name", None) or getattr(
+            referenced.author, "name", "unknown"
+        )
+        text = (referenced.content or "").strip()
+        if len(text) > 800:
+            text = text[:797].rstrip() + "..."
+
+        context = {
+            "message_id": str(referenced.id),
+            "author_id": str(referenced.author.id),
+            "author": author,
+        }
+        if text:
+            context["content"] = text
+        return context
+
+    @staticmethod
+    def _join_discord_context(reply_context: dict[str, str], content: str) -> str:
+        author = reply_context.get("author") or "someone"
+        message_id = reply_context.get("message_id") or "unknown"
+        quoted = reply_context.get("content") or "(no text content)"
+        context = (
+            f"[Discord reply context: replying to {author}'s message {message_id}]\n"
+            f"{quoted}"
+        )
+        return f"{context}\n\n{content}" if content else context
+
+    async def _cancel_typing_tasks(self) -> None:
+        tasks = [task for task in self._typing_tasks.values() if not task.done()]
+        self._typing_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _drain_send_tasks(self) -> None:
+        pending = [task for task in self._send_tasks if not task.done()]
+        if not pending:
+            return
+        timeout = float(getattr(self.config, "send_drain_timeout", 5.0) or 5.0)
+        done, pending_set = await asyncio.wait(pending, timeout=timeout)
+        for task in done:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                task.result()
+        for task in pending_set:
+            task.cancel()
+        if pending_set:
+            await asyncio.gather(*pending_set, return_exceptions=True)
+        self._send_tasks.difference_update(done)
+        self._send_tasks.difference_update(pending_set)
 
     @staticmethod
     def _extract_discord_attachment_urls(
@@ -1079,7 +1254,9 @@ class DiscordChannel(BaseChannel):
         if not raw_attachments:
             return attachments
 
-        upload_dir = Path.cwd() / "temp" / "discord_uploads" / self._sanitize_component(
+        await self._cleanup_discord_uploads()
+
+        upload_dir = Path.cwd() / _DISCORD_UPLOAD_ROOT / self._sanitize_component(
             chat_id
         )
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -1148,6 +1325,37 @@ class DiscordChannel(BaseChannel):
                 attachments.append(info)
 
         return attachments
+
+    async def _cleanup_discord_uploads(self) -> None:
+        retention_hours = getattr(
+            self.config, "upload_retention_hours", _DISCORD_UPLOAD_RETENTION_HOURS
+        )
+        try:
+            retention_hours = float(retention_hours)
+        except (TypeError, ValueError):
+            retention_hours = _DISCORD_UPLOAD_RETENTION_HOURS
+        if retention_hours <= 0:
+            return
+
+        root = Path.cwd() / _DISCORD_UPLOAD_ROOT
+        cutoff = time.time() - (retention_hours * 60 * 60)
+
+        def _cleanup() -> None:
+            if not root.exists():
+                return
+            paths = sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True)
+            for path in paths:
+                try:
+                    if path.is_file():
+                        if path.stat().st_mtime < cutoff:
+                            path.unlink(missing_ok=True)
+                    elif path.is_dir() and path != root:
+                        with contextlib.suppress(OSError):
+                            path.rmdir()
+                except Exception as e:
+                    logger.debug(f"[Discord] Upload cleanup skipped '{path}': {e}")
+
+        await asyncio.to_thread(_cleanup)
 
     @staticmethod
     def _extract_discord_document_text(path: Path) -> tuple[str, str | None]:
@@ -1395,6 +1603,29 @@ def _target_name(target) -> str:
         or getattr(target, "display_name", None)
         or str(getattr(target, "id", "?"))
     )
+
+
+def _is_retryable_http(error: discord.HTTPException) -> bool:
+    status = getattr(error, "status", None)
+    if status == 429:
+        return True
+    return isinstance(status, int) and 500 <= status < 600
+
+
+def _metadata_preview(metadata: dict | None) -> dict:
+    if not metadata:
+        return {}
+    keys = (
+        "type",
+        "kind",
+        "status",
+        "tool",
+        "turn_id",
+        "message_id",
+        "trace_id",
+        "conf_id",
+    )
+    return {key: metadata[key] for key in keys if key in metadata}
 
 
 def _split_message(content: str, chunk_size: int = _CHUNK_SIZE) -> list[str]:

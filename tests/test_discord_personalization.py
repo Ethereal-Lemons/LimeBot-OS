@@ -1,4 +1,5 @@
 import asyncio
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -61,6 +62,7 @@ def make_config(**overrides):
         "embed_theme": {},
         "nickname_templates": {},
         "avatar_overrides": {},
+        "upload_retention_hours": 72,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -134,6 +136,29 @@ def test_theme_color_override():
     assert color == 0x123456
 
 
+def test_discord_packed_chat_id_routes_to_numeric_target():
+    from channels.discord import DiscordChannel
+
+    packed = DiscordChannel._pack_chat_id("123", "reply:123:456")
+
+    assert packed == "123:reply:123:456"
+    assert DiscordChannel._route_chat_id(packed) == "123"
+
+
+def test_inbound_session_key_can_use_channel_session_id():
+    from core.events import InboundMessage
+
+    msg = InboundMessage(
+        channel="discord",
+        sender_id="user",
+        chat_id="123",
+        content="hello",
+        metadata={"session_id": "123:reply:123:456"},
+    )
+
+    assert msg.session_key == "discord_123_reply_123_456"
+
+
 def test_extract_discord_attachment_urls_promotes_first_image():
     from channels.discord import DiscordChannel
 
@@ -164,6 +189,33 @@ def test_extract_discord_attachment_urls_promotes_first_image():
         "https://cdn.example.com/document.pdf",
         "https://cdn.example.com/second.jpg",
     ]
+
+
+def test_attachment_summary_includes_images_and_documents():
+    from core.loop import AgentLoop
+
+    summary = AgentLoop._build_attachment_summary(
+        [
+            {
+                "kind": "image",
+                "name": "diagram.png",
+                "mime_type": "image/png",
+                "path": "temp/discord_uploads/1/diagram.png",
+            },
+            {
+                "kind": "document",
+                "name": "report.pdf",
+                "mime_type": "application/pdf",
+                "path": "temp/discord_uploads/1/report.pdf",
+                "extracted_text": "Quarterly metrics",
+            },
+        ]
+    )
+
+    assert "1 image(s), 1 document(s)" in summary
+    assert "Attached image 1: diagram.png" in summary
+    assert "Attached document 1: report.pdf" in summary
+    assert "Text was extracted" in summary
 
 
 @pytest.mark.asyncio
@@ -235,3 +287,32 @@ async def test_normalize_discord_attachments_extracts_document_text():
     assert normalized[0]["kind"] == "document"
     assert normalized[0]["extracted_text"] == "Quarterly metrics"
     assert normalized[0]["path"].endswith(".pdf")
+
+
+@pytest.mark.asyncio
+async def test_cleanup_discord_uploads_removes_expired_files(tmp_path, monkeypatch):
+    from channels.discord import DiscordChannel
+    from core.bus import MessageBus
+
+    monkeypatch.chdir(tmp_path)
+    old_file = tmp_path / "temp" / "discord_uploads" / "chat" / "old.pdf"
+    new_file = tmp_path / "temp" / "discord_uploads" / "chat" / "new.pdf"
+    old_file.parent.mkdir(parents=True)
+    old_file.write_text("old", encoding="utf-8")
+    new_file.write_text("new", encoding="utf-8")
+
+    old_time = time.time() - (3 * 60 * 60)
+    old_file.touch()
+    new_file.touch()
+    import os
+
+    os.utime(old_file, (old_time, old_time))
+
+    channel = DiscordChannel(
+        make_config(upload_retention_hours=1),
+        MessageBus(),
+    )
+    await channel._cleanup_discord_uploads()
+
+    assert not old_file.exists()
+    assert new_file.exists()

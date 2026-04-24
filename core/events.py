@@ -19,7 +19,8 @@ class InboundMessage:
     def session_key(self) -> str:
         """Unique key for the conversation session. Sanitized for filesystem safety."""
 
-        key = f"{self.channel}_{self.chat_id}"
+        session_id = self.metadata.get("session_id") if self.metadata else None
+        key = f"{self.channel}_{session_id or self.chat_id}"
 
         for char in ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]:
             key = key.replace(char, "_")
