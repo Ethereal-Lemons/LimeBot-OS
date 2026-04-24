@@ -1260,11 +1260,13 @@ class AgentLoop:
 
     @staticmethod
     def _unpack_stream_result(result) -> tuple:
-        """Unpack _consume_stream result into (content, tool_calls, usage, streamed_to_web)."""
+        """Unpack _consume_stream result into content, calls, usage, web-streamed, discord-streamed."""
+        if isinstance(result, tuple) and len(result) >= 5:
+            return result[0], result[1], result[2], result[3], result[4]
         if isinstance(result, tuple) and len(result) >= 4:
-            return result[0], result[1], result[2], result[3]
+            return result[0], result[1], result[2], result[3], False
         content, tool_calls, usage = result
-        return content, tool_calls, usage, False
+        return content, tool_calls, usage, False, False
 
     # ── Overlap deduplication ────────────────────────────────────────────
 
@@ -3800,7 +3802,7 @@ class AgentLoop:
             usage=str(usage) if usage else "",
         )
 
-        return full_content, tool_calls, usage, streamed_to_web
+        return full_content, tool_calls, usage, streamed_to_web, streamed_to_discord
 
     async def _process_message(self, msg: InboundMessage) -> None:
         session_key = msg.session_key
@@ -4174,10 +4176,23 @@ class AgentLoop:
                     }
 
                     image_urls = [
-                        str(url).strip()
-                        for url in (msg.metadata.get("images") or [])
-                        if str(url or "").strip()
+                        str(
+                            attachment.get("data_url")
+                            or attachment.get("url")
+                            or ""
+                        ).strip()
+                        for attachment in attachments
+                        if attachment.get("kind") == "image"
+                        and str(
+                            attachment.get("data_url")
+                            or attachment.get("url")
+                            or ""
+                        ).strip()
                     ]
+                    for url in msg.metadata.get("images") or []:
+                        image_url = str(url or "").strip()
+                        if image_url and image_url not in image_urls:
+                            image_urls.append(image_url)
                     legacy_image = str(msg.metadata.get("image") or "").strip()
                     if legacy_image and legacy_image not in image_urls:
                         image_urls.insert(0, legacy_image)
@@ -4353,12 +4368,19 @@ class AgentLoop:
                         turn_id=turn_id,
                         message_id=assistant_message_id,
                     )
-                    full_content, tool_calls, _, streamed_to_web = (
+                    (
+                        full_content,
+                        tool_calls,
+                        _,
+                        streamed_to_web,
+                        streamed_to_discord,
+                    ) = (
                         self._unpack_stream_result(consume_result)
                     )
                     accumulated_content = full_content
                     iterations_limit_reached = False
                     web_streamed_reply = bool(streamed_to_web)
+                    discord_streamed_reply = bool(streamed_to_discord)
                     force_direct_reply = False
                     any_tool_calls_in_turn = bool(tool_calls)
                     fallback_inserted = False
@@ -4469,11 +4491,21 @@ class AgentLoop:
                                     turn_id=turn_id,
                                     message_id=assistant_message_id,
                                 )
-                                nxt_content, nxt_tool_calls, _, nxt_streamed_to_web = (
+                                (
+                                    nxt_content,
+                                    nxt_tool_calls,
+                                    _,
+                                    nxt_streamed_to_web,
+                                    nxt_streamed_to_discord,
+                                ) = (
                                     self._unpack_stream_result(nxt_consume_result)
                                 )
                                 web_streamed_reply = web_streamed_reply or bool(
                                     nxt_streamed_to_web
+                                )
+                                discord_streamed_reply = (
+                                    discord_streamed_reply
+                                    or bool(nxt_streamed_to_discord)
                                 )
 
                                 clean_next = self._dedup_overlap(
@@ -4656,7 +4688,6 @@ class AgentLoop:
                                 raw_reply=raw_reply,
                             )
                         )
-
                         if suppress_web_final_reply:
                             outbound = OutboundMessage(
                                 channel=msg.channel,

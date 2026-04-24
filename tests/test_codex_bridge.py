@@ -88,6 +88,35 @@ class TestCodexBridge(unittest.TestCase):
         )
         self.assertEqual(response.usage["total_tokens"], 20)
 
+    def test_build_codex_context_preserves_inline_image_blocks(self):
+        context = build_codex_context(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Can you see this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "data:image/png;base64,ZmFrZS1pbWFnZQ=="
+                            },
+                        },
+                    ],
+                }
+            ]
+        )
+
+        content = context["messages"][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "Can you see this?"})
+        self.assertEqual(
+            content[1],
+            {
+                "type": "image",
+                "data": "ZmFrZS1pbWFnZQ==",
+                "mimeType": "image/png",
+            },
+        )
+
     def test_complete_codex_response_preserves_unicode_text(self):
         payload = {
             "text": "hi ✨ Jisoo here 🥪\n\nWhat’s up?",
