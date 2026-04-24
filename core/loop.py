@@ -507,20 +507,47 @@ class AgentLoop:
     @staticmethod
     def _build_attachment_summary(attachments: List[Dict[str, Any]]) -> str:
         lines: List[str] = []
+        image_count = 0
+        document_count = 0
         for attachment in attachments:
             if not isinstance(attachment, dict):
                 continue
+            kind = str(attachment.get("kind") or "attachment").strip().lower()
+            name = str(attachment.get("name") or kind or "attachment").strip()
+            path = str(attachment.get("path") or "").strip()
+            mime_type = str(
+                attachment.get("mime_type") or attachment.get("mimeType") or ""
+            ).strip()
+
             if attachment.get("kind") == "image":
+                image_count += 1
+                note = f"[Attached image {image_count}: {name}]"
+                if mime_type:
+                    note += f" Type: {mime_type}."
+                if path:
+                    note += f" Saved as `{path}`."
+                lines.append(note)
                 continue
 
-            name = str(attachment.get("name") or "document").strip()
-            path = str(attachment.get("path") or "").strip()
-            note = f"[Attached document: {name}]"
+            document_count += 1
+            note = f"[Attached document {document_count}: {name}]"
+            if mime_type:
+                note += f" Type: {mime_type}."
             if path:
                 note += f" Saved as `{path}`."
+            if attachment.get("extracted_text"):
+                note += " Text was extracted and included below."
+            elif attachment.get("extraction_note"):
+                note += f" Extraction note: {attachment.get('extraction_note')}."
             lines.append(note)
 
-        return "\n".join(lines)
+        if not lines:
+            return ""
+        header = (
+            f"[Discord attachments received: {image_count} image(s), "
+            f"{document_count} document(s)]"
+        )
+        return "\n".join([header] + lines)
 
     @staticmethod
     def _build_document_attachment_context(attachments: List[Dict[str, Any]]) -> str:
@@ -4146,30 +4173,35 @@ class AgentLoop:
                         "content": system_prompt,
                     }
 
-                    image_data = msg.metadata.get("image")
+                    image_urls = [
+                        str(url).strip()
+                        for url in (msg.metadata.get("images") or [])
+                        if str(url or "").strip()
+                    ]
+                    legacy_image = str(msg.metadata.get("image") or "").strip()
+                    if legacy_image and legacy_image not in image_urls:
+                        image_urls.insert(0, legacy_image)
+
                     user_text_payload = user_text_content or content or " "
-                    if image_data and self._image_inputs_disabled_for_session(
+                    if image_urls and self._image_inputs_disabled_for_session(
                         session_key
                     ):
+                        image_parts = [
+                            {"type": "image_url", "image_url": {"url": image_url}}
+                            for image_url in image_urls
+                        ]
                         user_msg_content = self._render_text_only_message_content(
-                            [
-                                {"type": "text", "text": user_text_payload},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": image_data},
-                                },
-                            ]
+                            [{"type": "text", "text": user_text_payload}]
+                            + image_parts
                         )
                     else:
                         user_msg_content = (
-                            [
-                                {"type": "text", "text": user_text_payload},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": image_data},
-                                },
+                            [{"type": "text", "text": user_text_payload}]
+                            + [
+                                {"type": "image_url", "image_url": {"url": image_url}}
+                                for image_url in image_urls
                             ]
-                            if image_data
+                            if image_urls
                             else user_text_payload
                         )
                     self.history[session_key].append(
@@ -4183,7 +4215,8 @@ class AgentLoop:
                             {
                                 "role": "user",
                                 "content": msg.content or "",
-                                "image": bool(image_data),
+                                "image": bool(image_urls),
+                                "images": len(image_urls),
                                 "attachments": [
                                     str(attachment.get("name") or "attachment")
                                     for attachment in attachments
