@@ -290,6 +290,54 @@ async def test_normalize_discord_attachments_extracts_document_text():
 
 
 @pytest.mark.asyncio
+async def test_normalize_discord_image_adds_data_url():
+    from channels.discord import DiscordChannel
+    from core.bus import MessageBus
+
+    class FakeResponse:
+        status = 200
+
+        async def read(self):
+            return b"fake-image"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, timeout=None):
+            return FakeResponse()
+
+    channel = DiscordChannel(make_config(), MessageBus())
+    attachments = [
+        SimpleNamespace(
+            url="https://cdn.example.com/design.png",
+            content_type="image/png",
+            filename="design.png",
+        )
+    ]
+
+    with patch("channels.discord.aiohttp.ClientSession", FakeSession):
+        normalized = await channel._normalize_discord_attachments("chat-8", attachments)
+
+    assert len(normalized) == 1
+    assert normalized[0]["kind"] == "image"
+    assert normalized[0]["data_url"].startswith("data:image/png;base64,")
+    assert normalized[0]["path"].endswith(".png")
+
+
+@pytest.mark.asyncio
 async def test_cleanup_discord_uploads_removes_expired_files(tmp_path, monkeypatch):
     from channels.discord import DiscordChannel
     from core.bus import MessageBus

@@ -34,6 +34,18 @@ def _tool_arguments_to_object(arguments: Any) -> Dict[str, Any]:
         return {}
 
 
+def _data_url_to_image_block(url: str) -> Optional[Dict[str, str]]:
+    raw = str(url or "").strip()
+    if not raw.startswith("data:image/") or ";base64," not in raw:
+        return None
+    header, data = raw.split(";base64,", 1)
+    mime_type = header.removeprefix("data:").strip() or "image/png"
+    data = data.strip()
+    if not data:
+        return None
+    return {"type": "image", "data": data, "mimeType": mime_type}
+
+
 def _content_blocks_to_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -58,6 +70,39 @@ def _content_blocks_to_text(content: Any) -> str:
     return "\n".join(parts).strip()
 
 
+def _content_blocks_to_codex_user_content(content: Any) -> str | List[Dict[str, str]]:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+
+    blocks: List[Dict[str, str]] = []
+    fallback_text_parts: List[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip()
+        if item_type == "text":
+            text = str(item.get("text") or "").strip()
+            if text:
+                blocks.append({"type": "text", "text": text})
+                fallback_text_parts.append(text)
+            continue
+        if item_type == "image_url":
+            url = str(item.get("image_url", {}).get("url") or "").strip()
+            image_block = _data_url_to_image_block(url)
+            if image_block:
+                blocks.append(image_block)
+            elif url:
+                fallback_text_parts.append(
+                    f"[Image attachment available by URL, but not inlined]: {url}"
+                )
+
+    if any(block.get("type") == "image" for block in blocks):
+        return blocks
+    return "\n".join(part for part in fallback_text_parts if part).strip()
+
+
 def build_codex_context(
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]] = None,
@@ -79,11 +124,11 @@ def build_codex_context(
             continue
 
         if role == "user":
-            text = _content_blocks_to_text(content)
+            user_content = _content_blocks_to_codex_user_content(content)
             codex_messages.append(
                 {
                     "role": "user",
-                    "content": text,
+                    "content": user_content,
                     "timestamp": timestamp_ms,
                 }
             )

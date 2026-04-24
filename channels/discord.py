@@ -1,6 +1,7 @@
 """Discord channel implementation."""
 
 import asyncio
+import base64
 import contextlib
 import io
 import json
@@ -27,6 +28,7 @@ _AVATAR_COOLDOWN_SECS = 24 * 60 * 60
 _DISCORD_MAX_STREAM_LEN = 1900
 _DISCORD_STREAM_SUFFIX = "\n\n... generating"
 _DISCORD_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
+_DISCORD_INLINE_IMAGE_MAX_BYTES = 4 * 1024 * 1024
 _DISCORD_DOCUMENT_EXTENSIONS = frozenset({".pdf", ".doc", ".docx"})
 _DISCORD_SEND_MAX_ATTEMPTS = 3
 _DISCORD_SEND_BACKOFF_BASE_SECS = 0.75
@@ -238,6 +240,7 @@ class DiscordChannel(BaseChannel):
         self._typing_tasks: dict[str, asyncio.Task] = {}
         self._live_messages: dict[str, discord.Message] = {}
         self._send_tasks: set[asyncio.Task] = set()
+        self._send_locks: dict[str, asyncio.Lock] = {}
         self.agent = None
         self._style_overrides = getattr(self.config, "style_overrides", {}) or {}
         self._signature = getattr(self.config, "signature", "") or ""
@@ -835,35 +838,38 @@ class DiscordChannel(BaseChannel):
                 await message.edit(embed=embed)
 
     async def _send_impl(self, msg: OutboundMessage) -> None:
-        for attempt in range(1, _DISCORD_SEND_MAX_ATTEMPTS + 1):
-            try:
-                await self._send_impl_once(msg)
-                return
-            except discord.Forbidden:
-                logger.error(
-                    f"[Discord] Missing permissions to send to chat_id={msg.chat_id} "
-                    f"metadata={_metadata_preview(msg.metadata)}."
-                )
-                return
-            except discord.HTTPException as e:
-                if attempt >= _DISCORD_SEND_MAX_ATTEMPTS or not _is_retryable_http(e):
+        lock_key = _session_key("discord", msg.chat_id)
+        lock = self._send_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            for attempt in range(1, _DISCORD_SEND_MAX_ATTEMPTS + 1):
+                try:
+                    await self._send_impl_once(msg)
+                    return
+                except discord.Forbidden:
                     logger.error(
-                        f"[Discord] HTTP error while sending to chat_id={msg.chat_id} "
+                        f"[Discord] Missing permissions to send to chat_id={msg.chat_id} "
+                        f"metadata={_metadata_preview(msg.metadata)}."
+                    )
+                    return
+                except discord.HTTPException as e:
+                    if attempt >= _DISCORD_SEND_MAX_ATTEMPTS or not _is_retryable_http(e):
+                        logger.error(
+                            f"[Discord] HTTP error while sending to chat_id={msg.chat_id} "
+                            f"metadata={_metadata_preview(msg.metadata)}: {e}"
+                        )
+                        return
+                    delay = _DISCORD_SEND_BACKOFF_BASE_SECS * (2 ** (attempt - 1))
+                    logger.warning(
+                        f"[Discord] Transient HTTP error while sending to chat_id={msg.chat_id}; "
+                        f"retrying in {delay:.2f}s ({attempt}/{_DISCORD_SEND_MAX_ATTEMPTS}): {e}"
+                    )
+                    await asyncio.sleep(delay)
+                except Exception as e:
+                    logger.exception(
+                        f"[Discord] Unexpected error sending to chat_id={msg.chat_id} "
                         f"metadata={_metadata_preview(msg.metadata)}: {e}"
                     )
                     return
-                delay = _DISCORD_SEND_BACKOFF_BASE_SECS * (2 ** (attempt - 1))
-                logger.warning(
-                    f"[Discord] Transient HTTP error while sending to chat_id={msg.chat_id}; "
-                    f"retrying in {delay:.2f}s ({attempt}/{_DISCORD_SEND_MAX_ATTEMPTS}): {e}"
-                )
-                await asyncio.sleep(delay)
-            except Exception as e:
-                logger.exception(
-                    f"[Discord] Unexpected error sending to chat_id={msg.chat_id} "
-                    f"metadata={_metadata_preview(msg.metadata)}: {e}"
-                )
-                return
 
     async def _send_impl_once(self, msg: OutboundMessage) -> None:
         """Core send logic: resolve target, then dispatch based on message type."""
@@ -915,7 +921,6 @@ class DiscordChannel(BaseChannel):
                 await self._send_text(target, msg.content)
         elif msg_type == "typing":
             await self._send_typing(target, msg.chat_id)
-            await self._show_stop_control(target, msg.chat_id)
         elif msg_type == "stop_typing":
             await self._stop_typing(msg.chat_id)
             await self._clear_stop_control(msg.chat_id)
@@ -1303,6 +1308,11 @@ class DiscordChannel(BaseChannel):
                     f"{int(time.time() * 1000)}_{index}_{self._sanitize_component(Path(original_name).stem)}{suffix or ''}"
                 )
                 saved_path.write_bytes(blob)
+                image_data_url = ""
+                if is_image and len(blob) <= _DISCORD_INLINE_IMAGE_MAX_BYTES:
+                    inline_mime = mime_type or "image/png"
+                    encoded = base64.b64encode(blob).decode("ascii")
+                    image_data_url = f"data:{inline_mime};base64,{encoded}"
 
                 info: dict[str, Any] = {
                     "name": original_name,
@@ -1312,6 +1322,8 @@ class DiscordChannel(BaseChannel):
                     "path": str(saved_path.relative_to(Path.cwd())).replace("\\", "/"),
                     "url": url,
                 }
+                if image_data_url:
+                    info["data_url"] = image_data_url
 
                 if is_document:
                     extracted_text, extraction_note = self._extract_discord_document_text(
