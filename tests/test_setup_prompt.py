@@ -91,6 +91,26 @@ class TestSetupPrompt(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state["identity_valid"])
         self.assertIn("Identity (Name, Emoji, Style)", state["missing"])
 
+    async def test_bootstrapped_example_persona_triggers_setup_prompt(self):
+        if not Path("persona/SOUL.md.example").exists() or not Path(
+            "persona/IDENTITY.md.example"
+        ).exists():
+            self.skipTest("Missing persona example templates.")
+
+        SOUL_FILE.write_text(
+            Path("persona/SOUL.md.example").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        IDENTITY_FILE.write_text(
+            Path("persona/IDENTITY.md.example").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+        prompt = await self._get_prompt()
+        self.assertIn("SYSTEM STATUS: SETUP MODE", prompt)
+        self.assertIn("who you are and who the primary user is", prompt)
+        self.assertIn("<save_user>", prompt)
+
     async def test_valid_persona_content_exits_setup_prompt(self):
         SOUL_FILE.write_text(
             "Core values: truth and boundaries. "
