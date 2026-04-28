@@ -1350,7 +1350,10 @@ class WebChannel(BaseChannel):
                 if "LLM_MODEL" in new_env:
                     model_value = str(new_env["LLM_MODEL"] or "").strip()
                     if not model_value:
-                        return {"error": "LLM_MODEL cannot be empty."}
+                        model_value = "ollama/llama3"
+                        logger.warning(
+                            "Received empty LLM_MODEL from config UI; using ollama/llama3."
+                        )
                     new_env["LLM_MODEL"] = model_value
 
                     try:
@@ -2459,35 +2462,52 @@ class WebChannel(BaseChannel):
         base_port_retry_interval = 0.5
 
         max_retries = 10
+        last_base_port_error: OSError | None = None
+
+        def _format_bind_error(port: int, exc: OSError) -> str:
+            reason = getattr(exc, "strerror", None) or str(exc)
+            code = getattr(exc, "errno", None)
+            if code:
+                return f"port {port} bind failed with errno {code}: {reason}"
+            return f"port {port} bind failed: {reason}"
 
         async def _wait_for_preferred_port(port: int) -> bool:
+            nonlocal last_base_port_error
             deadline = asyncio.get_running_loop().time() + base_port_wait_seconds
             while True:
                 try:
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                         s.bind(("0.0.0.0", port))
                     return True
-                except OSError:
+                except OSError as e:
+                    last_base_port_error = e
+                    reason = _format_bind_error(port, e)
                     if asyncio.get_running_loop().time() >= deadline:
                         return False
                     logger.warning(
-                        f"Port {port} is still in use; waiting before fallback..."
+                        f"Port {port} is unavailable ({reason}); waiting before fallback..."
                     )
                     await asyncio.sleep(base_port_retry_interval)
 
-        if not await _wait_for_preferred_port(base_port):
+        base_port_available = await _wait_for_preferred_port(base_port)
+        if not base_port_available:
             if prefer_base_port_only:
-                logger.error(
+                logger.warning(
                     f"Configured web port {base_port} did not become available after "
-                    f"{base_port_wait_seconds:.1f}s during soft restart."
+                    f"{base_port_wait_seconds:.1f}s during soft restart; "
+                    f"{_format_bind_error(base_port, last_base_port_error) if last_base_port_error else 'cause unknown'}; "
+                    "trying fallback ports."
                 )
-                raise OSError(f"Port {base_port} unavailable after restart wait")
-            logger.warning(
-                f"Configured web port {base_port} did not become available after "
-                f"{base_port_wait_seconds:.1f}s; trying fallback ports."
-            )
+            else:
+                logger.warning(
+                    f"Configured web port {base_port} did not become available after "
+                    f"{base_port_wait_seconds:.1f}s; "
+                    f"{_format_bind_error(base_port, last_base_port_error) if last_base_port_error else 'cause unknown'}; "
+                    "trying fallback ports."
+                )
 
-        for port_offset in range(max_retries):
+        start_offset = 0 if base_port_available else 1
+        for port_offset in range(start_offset, max_retries):
             current_port = base_port + port_offset
             try:
                 # First try to see if we can bind a socket to this port
@@ -2528,15 +2548,17 @@ class WebChannel(BaseChannel):
                     else:
                         raise
 
-            except OSError:
+            except OSError as e:
                 if port_offset < max_retries - 1:
                     logger.warning(
-                        f"Port {current_port} is in use (socket bind failed), trying {current_port + 1}..."
+                        f"Port {current_port} is unavailable ({_format_bind_error(current_port, e)}), "
+                        f"trying {current_port + 1}..."
                     )
                     continue
                 else:
                     logger.error(
-                        f"Failed to find an available port after {max_retries} attempts."
+                        f"Failed to find an available port after {max_retries} attempts; "
+                        f"last error: {_format_bind_error(current_port, e)}"
                     )
                     raise
             except Exception as e:
@@ -2595,10 +2617,6 @@ class WebChannel(BaseChannel):
 
 
 def _spawn_restart() -> None:
-    """Spawn a new process then exit — used by call_later callbacks."""
-    import subprocess
-    import sys
-
+    """Restart the current process after the response is sent."""
     os.environ["LIMEBOT_SOFT_RESTART"] = "1"
-    subprocess.Popen([sys.executable] + sys.argv)
-    os._exit(0)
+    os.execl(os.sys.executable, os.sys.executable, *os.sys.argv)
