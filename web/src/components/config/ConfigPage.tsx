@@ -16,7 +16,7 @@ import {
     CardHeader,
     CardTitle,
 } from "@/components/ui/card";
-import { getAdditionalModels, getInitialModelForProvider, getModelProvider, getRecommendedModels, PROVIDER_LABELS, type LlmModelOption } from "@/lib/llm-models";
+import { DEFAULT_MODEL_BY_PROVIDER, getAdditionalModels, getInitialModelForProvider, getModelProvider, getRecommendedModels, PROVIDER_LABELS, type LlmModelOption } from "@/lib/llm-models";
 import { type ConfigApiResponse, type ConfigSecretsMap, getSecretInfo, getSecretPlaceholder } from "@/lib/config-secrets";
 
 interface ConfigState {
@@ -46,6 +46,8 @@ const SECRET_KEYS = [
     "NVIDIA_API_KEY",
     "DASHSCOPE_API_KEY",
 ] as const;
+
+const DEFAULT_CUSTOM_MODEL = "ollama/llama3";
 
 
 export function ConfigPage() {
@@ -117,12 +119,7 @@ export function ConfigPage() {
         setSaving(true);
         setStatus(null);
 
-        // Validation for Custom Model
-        if (!config.LLM_MODEL || config.LLM_MODEL.trim() === "") {
-            setStatus({ type: 'error', message: "Model name cannot be empty. Please select a model or enter a custom one." });
-            setSaving(false);
-            return;
-        }
+        const normalizedModel = String(config.LLM_MODEL || "").trim() || DEFAULT_CUSTOM_MODEL;
 
         try {
             const secretUpdates = Object.fromEntries(
@@ -131,6 +128,7 @@ export function ConfigPage() {
             const res = await axios.post(`${API_BASE_URL}/api/config`, {
                 env: {
                     ...config,
+                    LLM_MODEL: normalizedModel,
                     ...secretUpdates,
                 },
                 clear_secrets: clearedSecrets,
@@ -225,7 +223,7 @@ export function ConfigPage() {
     const filteredModels = getFilteredModels();
     const knownModel = filteredModels.find((model) => model.id === config.LLM_MODEL);
     const selectedProvider = knownModel?.provider || getModelProvider(config.LLM_MODEL);
-    const providerOptions = Array.from(new Set(filteredModels.map((model) => model.provider)));
+    const providerOptions = Object.keys(PROVIDER_LABELS).filter((provider) => provider !== "custom");
     const recommendedModels = selectedProvider === 'custom'
         ? []
         : getRecommendedModels(filteredModels, selectedProvider);
@@ -294,12 +292,12 @@ export function ConfigPage() {
                                         onValueChange={(value) => {
                                             setShowAllModels(false);
                                             if (value === "custom") {
-                                                handleChange("LLM_MODEL", "");
+                                                handleChange("LLM_MODEL", config.LLM_MODEL?.trim() || DEFAULT_CUSTOM_MODEL);
                                                 return;
                                             }
                                             handleChange(
                                                 "LLM_MODEL",
-                                                getInitialModelForProvider(filteredModels, value),
+                                                getInitialModelForProvider(filteredModels, value) || DEFAULT_MODEL_BY_PROVIDER[value],
                                             );
                                         }}
                                     >

@@ -640,33 +640,62 @@ function getConfiguredPort(key, fallback) {
     return parsed;
 }
 
-async function isPortAvailable(port) {
+function describePortBindFailure(result) {
+    const code = result?.code ? `${result.code}: ` : '';
+    const message = result?.message || 'unknown bind failure';
+    if (result?.code === 'EACCES' || result?.code === 'EPERM') {
+        const platformHint = process.platform === 'darwin'
+            ? 'macOS denied permission to bind the port. Grant terminal/network permissions or run from a terminal with the required privileges.'
+            : 'Permission denied while binding the port. Try a terminal with the required privileges or choose another port.';
+        return `${code}${message}. ${platformHint}`;
+    }
+    if (result?.code === 'EADDRINUSE') {
+        return `${code}${message}. Another process is already listening on this port.`;
+    }
+    return `${code}${message}`;
+}
+
+async function checkPortAvailability(port) {
     return new Promise((resolve) => {
         const server = net.createServer();
-        const done = (ok) => {
+        const done = (result) => {
             try {
                 server.removeAllListeners();
                 if (server.listening) {
-                    server.close(() => resolve(ok));
+                    server.close(() => resolve(result));
                     return;
                 }
             } catch { }
-            resolve(ok);
+            resolve(result);
         };
 
-        server.once('error', () => done(false));
-        server.once('listening', () => done(true));
+        server.once('error', (err) => done({
+            available: false,
+            code: err?.code || '',
+            message: err?.message || String(err),
+        }));
+        server.once('listening', () => done({ available: true }));
         server.listen({ port, host: '0.0.0.0', exclusive: true });
     });
 }
 
+async function isPortAvailable(port) {
+    return (await checkPortAvailability(port)).available;
+}
+
 async function findAvailablePort(startPort, maxChecks = 100, reservedPorts = new Set()) {
     let port = startPort;
+    let lastBlocked = null;
     for (let i = 0; i < maxChecks; i++, port++) {
         if (reservedPorts.has(port)) continue;
-        if (await isPortAvailable(port)) return port;
+        const result = await checkPortAvailability(port);
+        if (result.available) return port;
+        lastBlocked = { port, ...result };
     }
-    throw new Error(`Could not find available port near ${startPort} (checked ${maxChecks} ports).`);
+    const detail = lastBlocked
+        ? ` Last checked port ${lastBlocked.port}: ${describePortBindFailure(lastBlocked)}`
+        : '';
+    throw new Error(`Could not find available port near ${startPort} (checked ${maxChecks} ports).${detail}`);
 }
 
 function commandExists(cmd) {
@@ -1543,10 +1572,28 @@ async function cmdStart(args, updateStatus = null) {
     const systemPython = await getSystemPython();
     const configuredBackendPort = getConfiguredPort('WEB_PORT', 8000);
     const configuredFrontendPort = getConfiguredPort('FRONTEND_PORT', 5173);
+    const configuredBackendPortCheck = frontendOnly
+        ? { available: true }
+        : await checkPortAvailability(configuredBackendPort);
+    if (!configuredBackendPortCheck.available) {
+        warning(
+            `Backend port ${configuredBackendPort} cannot be bound: ` +
+            describePortBindFailure(configuredBackendPortCheck)
+        );
+    }
     const backendPort = frontendOnly
         ? configuredBackendPort
         : await findAvailablePort(configuredBackendPort, 100);
     const frontendReservedPorts = new Set([backendPort]);
+    const configuredFrontendPortCheck = backendOnly || frontendReservedPorts.has(configuredFrontendPort)
+        ? { available: true }
+        : await checkPortAvailability(configuredFrontendPort);
+    if (!configuredFrontendPortCheck.available) {
+        warning(
+            `Frontend port ${configuredFrontendPort} cannot be bound: ` +
+            describePortBindFailure(configuredFrontendPortCheck)
+        );
+    }
     const frontendPort = backendOnly
         ? configuredFrontendPort
         : await findAvailablePort(configuredFrontendPort, 100, frontendReservedPorts);
