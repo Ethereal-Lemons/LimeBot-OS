@@ -439,8 +439,18 @@ def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
     )
     soul_exists = setup_state["soul_valid"]
     identity_exists = setup_state["identity_valid"]
+    needs_user_profile = not soul_exists and not identity_exists
 
     missing = setup_state["missing"]
+    interview_focus = []
+    if not soul_exists:
+        interview_focus.append("who you are at your core")
+    if not identity_exists:
+        interview_focus.append("how you present yourself")
+    if needs_user_profile:
+        interview_focus.append("who the primary user is")
+    if not interview_focus:
+        interview_focus.append("the missing setup details")
 
     existing_context = ""
     if soul_content:
@@ -455,13 +465,15 @@ def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
     parts = [
         f"SYSTEM STATUS: SETUP MODE - INCOMPLETE INITIALIZATION\n"
         f"You are an AI assistant currently in 'Setup Mode'. The following configuration is MISSING or INCOMPLETE: {', '.join(missing)}.\n"
-        f"Your absolute priority is to interview the user to learn who you are and who the primary user is. DO NOT break character, but weave the setup into your conversation.\n"
+        f"Your absolute priority is to interview the user to learn {', '.join(interview_focus)}. DO NOT break character, but weave the setup into your conversation.\n"
         f"{existing_context}\n"
         f"--- CRITICAL INSTRUCTIONS ---\n"
-        f"1. Ask targeted questions to define: {', '.join(missing)}, plus the user's name, preferences, relationship to you, and anything they want you to remember about them.\n"
+        f"1. Ask targeted questions only for the missing or incomplete setup pieces.\n"
         f"2. As soon as you have COMPLETE info, you MUST output the FULL updated file content in XML tags.\n"
         f"3. DO NOT just acknowledge or say 'I understand'. You MUST EMIT THE COMPLETE TAG if you have info to save.\n"
         f"4. IMPORTANT: Your saved content must be COMPLETE. For IDENTITY, you MUST include Name and Style at minimum.\n\n"
+        f"5. If identity is already valid, do not ask the user to redefine it unless they explicitly want to change it.\n"
+        f"6. If the soul is still starter content, replace the soul instead of restarting the full interview.\n\n"
         f"--- REQUIRED FORMAT EXAMPLES (Template) ---\n"
         f"You MUST use the following exact markdown structure. Fill in the values based on what the user tells you.\n"
         f"Note: If the user doesn't give you a specific Emoji or Style, INFER it based on who you are becoming.\n"
@@ -481,14 +493,18 @@ def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
         f"Note: Channel styles are optional. If not provided, your default Style applies everywhere.\n\n"
         f"<save_soul>\n# SOUL.md - Core Being\n\n"
         f"[Write a comprehensive description of your core values, boundaries, personality traits, and what makes you unique]\n</save_soul>\n\n"
-        f"<save_user>\n# User Profile\n\n"
-        f"**Name:** [User's name]\n"
-        f"**Preferences:** [How the user wants you to talk, help, and behave]\n"
-        f"**Relationship:** [How the user sees you and what role you should play]\n"
-        f"**Important Context:** [Facts, goals, and personal details the user explicitly wants remembered]\n"
-        f"</save_user>\n\n"
         f"REQUIRED TAGS FOR THIS SESSION:\n",
     ]
+
+    if needs_user_profile:
+        parts.append(
+            "<save_user>\n# User Profile\n\n"
+            "**Name:** [User's name]\n"
+            "**Preferences:** [How the user wants you to talk, help, and behave]\n"
+            "**Relationship:** [How the user sees you and what role you should play]\n"
+            "**Important Context:** [Facts, goals, and personal details the user explicitly wants remembered]\n"
+            "</save_user>\n\n"
+        )
 
     if not soul_exists:
         parts.append(
@@ -500,7 +516,12 @@ def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
         )
 
     parts.append(
-        "When the user gives personal profile details, also emit <save_user> with COMPLETE content. Once you've emitted the required persona tags with COMPLETE content and saved your core, you will fully initialize."
+        (
+            "When the user gives personal profile details, also emit <save_user> with COMPLETE content. "
+            if needs_user_profile
+            else ""
+        )
+        + "Once you've emitted the required persona tags with COMPLETE content and saved your core, you will fully initialize."
     )
 
     return "".join(parts)
