@@ -108,8 +108,32 @@ class TestSetupPrompt(unittest.IsolatedAsyncioTestCase):
 
         prompt = await self._get_prompt()
         self.assertIn("SYSTEM STATUS: SETUP MODE", prompt)
-        self.assertIn("who you are and who the primary user is", prompt)
+        self.assertIn("who you are at your core, how you present yourself, who the primary user is", prompt)
         self.assertIn("<save_user>", prompt)
+
+    async def test_template_soul_with_valid_identity_only_requests_soul(self):
+        if not Path("persona/SOUL.md.example").exists():
+            self.skipTest("Missing soul example template.")
+
+        SOUL_FILE.write_text(
+            Path("persona/SOUL.md.example").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        IDENTITY_FILE.write_text(
+            "# IDENTITY.md - Who I Am\n\n"
+            "*   **Name:** Rukia Kuchiki\n"
+            "*   **Emoji:** ❄️\n"
+            "*   **Pfp_URL:** https://example.com/rukia.jpg\n"
+            "*   **Style:** Stoic, disciplined, protective, and slightly reserved.\n"
+            "*   **Catchphrases:** \n",
+            encoding="utf-8",
+        )
+
+        prompt = await self._get_prompt()
+        self.assertIn("SYSTEM STATUS: SETUP MODE", prompt)
+        self.assertIn("who you are at your core", prompt)
+        self.assertNotIn("who the primary user is", prompt)
+        self.assertNotIn("<save_user>", prompt)
 
     async def test_valid_persona_content_exits_setup_prompt(self):
         SOUL_FILE.write_text(
