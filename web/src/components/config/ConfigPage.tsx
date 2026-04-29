@@ -673,7 +673,7 @@ export function ConfigPage() {
                                                 Allow Unsafe Commands
                                             </Label>
                                             <p className="text-xs text-muted-foreground">
-                                                Allow commands with redirects ({'>'}), semicolons, and other shell operators. Useful for piped workflows but reduces sandboxing.
+                                                Allows shell operators such as redirects ({'>'}), semicolons, and pipes, and also permits privileged commands like <code className="font-mono">sudo</code>, <code className="font-mono">chmod</code>, and <code className="font-mono">chown</code>. Useful for advanced workflows, but it reduces sandboxing.
                                             </p>
                                         </div>
                                         <Switch
