@@ -968,11 +968,17 @@ class Toolbox:
             match = re.search(forbidden_regex, command).group(0)
             return f"Error: Command contains forbidden character/sequence '{match}'. Enable 'Allow Unsafe Commands' in Config to bypass this restriction."
 
-        if any(
-            f in command.lower()
-            for f in ["sudo", "chmod", "chown", "ifs=", "pythonpath="]
-        ):
+        lowered_command = command.lower()
+        if any(f in lowered_command for f in ["ifs=", "pythonpath="]):
             return "Error: Command or environment manipulation forbidden."
+
+        if not unsafe_allowed and any(
+            f in lowered_command for f in ["sudo", "chmod", "chown"]
+        ):
+            return (
+                "Error: Privileged commands are blocked. "
+                "Enable 'Allow Unsafe Commands' in Config to allow them."
+            )
 
         try:
             command, browser_launch_error = self._normalize_browser_launch_command(command)
