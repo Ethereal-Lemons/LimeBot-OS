@@ -264,6 +264,13 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
     }
 
 
+# Codex models available on the free ChatGPT plan.
+CODEX_FREE_MODELS = ["openai-codex/gpt-5.3", "openai-codex/gpt-5.2"]
+
+# Codex models that require a ChatGPT Pro subscription.
+CODEX_PRO_MODELS = {"openai-codex/gpt-5.4", "openai-codex/gpt-5.4-mini", "openai-codex/gpt-5.5"}
+
+
 def build_provider_chain(
     primary_model: str,
     fallback_models: List[str],
@@ -274,10 +281,21 @@ def build_provider_chain(
 
     Returns a list of (source_model_name, provider_config_dict).
     """
+    effective_fallbacks = list(fallback_models or [])
+
+    # If the primary model is a pro-tier Codex model, automatically append
+    # free-tier Codex models as fallbacks so the agent degrades gracefully.
+    normalized_primary = str(primary_model or "").strip()
+    if normalized_primary in CODEX_PRO_MODELS:
+        existing = {normalized_primary, *effective_fallbacks}
+        for free_model in CODEX_FREE_MODELS:
+            if free_model not in existing:
+                effective_fallbacks.append(free_model)
+
     chain: List[Tuple[str, dict]] = []
     seen: set[str] = set()
 
-    for raw_model in [primary_model, *(fallback_models or [])]:
+    for raw_model in [primary_model, *effective_fallbacks]:
         model = str(raw_model or "").strip()
         if not model or model in seen:
             continue
@@ -287,3 +305,4 @@ def build_provider_chain(
         )
 
     return chain
+

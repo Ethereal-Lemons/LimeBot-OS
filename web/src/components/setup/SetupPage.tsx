@@ -80,6 +80,7 @@ export function SetupPage() {
         : recommendedModels;
 
     const getRequiredKeyError = () => {
+        if (config.LLM_MODEL.startsWith('openai-codex')) return null; // Codex uses OAuth, managed via CLI
         if (config.LLM_MODEL.startsWith('gemini') && !config.GEMINI_API_KEY) return 'Gemini API Key is required.';
         if (config.LLM_MODEL.startsWith('openai') && !(config as any).OPENAI_API_KEY) return 'OpenAI API Key is required.';
         if (config.LLM_MODEL.startsWith('anthropic') && !(config as any).ANTHROPIC_API_KEY) return 'Anthropic API Key is required.';
@@ -188,6 +189,7 @@ export function SetupPage() {
                                     <SelectContent>
                                         <SelectItem value="gemini">{PROVIDER_LABELS.gemini}</SelectItem>
                                         <SelectItem value="openai">{PROVIDER_LABELS.openai}</SelectItem>
+                                        <SelectItem value="openai-codex">{PROVIDER_LABELS["openai-codex"]}</SelectItem>
                                         <SelectItem value="anthropic">{PROVIDER_LABELS.anthropic}</SelectItem>
                                         <SelectItem value="xai">{PROVIDER_LABELS.xai}</SelectItem>
                                         <SelectItem value="deepseek">{PROVIDER_LABELS.deepseek}</SelectItem>
@@ -274,7 +276,14 @@ export function SetupPage() {
                                         />
                                     </div>
                                 )}
-                                {config.LLM_MODEL.startsWith('openai') && (
+                                {config.LLM_MODEL.startsWith('openai-codex') && (
+                                    <div className="space-y-2">
+                                        <p className="text-xs text-muted-foreground">
+                                            Codex uses ChatGPT OAuth — no API key needed. Run <code className="text-primary">limebot auth codex login</code> from your terminal to authenticate.
+                                        </p>
+                                    </div>
+                                )}
+                                {config.LLM_MODEL.startsWith('openai/') && (
                                     <div className="space-y-2">
                                         <Label htmlFor="openai_key">OpenAI API Key</Label>
                                         <Input
