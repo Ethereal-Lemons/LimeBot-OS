@@ -88,12 +88,23 @@ const McpPage = lazy(() =>
     default: module.McpPage,
   }))
 );
+const TaskQueuePanel = lazy(() =>
+  import("./components/queue/TaskQueuePanel").then((module) => ({
+    default: module.TaskQueuePanel,
+  }))
+);
+const BrowserSessionsPanel = lazy(() =>
+  import("./components/browser/BrowserSessionsPanel").then((module) => ({
+    default: module.BrowserSessionsPanel,
+  }))
+);
 
 // ── View metadata ─────────────────────────────────────────────────────────────
 
 const VIEW_META: Record<string, { title: string; description: string }> = {
   chat: { title: "Chat", description: "Live conversation and tool execution." },
   overview: { title: "Overview", description: "System health, gateway access, and controls." },
+  queue: { title: "Task Queue", description: "Active work, delivery queue, and scheduled jobs." },
   memory: { title: "Memory", description: "Stored facts, recall mode, and memory management." },
   channels: { title: "Channels", description: "Discord, WhatsApp, and channel configuration." },
   logs: { title: "System Logs", description: "Live backend output and operational events." },
@@ -101,6 +112,7 @@ const VIEW_META: Record<string, { title: string; description: string }> = {
   cron: { title: "Cron Jobs", description: "Scheduled automations and recurring tasks." },
   skills: { title: "Skills", description: "Installed capabilities and tool bundles." },
   subagents: { title: "Subagents", description: "Specialized helper profiles Claude-style, kept lightweight." },
+  browsers: { title: "Browser Sessions", description: "Active headless browsers and session modes." },
   mcp: { title: "MCP", description: "External Model Context Protocol servers." },
   persona: { title: "Persona", description: "Identity, style, and adaptive behavior." },
   appearance: { title: "Appearance", description: "Themes, wallpaper, and visual settings." },
@@ -398,6 +410,8 @@ function App() {
         {
           currentView === 'instances' ? (
             <InstancesList currentSessionId={sessionId} />
+          ) : currentView === 'queue' ? (
+            <TaskQueuePanel />
           ) : currentView === 'cron' ? (
             <CronPage />
           ) : currentView === 'memory' ? (
@@ -412,6 +426,8 @@ function App() {
             <SkillsPage />
           ) : currentView === 'subagents' ? (
             <SubagentsPage />
+          ) : currentView === 'browsers' ? (
+            <BrowserSessionsPanel />
           ) : currentView === 'persona' ? (
             <PersonaPage onNavigate={setCurrentView} />
           ) : currentView === 'appearance' ? (

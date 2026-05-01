@@ -42,13 +42,14 @@ def _browser_settings(config: Any) -> Dict[str, str]:
     user_data_dir = str(getattr(browser, "user_data_dir", "") or "").strip()
     profile_directory = str(getattr(browser, "profile_directory", "") or "").strip()
 
-    if cdp_url:
-        mode = "attach"
-    elif mode not in _VALID_BROWSER_MODES:
+    if mode not in _VALID_BROWSER_MODES:
         mode = "isolated"
 
-    if mode == "attach" and not cdp_url:
-        cdp_url = "http://127.0.0.1:9222"
+    if mode == "attach":
+        if not cdp_url:
+            cdp_url = "http://127.0.0.1:9222"
+    else:
+        cdp_url = ""
 
     return {
         "mode": mode,
@@ -466,6 +467,19 @@ class BrowserManager:
             )
 
             logger.info("Browser launched successfully")
+
+            # ── Session Tracking ──────────────────────────────────────────────
+            from core.browser_sessions import get_browser_session_manager
+            manager = get_browser_session_manager()
+            self._profile_id = await manager.register_session(
+                session_key=self.session_key,
+                mode=self.mode,
+                metadata={
+                    "channel": self.channel,
+                    "cdp_url": self.cdp_url if self.mode == "attach" else None,
+                    "headless": self.headless,
+                }
+            )
             return self._page
 
     def _has_live_browser_connection(self) -> bool:
@@ -691,6 +705,13 @@ class BrowserManager:
         self._using_system_snapshot = False
         self._attached_browser = False
         self._element_map.clear()
+        
+        # ── Session Tracking ──────────────────────────────────────────────
+        if getattr(self, "_profile_id", None):
+            from core.browser_sessions import get_browser_session_manager
+            manager = get_browser_session_manager()
+            await manager.mark_closed(self._profile_id)
+        
         logger.info("Browser closed")
 
     async def list_tabs(self) -> List[Dict[str, Any]]:

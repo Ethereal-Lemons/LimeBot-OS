@@ -14,7 +14,9 @@ import {
     Bot,
     ShieldCheck,
     Wifi,
-    WifiOff
+    WifiOff,
+    List,
+    Globe
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -84,6 +86,7 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
     const navItems = [
         { id: 'chat', icon: MessageSquare, label: "Chat" },
         { id: 'overview', icon: LayoutDashboard, label: "Overview" },
+        { id: 'queue', icon: List, label: "Task Queue" },
         { id: 'memory', icon: Brain, label: "Memory" },
         { id: 'channels', icon: Activity, label: "Channels" },
         { id: 'logs', icon: FileText, label: "System Logs" },
@@ -94,6 +97,7 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
     const agentItems = [
         { id: 'skills', icon: Zap, label: "Skills" },
         { id: 'subagents', icon: Bot, label: "Subagents" },
+        { id: 'browsers', icon: Globe, label: "Browser Sessions" },
         { id: 'mcp', icon: Cpu, label: "MCP" },
         // { icon: Box, label: "Nodes", active: false },
     ];

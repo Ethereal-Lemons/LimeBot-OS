@@ -2381,6 +2381,35 @@ class WebChannel(BaseChannel):
                 return {"status": "success", "job": updated}
             raise HTTPException(status_code=404, detail="Job not found")
 
+        # ── Observability Endpoints ─────────────────────────────────────
+        @self.app.get("/api/tasks", dependencies=[Depends(self.verify_auth)])
+        async def get_tasks():
+            from core.task_tracker import get_task_tracker
+            tasks = await get_task_tracker().list_tasks()
+            return {"tasks": tasks}
+
+        @self.app.get("/api/deliveries", dependencies=[Depends(self.verify_auth)])
+        async def get_deliveries():
+            from core.delivery_tracker import get_delivery_tracker
+            deliveries = await get_delivery_tracker().list_deliveries()
+            return {"deliveries": deliveries}
+
+        @self.app.get("/api/browser/sessions", dependencies=[Depends(self.verify_auth)])
+        async def get_browser_sessions():
+            from core.browser_sessions import get_browser_session_manager
+            sessions = await get_browser_session_manager().list_sessions()
+            return {"sessions": sessions}
+
+        @self.app.delete("/api/browser/sessions/{session_id}", dependencies=[Depends(self.verify_auth)])
+        async def delete_browser_session(session_id: str):
+            from core.browser_sessions import get_browser_session_manager
+            mgr = get_browser_session_manager()
+            res = await mgr.delete_session(session_id)
+            if res.get("success"):
+                return {"status": "ok"}
+            else:
+                raise HTTPException(status_code=404, detail=res.get("error", "Session not found or could not be removed"))
+
         @self.app.websocket("/ws")
         async def websocket_root(websocket: WebSocket):
             await self._websocket_handler(websocket)
