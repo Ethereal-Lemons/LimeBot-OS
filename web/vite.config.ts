@@ -43,7 +43,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: Number.isFinite(frontendPort) ? frontendPort : 5173,
-      strictPort: false,
+      strictPort: true,
       proxy: {
         "/api": {
           target: backendHttp,
