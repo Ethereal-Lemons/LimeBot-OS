@@ -1038,18 +1038,28 @@ class WebChannel(BaseChannel):
                 models.extend(
                     [
                         {
+                            "id": "openai-codex/gpt-5.3",
+                            "name": "GPT-5.3 (Codex · Free)",
+                            "provider": "openai-codex",
+                        },
+                        {
+                            "id": "openai-codex/gpt-5.2",
+                            "name": "GPT-5.2 (Codex · Free)",
+                            "provider": "openai-codex",
+                        },
+                        {
                             "id": "openai-codex/gpt-5.4",
-                            "name": "GPT-5.4 (Codex OAuth)",
+                            "name": "GPT-5.4 (Codex · Pro)",
                             "provider": "openai-codex",
                         },
                         {
                             "id": "openai-codex/gpt-5.4-mini",
-                            "name": "GPT-5.4 Mini (Codex OAuth)",
+                            "name": "GPT-5.4 Mini (Codex · Pro)",
                             "provider": "openai-codex",
                         },
                         {
-                            "id": "openai-codex/gpt-5.4-pro",
-                            "name": "GPT-5.4 Pro (Codex OAuth)",
+                            "id": "openai-codex/gpt-5.5",
+                            "name": "GPT-5.5 (Codex · Pro)",
                             "provider": "openai-codex",
                         },
                     ]
