@@ -3808,6 +3808,20 @@ class AgentLoop:
         session_key = msg.session_key
         turn_id = f"turn_{uuid.uuid4().hex[:12]}"
         assistant_message_id = f"msg_{uuid.uuid4().hex[:12]}"
+
+        # ── Task tracking ────────────────────────────────────────────────
+        from core.task_tracker import get_task_tracker
+        _tracker = get_task_tracker()
+        _msg_task_id = await _tracker.create_task(
+            task_type="inbound_message",
+            summary=f"{msg.channel}: {(msg.content or '')[:80]}",
+            channel=msg.channel,
+            session_key=session_key,
+            chat_id=msg.chat_id,
+            metadata={"turn_id": turn_id, "sender_id": msg.sender_id},
+        )
+        await _tracker.update_task(_msg_task_id, status="running")
+
         try:
             content = msg.content or ""
             attachments = [
@@ -4749,6 +4763,7 @@ class AgentLoop:
 
                     traceback.print_exc()
                     logger.exception(f"❌ Error processing message: {e}")
+                    await _tracker.complete_task(_msg_task_id, error=str(e))
                     self._log_session_event(
                         session_key,
                         {
@@ -4771,6 +4786,10 @@ class AgentLoop:
                     )
 
         finally:
+            if _msg_task_id:
+                task = await _tracker.get_task(_msg_task_id)
+                if task and task.status == "running":
+                    await _tracker.complete_task(_msg_task_id)
             await self._flush_history(session_key, force=True)
             self.active_tasks.pop(session_key, None)
             # Always notify frontend that processing is done

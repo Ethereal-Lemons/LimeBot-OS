@@ -291,6 +291,18 @@ class CronManager:
 
     async def _execute_job(self, job: Dict[str, Any]) -> None:
         """Fire a triggered job by publishing an inbound message."""
+        from core.task_tracker import get_task_tracker
+
+        tracker = get_task_tracker()
+        _task_id = await tracker.create_task(
+            task_type="scheduled_job",
+            summary=f"Cron job: {job['payload'][:80]}",
+            channel=job.get("context", {}).get("channel", "unknown"),
+            chat_id=job.get("context", {}).get("chat_id", "unknown"),
+            metadata={"job_id": job["id"]},
+        )
+        await tracker.update_task(_task_id, status="running")
+
         logger.info(f"Executing job {job['id']}: {job['payload']}")
         await asyncio.to_thread(
             self._append_run_event,
@@ -326,6 +338,7 @@ class CronManager:
                     "chat_id": context.get("chat_id", "unknown"),
                 },
             )
+            await tracker.complete_task(_task_id)
         except Exception as e:
             logger.error(f"Failed to publish job {job['id']}: {e}")
             await asyncio.to_thread(
@@ -337,3 +350,4 @@ class CronManager:
                     "error": str(e),
                 },
             )
+            await tracker.complete_task(_task_id, error=str(e))

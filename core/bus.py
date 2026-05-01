@@ -52,16 +52,37 @@ class MessageBus:
         Dispatch outbound messages to subscribed channels.
         Run this as a background task.
         """
+        from core.delivery_tracker import get_delivery_tracker
+
+        tracker = get_delivery_tracker()
         self._running = True
         while self._running:
             try:
                 msg = await self.outbound.get()
                 subscribers = self._outbound_subscribers.get(msg.channel, [])
+
+                # Determine message kind for delivery tracking
+                msg_kind = "text"
+                if msg.media:
+                    msg_kind = "media"
+                elif msg.metadata.get("embed"):
+                    msg_kind = "embed"
+
                 for callback in subscribers:
+                    delivery_id = ""
                     try:
+                        delivery_id = await tracker.track_delivery(
+                            channel=msg.channel,
+                            target=msg.chat_id,
+                            message_kind=msg_kind,
+                        )
+                        await tracker.mark_sending(delivery_id)
                         await callback(msg)
+                        await tracker.mark_sent(delivery_id)
                     except Exception as e:
                         logger.error(f"[BUS] Error dispatching to {msg.channel}: {e}")
+                        if delivery_id:
+                            await tracker.mark_failed(delivery_id, str(e))
             except asyncio.CancelledError:
                 break
             except Exception as e:
