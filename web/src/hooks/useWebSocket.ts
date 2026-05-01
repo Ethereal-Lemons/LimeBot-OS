@@ -89,6 +89,7 @@ export function useWebSocket({
 
     const ws = useRef<WebSocket | null>(null);
     const reconnectTimerRef = useRef<number | null>(null);
+    const connectTimerRef = useRef<number | null>(null);
     const mountedRef = useRef(true);
     const sessionIdRef = useRef(sessionId);
     const streamFlushTimerRef = useRef<number | null>(null);
@@ -126,6 +127,13 @@ export function useWebSocket({
         if (reconnectTimerRef.current !== null) {
             window.clearTimeout(reconnectTimerRef.current);
             reconnectTimerRef.current = null;
+        }
+    };
+
+    const clearConnectTimer = () => {
+        if (connectTimerRef.current !== null) {
+            window.clearTimeout(connectTimerRef.current);
+            connectTimerRef.current = null;
         }
     };
 
@@ -196,189 +204,200 @@ export function useWebSocket({
             return;
         }
 
-        const apiKey = localStorage.getItem('limebot_api_key');
-        const wsUrl = `${WS_BASE_URL}/ws?api_key=${encodeURIComponent(apiKey || '')}`;
-
         clearReconnectTimer();
-
-        const socket = new WebSocket(wsUrl);
-        ws.current = socket;
-
-        socket.onopen = () => {
-            if (socket !== ws.current || !mountedRef.current) {
-                socket.close();
+        clearConnectTimer();
+        connectTimerRef.current = window.setTimeout(() => {
+            connectTimerRef.current = null;
+            if (!mountedRef.current) return;
+            if (
+                ws.current?.readyState === WebSocket.OPEN ||
+                ws.current?.readyState === WebSocket.CONNECTING
+            ) {
                 return;
             }
-            console.log('Connected to LimeBot');
-            setIsConnected(true);
-        };
 
-        socket.onerror = (event) => {
-            if (socket !== ws.current || !mountedRef.current) {
-                return;
-            }
-            console.error('WebSocket error:', event);
-        };
+            const apiKey = localStorage.getItem('limebot_api_key');
+            const wsUrl = `${WS_BASE_URL}/ws?api_key=${encodeURIComponent(apiKey || '')}`;
 
-        socket.onclose = () => {
-            if (socket !== ws.current) {
-                return;
-            }
-            ws.current = null;
-            console.log('Disconnected from LimeBot');
-            setIsConnected(false);
-            clearStreamFlushTimer();
-            streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
-            if (!mountedRef.current) {
-                return;
-            }
-            reconnectTimerRef.current = window.setTimeout(() => {
-                reconnectTimerRef.current = null;
-                console.log('Attempting to reconnect...');
-                connectWebSocket();
-            }, 3000);
-        };
+            const socket = new WebSocket(wsUrl);
+            ws.current = socket;
 
-        socket.onmessage = (event) => {
-            if (socket !== ws.current) {
-                return;
-            }
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'auth_ok') {
-                    setIsConnected(true);
+            socket.onopen = () => {
+                if (socket !== ws.current || !mountedRef.current) {
+                    socket.close();
                     return;
                 }
-                const isMaintenanceEvent = data.type === 'maintenance' || data.metadata?.is_maintenance;
-                const eventChatId: string | undefined = typeof data.chat_id === 'string' ? data.chat_id : undefined;
-                const eventTurnId: string | undefined =
-                    typeof data.turn_id === 'string'
-                        ? data.turn_id
-                        : typeof data.metadata?.turn_id === 'string'
-                            ? data.metadata.turn_id
-                            : undefined;
-                const eventMessageId: string | undefined =
-                    typeof data.message_id === 'string'
-                        ? data.message_id
-                        : typeof data.metadata?.message_id === 'string'
-                            ? data.metadata.message_id
-                            : undefined;
-                const activeSessionId = sessionIdRef.current;
-                const streamType = data.metadata?.type;
+                console.log('Connected to LimeBot');
+                setIsConnected(true);
+            };
 
-                if (isMaintenanceEvent) {
-                    onActivity(data.content || '✨ Background task complete');
-                    setTimeout(onActivityClear, 4000);
+            socket.onerror = (event) => {
+                if (socket !== ws.current || !mountedRef.current) {
                     return;
                 }
+                console.error('WebSocket error:', event);
+            };
 
-                if (eventChatId !== activeSessionId) return;
-
-                if (streamType === 'chunk') {
-                    queueStreamDelta(eventChatId, eventMessageId, eventTurnId, data.content || '', '');
+            socket.onclose = () => {
+                if (socket !== ws.current) {
                     return;
                 }
-                if (streamType === 'thinking') {
-                    queueStreamDelta(eventChatId, eventMessageId, eventTurnId, '', data.content || '');
+                ws.current = null;
+                console.log('Disconnected from LimeBot');
+                setIsConnected(false);
+                clearStreamFlushTimer();
+                streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
+                if (!mountedRef.current) {
                     return;
                 }
+                reconnectTimerRef.current = window.setTimeout(() => {
+                    reconnectTimerRef.current = null;
+                    console.log('Attempting to reconnect...');
+                    connectWebSocket();
+                }, 3000);
+            };
 
-                flushStreamBuffer();
-
-                if (data.type === 'message' || data.type === 'full_content') {
-                    setIsTyping(false);
-                    let variant: 'default' | 'destructive' | 'warning' = 'default';
-                    if (data.metadata?.is_error) variant = 'destructive';
-                    if (data.metadata?.is_warning) variant = 'warning';
-
-                    setMessages(prev =>
-                        applyFinalAssistantMessage(prev, {
-                            messageId: eventMessageId,
-                            turnId: eventTurnId,
-                            content: data.content,
-                            variant,
-                            image: typeof data.metadata?.image === 'string' ? data.metadata.image : null,
-                            attachments: normalizeIncomingAttachments(data.metadata?.attachments),
-                        })
-                    );
-
-                    if (data.metadata?.identity_updated) {
-                        onIdentityUpdated();
+            socket.onmessage = (event) => {
+                if (socket !== ws.current) {
+                    return;
+                }
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'auth_ok') {
+                        setIsConnected(true);
+                        return;
                     }
-                } else if (data.type === 'cancellation' || data.metadata?.is_cancellation) {
-                    setIsTyping(false);
-                    setMessages(prev => prev.map(m => {
-                        if (m.type === 'tool' && m.toolExecution?.status === 'running') {
-                            return {
-                                ...m,
-                                toolExecution: { ...m.toolExecution, status: 'error', result: 'Cancelled by user.' },
-                            };
-                        }
-                        return m;
-                    }));
-                } else if (data.type === 'stop_typing' || data.metadata?.type === 'stop_typing') {
-                    setIsTyping(false);
-                    setMessages(prev => applyStopTyping(prev, { messageId: eventMessageId, turnId: eventTurnId }));
-                } else if (data.type === 'typing' || data.metadata?.type === 'typing') {
-                    setIsTyping(true);
-                } else if (data.type === 'rate_limit_error') {
-                    console.error('Rate Limit Error:', data.metadata?.details);
-                    onRateLimit();
-                } else if (data.type === 'tool_execution') {
-                    const toolData = data.metadata;
-                    setMessages(prev => {
-                        const existingIndex = prev.findIndex(m =>
-                            m.type === 'tool' && m.toolExecution?.tool_call_id === toolData.tool_call_id
+                    const isMaintenanceEvent = data.type === 'maintenance' || data.metadata?.is_maintenance;
+                    const eventChatId: string | undefined = typeof data.chat_id === 'string' ? data.chat_id : undefined;
+                    const eventTurnId: string | undefined =
+                        typeof data.turn_id === 'string'
+                            ? data.turn_id
+                            : typeof data.metadata?.turn_id === 'string'
+                                ? data.metadata.turn_id
+                                : undefined;
+                    const eventMessageId: string | undefined =
+                        typeof data.message_id === 'string'
+                            ? data.message_id
+                            : typeof data.metadata?.message_id === 'string'
+                                ? data.metadata.message_id
+                                : undefined;
+                    const activeSessionId = sessionIdRef.current;
+                    const streamType = data.metadata?.type;
+
+                    if (isMaintenanceEvent) {
+                        onActivity(data.content || '✨ Background task complete');
+                        setTimeout(onActivityClear, 4000);
+                        return;
+                    }
+
+                    if (eventChatId !== activeSessionId) return;
+
+                    if (streamType === 'chunk') {
+                        queueStreamDelta(eventChatId, eventMessageId, eventTurnId, data.content || '', '');
+                        return;
+                    }
+                    if (streamType === 'thinking') {
+                        queueStreamDelta(eventChatId, eventMessageId, eventTurnId, '', data.content || '');
+                        return;
+                    }
+
+                    flushStreamBuffer();
+
+                    if (data.type === 'message' || data.type === 'full_content') {
+                        setIsTyping(false);
+                        let variant: 'default' | 'destructive' | 'warning' = 'default';
+                        if (data.metadata?.is_error) variant = 'destructive';
+                        if (data.metadata?.is_warning) variant = 'warning';
+
+                        setMessages(prev =>
+                            applyFinalAssistantMessage(prev, {
+                                messageId: eventMessageId,
+                                turnId: eventTurnId,
+                                content: data.content,
+                                variant,
+                                image: typeof data.metadata?.image === 'string' ? data.metadata.image : null,
+                                attachments: normalizeIncomingAttachments(data.metadata?.attachments),
+                            })
                         );
-                        if (existingIndex !== -1) {
-                            const newMessages = [...prev];
-                            const existingExec = newMessages[existingIndex].toolExecution!;
-                            let updatedLogs = existingExec.logs || [];
-                            if (toolData.status === 'progress') {
-                                updatedLogs = [...updatedLogs, data.content];
-                            }
-                            newMessages[existingIndex] = {
-                                ...newMessages[existingIndex],
-                                messageId: eventMessageId || newMessages[existingIndex].messageId,
-                                turnId: eventTurnId || newMessages[existingIndex].turnId,
-                                toolExecution: {
-                                    ...existingExec,
-                                    status: toolData.status === 'progress' ? existingExec.status : toolData.status,
-                                    result: toolData.result,
-                                    conf_id: toolData.conf_id || existingExec.conf_id,
-                                    logs: updatedLogs,
-                                    preview: toolData.preview || existingExec.preview,
-                                },
-                            };
-                            return newMessages;
-                        } else {
-                            return [...prev, {
-                                sender: 'bot',
-                                type: 'tool',
-                                content: '',
-                                messageId: eventMessageId || undefined,
-                                turnId: eventTurnId || undefined,
-                                toolExecution: {
-                                    tool: toolData.tool,
-                                    status: toolData.status,
-                                    args: toolData.args,
-                                    tool_call_id: toolData.tool_call_id,
-                                    conf_id: toolData.conf_id,
-                                    logs: [],
-                                    preview: toolData.preview,
-                                },
-                            }];
+
+                        if (data.metadata?.identity_updated) {
+                            onIdentityUpdated();
                         }
-                    });
-                } else if (data.metadata?.type === 'activity') {
-                    console.log('👻 Activity:', data.metadata.text);
-                    onActivity(data.metadata.text);
-                    setTimeout(onActivityClear, 4000);
+                    } else if (data.type === 'cancellation' || data.metadata?.is_cancellation) {
+                        setIsTyping(false);
+                        setMessages(prev => prev.map(m => {
+                            if (m.type === 'tool' && m.toolExecution?.status === 'running') {
+                                return {
+                                    ...m,
+                                    toolExecution: { ...m.toolExecution, status: 'error', result: 'Cancelled by user.' },
+                                };
+                            }
+                            return m;
+                        }));
+                    } else if (data.type === 'stop_typing' || data.metadata?.type === 'stop_typing') {
+                        setIsTyping(false);
+                        setMessages(prev => applyStopTyping(prev, { messageId: eventMessageId, turnId: eventTurnId }));
+                    } else if (data.type === 'typing' || data.metadata?.type === 'typing') {
+                        setIsTyping(true);
+                    } else if (data.type === 'rate_limit_error') {
+                        console.error('Rate Limit Error:', data.metadata?.details);
+                        onRateLimit();
+                    } else if (data.type === 'tool_execution') {
+                        const toolData = data.metadata;
+                        setMessages(prev => {
+                            const existingIndex = prev.findIndex(m =>
+                                m.type === 'tool' && m.toolExecution?.tool_call_id === toolData.tool_call_id
+                            );
+                            if (existingIndex !== -1) {
+                                const newMessages = [...prev];
+                                const existingExec = newMessages[existingIndex].toolExecution!;
+                                let updatedLogs = existingExec.logs || [];
+                                if (toolData.status === 'progress') {
+                                    updatedLogs = [...updatedLogs, data.content];
+                                }
+                                newMessages[existingIndex] = {
+                                    ...newMessages[existingIndex],
+                                    messageId: eventMessageId || newMessages[existingIndex].messageId,
+                                    turnId: eventTurnId || newMessages[existingIndex].turnId,
+                                    toolExecution: {
+                                        ...existingExec,
+                                        status: toolData.status === 'progress' ? existingExec.status : toolData.status,
+                                        result: toolData.result,
+                                        conf_id: toolData.conf_id || existingExec.conf_id,
+                                        logs: updatedLogs,
+                                        preview: toolData.preview || existingExec.preview,
+                                    },
+                                };
+                                return newMessages;
+                            } else {
+                                return [...prev, {
+                                    sender: 'bot',
+                                    type: 'tool',
+                                    content: '',
+                                    messageId: eventMessageId || undefined,
+                                    turnId: eventTurnId || undefined,
+                                    toolExecution: {
+                                        tool: toolData.tool,
+                                        status: toolData.status,
+                                        args: toolData.args,
+                                        tool_call_id: toolData.tool_call_id,
+                                        conf_id: toolData.conf_id,
+                                        logs: [],
+                                        preview: toolData.preview,
+                                    },
+                                }];
+                            }
+                        });
+                    } else if (data.metadata?.type === 'activity') {
+                        console.log('👻 Activity:', data.metadata.text);
+                        onActivity(data.metadata.text);
+                        setTimeout(onActivityClear, 4000);
+                    }
+                } catch (error) {
+                    console.error('Error parsing message:', error);
                 }
-            } catch (error) {
-                console.error('Error parsing message:', error);
-            }
-        };
+            };
+        }, 120);
     };
 
     // ── Send / new chat ───────────────────────────────────────────────────
@@ -439,6 +458,7 @@ export function useWebSocket({
         return () => {
             mountedRef.current = false;
             clearReconnectTimer();
+            clearConnectTimer();
             clearStreamFlushTimer();
             streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
             ws.current?.close();
