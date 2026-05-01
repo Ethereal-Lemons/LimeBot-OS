@@ -1619,10 +1619,16 @@ async function cmdStart(args, updateStatus = null) {
     childEnv.WEB_PORT = String(backendPort);
     childEnv.PORT = String(backendPort);
     childEnv.VITE_DEV_SERVER_PORT = String(frontendPort);
+    childEnv.FRONTEND_PORT = String(frontendPort);
     childEnv.VITE_BACKEND_URL = `http://127.0.0.1:${backendPort}`;
     childEnv.VITE_BACKEND_WS_URL = `ws://127.0.0.1:${backendPort}`;
     childEnv.VITE_API_BASE_URL = `http://127.0.0.1:${backendPort}`;
     childEnv.VITE_WS_BASE_URL = `ws://127.0.0.1:${backendPort}`;
+    // Override CORS origins so the backend accepts requests from the actual frontend port
+    childEnv.WEB_ALLOWED_ORIGINS = [
+        `http://localhost:${frontendPort}`,
+        `http://127.0.0.1:${frontendPort}`,
+    ].join(',');
 
     // ── Dependency installation ──────────────────────────────────
 
