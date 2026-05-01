@@ -8,6 +8,7 @@ import os
 import re
 import socket
 import time
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import unquote_to_bytes
 
@@ -58,6 +59,10 @@ _SECRET_CONFIG_KEYS = frozenset(
         "TELEGRAM_BOT_TOKEN",
     }
 )
+_PIAI_MODELS_JS_PATH = (
+    Path.cwd() / "node_modules" / "@mariozechner" / "pi-ai" / "dist" / "models.generated.js"
+)
+_PIAI_PROVIDER_MODEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
 
 
 def _mask_secret(value: str) -> str:
@@ -76,6 +81,67 @@ def _serialize_secret(value: str) -> dict[str, Any]:
         "masked": _mask_secret(cleaned),
         "last4": cleaned[-4:] if len(cleaned) > 4 else "",
     }
+
+
+def _extract_js_object_block(text: str, key: str) -> str:
+    marker = f'"{key}": {{'
+    start = text.find(marker)
+    if start < 0:
+        return ""
+
+    brace_start = text.find("{", start)
+    if brace_start < 0:
+        return ""
+
+    depth = 0
+    for idx in range(brace_start, len(text)):
+        char = text[idx]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace_start + 1 : idx]
+    return ""
+
+
+def _load_piai_provider_models(provider: str) -> list[dict[str, str]]:
+    try:
+        stat = _PIAI_MODELS_JS_PATH.stat()
+    except OSError:
+        return []
+
+    cached = _PIAI_PROVIDER_MODEL_CACHE.get(provider)
+    if cached and cached[0] == stat.st_mtime:
+        return [dict(model) for model in cached[1]]
+
+    try:
+        text = _PIAI_MODELS_JS_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning(f"Failed to read pi-ai model registry: {exc}")
+        return []
+
+    block = _extract_js_object_block(text, provider)
+    if not block:
+        return []
+
+    pattern = re.compile(
+        r'"(?P<id>[^"]+)":\s*{\s*id:\s*"(?P=id)",\s*name:\s*"(?P<name>[^"]+)"',
+        re.DOTALL,
+    )
+    models = [
+        {
+            "id": f"{provider}/{match.group('id')}",
+            "name": match.group("name"),
+            "provider": provider,
+        }
+        for match in pattern.finditer(block)
+    ]
+    _PIAI_PROVIDER_MODEL_CACHE[provider] = (
+        stat.st_mtime,
+        [dict(model) for model in models],
+    )
+    return models
 
 
 def _build_identity_markdown(data: dict[str, Any]) -> str:
@@ -1035,35 +1101,7 @@ class WebChannel(BaseChannel):
             ]
 
             if codex_status.get("configured"):
-                models.extend(
-                    [
-                        {
-                            "id": "openai-codex/gpt-5.3",
-                            "name": "GPT-5.3 (Codex · Free)",
-                            "provider": "openai-codex",
-                        },
-                        {
-                            "id": "openai-codex/gpt-5.2",
-                            "name": "GPT-5.2 (Codex · Free)",
-                            "provider": "openai-codex",
-                        },
-                        {
-                            "id": "openai-codex/gpt-5.4",
-                            "name": "GPT-5.4 (Codex · Pro)",
-                            "provider": "openai-codex",
-                        },
-                        {
-                            "id": "openai-codex/gpt-5.4-mini",
-                            "name": "GPT-5.4 Mini (Codex · Pro)",
-                            "provider": "openai-codex",
-                        },
-                        {
-                            "id": "openai-codex/gpt-5.5",
-                            "name": "GPT-5.5 (Codex · Pro)",
-                            "provider": "openai-codex",
-                        },
-                    ]
-                )
+                models.extend(_load_piai_provider_models("openai-codex"))
 
             from core.llm_utils import (
                 fetch_openai_compatible_models,

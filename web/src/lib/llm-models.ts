@@ -7,7 +7,7 @@ export type LlmModelOption = {
 export const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   gemini: "gemini/gemini-3.1-flash-lite-preview",
   openai: "openai/gpt-4o",
-  "openai-codex": "openai-codex/gpt-5.3",
+  "openai-codex": "openai-codex/gpt-5.4",
   anthropic: "anthropic/claude-3-7-sonnet-20250219",
   xai: "xai/grok-2-1212",
   deepseek: "deepseek/deepseek-v3.2",
@@ -35,10 +35,12 @@ const FEATURED_MODEL_IDS_BY_PROVIDER: Record<string, string[]> = {
   ],
   openai: ["openai/gpt-4o", "openai/gpt-4o-mini"],
   "openai-codex": [
-    "openai-codex/gpt-5.3",
-    "openai-codex/gpt-5.2",
     "openai-codex/gpt-5.4",
     "openai-codex/gpt-5.4-mini",
+    "openai-codex/gpt-5.3-codex",
+    "openai-codex/gpt-5.2-codex",
+    "openai-codex/gpt-5.1",
+    "openai-codex/gpt-5.1-codex-mini",
   ],
   anthropic: [
     "anthropic/claude-3-7-sonnet-20250219",
