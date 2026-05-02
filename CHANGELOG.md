@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.9 - 2026-05-02
+### Added
+- OpenAI Codex integration with OAuth flow and configuration UI.
+- Automatic LLM fallback mechanism (downgrades from Pro models to Free models if necessary).
+- Operator dashboards for observability with Task and Delivery queue trackers.
+
+### Fixed
+- Fixed API controllers throwing attribute errors related to task queues.
+
 ## 1.0.8 - 2026-03-31
 ### Added
 - Lightweight subagent system with built-in specialist profiles such as reviewer, verifier, and explorer.
