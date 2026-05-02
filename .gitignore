@@ -93,9 +93,6 @@ server_diagnostics/
 
 data/vectors/
 temp/
-jira/
-mysql_query/
-vendor_management/
 limebot.json
 
 # Local integrations and generated state
