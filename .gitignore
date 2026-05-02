@@ -6,12 +6,8 @@ Desktop.ini
 
 # Python
 __pycache__/
-**/__pycache__/
 *.py[cod]
 *$py.class
-*.pyc
-*.pyo
-*.pyd
 *.so
 .Python
 build/
@@ -42,7 +38,6 @@ venv.bak/
 
 # Node.js / Web
 node_modules/
-**/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -90,13 +85,9 @@ persona/USER.md
 # Logs
 /logs/
 *.log
-**/discord.log
-**/limebot.log
 
 # Sensitive Data
 data/*.json
-data/contacts.json
-data/cron.json
 contacts.json
 server_diagnostics/
 
@@ -107,29 +98,9 @@ mysql_query/
 vendor_management/
 limebot.json
 
-# ClawHub Integration
-skills/clawhub/.clawhub/lock.json
-skills/clawhub/installed/*
-!skills/clawhub/installed/.gitkeep
+# Local integrations and generated state
 RELATIONSHIPS.md
-allowed_paths.txt
-skills/discord-voice/*
-skills/github/*
-skills/discord_bot_bridge/*
-skills/youtube_downloader/*
-bin/sync-to-limebot-os.local.ps1
 data/.backend_port
-skills/discord_voice_note/*
-tests/test_discord_voice_note.py
-tests/test_discord_voice_note_skill.py
-tests/test_discord_file_delivery.py
-tests/test_tool_failure_handling.py
-skills/gworkspace_cli/*
-skills/gworkspace_cli/token.pickle
-skills/daily_briefing/*
 temp_tasks.json
-skills/linkedin_scout/*
-allowed_paths.txt
-tests/test_x_quick_post_cli.py
-data/cron_runs/*
 data/cron_runs
+allowed_paths.txt

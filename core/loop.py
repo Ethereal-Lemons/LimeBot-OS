@@ -191,6 +191,9 @@ class AgentLoop:
             "search_files": self.toolbox.search_files,
             "run_command": self.toolbox.run_command,
             "memory_search": self.toolbox.memory_search,
+            "send_media": self.toolbox.send_media,
+            "send_discord_embed": self.toolbox.send_discord_embed,
+            "list_discord_channels": self.toolbox.list_discord_channels,
             "cron_add": self.toolbox.cron_add,
             "cron_list": self.toolbox.cron_list,
             "cron_remove": self.toolbox.cron_remove,
@@ -2603,6 +2606,8 @@ class AgentLoop:
                 tool_context.set(
                     {
                         "tc_id": tc_id,
+                        "channel": msg.channel if msg else "system",
+                        "sender_id": msg.sender_id if msg else "system",
                         "chat_id": msg.chat_id if msg else "system",
                         "turn_id": turn_id or "",
                         "message_id": message_id or "",
@@ -2923,6 +2928,8 @@ class AgentLoop:
             "google_search": "query",
             "browser_navigate": "url",
             "spawn_agent": "task",
+            "send_media": "path",
+            "send_discord_embed": "description",
             "cron_remove": "job_id",
             "save_memory": "content",
             "log_memory": "content",
@@ -3157,7 +3164,7 @@ class AgentLoop:
             bare_call_pattern = re.compile(
                 r"\b(?:list_dir|read_file|write_file|delete_file|search_files|"
                 r"run_command|memory_search|google_search|browser_navigate|"
-                r"spawn_agent|cron_remove|save_memory|log_memory|ls|dir|cat|"
+                r"spawn_agent|send_media|send_discord_embed|list_discord_channels|cron_remove|save_memory|log_memory|ls|dir|cat|"
                 r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|"
                 r"powershell|cmd)\s*\([^)]*\)"
             )
@@ -3218,7 +3225,7 @@ class AgentLoop:
         marker_positions = []
         legacy_tag_pattern = (
             r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|"
-            r"memory_search|google_search|browser_navigate|spawn_agent|"
+            r"memory_search|google_search|browser_navigate|spawn_agent|send_media|send_discord_embed|list_discord_channels|"
             r"save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|"
             r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>"
         )
@@ -3683,7 +3690,7 @@ class AgentLoop:
                     clean_content,
                 ).strip()
                 clean_content = re.sub(
-                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
                     "",
                     clean_content,
                     flags=re.DOTALL | re.IGNORECASE,

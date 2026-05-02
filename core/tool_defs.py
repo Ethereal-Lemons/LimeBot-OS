@@ -235,6 +235,75 @@ BASE_TOOLS = [
         },
         "required": ["name", "description"],
     },
+    {
+        "name": "send_media",
+        "description": "Send a local file or image back into the current Discord or WhatsApp conversation. Use this when the user wants you to share an existing local asset in the same chat. Only works for Discord and WhatsApp sessions, not the web dashboard.",
+        "params": {
+            "path": {
+                "type": "string",
+                "description": "Relative or absolute path to the local file to send.",
+            },
+            "caption": {
+                "type": "string",
+                "description": "Optional caption to send alongside the file.",
+            },
+        },
+        "required": ["path"],
+    },
+    {
+        "name": "send_discord_embed",
+        "description": "Send a native Discord embed. Use this for structured Discord output instead of faking an embed with plain text. Defaults to the current Discord chat when used from Discord; otherwise pass channel_id explicitly.",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Optional embed title.",
+            },
+            "description": {
+                "type": "string",
+                "description": "Optional embed description.",
+            },
+            "color": {
+                "type": "string",
+                "description": "Optional hex color like #5865F2.",
+            },
+            "footer": {
+                "type": "string",
+                "description": "Optional footer text.",
+            },
+            "image": {
+                "type": "string",
+                "description": "Optional image URL.",
+            },
+            "thumbnail": {
+                "type": "string",
+                "description": "Optional thumbnail URL.",
+            },
+            "fields": {
+                "type": "array",
+                "description": "Optional embed fields.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "value": {"type": "string"},
+                        "inline": {"type": "boolean"},
+                    },
+                    "required": ["name", "value"],
+                },
+            },
+            "channel_id": {
+                "type": "string",
+                "description": "Optional numeric Discord channel ID. Required outside Discord chats.",
+            },
+        },
+        "required": [],
+    },
+    {
+        "name": "list_discord_channels",
+        "description": "List the Discord guilds and text channels LimeBot can currently access. Use this to discover channel IDs before sending to a specific Discord channel.",
+        "params": {},
+        "required": [],
+    },
 ]
 
 

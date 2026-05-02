@@ -225,6 +225,7 @@ async def main():
         scheduler=scheduler,
         session_manager=session_manager,
     )
+    agent.toolbox.set_channels(channels)
     from core import prompt as prompt_module
 
     if prompt_module.is_setup_complete():
