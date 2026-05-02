@@ -1,6 +1,7 @@
 import unittest
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 
 class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
@@ -204,3 +205,163 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
             tmp_file.unlink(missing_ok=True)
 
         self.assertIn("No extractable text found in PDF.", str(result))
+
+    async def test_tool_call_send_media_uses_current_chat_context(self):
+        from core.bus import MessageBus
+        from core.context import tool_context
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
+        bus = MessageBus()
+        sent = []
+
+        async def _capture(msg):
+            sent.append(msg)
+
+        bus.publish_outbound = _capture
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
+
+        tmp_dir = Path("temp")
+        tmp_dir.mkdir(exist_ok=True)
+        tmp_file = tmp_dir / "send_media_test.txt"
+        tmp_file.write_text("share me", encoding="utf-8")
+
+        token = tool_context.set(
+            {
+                "channel": "discord",
+                "chat_id": "12345",
+                "sender_id": "user-1",
+            }
+        )
+        try:
+            result = await toolbox.send_media(str(tmp_file), "Here you go")
+        finally:
+            tool_context.reset(token)
+            tmp_file.unlink(missing_ok=True)
+
+        self.assertIn("Sent 'temp", result)
+        self.assertEqual(len(sent), 1)
+        outbound = sent[0]
+        self.assertEqual(outbound.channel, "discord")
+        self.assertEqual(outbound.chat_id, "12345")
+        self.assertEqual(outbound.metadata["type"], "file")
+        self.assertEqual(outbound.metadata["caption"], "Here you go")
+
+    async def test_tool_call_send_media_blocks_persona_files(self):
+        from core.bus import MessageBus
+        from core.context import tool_context
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
+        bus = MessageBus()
+        sent = []
+
+        async def _capture(msg):
+            sent.append(msg)
+
+        bus.publish_outbound = _capture
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
+
+        persona_dir = Path("persona")
+        persona_dir.mkdir(exist_ok=True)
+        tmp_file = persona_dir / "blocked_share.txt"
+        tmp_file.write_text("nope", encoding="utf-8")
+
+        token = tool_context.set(
+            {
+                "channel": "whatsapp",
+                "chat_id": "123@s.whatsapp.net",
+                "sender_id": "user-1",
+            }
+        )
+        try:
+            result = await toolbox.send_media(str(tmp_file))
+        finally:
+            tool_context.reset(token)
+            tmp_file.unlink(missing_ok=True)
+
+        self.assertIn("Blocked files inside the persona directory", result)
+        self.assertEqual(sent, [])
+
+    async def test_tool_call_send_discord_embed_uses_current_chat(self):
+        from core.bus import MessageBus
+        from core.context import tool_context
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
+        bus = MessageBus()
+        sent = []
+
+        async def _capture(msg):
+            sent.append(msg)
+
+        bus.publish_outbound = _capture
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
+
+        token = tool_context.set(
+            {
+                "channel": "discord",
+                "chat_id": "777",
+                "sender_id": "user-1",
+            }
+        )
+        try:
+            result = await toolbox.send_discord_embed(
+                title="Build",
+                description="Passed",
+                color="#00FF00",
+                fields=[{"name": "Status", "value": "Green", "inline": True}],
+            )
+        finally:
+            tool_context.reset(token)
+
+        self.assertEqual(result, "Sent native Discord embed to channel 777.")
+        self.assertEqual(len(sent), 1)
+        outbound = sent[0]
+        self.assertEqual(outbound.channel, "discord")
+        self.assertEqual(outbound.chat_id, "777")
+        self.assertEqual(outbound.metadata["embed"]["title"], "Build")
+        self.assertEqual(outbound.metadata["embed"]["fields"][0]["name"], "Status")
+
+    async def test_tool_call_list_discord_channels_reads_live_client(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        class _DummyTextChannel:
+            def __init__(self, cid: str, name: str):
+                self.id = int(cid)
+                self.name = name
+                self.type = "text"
+
+        class _DummyVoiceChannel:
+            def __init__(self, cid: str, name: str):
+                self.id = int(cid)
+                self.name = name
+                self.type = "voice"
+
+        class _DummyGuild:
+            def __init__(self):
+                self.id = 1
+                self.name = "Main"
+                self.channels = [
+                    _DummyTextChannel("11", "general"),
+                    _DummyVoiceChannel("12", "voice"),
+                ]
+
+        discord_channel = SimpleNamespace(
+            name="discord",
+            client=SimpleNamespace(
+                is_ready=lambda: True,
+                guilds=[_DummyGuild()],
+            ),
+        )
+
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=MessageBus(), config=config)
+        toolbox.set_channels([discord_channel])
+
+        result = await toolbox.list_discord_channels()
+
+        self.assertIn('"name": "Main"', result)
+        self.assertIn('"name": "general"', result)
+        self.assertNotIn('"name": "voice"', result)

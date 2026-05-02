@@ -2,15 +2,13 @@
   "skills": {
     "enabled": [
       "browser",
+      "browser-harness",
       "download_image",
       "filesystem",
       "discord",
-      "whatsapp",
       "docx-creator",
       "github",
-      "scrapling",
-      "discord_voice_note",
-      "gworkspace_cli"
+      "scrapling"
     ],
     "installed": {}
   }

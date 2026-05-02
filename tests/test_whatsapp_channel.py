@@ -71,3 +71,38 @@ async def test_send_file_success(tmp_path):
     assert payload["to"] == "123@s.whatsapp.net"
     assert payload["filePath"] == str(p.resolve())
     assert payload["caption"] == "caption"
+
+
+@pytest.mark.asyncio
+async def test_send_routes_native_file_message(tmp_path):
+    from channels.whatsapp import WhatsAppChannel
+    from core.bus import MessageBus
+    from core.events import OutboundMessage
+
+    config = SimpleNamespace(bridge_url="ws://localhost:3000", allow_from=[])
+    channel = WhatsAppChannel(config, MessageBus())
+    channel._connected = True
+    channel._ws = FakeWS()
+
+    p = tmp_path / "shared.png"
+    p.write_text("ok", encoding="utf-8")
+
+    await channel.send(
+        OutboundMessage(
+            channel="whatsapp",
+            chat_id="123@s.whatsapp.net",
+            content="",
+            metadata={
+                "type": "file",
+                "file_path": str(p),
+                "caption": "look",
+            },
+        )
+    )
+
+    assert len(channel._ws.sent) == 1
+    payload = json.loads(channel._ws.sent[0])
+    assert payload["type"] == "sendFile"
+    assert payload["to"] == "123@s.whatsapp.net"
+    assert payload["filePath"] == str(p.resolve())
+    assert payload["caption"] == "look"

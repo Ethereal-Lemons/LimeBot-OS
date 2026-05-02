@@ -125,6 +125,21 @@ class WhatsAppChannel(BaseChannel):
                 self._stop_hints_shown.discard(msg.chat_id)
                 return
 
+            if msg_type == "file":
+                sent = await self.send_file(
+                    msg.chat_id,
+                    str(metadata.get("file_path", "")),
+                    metadata.get("caption"),
+                )
+                if sent and metadata.get("cleanup_file"):
+                    try:
+                        Path(str(metadata.get("file_path"))).unlink(missing_ok=True)
+                    except Exception as e:
+                        logger.warning(
+                            f"[WhatsApp] Failed to clean up staged file '{metadata.get('file_path')}': {e}"
+                        )
+                return
+
             if "embed" in metadata:
                 embed = metadata["embed"]
                 parts = []
