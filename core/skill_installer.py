@@ -30,7 +30,6 @@ from typing import Optional
 from loguru import logger
 
 SKILLS_DIR = Path("skills")
-CLAW_SKILLS_DIR = SKILLS_DIR / "clawhub" / "installed"
 CONFIG_FILE = Path("limebot.json")
 
 try:
@@ -578,8 +577,6 @@ print(json.dumps(missing))
         """Enable an installed skill."""
         skill_dir = SKILLS_DIR / skill_name
         if not skill_dir.exists():
-            skill_dir = CLAW_SKILLS_DIR / skill_name
-        if not skill_dir.exists():
             return {
                 "status": "error",
                 "message": f"Skill '{skill_name}' not found.",
@@ -621,9 +618,6 @@ print(json.dumps(missing))
             # Single skill
             skill_dir = SKILLS_DIR / skill_name
             if not skill_dir.exists():
-                # Check clawhub
-                skill_dir = CLAW_SKILLS_DIR / skill_name
-            if not skill_dir.exists():
                 return {
                     "status": "error",
                     "message": f"Skill '{skill_name}' not found.",
@@ -657,8 +651,6 @@ print(json.dumps(missing))
 
             for name in enabled:
                 skill_dir = SKILLS_DIR / name
-                if not skill_dir.exists():
-                    skill_dir = CLAW_SKILLS_DIR / name
                 if skill_dir.exists():
                     all_dirs.append((name, skill_dir))
 
@@ -706,10 +698,6 @@ print(json.dumps(missing))
                 if not folder.is_dir() or folder.name.startswith(("__", ".")):
                     continue
 
-                # Skip the clawhub directory itself as it's a manager
-                if folder.name == "clawhub":
-                    continue
-
                 skill_md = folder / "SKILL.md"
                 # If SKILL.md is missing, we assume it's a core skill like 'browser' if it has python files
                 # or just use folder name as description
@@ -737,38 +725,6 @@ print(json.dumps(missing))
                         "version": version,
                         "description": meta.get("description", "Core LimeBot Skill"),
                         "repo": repo,
-                        "deps_ok": deps_ok,
-                        "missing_deps": missing_deps,
-                        "required_deps": required_deps,
-                    }
-                )
-
-        # List ClawHub Skills
-        if CLAW_SKILLS_DIR.exists():
-            for folder in sorted(CLAW_SKILLS_DIR.iterdir()):
-                if not folder.is_dir() or folder.name.startswith(("__", ".")):
-                    continue
-
-                skill_md = folder / "SKILL.md"
-                meta = self._read_metadata(skill_md)
-                name = folder.name
-
-                is_enabled = name in enabled
-                deps_ok, missing_deps, required_deps = self._evaluate_skill_deps(
-                    folder, meta
-                )
-
-                skills.append(
-                    {
-                        "name": name,
-                        "id": name,
-                        "type": "clawhub",
-                        "source": "clawhub",
-                        "enabled": is_enabled,
-                        "active": is_enabled and deps_ok,
-                        "version": meta.get("version", "1.0.0"),
-                        "description": meta.get("description", "ClawHub Skill"),
-                        "repo": "",  # Managed by clawhub CLI
                         "deps_ok": deps_ok,
                         "missing_deps": missing_deps,
                         "required_deps": required_deps,

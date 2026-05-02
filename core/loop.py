@@ -2315,15 +2315,7 @@ class AgentLoop:
                         logger.error(f"Error in echo→log_memory redirect: {e}")
 
         try:
-            if function_name.startswith("clawhub_"):
-                skill_slug = function_name[len("clawhub_") :]
-                # We need to map back to the original folder name if it was slugified.
-                # For now assume the folder name is the slug retrieved from parser.get_installed_skills()
-                args = function_args.get("args", "")
-                from skills.clawhub.parser import run_skill
-
-                result = await asyncio.to_thread(run_skill, skill_slug, args)
-            elif function_name == "spawn_agent":
+            if function_name == "spawn_agent":
                 result = await self.toolbox.spawn_agent(
                     session_key=session_key, **function_args
                 )

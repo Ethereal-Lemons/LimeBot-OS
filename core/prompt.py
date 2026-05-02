@@ -646,10 +646,6 @@ def build_stable_system_prompt(
         f"{allowed_paths_str}\n"
         f"Do not refuse requests to read/list files in these paths on the basis of permissions. "
         f"Use the `list_dir` and `read_file` tools to fulfill such requests.\n"
-        f"\n--- CLAWHUB SKILLS ---\n"
-        f"Tools starting with 'clawhub_' are dynamic skills from the ClawHub registry. "
-        f"They take a single 'args' parameter which is a string or JSON passed to the skill's CLI. "
-        f"Use them as needed for specialized tasks (weather, scraping, etc.).\n"
     )
 
     # Read user file once — reused for both adaptive behavior and user context.

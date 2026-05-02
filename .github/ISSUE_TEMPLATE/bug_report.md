@@ -31,7 +31,7 @@ A clear and concise description of what you expected to happen.
 Did you check the `logs/` directory? If there are relevant error logs, please paste them here (carefully removing any private keys or tokens).
 
 **Is this related to a specific Skill?**
-If so, please specify the skill name (e.g. `browser`, `clawhub_weather`).
+If so, please specify the skill name (e.g. `browser`, `download_image`).
 
 **Additional context**
 Add any other context about the problem here.
