@@ -131,24 +131,8 @@ Skills extend what LimeBot can do. Each skill is a folder with a `SKILL.md` (the
 | `browser` | Full Playwright web browsing  navigate, click, type, search, extract |
 | `download_image` | Download high-res images from Pinterest, Reddit, Wikimedia, or direct URLs |
 | `filesystem` | Extended file operations beyond the core toolbox |
-| `discord` | Send messages and embeds to any Discord channel by ID |
-| `whatsapp` | Send files and media to WhatsApp conversations |
+| `discord` | Optional higher-level Discord administration helpers |
 | `docx-creator` | Generate formatted Microsoft Word `.docx` documents |
-
-**ClawHub Skills:**
-
-LimeBot supports installing skills from the [ClawHub](https://github.com/openclaw/clawhub) registry. These are community-built tools that LimeBot can call as `clawhub_<skill_name>`.
-
-| Skill | What it does |
-|-------|-------------|
-| `clawhub_weather` | Get current weather and forecasts for any location (no API key required) |
-
-**Install a ClawHub skill:**
-```bash
-npx clawhub install <skill-name> --workdir ./skills/clawhub --dir installed
-```
-
-Installed skills appear in `skills/clawhub/installed/` and are automatically available as tools. Enable or disable them from the **Skills** tab in the web dashboard.
 
 **Install community skills from GitHub:**
 ```bash
