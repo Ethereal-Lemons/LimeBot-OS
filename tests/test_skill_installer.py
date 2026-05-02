@@ -30,17 +30,14 @@ class TestSkillInstaller(unittest.TestCase):
             )
 
             original_skills_dir = installer_module.SKILLS_DIR
-            original_claw_dir = installer_module.CLAW_SKILLS_DIR
             original_config = installer_module.CONFIG_FILE
             installer_module.SKILLS_DIR = skills_dir
-            installer_module.CLAW_SKILLS_DIR = skills_dir / "clawhub" / "installed"
             installer_module.CONFIG_FILE = config_file
             try:
                 installer = installer_module.SkillInstaller()
                 result = installer.enable("missing_dep_skill")
             finally:
                 installer_module.SKILLS_DIR = original_skills_dir
-                installer_module.CLAW_SKILLS_DIR = original_claw_dir
                 installer_module.CONFIG_FILE = original_config
 
             self.assertEqual(result["status"], "error")
@@ -74,17 +71,14 @@ class TestSkillInstaller(unittest.TestCase):
             )
 
             original_skills_dir = installer_module.SKILLS_DIR
-            original_claw_dir = installer_module.CLAW_SKILLS_DIR
             original_config = installer_module.CONFIG_FILE
             installer_module.SKILLS_DIR = skills_dir
-            installer_module.CLAW_SKILLS_DIR = skills_dir / "clawhub" / "installed"
             installer_module.CONFIG_FILE = config_file
             try:
                 installer = installer_module.SkillInstaller()
                 result = installer.list_skills()
             finally:
                 installer_module.SKILLS_DIR = original_skills_dir
-                installer_module.CLAW_SKILLS_DIR = original_claw_dir
                 installer_module.CONFIG_FILE = original_config
 
             skill = next(item for item in result["skills"] if item["id"] == "missing_dep_skill")

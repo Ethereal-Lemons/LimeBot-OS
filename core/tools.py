@@ -116,19 +116,6 @@ class Toolbox:
             return None
 
         name = match.group("name")
-        if name == "clawhub":
-            match = re.search(
-                r"skills[\\/]clawhub[\\/]installed[\\/](?P<name>[^\\/\\s]+)",
-                command,
-            )
-            if not match:
-                return None
-            name = match.group("name")
-            return {
-                "name": name,
-                "path": Path("skills") / "clawhub" / "installed" / name,
-            }
-
         return {"name": name, "path": Path("skills") / name}
 
     @staticmethod
@@ -311,17 +298,6 @@ class Toolbox:
         tools = build_tool_definitions(
             enabled_skills, available_agents=available_agents
         )
-
-        # Load ClawHub tools dynamically
-        try:
-            from skills.clawhub.parser import get_all_gemini_tools
-
-            claw_tools = get_all_gemini_tools()
-            for ct in claw_tools:
-                tools.append({"type": "function", "function": ct})
-                logger.debug(f"Registered ClawHub tool: {ct['name']}")
-        except Exception as e:
-            logger.warning(f"Failed to load ClawHub tools: {e}")
 
         # Load MCP tools dynamically
         try:

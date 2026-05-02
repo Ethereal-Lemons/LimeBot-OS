@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from "@/lib/api";
-import { Search, Zap, CheckCircle2, AlertCircle, Box, Layers } from 'lucide-react';
+import { Search, Zap, CheckCircle2, AlertCircle, Box } from 'lucide-react';
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -16,7 +16,6 @@ interface Skill {
     path: string;
     enabled: boolean;
     active: boolean;
-    type?: "limebot" | "clawhub";
     deps_ok?: boolean;
     missing_deps?: {
         python?: string[];
@@ -108,9 +107,6 @@ export function SkillsPage() {
         skill.description.toLowerCase().includes(search.toLowerCase())
     );
 
-    const limebotSkills = filteredSkills.filter(s => s.type !== "clawhub");
-    const clawhubSkills = filteredSkills.filter(s => s.type === "clawhub");
-
     const formatMissingDeps = (skill: Skill) => {
         const missing = skill.missing_deps || {};
         const python = missing.python || [];
@@ -151,19 +147,14 @@ export function SkillsPage() {
                     <div className="flex items-center gap-3">
                         <div className={`p-2 rounded-lg transition-colors ${
                             skill.active 
-                                ? (skill.type === 'clawhub' ? 'bg-purple-500/10 text-purple-500' : 'bg-primary/10 text-primary')
+                                ? 'bg-primary/10 text-primary'
                                 : 'bg-muted text-muted-foreground'
                         }`}>
-                            {skill.type === 'clawhub' ? <Layers className="h-5 w-5" /> : <Zap className="h-5 w-5" />}
+                            <Zap className="h-5 w-5" />
                         </div>
                         <div>
                             <CardTitle className="text-base flex items-center gap-2">
                                 {skill.name}
-                                {skill.type === 'clawhub' && (
-                                    <Badge variant="secondary" className="text-[10px] h-5 bg-purple-500/10 text-purple-500 hover:bg-purple-500/20 border-purple-500/20">
-                                        CLAW
-                                    </Badge>
-                                )}
                                 {missingDeps && (
                                     <Badge
                                         variant="destructive"
@@ -212,10 +203,10 @@ export function SkillsPage() {
                 )}
                 <div className="mt-4 pt-4 border-t border-border flex items-center justify-between text-xs text-muted-foreground font-mono">
                     <span className="truncate max-w-[150px] opacity-70">
-                        {skill.type === 'clawhub' ? 'clawhub/' : 'skills/'}{skill.id}
+                        skills/{skill.id}
                     </span>
                     {isRunnable ? (
-                        <span className={`flex items-center gap-1 ${skill.type === 'clawhub' ? 'text-purple-500' : 'text-primary'}`}>
+                        <span className="flex items-center gap-1 text-primary">
                             <CheckCircle2 className="h-3 w-3" /> Enabled
                         </span>
                     ) : isConfigured ? (
@@ -265,32 +256,15 @@ export function SkillsPage() {
                     </div>
                 ) : (
                     <div className="space-y-10">
-                        {/* LimeBot Core Skills Section */}
-                        {limebotSkills.length > 0 && (
+                        {filteredSkills.length > 0 && (
                             <div className="space-y-4">
                                 <div className="flex items-center gap-2 pb-2 border-b border-border/50">
                                     <Zap className="h-5 w-5 text-primary" />
-                                    <h2 className="text-lg font-semibold">Core Skills</h2>
-                                    <Badge variant="outline" className="ml-2">{limebotSkills.length}</Badge>
+                                    <h2 className="text-lg font-semibold">Skills</h2>
+                                    <Badge variant="outline" className="ml-2">{filteredSkills.length}</Badge>
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                    {limebotSkills.map(skill => (
-                                        <SkillCard key={skill.id} skill={skill} />
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        {/* ClawHub Extensions Section */}
-                        {clawhubSkills.length > 0 && (
-                            <div className="space-y-4">
-                                <div className="flex items-center gap-2 pb-2 border-b border-border/50">
-                                    <Layers className="h-5 w-5 text-purple-500" />
-                                    <h2 className="text-lg font-semibold">ClawHub Extensions</h2>
-                                    <Badge variant="outline" className="ml-2 border-purple-500/20 text-purple-500">{clawhubSkills.length}</Badge>
-                                </div>
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                    {clawhubSkills.map(skill => (
+                                    {filteredSkills.map(skill => (
                                         <SkillCard key={skill.id} skill={skill} />
                                     ))}
                                 </div>
