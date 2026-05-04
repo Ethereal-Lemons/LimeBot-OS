@@ -64,3 +64,61 @@ class TestDedupWindow(unittest.IsolatedAsyncioTestCase):
             "Same message after 2s should be processed again.",
         )
 
+    async def test_identical_message_from_different_sender_is_not_deduped(self):
+        try:
+            import loguru  # noqa: F401
+        except Exception:
+            raise unittest.SkipTest("Missing dependencies (loguru).")
+
+        from core.bus import MessageBus
+        from core.events import InboundMessage
+        from core.loop import AgentLoop
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+            async def _llm_call_with_retry(self, *args, **kwargs):
+                return None
+
+            async def _consume_stream(self, *args, **kwargs):
+                return ("ok", [], {"total_tokens": 2})
+
+            async def _build_full_system_prompt(self, *args, **kwargs):
+                return "SYSTEM: TEST"
+
+            async def _trim_history(self, *args, **kwargs):
+                return
+
+        bus = MessageBus()
+        agent = _TestAgentLoop(bus=bus)
+        chat_id = f"dedup_{uuid.uuid4().hex[:10]}"
+
+        first = InboundMessage(
+            channel="discord",
+            sender_id="user-a",
+            chat_id=chat_id,
+            content="una big mac o un burrito, elige 1",
+            metadata={"mentioned": True, "message_id": "111"},
+        )
+        second = InboundMessage(
+            channel="discord",
+            sender_id="user-b",
+            chat_id=chat_id,
+            content="una big mac o un burrito, elige 1",
+            metadata={"mentioned": True, "message_id": "222"},
+        )
+
+        await agent._process_message(first)
+        first_len = len(agent.history[first.session_key])
+
+        await agent._process_message(second)
+        second_len = len(agent.history[first.session_key])
+
+        self.assertGreater(
+            second_len,
+            first_len,
+            "Same content from a different sender should still be processed.",
+        )
+

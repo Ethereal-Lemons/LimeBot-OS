@@ -3897,7 +3897,19 @@ class AgentLoop:
                 normalized.startswith(k + " ") for k in _DENY_WORDS
             )
 
-            msg_hash = hash(msg.content) if msg.content else None
+            dedup_source = None
+            if msg.content:
+                message_id = (
+                    str(msg.metadata.get("message_id") or "").strip()
+                    if msg.metadata
+                    else ""
+                )
+                if message_id:
+                    dedup_source = f"message:{message_id}"
+                else:
+                    dedup_source = f"sender:{msg.sender_id}\ncontent:{msg.content}"
+
+            msg_hash = hash(dedup_source) if dedup_source else None
             if msg_hash is not None and not is_stop_request:
                 now_ts = asyncio.get_running_loop().time()
                 last_seen = self._last_msg_hash.get(session_key)
