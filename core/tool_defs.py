@@ -186,9 +186,17 @@ BASE_TOOLS = [
                 "type": "string",
                 "description": "Cron expression for repeating jobs, e.g. '0 9 * * 1-5' for weekdays at 9 AM.",
             },
+            "tz": {
+                "type": "string",
+                "description": "Optional IANA timezone for cron_expr schedules, e.g. 'America/El_Salvador'.",
+            },
             "message": {
                 "type": "string",
                 "description": "The reminder message or task description.",
+            },
+            "name": {
+                "type": "string",
+                "description": "Optional short human-readable job name, e.g. 'Daily finance brief'.",
             },
             "context": {
                 "type": "object",

@@ -1494,6 +1494,8 @@ class Toolbox:
         context: Dict[str, Any],
         time_expr: str = None,
         cron_expr: str = None,
+        tz: str = None,
+        name: str = None,
     ) -> str:
         """Add a scheduled task."""
         if not self.scheduler:
@@ -1521,6 +1523,8 @@ class Toolbox:
                 message=message,
                 context=context,
                 cron_expr=cron_expr,
+                tz=tz,
+                name=name,
             )
             return f"Success: Scheduled job {job_id}"
         except Exception as e:
@@ -1544,8 +1548,19 @@ class Toolbox:
                 )
                 recur = f" (RECURS: {j['cron_expr']})" if j.get("cron_expr") else ""
                 status = "PAUSED" if j.get("active") is False else "ACTIVE"
+                state = j.get("state") or {}
+                last_status = state.get("lastStatus") or state.get("last_status")
+                duration = state.get("lastDurationMs") or state.get("last_duration_ms")
+                name = j.get("name") or j["id"]
+                state_bits = []
+                if last_status:
+                    state_bits.append(f"last={last_status}")
+                if duration is not None:
+                    state_bits.append(f"{duration}ms")
+                state_suffix = f" [{' '.join(state_bits)}]" if state_bits else ""
                 res.append(
-                    f" - [{j['id']}] [{status}] {trigger_str}{recur}: {j['payload']}"
+                    f" - [{j['id']}] [{status}] {name}: {trigger_str}{recur}{state_suffix}\n"
+                    f"   {j['payload']}"
                 )
             return "\n".join(res)
         except Exception as e:

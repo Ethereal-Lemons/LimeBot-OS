@@ -87,8 +87,11 @@ class TestScheduler(unittest.IsolatedAsyncioTestCase):
             def __init__(self, bus, data_file):
                 self.bus = bus
                 self.jobs = []
+                self.job_state = {}
                 self._running = False
                 self.data_file = data_file
+                self.state_file = data_file.with_name("cron_state.json")
+                self.runs_dir = data_file.parent / "cron_runs"
                 self.lock = asyncio.Lock()
 
         bus = _TestBus()
@@ -127,6 +130,15 @@ class TestScheduler(unittest.IsolatedAsyncioTestCase):
             time.time(),
             "Recurring jobs should be rescheduled to a future trigger.",
         )
+        self.assertEqual(scheduler.job_state["recent123"]["lastStatus"], "ok")
+        self.assertIn("lastDurationMs", scheduler.job_state["recent123"])
+        self.assertGreater(scheduler.job_state["recent123"]["nextRunAtMs"], int(time.time() * 1000))
+
+        run_file = scheduler.runs_dir / "recent123.jsonl"
+        self.assertTrue(run_file.exists())
+        run_log = run_file.read_text(encoding="utf-8")
+        self.assertIn('"type": "job_finished"', run_log)
+        self.assertIn('"durationMs"', run_log)
 
     async def test_inactive_job_does_not_execute_until_resumed(self):
         from core.scheduler import CronManager
@@ -199,3 +211,50 @@ class TestScheduler(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(scheduler.jobs), 1)
         self.assertTrue(scheduler.jobs[0]["active"])
+
+    async def test_state_file_is_loaded_and_merged_into_list_jobs(self):
+        from core.scheduler import CronManager
+
+        data_file = self.temp_dir / "cron_state_load.json"
+        state_file = self.temp_dir / "cron_state.json"
+        data_file.write_text(
+            '[{"id":"job1","trigger":4102444800,"cron_expr":null,"tz_offset":null,"payload":"hi","context":{"channel":"web","chat_id":"dashboard"},"created_at":1}]',
+            encoding="utf-8",
+        )
+        state_file.write_text(
+            '{"version":1,"jobs":{"job1":{"lastStatus":"ok","lastDurationMs":42,"nextRunAtMs":4102444800000}}}',
+            encoding="utf-8",
+        )
+
+        scheduler = CronManager(_TestBus())
+        scheduler.data_file = data_file
+        scheduler.state_file = state_file
+        scheduler.jobs = []
+        scheduler._load_jobs()
+        scheduler._load_state()
+
+        jobs = await scheduler.list_jobs()
+        self.assertEqual(jobs[0]["state"]["lastStatus"], "ok")
+        self.assertEqual(jobs[0]["state"]["lastDurationMs"], 42)
+
+    async def test_add_job_accepts_name_and_timezone(self):
+        from core.scheduler import CronManager
+
+        scheduler = CronManager(_TestBus())
+        scheduler.data_file = self.temp_dir / "cron_named.json"
+        scheduler.state_file = self.temp_dir / "cron_state_named.json"
+        scheduler.jobs = []
+
+        job_id = await scheduler.add_job(
+            trigger_time=None,
+            message="daily thing",
+            context={"channel": "web", "chat_id": "dashboard", "sender_id": "tester"},
+            cron_expr="0 9 * * *",
+            tz="America/El_Salvador",
+            name="Daily thing",
+        )
+
+        self.assertEqual(scheduler.jobs[0]["id"], job_id)
+        self.assertEqual(scheduler.jobs[0]["name"], "Daily thing")
+        self.assertEqual(scheduler.jobs[0]["tz"], "America/El_Salvador")
+        self.assertGreater(scheduler.jobs[0]["trigger"], time.time())

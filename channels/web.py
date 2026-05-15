@@ -2342,6 +2342,8 @@ class WebChannel(BaseChannel):
                     context,
                     cron_expr=cron_expr,
                     tz_offset=data.get("tz_offset"),
+                    tz=data.get("tz"),
+                    name=data.get("name"),
                 )
                 return {
                     "status": "success",
