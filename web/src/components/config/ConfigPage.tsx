@@ -236,6 +236,9 @@ export function ConfigPage() {
     const recommendedDisplayModels = selectedHiddenModel
         ? [selectedHiddenModel, ...recommendedModels]
         : recommendedModels;
+    const additionalDisplayModels = selectedHiddenModel
+        ? additionalModels.filter((model) => model.id !== selectedHiddenModel.id)
+        : additionalModels;
 
     return (
         <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">
@@ -373,12 +376,12 @@ export function ConfigPage() {
                                                                 </SelectGroup>
                                                             </>
                                                         )}
-                                                        {showAllModels && additionalModels.length > 0 && (
+                                                        {showAllModels && additionalDisplayModels.length > 0 && (
                                                             <>
                                                                 <SelectSeparator />
                                                                 <SelectGroup>
                                                                     <SelectLabel>All {PROVIDER_LABELS[selectedProvider] || selectedProvider} Models</SelectLabel>
-                                                                    {additionalModels.map((model) => (
+                                                                    {additionalDisplayModels.map((model) => (
                                                                         <SelectItem key={model.id} value={model.id}>
                                                                             {model.name}
                                                                         </SelectItem>
@@ -392,7 +395,7 @@ export function ConfigPage() {
                                         </Select>
                                     </div>
 
-                                    {selectedProvider !== 'custom' && additionalModels.length > 0 && (
+                                    {selectedProvider !== 'custom' && additionalDisplayModels.length > 0 && (
                                         <div className="flex items-center justify-between text-xs text-muted-foreground">
                                             <span>
                                                 Showing {recommendedDisplayModels.length} recommended model{recommendedDisplayModels.length === 1 ? '' : 's'} first.
@@ -406,7 +409,7 @@ export function ConfigPage() {
                                             >
                                                 {showAllModels
                                                     ? 'Show recommended only'
-                                                    : `Show all ${recommendedDisplayModels.length + additionalModels.length} models`}
+                                                    : `Show all ${recommendedDisplayModels.length + additionalDisplayModels.length} models`}
                                             </Button>
                                         </div>
                                     )}

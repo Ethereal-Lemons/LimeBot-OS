@@ -259,16 +259,17 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
     base_url = default_base_url
     custom_llm_provider = None
     target_model = normalized_model
+    proxy_url = getattr(cfg.llm, "proxy_url", "") if hasattr(cfg, "llm") else ""
 
-    if hasattr(cfg.llm, "proxy_url") and cfg.llm.proxy_url:
-        base_url = cfg.llm.proxy_url
+    if proxy_url:
+        base_url = proxy_url
     
     if normalized_model.startswith("nvidia/"):
         base_url = "https://integrate.api.nvidia.com/v1"
         target_model = normalized_model.removeprefix("nvidia/")
         custom_llm_provider = "nvidia_nim"
     elif normalized_model.startswith("openrouter/"):
-        if not base_url:
+        if not proxy_url:
             base_url = os.getenv("OPENROUTER_BASE_URL") or OPENROUTER_BASE_URL
         target_model = normalized_model.removeprefix("openrouter/")
         custom_llm_provider = "openai"

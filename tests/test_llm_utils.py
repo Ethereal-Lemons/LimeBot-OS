@@ -74,6 +74,31 @@ class TestLlmUtils(unittest.TestCase):
         self.assertEqual(resolved["api_key"], "openrouter-secret")
         self.assertEqual(resolved["custom_llm_provider"], "openai")
 
+    def test_openrouter_gateway_ignores_stale_llm_base_url(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
+        with patch("config.load_config", return_value=cfg), patch.dict(
+            "os.environ",
+            {"OPENROUTER_API_KEY": "openrouter-secret"},
+            clear=False,
+        ):
+            resolved = resolve_provider_config(
+                "openrouter/anthropic/claude-sonnet-4.6",
+                default_base_url="https://api.openai.com/v1",
+            )
+
+        self.assertEqual(resolved["base_url"], "https://openrouter.ai/api/v1")
+
+    def test_openrouter_respects_explicit_proxy_url(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url="http://localhost:8080/v1"))
+        with patch("config.load_config", return_value=cfg), patch.dict(
+            "os.environ",
+            {"OPENROUTER_API_KEY": "openrouter-secret"},
+            clear=False,
+        ):
+            resolved = resolve_provider_config("openrouter/anthropic/claude-sonnet-4.6")
+
+        self.assertEqual(resolved["base_url"], "http://localhost:8080/v1")
+
     def test_build_provider_chain_keeps_order_and_dedupes(self):
         cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
         with patch("config.load_config", return_value=cfg), patch.dict(

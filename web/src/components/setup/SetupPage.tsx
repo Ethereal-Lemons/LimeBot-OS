@@ -82,6 +82,9 @@ export function SetupPage() {
     const recommendedDisplayModels = selectedHiddenModel
         ? [selectedHiddenModel, ...recommendedModels]
         : recommendedModels;
+    const additionalDisplayModels = selectedHiddenModel
+        ? additionalModels.filter((model) => model.id !== selectedHiddenModel.id)
+        : additionalModels;
 
     const getRequiredKeyError = () => {
         if (config.LLM_MODEL.startsWith('openai-codex')) return null; // Codex uses OAuth, managed via CLI
@@ -228,12 +231,12 @@ export function SetupPage() {
                                                 ))}
                                             </SelectGroup>
                                         )}
-                                        {showAllModels && additionalModels.length > 0 && (
+                                        {showAllModels && additionalDisplayModels.length > 0 && (
                                             <>
                                                 <SelectSeparator />
                                                 <SelectGroup>
                                                     <SelectLabel>All {PROVIDER_LABELS[currentProvider]} Models</SelectLabel>
-                                                    {additionalModels.map((model) => (
+                                                    {additionalDisplayModels.map((model) => (
                                                         <SelectItem key={model.id} value={model.id}>
                                                             {model.name}
                                                         </SelectItem>
@@ -241,12 +244,12 @@ export function SetupPage() {
                                                 </SelectGroup>
                                             </>
                                         )}
-                                        {recommendedDisplayModels.length === 0 && (!showAllModels || additionalModels.length === 0) && (
+                                        {recommendedDisplayModels.length === 0 && (!showAllModels || additionalDisplayModels.length === 0) && (
                                             <div className="p-2 text-xs text-muted-foreground">Loading models...</div>
                                         )}
                                     </SelectContent>
                                 </Select>
-                                {additionalModels.length > 0 && (
+                                {additionalDisplayModels.length > 0 && (
                                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                                         <span>
                                             Showing {recommendedDisplayModels.length} recommended model{recommendedDisplayModels.length === 1 ? '' : 's'} first.
@@ -260,7 +263,7 @@ export function SetupPage() {
                                         >
                                             {showAllModels
                                                 ? 'Show recommended only'
-                                                : `Show all ${recommendedDisplayModels.length + additionalModels.length} models`}
+                                                : `Show all ${recommendedDisplayModels.length + additionalDisplayModels.length} models`}
                                         </Button>
                                     </div>
                                 )}
