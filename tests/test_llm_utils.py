@@ -60,6 +60,20 @@ class TestLlmUtils(unittest.TestCase):
         self.assertEqual(resolved["api_key"], "nvidia-secret")
         self.assertEqual(resolved["custom_llm_provider"], "nvidia_nim")
 
+    def test_resolve_provider_config_uses_openrouter_gateway(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
+        with patch("config.load_config", return_value=cfg), patch.dict(
+            "os.environ",
+            {"OPENROUTER_API_KEY": "openrouter-secret"},
+            clear=False,
+        ):
+            resolved = resolve_provider_config("openrouter/anthropic/claude-sonnet-4.6")
+
+        self.assertEqual(resolved["model"], "anthropic/claude-sonnet-4.6")
+        self.assertEqual(resolved["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(resolved["api_key"], "openrouter-secret")
+        self.assertEqual(resolved["custom_llm_provider"], "openai")
+
     def test_build_provider_chain_keeps_order_and_dedupes(self):
         cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
         with patch("config.load_config", return_value=cfg), patch.dict(

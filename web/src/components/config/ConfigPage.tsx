@@ -40,6 +40,7 @@ const SECRET_KEYS = [
     "APP_API_KEY",
     "GEMINI_API_KEY",
     "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
     "XAI_API_KEY",
     "DEEPSEEK_API_KEY",
@@ -85,6 +86,7 @@ export function ConfigPage() {
         return availableModels.filter(model => {
             if (model.provider === 'gemini') return !!secretDrafts.GEMINI_API_KEY || getSecretInfo(secretMeta, 'GEMINI_API_KEY').configured;
             if (model.provider === 'openai') return !!secretDrafts.OPENAI_API_KEY || getSecretInfo(secretMeta, 'OPENAI_API_KEY').configured;
+            if (model.provider === 'openrouter') return !!secretDrafts.OPENROUTER_API_KEY || getSecretInfo(secretMeta, 'OPENROUTER_API_KEY').configured;
             if (model.provider === 'anthropic') return !!secretDrafts.ANTHROPIC_API_KEY || getSecretInfo(secretMeta, 'ANTHROPIC_API_KEY').configured;
             if (model.provider === 'xai') return !!secretDrafts.XAI_API_KEY || getSecretInfo(secretMeta, 'XAI_API_KEY').configured;
             if (model.provider === 'deepseek') return !!secretDrafts.DEEPSEEK_API_KEY || getSecretInfo(secretMeta, 'DEEPSEEK_API_KEY').configured;
@@ -541,6 +543,7 @@ export function ConfigPage() {
                                         {renderSecretInput("GEMINI_API_KEY", "Google Gemini API Key", "sk-...")}
                                     </div>
                                     {renderSecretInput("OPENAI_API_KEY", "OpenAI API Key", "sk-...")}
+                                    {renderSecretInput("OPENROUTER_API_KEY", "OpenRouter API Key", "sk-or-...")}
                                     {renderSecretInput("ANTHROPIC_API_KEY", "Anthropic API Key", "sk-ant-...")}
                                     {renderSecretInput("XAI_API_KEY", "xAI (Grok) API Key", "xai-...")}
                                     {renderSecretInput("DEEPSEEK_API_KEY", "DeepSeek API Key", "sk-...")}

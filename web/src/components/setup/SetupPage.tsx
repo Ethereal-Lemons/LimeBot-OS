@@ -17,6 +17,9 @@ const FALLBACK_MODELS: LlmModelOption[] = [
     { id: 'gemini/gemini-1.5-flash', name: 'Gemini 1.5 Flash', provider: 'gemini' },
     { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'openai' },
     { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai' },
+    { id: 'openrouter/anthropic/claude-sonnet-4.6', name: 'Anthropic Claude Sonnet 4.6', provider: 'openrouter' },
+    { id: 'openrouter/openai/gpt-5.4-pro', name: 'OpenAI GPT-5.4 Pro', provider: 'openrouter' },
+    { id: 'openrouter/google/gemini-3.1-pro-preview', name: 'Google Gemini 3.1 Pro Preview', provider: 'openrouter' },
     { id: 'anthropic/claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet', provider: 'anthropic' },
     { id: 'anthropic/claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'anthropic' },
     { id: 'deepseek/deepseek-chat', name: 'DeepSeek V3', provider: 'deepseek' },
@@ -36,6 +39,7 @@ export function SetupPage() {
     const [config, setConfig] = useState({
         LLM_MODEL: 'gemini/gemini-2.0-flash',
         GEMINI_API_KEY: '',
+        OPENROUTER_API_KEY: '',
         DISCORD_TOKEN: '',
         ENABLE_WHATSAPP: 'false',
         WHATSAPP_BRIDGE_URL: 'ws://localhost:3000',
@@ -81,6 +85,7 @@ export function SetupPage() {
 
     const getRequiredKeyError = () => {
         if (config.LLM_MODEL.startsWith('openai-codex')) return null; // Codex uses OAuth, managed via CLI
+        if (config.LLM_MODEL.startsWith('openrouter') && !(config as any).OPENROUTER_API_KEY) return 'OpenRouter API Key is required.';
         if (config.LLM_MODEL.startsWith('gemini') && !config.GEMINI_API_KEY) return 'Gemini API Key is required.';
         if (config.LLM_MODEL.startsWith('openai') && !(config as any).OPENAI_API_KEY) return 'OpenAI API Key is required.';
         if (config.LLM_MODEL.startsWith('anthropic') && !(config as any).ANTHROPIC_API_KEY) return 'Anthropic API Key is required.';
@@ -190,6 +195,7 @@ export function SetupPage() {
                                         <SelectItem value="gemini">{PROVIDER_LABELS.gemini}</SelectItem>
                                         <SelectItem value="openai">{PROVIDER_LABELS.openai}</SelectItem>
                                         <SelectItem value="openai-codex">{PROVIDER_LABELS["openai-codex"]}</SelectItem>
+                                        <SelectItem value="openrouter">{PROVIDER_LABELS.openrouter}</SelectItem>
                                         <SelectItem value="anthropic">{PROVIDER_LABELS.anthropic}</SelectItem>
                                         <SelectItem value="xai">{PROVIDER_LABELS.xai}</SelectItem>
                                         <SelectItem value="deepseek">{PROVIDER_LABELS.deepseek}</SelectItem>
@@ -292,6 +298,19 @@ export function SetupPage() {
                                             placeholder="sk-..."
                                             value={(config as any).OPENAI_API_KEY || ''}
                                             onChange={(e) => handleChange('OPENAI_API_KEY', e.target.value)}
+                                            className="bg-background/50"
+                                        />
+                                    </div>
+                                )}
+                                {config.LLM_MODEL.startsWith('openrouter') && (
+                                    <div className="space-y-2">
+                                        <Label htmlFor="openrouter_key">OpenRouter API Key</Label>
+                                        <Input
+                                            id="openrouter_key"
+                                            type="password"
+                                            placeholder="sk-or-..."
+                                            value={(config as any).OPENROUTER_API_KEY || ''}
+                                            onChange={(e) => handleChange('OPENROUTER_API_KEY', e.target.value)}
                                             className="bg-background/50"
                                         />
                                     </div>

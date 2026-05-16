@@ -50,6 +50,7 @@ _SECRET_CONFIG_KEYS = frozenset(
         "APP_API_KEY",
         "GEMINI_API_KEY",
         "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
         "ANTHROPIC_API_KEY",
         "XAI_API_KEY",
         "DEEPSEEK_API_KEY",
@@ -1104,8 +1105,32 @@ class WebChannel(BaseChannel):
                 models.extend(_load_piai_provider_models("openai-codex"))
 
             from core.llm_utils import (
+                OPENROUTER_CURATED_MODEL_IDS,
                 fetch_openai_compatible_models,
                 fetch_anthropic_models,
+            )
+
+            def openrouter_display_name(model_id: str) -> str:
+                family, _, model = model_id.partition("/")
+                label = model.replace("-", " ").replace(".", ".").title()
+                provider_label = {
+                    "x-ai": "xAI",
+                    "z-ai": "Z.ai",
+                    "qwen": "Qwen",
+                    "openai": "OpenAI",
+                    "google": "Google",
+                    "meta-llama": "Meta Llama",
+                    "anthropic": "Anthropic",
+                }.get(family, family.replace("-", " ").title())
+                return f"{provider_label} {label}".strip()
+
+            models.extend(
+                {
+                    "id": f"openrouter/{model_id}",
+                    "name": openrouter_display_name(model_id),
+                    "provider": "openrouter",
+                }
+                for model_id in OPENROUTER_CURATED_MODEL_IDS
             )
 
             api_keys = {
@@ -1311,6 +1336,7 @@ class WebChannel(BaseChannel):
                 "APP_API_KEY": _serialize_secret(cfg.whitelist.api_key or ""),
                 "GEMINI_API_KEY": _serialize_secret(os.getenv("GEMINI_API_KEY", "")),
                 "OPENAI_API_KEY": _serialize_secret(os.getenv("OPENAI_API_KEY", "")),
+                "OPENROUTER_API_KEY": _serialize_secret(os.getenv("OPENROUTER_API_KEY", "")),
                 "ANTHROPIC_API_KEY": _serialize_secret(os.getenv("ANTHROPIC_API_KEY", "")),
                 "XAI_API_KEY": _serialize_secret(os.getenv("XAI_API_KEY", "")),
                 "DEEPSEEK_API_KEY": _serialize_secret(os.getenv("DEEPSEEK_API_KEY", "")),

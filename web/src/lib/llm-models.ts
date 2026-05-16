@@ -13,7 +13,49 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   deepseek: "deepseek/deepseek-v3.2",
   qwen: "qwen/qwen-plus",
   nvidia: "nvidia/moonshotai/kimi-k2-instruct",
+  openrouter: "openrouter/anthropic/claude-sonnet-4.5",
 };
+
+export const OPENROUTER_CURATED_MODEL_IDS = [
+  "openrouter/anthropic/claude-haiku-4.5",
+  "openrouter/anthropic/claude-opus-4.6",
+  "openrouter/anthropic/claude-sonnet-4.5",
+  "openrouter/anthropic/claude-sonnet-4.6",
+  "openrouter/deepseek/deepseek-r1",
+  "openrouter/google/gemini-2.5-flash-lite",
+  "openrouter/google/gemini-3-flash-preview",
+  "openrouter/google/gemini-3.1-flash-lite-preview",
+  "openrouter/google/gemini-3.1-pro-preview",
+  "openrouter/inception/mercury-2",
+  "openrouter/meta-llama/llama-3.3-70b-instruct",
+  "openrouter/minimax/minimax-m2.5",
+  "openrouter/mistralai/codestral-2508",
+  "openrouter/mistralai/mistral-7b-instruct-v0.1",
+  "openrouter/mistralai/mistral-large",
+  "openrouter/mistralai/mistral-medium-3.1",
+  "openrouter/mistralai/mistral-small-3.2-24b-instruct-2506",
+  "openrouter/moonshotai/kimi-k2-thinking",
+  "openrouter/openai/gpt-5",
+  "openrouter/openai/gpt-5-mini",
+  "openrouter/openai/gpt-5-nano",
+  "openrouter/openai/gpt-5.1",
+  "openrouter/openai/gpt-5.2",
+  "openrouter/openai/gpt-5.2-pro",
+  "openrouter/openai/gpt-5.3-chat",
+  "openrouter/openai/gpt-5.4-mini",
+  "openrouter/openai/gpt-5.4-nano",
+  "openrouter/openai/gpt-5.4-pro",
+  "openrouter/openai/gpt-oss-120b",
+  "openrouter/perplexity/sonar",
+  "openrouter/perplexity/sonar-pro",
+  "openrouter/qwen/qwen3-235b-a22b",
+  "openrouter/x-ai/grok-3",
+  "openrouter/x-ai/grok-3-mini",
+  "openrouter/x-ai/grok-4",
+  "openrouter/x-ai/grok-4-fast",
+  "openrouter/x-ai/grok-4.1-fast",
+  "openrouter/z-ai/glm-5",
+];
 
 export const PROVIDER_LABELS: Record<string, string> = {
   gemini: "Google Gemini",
@@ -24,6 +66,7 @@ export const PROVIDER_LABELS: Record<string, string> = {
   deepseek: "DeepSeek",
   qwen: "Qwen (DashScope)",
   nvidia: "NVIDIA",
+  openrouter: "OpenRouter",
   custom: "Custom / Local",
 };
 
@@ -56,6 +99,14 @@ const FEATURED_MODEL_IDS_BY_PROVIDER: Record<string, string[]> = {
     "nvidia/qwen/qwen3-next-80b-a3b-instruct",
     "nvidia/deepseek-ai/deepseek-v3.2",
     "nvidia/meta/llama-3.3-70b-instruct",
+  ],
+  openrouter: [
+    "openrouter/openai/gpt-5.4-pro",
+    "openrouter/anthropic/claude-sonnet-4.6",
+    "openrouter/openai/gpt-5.2-pro",
+    "openrouter/google/gemini-3.1-pro-preview",
+    "openrouter/deepseek/deepseek-r1",
+    "openrouter/x-ai/grok-4.1-fast",
   ],
 };
 
