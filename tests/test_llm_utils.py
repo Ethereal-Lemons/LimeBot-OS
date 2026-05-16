@@ -88,6 +88,24 @@ class TestLlmUtils(unittest.TestCase):
 
         self.assertEqual(resolved["base_url"], "https://openrouter.ai/api/v1")
 
+    def test_bare_curated_openrouter_id_routes_through_openrouter(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
+        with patch("config.load_config", return_value=cfg), patch.dict(
+            "os.environ",
+            {
+                "OPENROUTER_API_KEY": "openrouter-secret",
+                "GEMINI_API_KEY": "gemini-secret",
+                "OPENAI_API_KEY": "openai-secret",
+            },
+            clear=False,
+        ):
+            resolved = resolve_provider_config("mistralai/mistral-medium-3.1")
+
+        self.assertEqual(resolved["model"], "mistralai/mistral-medium-3.1")
+        self.assertEqual(resolved["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(resolved["api_key"], "openrouter-secret")
+        self.assertEqual(resolved["custom_llm_provider"], "openai")
+
     def test_openrouter_respects_explicit_proxy_url(self):
         cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url="http://localhost:8080/v1"))
         with patch("config.load_config", return_value=cfg), patch.dict(

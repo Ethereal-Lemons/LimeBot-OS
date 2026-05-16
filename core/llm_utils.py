@@ -52,6 +52,7 @@ OPENROUTER_CURATED_MODEL_IDS = [
     "x-ai/grok-4.1-fast",
     "z-ai/glm-5",
 ]
+OPENROUTER_CURATED_MODEL_ID_SET = frozenset(OPENROUTER_CURATED_MODEL_IDS)
 
 # Compatibility aliases for provider model IDs that were renamed or removed.
 MODEL_ALIASES = {
@@ -193,6 +194,8 @@ def get_api_key_for_model(model: str) -> Optional[str]:
     """
     if not model:
         return None
+    if model in OPENROUTER_CURATED_MODEL_ID_SET:
+        model = f"openrouter/{model}"
 
     if model.startswith("gemini/") or model.startswith("google/"):
         return os.getenv("GEMINI_API_KEY")
@@ -254,6 +257,8 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
     if normalized_model.startswith("moonshotai/"):
         normalized_model = f"moonshot/{normalized_model.removeprefix('moonshotai/')}"
     normalized_model = MODEL_ALIASES.get(normalized_model, normalized_model)
+    if normalized_model in OPENROUTER_CURATED_MODEL_ID_SET:
+        normalized_model = f"openrouter/{normalized_model}"
 
     api_key = get_api_key_for_model(normalized_model)
     base_url = default_base_url
