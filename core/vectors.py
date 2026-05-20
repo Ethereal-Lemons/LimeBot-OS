@@ -132,12 +132,33 @@ class VectorService:
             if val:
                 return val
 
-        # If it's a Gemini or OpenAI provider, we should only return the key if it's the expected one
-        # avoid falling back to unrelated model keys
+        # If it's a Gemini provider, we should only return the key if it's the expected one
         if provider == "gemini" and os.getenv("GEMINI_API_KEY"):
             return os.getenv("GEMINI_API_KEY")
-        if provider == "openai" and os.getenv("OPENAI_API_KEY"):
-            return os.getenv("OPENAI_API_KEY")
+
+        # For OpenAI embeddings, cascade through available key sources:
+        # 1. OPENAI_API_KEY env var (already checked above)
+        # 2. Active config api_key if chat model is openai-codex (uses Codex OAuth)
+        # 3. Direct Codex OAuth token resolution as last resort
+        if provider == "openai":
+            if (
+                cfg
+                and hasattr(cfg, "llm")
+                and hasattr(cfg.llm, "api_key")
+                and cfg.llm.api_key
+                and hasattr(cfg.llm, "model")
+                and str(getattr(cfg.llm, "model", "")).startswith("openai-codex/")
+            ):
+                return cfg.llm.api_key
+            try:
+                from core.oauth_profiles import resolve_codex_oauth_api_key
+
+                return resolve_codex_oauth_api_key()
+            except Exception as e:
+                logger.warning(
+                    f"Codex OAuth fallback for OpenAI embeddings failed: {e}"
+                )
+            return None
 
         # Only fallback if providers are not explicitly restricted
         if provider not in ("gemini", "openai", "nvidia", "qwen"):
@@ -198,6 +219,9 @@ class VectorService:
                 return None
 
             resolved_model = self.LEGACY_MODEL_ALIASES.get(self.model, self.model)
+            # Strip openai-codex/ prefix so litellm routes to the standard OpenAI endpoint
+            if resolved_model.startswith("openai-codex/"):
+                resolved_model = resolved_model.removeprefix("openai-codex/")
 
             kwargs = dict(
                 model=resolved_model,

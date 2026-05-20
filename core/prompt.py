@@ -711,6 +711,8 @@ def build_stable_system_prompt(
 
     # user_text already loaded above
     if user_text:
+        base_prompt += f"\n--- USER PROFILE ({sender_id}) ---\n{user_text}\n"
+
         relationship_ctx = get_relationship_context(sender_id)
         if (
             relationship_ctx

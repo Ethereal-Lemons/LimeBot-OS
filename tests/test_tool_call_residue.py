@@ -99,7 +99,7 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
             content="ok do it",
         )
         result = await self.agent._consume_stream(_stream(), msg, msg.session_key)
-        full_content, tool_calls, _, streamed_to_web = self.agent._unpack_stream_result(
+        full_content, tool_calls, _, streamed_to_web, _ = self.agent._unpack_stream_result(
             result
         )
 
@@ -129,7 +129,7 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
             content="ok do it",
         )
         result = await self.agent._consume_stream(_stream(), msg, msg.session_key)
-        full_content, tool_calls, _, streamed_to_web = self.agent._unpack_stream_result(
+        full_content, tool_calls, _, streamed_to_web, _ = self.agent._unpack_stream_result(
             result
         )
 
@@ -159,7 +159,7 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
             content="ok do it",
         )
         result = await self.agent._consume_stream(_stream(), msg, msg.session_key)
-        full_content, tool_calls, _, streamed_to_web = self.agent._unpack_stream_result(
+        full_content, tool_calls, _, streamed_to_web, _ = self.agent._unpack_stream_result(
             result
         )
 
@@ -182,7 +182,7 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
             content="ok do it",
         )
         result = await self.agent._consume_stream(_stream(), msg, msg.session_key)
-        full_content, tool_calls, _, streamed_to_web = self.agent._unpack_stream_result(
+        full_content, tool_calls, _, streamed_to_web, _ = self.agent._unpack_stream_result(
             result
         )
 
@@ -206,7 +206,7 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
             content="ok do it",
         )
         result = await self.agent._consume_stream(_stream(), msg, msg.session_key)
-        full_content, tool_calls, _, streamed_to_web = self.agent._unpack_stream_result(
+        full_content, tool_calls, _, streamed_to_web, _ = self.agent._unpack_stream_result(
             result
         )
 
@@ -234,7 +234,7 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
             content="ok do it",
         )
         result = await self.agent._consume_stream(_stream(), msg, msg.session_key)
-        full_content, tool_calls, _, streamed_to_web = self.agent._unpack_stream_result(
+        full_content, tool_calls, _, streamed_to_web, _ = self.agent._unpack_stream_result(
             result
         )
 
