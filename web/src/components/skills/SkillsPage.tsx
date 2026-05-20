@@ -90,13 +90,16 @@ export function SkillsPage() {
                 toast.success(`Dependencies installed for ${skill.name}`);
             } else if (status === "partial") {
                 toast.warning(`Some dependencies for ${skill.name} are still missing`);
+            } else if (status === "error") {
+                toast.error(res.data?.message || `Failed to install dependencies for ${skill.name}`);
             } else {
                 throw new Error(res.data?.message || "Failed to install dependencies");
             }
             await loadSkills();
-        } catch (err) {
+        } catch (err: any) {
             console.error("Failed to install skill deps:", err);
-            toast.error(`Failed to install dependencies for ${skill.name}`);
+            const msg = err?.response?.data?.message || err?.message || `Failed to install dependencies for ${skill.name}`;
+            toast.error(msg);
         } finally {
             setInstallingSkillId(null);
         }

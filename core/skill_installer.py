@@ -633,11 +633,38 @@ print(json.dumps(missing))
                     "message": f"Skill '{skill_name}' has no missing dependencies.",
                 }
 
-            print(f"Installing deps for '{skill_name}'...")
+            # If only binary deps are missing, we can't auto-install them
+            has_installable = bool(missing.get("python") or missing.get("node"))
+            missing_bins = missing.get("binaries", [])
+            if missing_bins and not has_installable:
+                bin_list = ", ".join(f"'{b}'" for b in missing_bins)
+                return {
+                    "status": "error",
+                    "code": "binary_deps_manual",
+                    "message": (
+                        f"Skill '{skill_name}' requires external binaries that "
+                        f"cannot be auto-installed: {bin_list}. "
+                        "Install them manually and ensure they are on your PATH."
+                    ),
+                    "missing_deps": missing,
+                }
+
+            logger.info(f"Installing deps for '{skill_name}'...")
             logs = self._install_deps(skill_dir)
 
             # Re-check
             deps_ok, still_missing, _ = self._evaluate_skill_deps(skill_dir, meta)
+
+            # If installable deps resolved but binaries remain, note it clearly
+            if not deps_ok and still_missing.get("binaries") and not (
+                still_missing.get("python") or still_missing.get("node")
+            ):
+                bin_list = ", ".join(f"'{b}'" for b in still_missing["binaries"])
+                logs.append(
+                    f"Note: external binaries still missing: {bin_list}. "
+                    "Install them manually and ensure they are on your PATH."
+                )
+
             return {
                 "status": "success" if deps_ok else "partial",
                 "skill": skill_name,
