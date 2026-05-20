@@ -101,3 +101,6 @@ data/.backend_port
 temp_tasks.json
 data/cron_runs
 allowed_paths.txt
+
+# Local-only skills (never commit)
+skills/twitter-engagement/
