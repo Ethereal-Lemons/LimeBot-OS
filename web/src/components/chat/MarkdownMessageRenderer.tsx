@@ -70,12 +70,12 @@ function MarkdownMessageRenderer({
     if (!content) return null;
 
     const renderedContent = isStreaming ? normalizeStreamingMarkdown(content) : content;
+    // Replace 3 or more consecutive newlines with exactly 2 to prevent huge vertical gaps
+    const normalizedContent = renderedContent.replace(/\n{3,}/g, "\n\n");
 
     return (
         <div className={cn(
-            "prose dark:prose-invert max-w-none break-words font-sans text-[15px] leading-[1.55] text-inherit",
-            "prose-p:my-0 prose-p:leading-[1.55] prose-headings:mb-1.5 prose-headings:mt-3",
-            "prose-li:my-0 prose-ul:my-1.5 prose-ol:my-1.5 prose-pre:my-0 prose-code:before:hidden prose-code:after:hidden",
+            "max-w-none break-words font-sans text-[14.5px] leading-[1.5] text-inherit",
             isStreaming && "streaming-markdown"
         )}>
             <ReactMarkdown
@@ -89,7 +89,10 @@ function MarkdownMessageRenderer({
                             className="font-bold underline text-primary decoration-primary/60 underline-offset-2 hover:decoration-primary hover:brightness-125 transition-all"
                         />
                     ),
-                    p: ({ node, ...props }) => <p {...props} className="mb-1.5 last:mb-0" />,
+                    p: ({ node, ...props }) => <p {...props} className="mb-2 last:mb-0 leading-[1.5]" />,
+                    ul: ({ node, ...props }) => <ul {...props} className="list-disc pl-5 my-2 space-y-0.5" />,
+                    ol: ({ node, ...props }) => <ol {...props} className="list-decimal pl-5 my-2 space-y-0.5" />,
+                    li: ({ node, ...props }) => <li {...props} className="leading-[1.45] pl-0.5 text-[14px]" />,
                     code: ({ node, className, children, ...props }: any) => {
                         const codeContent = String(children || "").trim();
                         if (!codeContent) return null;
@@ -110,7 +113,7 @@ function MarkdownMessageRenderer({
                         );
                     },
                     table: ({ node, ...props }) => (
-                        <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-card/30 backdrop-blur-sm shadow-sm">
+                        <div className="my-3 w-full overflow-x-auto rounded-xl border border-border bg-card/30 backdrop-blur-sm shadow-sm">
                             <table className="w-full text-left text-[13px]" {...props} />
                         </div>
                     ),
@@ -119,16 +122,16 @@ function MarkdownMessageRenderer({
                     tr: ({ node, ...props }) => <tr className="hover:bg-muted/20 transition-colors" {...props} />,
                     th: ({ node, ...props }) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...props} />,
                     td: ({ node, ...props }) => <td className="px-4 py-3 align-top" {...props} />,
-                    h1: ({ node, ...props }) => <h1 className="text-2xl font-semibold tracking-tight" {...props} />,
-                    h2: ({ node, ...props }) => <h2 className="text-xl font-semibold tracking-tight" {...props} />,
-                    h3: ({ node, ...props }) => <h3 className="text-lg font-semibold tracking-tight" {...props} />,
+                    h1: ({ node, ...props }) => <h1 className="text-base font-bold mt-3 mb-1 text-foreground tracking-tight" {...props} />,
+                    h2: ({ node, ...props }) => <h2 className="text-[14.5px] font-bold mt-2.5 mb-1 text-foreground/90 tracking-tight" {...props} />,
+                    h3: ({ node, ...props }) => <h3 className="text-[13.5px] font-bold mt-2 mb-0.5 text-foreground/80 tracking-tight" {...props} />,
                     blockquote: ({ node, ...props }) => (
-                        <blockquote className="my-4 rounded-2xl border border-border/70 bg-muted/35 px-4 py-3 text-muted-foreground" {...props} />
+                        <blockquote className="my-3 rounded-xl border-l-4 border-primary/30 bg-muted/30 px-3.5 py-2 text-muted-foreground/90 italic text-[13.5px]" {...props} />
                     ),
                     img: ({ node, ...props }: any) => <ChatImage src={props.src || ""} alt={props.alt || ""} />,
                 }}
             >
-                {renderedContent}
+                {normalizedContent}
             </ReactMarkdown>
             {isStreaming && (
                 <span

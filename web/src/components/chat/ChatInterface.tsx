@@ -29,6 +29,7 @@ import { ToolTimeline } from './ToolTimeline';
 import { AttachmentPreview } from './AttachmentPreview';
 import { MarkdownMessage } from './MarkdownMessage';
 import { parseSubagentReport, SubagentReportCard } from './SubagentReportCard';
+import { SystemUpdateCard } from './SystemUpdateCard';
 
 interface Message {
     sender: 'user' | 'bot';
@@ -318,15 +319,24 @@ const MemoizedMessageItem = memo(({
                                             attachment={attachment}
                                         />
                                     ))}
-                                    {subagentReport ? (
-                                        <SubagentReportCard report={subagentReport} />
-                                    ) : (
-                                        <MarkdownMessage
-                                            content={msg.content}
-                                            isUser={isUser}
-                                            isStreaming={msg.isStreaming}
-                                        />
-                                    )}
+                                    {(() => {
+                                        const trimmedContent = msg.content?.trim() || "";
+                                        const isSystemUpdate = !isUser && (trimmedContent === "(Persona configuration updated.)" || trimmedContent === "(System updated configuration/memory files.)");
+
+                                        if (isSystemUpdate) {
+                                            return <SystemUpdateCard content={trimmedContent} />;
+                                        } else if (subagentReport) {
+                                            return <SubagentReportCard report={subagentReport} />;
+                                        } else {
+                                            return (
+                                                <MarkdownMessage
+                                                    content={msg.content}
+                                                    isUser={isUser}
+                                                    isStreaming={msg.isStreaming}
+                                                />
+                                            );
+                                        }
+                                    })()}
                                 </div>
                             </div>
                         )}

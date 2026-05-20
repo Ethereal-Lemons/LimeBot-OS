@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { API_BASE_URL } from "@/lib/api";
+import { api, API_BASE_URL } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,6 +17,12 @@ const FALLBACK_MODELS: LlmModelOption[] = [
     { id: 'gemini/gemini-1.5-flash', name: 'Gemini 1.5 Flash', provider: 'gemini' },
     { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'openai' },
     { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai' },
+    { id: 'openai-codex/gpt-5.4', name: 'GPT-5.4', provider: 'openai-codex' },
+    { id: 'openai-codex/gpt-5.4-mini', name: 'GPT-5.4 Mini', provider: 'openai-codex' },
+    { id: 'openai-codex/gpt-5.3-codex', name: 'GPT-5.3 Codex', provider: 'openai-codex' },
+    { id: 'openai-codex/gpt-5.2-codex', name: 'GPT-5.2 Codex', provider: 'openai-codex' },
+    { id: 'openai-codex/gpt-5.1', name: 'GPT-5.1', provider: 'openai-codex' },
+    { id: 'openai-codex/gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', provider: 'openai-codex' },
     { id: 'openrouter/anthropic/claude-sonnet-4.6', name: 'Anthropic Claude Sonnet 4.6', provider: 'openrouter' },
     { id: 'openrouter/openai/gpt-5.4-pro', name: 'OpenAI GPT-5.4 Pro', provider: 'openrouter' },
     { id: 'openrouter/google/gemini-3.1-pro-preview', name: 'Google Gemini 3.1 Pro Preview', provider: 'openrouter' },
@@ -53,6 +59,7 @@ export function SetupPage() {
     const [availableModels, setAvailableModels] = useState<LlmModelOption[]>(FALLBACK_MODELS);
     const [isLoadingModels, setIsLoadingModels] = useState(false);
     const [showAllModels, setShowAllModels] = useState(false);
+    const [codexAuth, setCodexAuth] = useState<{ configured: boolean; email?: string } | null>(null);
 
     useEffect(() => {
         fetchModels();
@@ -61,9 +68,12 @@ export function SetupPage() {
     const fetchModels = async (retries = 3) => {
         setIsLoadingModels(true);
         try {
-            const res = await axios.get(`${API_BASE_URL}/api/llm/models`);
+            const res = await api.get("/api/llm/models");
             if (res.data.models && res.data.models.length > 0) {
                 setAvailableModels(res.data.models);
+            }
+            if (res.data.codexAuth) {
+                setCodexAuth(res.data.codexAuth);
             }
         } catch (err) {
             console.error("Failed to load models:", err);
@@ -74,6 +84,22 @@ export function SetupPage() {
             setIsLoadingModels(false);
         }
     };
+
+    // Polling for Codex OAuth configuration
+    useEffect(() => {
+        let timer: any;
+        const currentProvider = config.LLM_MODEL.split('/')[0] || 'gemini';
+        
+        if (currentProvider === 'openai-codex' && !codexAuth?.configured) {
+            timer = setInterval(() => {
+                fetchModels(0); // poll without retries
+            }, 3000);
+        }
+        
+        return () => {
+            if (timer) clearInterval(timer);
+        };
+    }, [config.LLM_MODEL, codexAuth?.configured]);
 
     const currentProvider = config.LLM_MODEL.split('/')[0] || 'gemini';
     const recommendedModels = getRecommendedModels(availableModels, currentProvider);
@@ -87,7 +113,10 @@ export function SetupPage() {
         : additionalModels;
 
     const getRequiredKeyError = () => {
-        if (config.LLM_MODEL.startsWith('openai-codex')) return null; // Codex uses OAuth, managed via CLI
+        if (config.LLM_MODEL.startsWith('openai-codex')) {
+            if (codexAuth?.configured === false) return 'Codex OAuth authentication is required.';
+            return null;
+        }
         if (config.LLM_MODEL.startsWith('openrouter') && !(config as any).OPENROUTER_API_KEY) return 'OpenRouter API Key is required.';
         if (config.LLM_MODEL.startsWith('gemini') && !config.GEMINI_API_KEY) return 'Gemini API Key is required.';
         if (config.LLM_MODEL.startsWith('openai') && !(config as any).OPENAI_API_KEY) return 'OpenAI API Key is required.';
@@ -286,10 +315,54 @@ export function SetupPage() {
                                     </div>
                                 )}
                                 {config.LLM_MODEL.startsWith('openai-codex') && (
-                                    <div className="space-y-2">
-                                        <p className="text-xs text-muted-foreground">
-                                            Codex uses ChatGPT OAuth — no API key needed. Run <code className="text-primary">limebot auth codex login</code> from your terminal to authenticate.
-                                        </p>
+                                    <div className="space-y-3 p-4 bg-primary/5 rounded-lg border border-primary/20 animate-in fade-in duration-300">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                                Codex Auth Status
+                                            </span>
+                                            {codexAuth?.configured ? (
+                                                <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] uppercase font-bold px-2 py-0.5">
+                                                    ✓ Configured
+                                                </Badge>
+                                            ) : (
+                                                <Badge className="bg-amber-500/10 text-amber-500 border-amber-500/20 text-[10px] uppercase font-bold px-2 py-0.5 animate-pulse">
+                                                    ● Awaiting Login
+                                                </Badge>
+                                            )}
+                                        </div>
+
+                                        {codexAuth?.configured ? (
+                                            <div className="space-y-1">
+                                                <p className="text-xs text-muted-foreground">
+                                                    Your Codex OAuth session is active and ready to go.
+                                                </p>
+                                                {codexAuth.email && (
+                                                    <p className="text-xs text-primary font-medium">
+                                                        Connected as: {codexAuth.email}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-3">
+                                                <p className="text-xs text-muted-foreground leading-relaxed">
+                                                    Codex uses ChatGPT OAuth. Run the login command in your terminal, complete the browser authorization, and this page will automatically activate.
+                                                </p>
+                                                <div className="bg-background/80 p-2.5 rounded border border-border/50 font-mono text-[11px] select-all flex items-center justify-between text-primary">
+                                                    <code>limebot auth codex login</code>
+                                                </div>
+                                                <Button 
+                                                    type="button" 
+                                                    variant="outline" 
+                                                    size="sm" 
+                                                    className="w-full text-xs flex items-center justify-center gap-1.5 h-8"
+                                                    onClick={() => fetchModels(0)}
+                                                    disabled={isLoadingModels}
+                                                >
+                                                    <RefreshCw className={`h-3 w-3 ${isLoadingModels ? 'animate-spin' : ''}`} />
+                                                    Check Status Now
+                                                </Button>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                                 {config.LLM_MODEL.startsWith('openai/') && (

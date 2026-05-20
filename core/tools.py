@@ -18,6 +18,7 @@ from datetime import datetime
 
 from core.tool_defs import build_tool_definitions
 from core.vectors import get_vector_service
+from core.paths import PERSONA_DIR
 
 _SENSITIVE_NAMES = frozenset(
     {
@@ -566,6 +567,17 @@ class Toolbox:
             return f"Error: Access denied to path '{path}'."
         p = Path(path).resolve()
         try:
+            resolved_persona = PERSONA_DIR.resolve()
+            if p == resolved_persona or resolved_persona in p.parents:
+                return (
+                    "Error: Direct modification of state-managed files under 'persona/' is blocked. "
+                    "Please use the appropriate XML tags to update your persona, mood, relationship, memories, or user profiles "
+                    "(e.g., <save_soul>, <save_identity>, <save_mood>, <save_relationship>, <save_memory>, <log_memory>, or <save_user>)."
+                )
+        except Exception as e:
+            logger.error(f"Error checking persona path safety: {e}")
+
+        try:
             await asyncio.to_thread(p.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(p.write_text, content, encoding="utf-8")
             return f"Successfully wrote to '{path}'."
@@ -577,6 +589,16 @@ class Toolbox:
         if not self._is_path_allowed(path):
             return f"Error: Access denied to path '{path}'."
         p = Path(path).resolve()
+        try:
+            resolved_persona = PERSONA_DIR.resolve()
+            if p == resolved_persona or resolved_persona in p.parents:
+                return (
+                    "Error: Direct deletion of state-managed files under 'persona/' is blocked. "
+                    "Please use the appropriate XML tags to manage your state."
+                )
+        except Exception as e:
+            logger.error(f"Error checking persona path safety: {e}")
+
         if not p.exists():
             return f"Error: Path '{path}' does not exist."
         try:

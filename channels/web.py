@@ -2582,6 +2582,7 @@ class WebChannel(BaseChannel):
             while True:
                 try:
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                         s.bind(("0.0.0.0", port))
                     return True
                 except OSError as e:
@@ -2617,6 +2618,7 @@ class WebChannel(BaseChannel):
             try:
                 # First try to see if we can bind a socket to this port
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     s.bind(("0.0.0.0", current_port))
 
                 # If we got here, the port is likely available
