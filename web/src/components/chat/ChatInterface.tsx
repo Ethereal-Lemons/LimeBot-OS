@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
-import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, ArrowDown, ShieldAlert, Wifi, WifiOff } from "lucide-react";
+import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, ArrowDown, ShieldAlert, Wifi, WifiOff, Play, Pause, Volume2, VolumeX, Download } from "lucide-react";
 import {
     AlertDialog,
     AlertDialogCancel,
@@ -43,6 +43,7 @@ interface Message {
     variant?: 'default' | 'destructive' | 'warning';
     messageId?: string;
     turnId?: string;
+    voiceUrl?: string;
 }
 
 interface ChatInterfaceProps {
@@ -205,6 +206,115 @@ function TypingIndicator({ botIdentity }: { botIdentity?: { name: string; avatar
     );
 }
 
+export function VoiceAudioPlayer({ url }: { url: string }) {
+    const audioRef = useRef<HTMLAudioElement | null>(null);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [duration, setDuration] = useState(0);
+    const [currentTime, setCurrentTime] = useState(0);
+    const [isMuted, setIsMuted] = useState(false);
+
+    useEffect(() => {
+        const audio = new Audio(`${API_BASE_URL}${url}`);
+        audioRef.current = audio;
+
+        const onTimeUpdate = () => setCurrentTime(audio.currentTime);
+        const onLoadedMetadata = () => setDuration(audio.duration);
+        const onEnded = () => setIsPlaying(false);
+
+        audio.addEventListener('timeupdate', onTimeUpdate);
+        audio.addEventListener('loadedmetadata', onLoadedMetadata);
+        audio.addEventListener('ended', onEnded);
+
+        return () => {
+            audio.pause();
+            audio.removeEventListener('timeupdate', onTimeUpdate);
+            audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+            audio.removeEventListener('ended', onEnded);
+            audioRef.current = null;
+        };
+    }, [url]);
+
+    const togglePlay = () => {
+        if (!audioRef.current) return;
+        if (isPlaying) {
+            audioRef.current.pause();
+            setIsPlaying(false);
+        } else {
+            audioRef.current.play().catch(err => console.error("Audio playback failed:", err));
+            setIsPlaying(true);
+        }
+    };
+
+    const toggleMute = () => {
+        if (!audioRef.current) return;
+        audioRef.current.muted = !isMuted;
+        setIsMuted(!isMuted);
+    };
+
+    const formatTime = (time: number) => {
+        if (isNaN(time)) return '0:00';
+        const mins = Math.floor(time / 60);
+        const secs = Math.floor(time % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    };
+
+    const handleProgressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (!audioRef.current) return;
+        const newTime = parseFloat(e.target.value);
+        audioRef.current.currentTime = newTime;
+        setCurrentTime(newTime);
+    };
+
+    return (
+        <div className="mt-3 flex flex-col gap-2 rounded-xl border border-primary/20 bg-primary/5 p-3 max-w-sm animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <div className="flex items-center gap-2">
+                <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={togglePlay}
+                    className="h-8 w-8 shrink-0 rounded-full border-primary/20 bg-background hover:bg-primary/10 hover:text-primary transition-all duration-200"
+                >
+                    {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
+                </Button>
+
+                <div className="flex-1 min-w-0 flex flex-col gap-1">
+                    <span className="text-[11px] font-bold text-primary tracking-wide uppercase">Voice Audio Response</span>
+                    <input
+                        type="range"
+                        min={0}
+                        max={duration || 1}
+                        value={currentTime}
+                        onChange={handleProgressChange}
+                        className="h-1 w-full bg-border rounded-lg appearance-none cursor-pointer accent-primary"
+                    />
+                    <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
+                        <span>{formatTime(currentTime)}</span>
+                        <span>{formatTime(duration)}</span>
+                    </div>
+                </div>
+
+                <div className="flex items-center gap-1">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={toggleMute}
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    >
+                        {isMuted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
+                    </Button>
+                    <a
+                        href={`${API_BASE_URL}${url}`}
+                        download
+                        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                    >
+                        <Download className="h-3.5 w-3.5" />
+                    </a>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 const MemoizedMessageItem = memo(({
     msg,
     botIdentity,
@@ -337,6 +447,9 @@ const MemoizedMessageItem = memo(({
                                             );
                                         }
                                     })()}
+                                    {msg.voiceUrl && (
+                                        <VoiceAudioPlayer url={msg.voiceUrl} />
+                                    )}
                                 </div>
                             </div>
                         )}

@@ -318,6 +318,7 @@ export function useWebSocket({
                                 variant,
                                 image: typeof data.metadata?.image === 'string' ? data.metadata.image : null,
                                 attachments: normalizeIncomingAttachments(data.metadata?.attachments),
+                                voiceUrl: typeof data.metadata?.voice_url === 'string' ? data.metadata.voice_url : undefined,
                             })
                         );
 

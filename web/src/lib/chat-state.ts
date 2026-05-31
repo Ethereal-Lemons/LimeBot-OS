@@ -58,6 +58,7 @@ export type ChatMessage = {
   variant?: 'default' | 'destructive' | 'warning';
   messageId?: string;
   turnId?: string;
+  voiceUrl?: string;
 };
 
 type MessageTarget = {
@@ -75,6 +76,7 @@ type FinalText = MessageTarget & {
   variant: 'default' | 'destructive' | 'warning';
   image?: string | null;
   attachments?: ChatAttachment[];
+  voiceUrl?: string;
 };
 
 type ToolUpdate = MessageTarget & {
@@ -191,6 +193,7 @@ export function applyFinalAssistantMessage(
         isStreaming: false,
         image: payload.image ?? null,
         attachments: payload.attachments,
+        voiceUrl: payload.voiceUrl,
         messageId: payload.messageId || undefined,
         turnId: payload.turnId || undefined,
       },
@@ -206,6 +209,7 @@ export function applyFinalAssistantMessage(
     isStreaming: false,
     image: payload.image ?? updated[index].image ?? null,
     attachments: payload.attachments ?? updated[index].attachments,
+    voiceUrl: payload.voiceUrl ?? updated[index].voiceUrl,
     messageId: payload.messageId || updated[index].messageId,
     turnId: payload.turnId || updated[index].turnId,
   };

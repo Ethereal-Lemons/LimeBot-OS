@@ -2438,6 +2438,68 @@ class WebChannel(BaseChannel):
             else:
                 raise HTTPException(status_code=404, detail=res.get("error", "Session not found or could not be removed"))
 
+        # ── ElevenLabs Voice Endpoints ─────────────────────────────────
+        @self.app.get("/api/voice/settings", dependencies=[Depends(self.verify_auth)])
+        async def get_voice_settings():
+            from core.tts import ElevenLabsTTS
+            return {
+                "has_key": bool(ElevenLabsTTS.get_api_key()),
+                "settings": ElevenLabsTTS.get_voice_config()
+            }
+
+        @self.app.post("/api/voice/settings", dependencies=[Depends(self.verify_auth)])
+        async def save_voice_settings(data: dict):
+            from core.tts import ElevenLabsTTS
+            ElevenLabsTTS.save_voice_config(data)
+            return {"status": "success", "settings": ElevenLabsTTS.get_voice_config()}
+
+        @self.app.get("/api/voice/voices", dependencies=[Depends(self.verify_auth)])
+        async def get_voice_list():
+            from core.tts import ElevenLabsTTS
+            voices = await ElevenLabsTTS.list_voices()
+            return {"voices": voices}
+
+        @self.app.post("/api/voice/synthesize", dependencies=[Depends(self.verify_auth)])
+        async def synthesize_voice_preview(data: dict):
+            from core.tts import ElevenLabsTTS
+            text = data.get("text", "").strip()
+            if not text:
+                raise HTTPException(status_code=400, detail="Text is required")
+            
+            # Temporary override settings for this preview if supplied
+            voice_id = data.get("voice_id")
+            settings = {
+                "stability": data.get("stability"),
+                "similarity_boost": data.get("similarity_boost"),
+                "style": data.get("style"),
+                "use_speaker_boost": data.get("use_speaker_boost"),
+                "speed": data.get("speed"),
+                "model_id": data.get("model_id"),
+                "output_format": data.get("output_format")
+            }
+            # Clean up None values
+            settings = {k: v for k, v in settings.items() if v is not None}
+            
+            # Since synthesize_and_save uses active config, let's temporarily do a custom synthesis
+            try:
+                audio_bytes = await ElevenLabsTTS.synthesize_text(text, voice_id=voice_id, settings=settings)
+                import uuid
+                from pathlib import Path
+                
+                temp_dir = Path("temp")
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                
+                filename = f"preview_{uuid.uuid4().hex[:8]}.mp3"
+                filepath = temp_dir / filename
+                
+                with open(filepath, "wb") as f:
+                    f.write(audio_bytes)
+                
+                return {"status": "success", "url": f"/temp/{filename}"}
+            except Exception as e:
+                logger.error(f"[TTS] Preview synthesis failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
         @self.app.websocket("/ws")
         async def websocket_root(websocket: WebSocket):
             await self._websocket_handler(websocket)

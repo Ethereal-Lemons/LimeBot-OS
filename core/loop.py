@@ -4760,6 +4760,18 @@ class AgentLoop:
                                 ),
                             )
                         else:
+                            # Auto-TTS synthesis for Web Channel if voice is enabled and has key
+                            if msg.channel == "web" and reply_to_user:
+                                try:
+                                    from core.tts import ElevenLabsTTS
+                                    voice_cfg = ElevenLabsTTS.get_voice_config()
+                                    if voice_cfg.get("enabled", False) and ElevenLabsTTS.get_api_key():
+                                        audio_url = await ElevenLabsTTS.synthesize_and_save(reply_to_user)
+                                        if audio_url:
+                                            meta["voice_url"] = audio_url
+                                except Exception as tts_err:
+                                    logger.error(f"[TTS] Auto synthesis failed: {tts_err}")
+
                             outbound = OutboundMessage(
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,

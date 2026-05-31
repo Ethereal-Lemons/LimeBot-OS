@@ -16,7 +16,8 @@ import {
     Wifi,
     WifiOff,
     List,
-    Globe
+    Globe,
+    Volume2
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -99,7 +100,7 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
         { id: 'subagents', icon: Bot, label: "Subagents" },
         { id: 'browsers', icon: Globe, label: "Browser Sessions" },
         { id: 'mcp', icon: Cpu, label: "MCP" },
-        // { icon: Box, label: "Nodes", active: false },
+        { id: 'voice', icon: Volume2, label: "ElevenLabs Voice" },
     ];
 
     const configItems = [

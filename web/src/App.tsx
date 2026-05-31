@@ -88,6 +88,11 @@ const McpPage = lazy(() =>
     default: module.McpPage,
   }))
 );
+const VoicePage = lazy(() =>
+  import("@/components/voice/VoicePage").then((module) => ({
+    default: module.VoicePage,
+  }))
+);
 const TaskQueuePanel = lazy(() =>
   import("./components/queue/TaskQueuePanel").then((module) => ({
     default: module.TaskQueuePanel,
@@ -114,6 +119,7 @@ const VIEW_META: Record<string, { title: string; description: string }> = {
   subagents: { title: "Subagents", description: "Specialized helper profiles Claude-style, kept lightweight." },
   browsers: { title: "Browser Sessions", description: "Active headless browsers and session modes." },
   mcp: { title: "MCP", description: "External Model Context Protocol servers." },
+  voice: { title: "ElevenLabs Voice", description: "List custom voices, customize TTS parameters, and test audio previews." },
   persona: { title: "Persona", description: "Identity, style, and adaptive behavior." },
   appearance: { title: "Appearance", description: "Themes, wallpaper, and visual settings." },
   config: { title: "Configuration", description: "Model, environment, and browser settings." },
@@ -437,6 +443,8 @@ function App() {
             />
           ) : currentView === 'mcp' ? (
             <McpPage />
+          ) : currentView === 'voice' ? (
+            <VoicePage />
           ) : currentView === 'config' ? (
             <ConfigPage />
           ) : (

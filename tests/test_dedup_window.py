@@ -4,6 +4,62 @@ import uuid
 
 
 class TestDedupWindow(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_dedup_handles_glued_exact_repeat(self):
+        try:
+            import loguru  # noqa: F401
+        except Exception:
+            raise unittest.SkipTest("Missing dependencies (loguru).")
+
+        from core.loop import AgentLoop
+
+        reply = (
+            "I’ll set it up, but I need to be careful here: I can only schedule "
+            "the reminder if I can target a valid delivery context. For a "
+            "Discord DM, I need the bot to have an actual DM-capable context "
+            "or a channel ID it can send to.\n\n"
+            "If you want, I can still help you do either of these right now:\n"
+            "1. **Find the Discord DM-capable channel/recipient setup**, or\n"
+            "2. **Set it to a specific server channel** you can confirm.\n\n"
+            "If you already know the DM setup works for this ID, I can proceed "
+            "once you confirm the bot can message that target."
+        )
+
+        duplicated = reply + reply
+
+        self.assertEqual(
+            AgentLoop._dedupe_repeated_reply_sections(duplicated),
+            reply,
+        )
+
+    async def test_reply_dedup_handles_repeated_paragraph_run(self):
+        try:
+            import loguru  # noqa: F401
+        except Exception:
+            raise unittest.SkipTest("Missing dependencies (loguru).")
+
+        from core.loop import AgentLoop
+
+        reply = "\n\n".join(
+            [
+                "First paragraph with enough content to resemble a real reply.",
+                "Second paragraph that should only appear once.",
+                "A useful final note that is not part of the repeated run.",
+                "First paragraph with enough content to resemble a real reply.",
+                "Second paragraph that should only appear once.",
+            ]
+        )
+
+        self.assertEqual(
+            AgentLoop._dedupe_repeated_reply_sections(reply),
+            "\n\n".join(
+                [
+                    "First paragraph with enough content to resemble a real reply.",
+                    "Second paragraph that should only appear once.",
+                    "A useful final note that is not part of the repeated run.",
+                ]
+            ),
+        )
+
     async def test_identical_message_only_deduped_within_2s(self):
         try:
             import loguru  # noqa: F401
@@ -121,4 +177,3 @@ class TestDedupWindow(unittest.IsolatedAsyncioTestCase):
             first_len,
             "Same content from a different sender should still be processed.",
         )
-
