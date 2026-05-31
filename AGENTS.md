@@ -130,6 +130,9 @@ Sandboxed OS interface. All methods check `_is_path_allowed()` before touching t
 | `list_dir(path)` | No | List directory contents |
 | `run_command(command)` | **Yes** | Execute shell command in project root |
 | `memory_search(query)` | No | Semantic search across vector memory |
+| `send_discord_message(message, channel_id, user_id)` | No | Send a Discord message to a server channel or user DM |
+| `send_discord_embed(...)` | No | Send a native Discord embed to a server channel or user DM |
+| `list_discord_channels()` | No | List guild text channels available to the bot |
 | `cron_add(message, context, time_expr, cron_expr)` | No | Schedule a one-time or repeating job |
 | `cron_list()` | No | List all pending scheduled jobs |
 | `cron_remove(job_id)` | **Yes** | Cancel a scheduled job |

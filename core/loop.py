@@ -193,6 +193,7 @@ class AgentLoop:
             "memory_search": self.toolbox.memory_search,
             "send_media": self.toolbox.send_media,
             "generate_image": self.toolbox.generate_image,
+            "send_discord_message": self.toolbox.send_discord_message,
             "send_discord_embed": self.toolbox.send_discord_embed,
             "list_discord_channels": self.toolbox.list_discord_channels,
             "cron_add": self.toolbox.cron_add,
@@ -2923,6 +2924,7 @@ class AgentLoop:
             "browser_navigate": "url",
             "spawn_agent": "task",
             "send_media": "path",
+            "send_discord_message": "message",
             "send_discord_embed": "description",
             "cron_remove": "job_id",
             "save_memory": "content",
@@ -3170,7 +3172,7 @@ class AgentLoop:
             bare_call_pattern = re.compile(
                 r"\b(?:list_dir|read_file|write_file|delete_file|search_files|"
                 r"run_command|memory_search|google_search|browser_navigate|"
-                r"spawn_agent|send_media|generate_image|send_discord_embed|list_discord_channels|cron_remove|save_memory|log_memory|ls|dir|cat|"
+                r"spawn_agent|send_media|generate_image|send_discord_message|send_discord_embed|list_discord_channels|cron_remove|save_memory|log_memory|ls|dir|cat|"
                 r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|"
                 r"powershell|cmd)\s*\([^)]*\)"
             )
@@ -3231,7 +3233,7 @@ class AgentLoop:
         marker_positions = []
         legacy_tag_pattern = (
             r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|"
-            r"memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_embed|list_discord_channels|"
+            r"memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_message|send_discord_embed|list_discord_channels|"
             r"save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|"
             r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>"
         )
@@ -3299,7 +3301,7 @@ class AgentLoop:
             cleaned,
         )
         cleaned = re.sub(
-            legacy_tag_pattern + r".*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+            legacy_tag_pattern + r".*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
             "",
             cleaned,
             flags=re.DOTALL | re.IGNORECASE,
@@ -3717,7 +3719,7 @@ class AgentLoop:
                     clean_content,
                 ).strip()
                 clean_content = re.sub(
-                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
                     "",
                     clean_content,
                     flags=re.DOTALL | re.IGNORECASE,

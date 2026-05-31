@@ -106,6 +106,9 @@ def load_config(force_reload=False):
     config.allow_unsafe_commands = (
         os.getenv("ALLOW_UNSAFE_COMMANDS", "false").lower() == "true"
     )
+    config.tool_shortlist_enabled = (
+        os.getenv("LIMEBOT_ENABLE_TOOL_SHORTLIST", "false").lower() == "true"
+    )
 
     try:
         config.max_iterations = int(os.getenv("MAX_ITERATIONS", "30"))

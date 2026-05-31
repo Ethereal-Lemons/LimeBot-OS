@@ -1319,6 +1319,9 @@ class WebChannel(BaseChannel):
                 "ALLOW_UNSAFE_COMMANDS": str(
                     getattr(cfg, "allow_unsafe_commands", False)
                 ).lower(),
+                "LIMEBOT_ENABLE_TOOL_SHORTLIST": str(
+                    getattr(cfg, "tool_shortlist_enabled", False)
+                ).lower(),
                 "WEB_PORT": str(getattr(cfg.web, "port", 8000)),
                 "WEB_ALLOWED_ORIGINS": ",".join(
                     getattr(cfg.web, "allowed_origins", [])

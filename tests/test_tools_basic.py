@@ -472,13 +472,89 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
         finally:
             tool_context.reset(token)
 
-        self.assertEqual(result, "Sent native Discord embed to channel 777.")
+        self.assertEqual(result, "Sent native Discord embed to current Discord chat 777.")
         self.assertEqual(len(sent), 1)
         outbound = sent[0]
         self.assertEqual(outbound.channel, "discord")
         self.assertEqual(outbound.chat_id, "777")
         self.assertEqual(outbound.metadata["embed"]["title"], "Build")
         self.assertEqual(outbound.metadata["embed"]["fields"][0]["name"], "Status")
+
+    async def test_tool_call_send_discord_message_to_user_dm(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
+        bus = MessageBus()
+        sent = []
+
+        async def _capture(msg):
+            sent.append(msg)
+
+        bus.publish_outbound = _capture
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
+
+        result = await toolbox.send_discord_message(
+            user_id="123456789012345678",
+            message="hello from LimeBot",
+        )
+
+        self.assertEqual(
+            result,
+            "Sent Discord message to user DM 123456789012345678.",
+        )
+        self.assertEqual(len(sent), 1)
+        outbound = sent[0]
+        self.assertEqual(outbound.channel, "discord")
+        self.assertEqual(outbound.chat_id, "123456789012345678")
+        self.assertEqual(outbound.content, "hello from LimeBot")
+        self.assertEqual(outbound.metadata["target_type"], "dm")
+
+    async def test_tool_call_send_discord_message_rejects_ambiguous_target(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=MessageBus(), config=config)
+
+        result = await toolbox.send_discord_message(
+            channel_id="111",
+            user_id="222",
+            message="ambiguous",
+        )
+
+        self.assertEqual(result, "Error: Pass either channel_id or user_id, not both.")
+
+    async def test_tool_call_send_discord_embed_to_user_dm(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
+        bus = MessageBus()
+        sent = []
+
+        async def _capture(msg):
+            sent.append(msg)
+
+        bus.publish_outbound = _capture
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
+
+        result = await toolbox.send_discord_embed(
+            user_id="123456789012345678",
+            title="Tiny update",
+            description="DM embed",
+        )
+
+        self.assertEqual(
+            result,
+            "Sent native Discord embed to user DM 123456789012345678.",
+        )
+        self.assertEqual(len(sent), 1)
+        outbound = sent[0]
+        self.assertEqual(outbound.channel, "discord")
+        self.assertEqual(outbound.chat_id, "123456789012345678")
+        self.assertEqual(outbound.metadata["target_type"], "dm")
+        self.assertEqual(outbound.metadata["embed"]["title"], "Tiny update")
 
     async def test_tool_call_list_discord_channels_reads_live_client(self):
         from core.bus import MessageBus

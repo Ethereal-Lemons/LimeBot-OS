@@ -850,6 +850,7 @@ class DiscordChannel(BaseChannel):
                         f"[Discord] Missing permissions to send to chat_id={msg.chat_id} "
                         f"metadata={_metadata_preview(msg.metadata)}."
                     )
+                    await self._notify_send_forbidden(msg)
                     return
                 except discord.HTTPException as e:
                     if attempt >= _DISCORD_SEND_MAX_ATTEMPTS or not _is_retryable_http(e):
@@ -870,6 +871,45 @@ class DiscordChannel(BaseChannel):
                         f"metadata={_metadata_preview(msg.metadata)}: {e}"
                     )
                     return
+
+    async def _notify_send_forbidden(self, msg: OutboundMessage) -> None:
+        metadata = msg.metadata or {}
+        origin_channel = str(metadata.get("origin_channel") or "").strip()
+        origin_chat_id = str(metadata.get("origin_chat_id") or "").strip()
+        if not origin_channel or not origin_chat_id:
+            return
+        if (
+            origin_channel == "discord"
+            and self._route_chat_id(origin_chat_id) == self._route_chat_id(msg.chat_id)
+        ):
+            return
+
+        target_type = str(metadata.get("target_type") or "").strip().lower()
+        if target_type == "dm":
+            content = (
+                f"Discord rejected the DM to user `{msg.chat_id}`. "
+                "This usually means the user has DMs disabled, does not share a server with the bot, "
+                "blocked the bot, or must message the bot first."
+            )
+        else:
+            content = (
+                f"Discord rejected the message to channel `{msg.chat_id}`. "
+                "The bot may be missing permission to view the channel or send messages there."
+            )
+
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=origin_channel,
+                chat_id=origin_chat_id,
+                content=content,
+                metadata={
+                    "type": "tool_error",
+                    "source": "discord",
+                    "target_chat_id": str(msg.chat_id),
+                    "target_type": target_type or "unknown",
+                },
+            )
+        )
 
     async def _send_impl_once(self, msg: OutboundMessage) -> None:
         """Core send logic: resolve target, then dispatch based on message type."""

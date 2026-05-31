@@ -90,3 +90,45 @@ async def test_discord_typing_keepalive_is_reused():
     assert target.ctx.entered == 1
 
     await channel._stop_typing("123")
+
+
+@pytest.mark.asyncio
+async def test_discord_forbidden_dm_reports_to_origin_chat():
+    import discord
+    from channels.discord import DiscordChannel
+    from core.bus import MessageBus
+    from core.events import OutboundMessage
+
+    bus = MessageBus()
+    reported = []
+
+    async def _capture(msg):
+        reported.append(msg)
+
+    bus.publish_outbound = _capture
+    channel = DiscordChannel(_make_config(), bus)
+
+    async def _raise_forbidden(_msg):
+        response = SimpleNamespace(status=403, reason="Forbidden")
+        raise discord.Forbidden(response, "Cannot send messages to this user")
+
+    channel._send_impl_once = _raise_forbidden
+
+    await channel._send_impl(
+        OutboundMessage(
+            channel="discord",
+            chat_id="123456789012345678",
+            content="hello",
+            metadata={
+                "target_type": "dm",
+                "origin_channel": "web",
+                "origin_chat_id": "web-chat",
+            },
+        )
+    )
+
+    assert len(reported) == 1
+    assert reported[0].channel == "web"
+    assert reported[0].chat_id == "web-chat"
+    assert "Discord rejected the DM" in reported[0].content
+    assert "DMs disabled" in reported[0].content

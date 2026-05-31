@@ -1876,6 +1876,58 @@ class Toolbox:
             }
         )
 
+    async def send_discord_message(
+        self,
+        message: str = "",
+        channel_id: str = "",
+        user_id: str = "",
+    ) -> str:
+        """Send a plain Discord message to a channel or user DM."""
+        from core.context import tool_context
+        from core.events import OutboundMessage
+
+        ctx = tool_context.get() or {}
+        active_channel = (ctx.get("channel") or "").strip().lower()
+        origin_chat_id = str(ctx.get("chat_id") or "").strip()
+        target_channel = str(channel_id or "").strip()
+        target_user = str(user_id or "").strip()
+
+        if target_channel and target_user:
+            return "Error: Pass either channel_id or user_id, not both."
+
+        target_id = target_user or target_channel
+        target_kind = "user DM" if target_user else "channel"
+
+        if not target_id:
+            if active_channel != "discord":
+                return (
+                    "Error: channel_id or user_id is required when sending a Discord message outside a Discord conversation."
+                )
+            target_id = str(ctx.get("chat_id") or "").strip()
+            target_kind = "current Discord chat"
+
+        if not target_id or not target_id.isdigit():
+            return "Error: Discord channel_id or user_id must be numeric."
+
+        message = str(message or "").strip()
+        if not message:
+            return "Error: message is required."
+
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="discord",
+                chat_id=target_id,
+                content=message,
+                metadata={
+                    "target_type": "dm" if target_user else "channel",
+                    "from_tool": "send_discord_message",
+                    "origin_channel": active_channel or None,
+                    "origin_chat_id": origin_chat_id or None,
+                },
+            )
+        )
+        return f"Sent Discord message to {target_kind} {target_id}."
+
     async def send_discord_embed(
         self,
         title: str = "",
@@ -1886,6 +1938,7 @@ class Toolbox:
         thumbnail: str = "",
         fields: Optional[List[Dict[str, Any]]] = None,
         channel_id: str = "",
+        user_id: str = "",
     ) -> str:
         """Send a native Discord embed via the live Discord channel."""
         from core.context import tool_context
@@ -1893,17 +1946,26 @@ class Toolbox:
 
         ctx = tool_context.get() or {}
         active_channel = (ctx.get("channel") or "").strip().lower()
+        origin_chat_id = str(ctx.get("chat_id") or "").strip()
         target_channel = str(channel_id or "").strip()
+        target_user = str(user_id or "").strip()
 
-        if not target_channel:
+        if target_channel and target_user:
+            return "Error: Pass either channel_id or user_id, not both."
+
+        target_id = target_user or target_channel
+        target_kind = "user DM" if target_user else "channel"
+
+        if not target_id:
             if active_channel != "discord":
                 return (
-                    "Error: channel_id is required when sending a Discord embed outside a Discord conversation."
+                    "Error: channel_id or user_id is required when sending a Discord embed outside a Discord conversation."
                 )
-            target_channel = str(ctx.get("chat_id") or "").strip()
+            target_id = str(ctx.get("chat_id") or "").strip()
+            target_kind = "current Discord chat"
 
-        if not target_channel or not target_channel.isdigit():
-            return "Error: Discord channel_id must be numeric."
+        if not target_id or not target_id.isdigit():
+            return "Error: Discord channel_id or user_id must be numeric."
 
         title = str(title or "").strip()
         description = str(description or "").strip()
@@ -1947,12 +2009,18 @@ class Toolbox:
         await self.bus.publish_outbound(
             OutboundMessage(
                 channel="discord",
-                chat_id=target_channel,
+                chat_id=target_id,
                 content=fallback,
-                metadata={"embed": embed_data},
+                metadata={
+                    "embed": embed_data,
+                    "target_type": "dm" if target_user else "channel",
+                    "from_tool": "send_discord_embed",
+                    "origin_channel": active_channel or None,
+                    "origin_chat_id": origin_chat_id or None,
+                },
             )
         )
-        return f"Sent native Discord embed to channel {target_channel}."
+        return f"Sent native Discord embed to {target_kind} {target_id}."
 
     async def list_discord_channels(self) -> str:
         """List Discord guilds and text channels available to the running bot."""

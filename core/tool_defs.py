@@ -294,8 +294,30 @@ BASE_TOOLS = [
         "required": ["prompt"],
     },
     {
+        "name": "send_discord_message",
+        "description": (
+            "Send a plain Discord message to a server channel or directly to a user DM. "
+            "Use channel_id for public/server channels, user_id for DMs, or omit both to reply in the current Discord chat."
+        ),
+        "params": {
+            "message": {
+                "type": "string",
+                "description": "Message text to send.",
+            },
+            "channel_id": {
+                "type": "string",
+                "description": "Optional numeric Discord channel ID for a public/server channel target.",
+            },
+            "user_id": {
+                "type": "string",
+                "description": "Optional numeric Discord user ID for a direct message target.",
+            },
+        },
+        "required": ["message"],
+    },
+    {
         "name": "send_discord_embed",
-        "description": "Send a native Discord embed. Use this for structured Discord output instead of faking an embed with plain text. Defaults to the current Discord chat when used from Discord; otherwise pass channel_id explicitly.",
+        "description": "Send a native Discord embed. Use this for structured Discord output instead of faking an embed with plain text. Defaults to the current Discord chat when used from Discord; otherwise pass channel_id or user_id explicitly.",
         "params": {
             "title": {
                 "type": "string",
@@ -337,6 +359,10 @@ BASE_TOOLS = [
             "channel_id": {
                 "type": "string",
                 "description": "Optional numeric Discord channel ID. Required outside Discord chats.",
+            },
+            "user_id": {
+                "type": "string",
+                "description": "Optional numeric Discord user ID for a direct message target.",
             },
         },
         "required": [],
@@ -498,6 +524,9 @@ _TOOL_FAMILIES = {
     "run_command": "command",
     "memory_search": "memory",
     "generate_image": "media",
+    "send_discord_message": "discord",
+    "send_discord_embed": "discord",
+    "list_discord_channels": "discord",
     "spawn_agent": "agent",
     "cron_add": "scheduler",
     "cron_list": "scheduler",
@@ -615,6 +644,17 @@ _FAMILY_HINTS = {
         "art",
         "illustration",
     },
+    "discord": {
+        "discord",
+        "dm",
+        "dms",
+        "direct",
+        "message",
+        "channel",
+        "guild",
+        "server",
+        "user",
+    },
 }
 
 _MANDATORY_FAMILY_TOOLS = {
@@ -633,6 +673,7 @@ _MANDATORY_FAMILY_TOOLS = {
     "memory": {"memory_search"},
     "agent": {"spawn_agent"},
     "media": {"generate_image"},
+    "discord": {"send_discord_message", "send_discord_embed", "list_discord_channels"},
 }
 
 _TOOL_HINTS = {
@@ -644,6 +685,9 @@ _TOOL_HINTS = {
     "run_command": {"run", "command", "terminal", "shell", "script", "git", "pytest", "npm", "python"},
     "memory_search": {"memory", "remember", "recall", "history", "journal"},
     "generate_image": {"image", "images", "picture", "photo", "draw", "render", "generate", "art"},
+    "send_discord_message": {"discord", "dm", "direct", "message", "send", "user", "channel"},
+    "send_discord_embed": {"discord", "embed", "structured", "send", "channel", "dm"},
+    "list_discord_channels": {"discord", "channels", "guild", "server", "list"},
     "spawn_agent": {"delegate", "background", "subagent", "parallel"},
     "cron_add": {"remind", "schedule", "later", "daily", "weekly", "every"},
     "cron_list": {"scheduled", "reminders", "jobs", "cron"},

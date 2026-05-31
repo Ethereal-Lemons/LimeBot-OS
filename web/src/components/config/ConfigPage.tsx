@@ -23,6 +23,7 @@ interface ConfigState {
     LLM_MODEL?: string;
     ALLOWED_PATHS?: string[];
     AUTONOMOUS_MODE?: string;
+    LIMEBOT_ENABLE_TOOL_SHORTLIST?: string;
     MAX_ITERATIONS?: string;
     WEB_PORT?: string;
     LLM_PROXY_URL?: string;
@@ -454,6 +455,33 @@ export function ConfigPage() {
                                     <p className="text-[10px] text-muted-foreground">
                                         Routes all LLM traffic through external security or caching middleware. Overrides default provider endpoints.
                                     </p>
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2">
+                                    <Settings className="h-5 w-5" />
+                                    Agent Tooling
+                                </CardTitle>
+                                <CardDescription>
+                                    Tune how much tool schema is sent to the model on each turn.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                <div className="flex items-center justify-between p-4 bg-card/50 rounded-lg border border-border/50">
+                                    <div className="space-y-0.5">
+                                        <Label htmlFor="tool_shortlist" className="font-semibold">Enable Tool Shortlist</Label>
+                                        <p className="text-xs text-muted-foreground max-w-xl">
+                                            Shows the model a smaller, request-specific tool set instead of the full registry. This can reduce prompt size and make tool selection less noisy.
+                                        </p>
+                                    </div>
+                                    <Switch
+                                        id="tool_shortlist"
+                                        checked={config.LIMEBOT_ENABLE_TOOL_SHORTLIST === 'true'}
+                                        onCheckedChange={(checked) => handleChange('LIMEBOT_ENABLE_TOOL_SHORTLIST', checked ? 'true' : 'false')}
+                                    />
                                 </div>
                             </CardContent>
                         </Card>
