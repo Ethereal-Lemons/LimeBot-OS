@@ -152,6 +152,18 @@ def load_config(force_reload=False):
 
     config.llm.base_url = os.getenv("LLM_BASE_URL")
 
+    config.image_generation = SimpleNamespace()
+    config.image_generation.model = (
+        os.getenv("IMAGE_GENERATION_MODEL", "openai/gpt-image-1").strip()
+        or "openai/gpt-image-1"
+    )
+    config.image_generation.size = (
+        os.getenv("IMAGE_GENERATION_SIZE", "1024x1024").strip() or "1024x1024"
+    )
+    config.image_generation.quality = (
+        os.getenv("IMAGE_GENERATION_QUALITY", "auto").strip() or "auto"
+    )
+
     is_google_model = config.llm.model and (
         "gemini" in config.llm.model or "vertex" in config.llm.model
     )

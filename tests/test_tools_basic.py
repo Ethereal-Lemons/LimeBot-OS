@@ -1,5 +1,6 @@
 import unittest
 import shutil
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -282,6 +283,162 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Blocked files inside the persona directory", result)
         self.assertEqual(sent, [])
+
+    async def test_tool_call_generate_image_saves_and_previews_web_image(self):
+        from core.bus import MessageBus
+        from core.context import tool_context
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(
+            skills=SimpleNamespace(enabled=[]),
+            image_generation=SimpleNamespace(
+                model="openai/gpt-image-1",
+                size="1024x1024",
+                quality="auto",
+            ),
+        )
+        bus = MessageBus()
+        sent = []
+
+        async def _capture(msg):
+            sent.append(msg)
+
+        bus.publish_outbound = _capture
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
+
+        token = tool_context.set(
+            {
+                "channel": "web",
+                "chat_id": "dashboard",
+                "sender_id": "user-1",
+            }
+        )
+        try:
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "openai-test-key"}, clear=False):
+                with patch.object(
+                    toolbox,
+                    "_generate_litellm_image",
+                    return_value=[{"b64": "iVBORw0KGgo=", "mime_type": "image/png"}],
+                ):
+                    result = await toolbox.generate_image("a lime robot")
+        finally:
+            tool_context.reset(token)
+
+        self.assertIn('"status": "ok"', result)
+        self.assertIn("temp/generated_images", result)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0].channel, "web")
+        self.assertTrue(sent[0].metadata["image"].startswith("/temp/generated_images/"))
+        self.assertEqual(sent[0].metadata["attachments"][0]["kind"], "image")
+        self.assertEqual(sent[0].metadata["attachments"][0]["url"], sent[0].metadata["image"])
+
+    async def test_tool_call_generate_image_skips_gemini_without_key_and_uses_codex(self):
+        from core.bus import MessageBus
+        from core.context import tool_context
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(
+            skills=SimpleNamespace(enabled=[]),
+            llm=SimpleNamespace(model="openai-codex/gpt-5.4"),
+            image_generation=SimpleNamespace(
+                model="gemini/gemini-2.5-flash-image",
+                size="1024x1024",
+                quality="high",
+            ),
+        )
+        bus = MessageBus()
+        sent = []
+
+        async def _capture(msg):
+            sent.append(msg)
+
+        bus.publish_outbound = _capture
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
+
+        token = tool_context.set(
+            {
+                "channel": "web",
+                "chat_id": "dashboard",
+                "sender_id": "user-1",
+            }
+        )
+        try:
+            with patch.dict("os.environ", {"GEMINI_API_KEY": "", "OPENAI_API_KEY": ""}, clear=False):
+                with patch.object(
+                    toolbox,
+                    "_generate_gemini_image",
+                    side_effect=AssertionError("Gemini should not be called without a key."),
+                ) as gemini_generate, patch.object(
+                    toolbox,
+                    "_generate_codex_image",
+                    return_value=[{"b64": "iVBORw0KGgo=", "mime_type": "image/png"}],
+                ) as codex_generate:
+                    result = await toolbox.generate_image(
+                        "a lime robot",
+                        model="gemini/gemini-2.5-flash-image",
+                    )
+        finally:
+            tool_context.reset(token)
+
+        gemini_generate.assert_not_called()
+        codex_generate.assert_called_once()
+        self.assertIn('"status": "ok"', result)
+        self.assertIn('"model": "openai-codex/gpt-5.4"', result)
+        self.assertEqual(len(sent), 1)
+
+    async def test_tool_call_generate_image_falls_back_to_codex_when_gemini_returns_text_only(self):
+        from core.bus import MessageBus
+        from core.context import tool_context
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(
+            skills=SimpleNamespace(enabled=[]),
+            llm=SimpleNamespace(model="openai-codex/gpt-5.4"),
+            image_generation=SimpleNamespace(
+                model="gemini/gemini-2.5-flash-image",
+                size="1024x1024",
+                quality="high",
+            ),
+        )
+        bus = MessageBus()
+        sent = []
+
+        async def _capture(msg):
+            sent.append(msg)
+
+        bus.publish_outbound = _capture
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
+
+        token = tool_context.set(
+            {
+                "channel": "web",
+                "chat_id": "dashboard",
+                "sender_id": "user-1",
+            }
+        )
+        try:
+            with patch.dict("os.environ", {"GEMINI_API_KEY": "gemini-test-key"}, clear=False):
+                with patch.object(
+                    toolbox,
+                    "_generate_gemini_image",
+                    return_value=[],
+                ) as gemini_generate, patch.object(
+                    toolbox,
+                    "_generate_codex_image",
+                    return_value=[{"b64": "iVBORw0KGgo=", "mime_type": "image/png"}],
+                ) as codex_generate:
+                    result = await toolbox.generate_image(
+                        "a lime robot",
+                        model="gemini/gemini-2.5-flash-image",
+                    )
+        finally:
+            tool_context.reset(token)
+
+        gemini_generate.assert_called_once()
+        codex_generate.assert_called_once()
+        self.assertIn('"status": "ok"', result)
+        self.assertIn('"model": "openai-codex/gpt-5.4"', result)
+        self.assertEqual(len(sent), 1)
 
     async def test_tool_call_send_discord_embed_uses_current_chat(self):
         from core.bus import MessageBus

@@ -4,7 +4,9 @@ Provides safe, whitelisted, and confirmed interface for file/OS operations.
 """
 
 import asyncio
+import base64
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -1398,6 +1400,481 @@ class Toolbox:
         )
         display_path = self._to_display_path(resolved)
         return f"Sent '{display_path}' to the current {channel} chat."
+
+    @staticmethod
+    def _normalize_image_model(model: str) -> str:
+        return str(model or "").strip()
+
+    @staticmethod
+    def _is_gemini_image_model(model: str) -> bool:
+        normalized = str(model or "").strip()
+        bare = normalized.split("/", 1)[-1]
+        return normalized.startswith(("gemini/", "google/")) and (
+            "flash-image" in bare
+            or "pro-image" in bare
+            or "image-preview" in bare
+        )
+
+    @staticmethod
+    def _is_openai_image_model(model: str) -> bool:
+        bare = str(model or "").strip().split("/", 1)[-1]
+        return (
+            bare.startswith(("gpt-image-", "dall-e-"))
+            or bare == "chatgpt-image-latest"
+        )
+
+    @staticmethod
+    def _image_extension_for_mime(mime_type: str) -> str:
+        normalized = (mime_type or "image/png").split(";", 1)[0].strip().lower()
+        if normalized == "image/jpeg":
+            return ".jpg"
+        if normalized == "image/webp":
+            return ".webp"
+        return mimetypes.guess_extension(normalized) or ".png"
+
+    @staticmethod
+    def _gemini_aspect_ratio(size: str) -> str:
+        normalized = str(size or "").strip().lower()
+        if not normalized:
+            return ""
+        if ":" in normalized and "x" not in normalized:
+            return normalized
+        ratios = {
+            "1024x1024": "1:1",
+            "1536x1024": "3:2",
+            "1024x1536": "2:3",
+            "1792x1024": "16:9",
+            "1024x1792": "9:16",
+        }
+        return ratios.get(normalized, "")
+
+    @staticmethod
+    def _codex_account_id(token: str) -> str:
+        try:
+            parts = str(token or "").split(".")
+            if len(parts) != 3:
+                return ""
+            payload = parts[1] + "=" * (-len(parts[1]) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+            auth = claims.get("https://api.openai.com/auth") or {}
+            return str(auth.get("chatgpt_account_id") or "").strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _codex_image_model(model: str) -> str:
+        normalized = str(model or "").strip()
+        if normalized.startswith("openai-codex/"):
+            bare = normalized.removeprefix("openai-codex/")
+            if bare and not bare.startswith(("gpt-image-", "dall-e-")):
+                return bare
+        return "gpt-5.4-mini"
+
+    def _image_model_candidates(self, requested_model: str) -> List[str]:
+        requested = self._normalize_image_model(requested_model)
+        image_cfg = getattr(self.config, "image_generation", None)
+        configured = self._normalize_image_model(getattr(image_cfg, "model", ""))
+        primary_chat = str(getattr(getattr(self.config, "llm", None), "model", "") or "")
+        codex_model = (
+            primary_chat
+            if primary_chat.startswith("openai-codex/")
+            else "openai-codex/gpt-5.4-mini"
+        )
+
+        raw_candidates = [requested, configured, codex_model, "openai/gpt-image-1"]
+        candidates: List[str] = []
+        for candidate in raw_candidates:
+            candidate = str(candidate or "").strip()
+            if not candidate or candidate in candidates:
+                continue
+            if self._is_gemini_image_model(candidate) and not os.getenv("GEMINI_API_KEY"):
+                continue
+            if candidate.startswith("openai/") and not os.getenv("OPENAI_API_KEY"):
+                continue
+            candidates.append(candidate)
+        return candidates
+
+    async def _generate_codex_image(
+        self,
+        prompt: str,
+        model: str,
+        count: int,
+        size: str,
+        quality: str,
+    ) -> List[Dict[str, str]]:
+        from core.oauth_profiles import resolve_codex_oauth_api_key
+
+        import httpx
+
+        token = resolve_codex_oauth_api_key()
+        account_id = self._codex_account_id(token)
+        if not account_id:
+            raise RuntimeError("Codex OAuth token did not include a ChatGPT account id.")
+
+        prompt_hints = []
+        if size:
+            prompt_hints.append(f"Output size/aspect request: {size}.")
+        if quality and quality != "auto":
+            prompt_hints.append(f"Quality request: {quality}.")
+        full_prompt = prompt
+        if prompt_hints:
+            full_prompt = f"{prompt}\n\n" + "\n".join(prompt_hints)
+
+        payload = {
+            "model": self._codex_image_model(model),
+            "instructions": (
+                "Generate exactly one image using the hosted image_generation tool. "
+                "Return no text unless required."
+            ),
+            "store": False,
+            "stream": True,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": full_prompt}],
+                }
+            ],
+            "tools": [{"type": "image_generation"}],
+            "tool_choice": {"type": "image_generation"},
+        }
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "chatgpt-account-id": account_id,
+            "originator": "limebot",
+            "OpenAI-Beta": "responses=experimental",
+            "accept": "text/event-stream",
+            "content-type": "application/json",
+        }
+
+        images: List[Dict[str, str]] = []
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            for _ in range(count):
+                async with client.stream(
+                    "POST",
+                    "https://chatgpt.com/backend-api/codex/responses",
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    if response.status_code >= 400:
+                        detail = await response.aread()
+                        text = detail.decode("utf-8", errors="replace").strip()
+                        raise RuntimeError(
+                            f"Codex image generation failed ({response.status_code}): {text}"
+                        )
+
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        raw = line.removeprefix("data:").strip()
+                        if not raw or raw == "[DONE]":
+                            continue
+                        try:
+                            event = json.loads(raw)
+                        except Exception:
+                            continue
+                        if event.get("type") == "response.failed":
+                            error = (event.get("response") or {}).get("error") or {}
+                            message = error.get("message") or json.dumps(event)[:500]
+                            raise RuntimeError(f"Codex image generation failed: {message}")
+                        item = event.get("item") or {}
+                        if item.get("type") != "image_generation_call":
+                            continue
+                        b64 = item.get("result") or item.get("b64_json")
+                        if b64:
+                            images.append({"b64": b64, "mime_type": "image/png"})
+                            break
+        return images
+
+    async def _generate_gemini_image(
+        self,
+        prompt: str,
+        model: str,
+        count: int,
+        size: str,
+    ) -> List[Dict[str, str]]:
+        from core.llm_utils import get_api_key_for_model
+
+        import httpx
+
+        api_key = get_api_key_for_model(model)
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is not configured.")
+
+        bare_model = model.split("/", 1)[-1]
+        generation_config: Dict[str, Any] = {"responseModalities": ["Image"]}
+        aspect_ratio = self._gemini_aspect_ratio(size)
+        if aspect_ratio:
+            generation_config["responseFormat"] = {
+                "image": {"aspectRatio": aspect_ratio}
+            }
+
+        url = (
+            "https://generativelanguage.googleapis.com/v1/models/"
+            f"{bare_model}:generateContent"
+        )
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": generation_config,
+        }
+        images: List[Dict[str, str]] = []
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            for _ in range(count):
+                response = await client.post(
+                    url,
+                    params={"key": api_key},
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+                for candidate in data.get("candidates", []) or []:
+                    content = candidate.get("content", {}) or {}
+                    for part in content.get("parts", []) or []:
+                        inline = part.get("inlineData") or part.get("inline_data")
+                        if not isinstance(inline, dict):
+                            continue
+                        b64 = inline.get("data")
+                        if not b64:
+                            continue
+                        images.append(
+                            {
+                                "b64": b64,
+                                "mime_type": inline.get("mimeType")
+                                or inline.get("mime_type")
+                                or "image/png",
+                            }
+                        )
+        return images
+
+    async def _generate_litellm_image(
+        self,
+        prompt: str,
+        model: str,
+        count: int,
+        size: str,
+        quality: str,
+    ) -> List[Dict[str, str]]:
+        from core.llm_utils import get_api_key_for_model
+        from litellm import aimage_generation
+
+        import httpx
+
+        api_key = get_api_key_for_model(model)
+        litellm_model = model
+        if model.startswith("openai/"):
+            litellm_model = model.removeprefix("openai/")
+
+        kwargs: Dict[str, Any] = {
+            "prompt": prompt,
+            "model": litellm_model,
+            "n": count,
+            "size": size,
+            "timeout": 180,
+        }
+        if api_key:
+            kwargs["api_key"] = api_key
+        if quality and quality != "auto":
+            kwargs["quality"] = quality
+        if not model.startswith(("gemini/", "google/")):
+            kwargs["response_format"] = "b64_json"
+
+        response = await aimage_generation(**kwargs)
+        data = getattr(response, "data", None)
+        if data is None and isinstance(response, dict):
+            data = response.get("data")
+
+        images: List[Dict[str, str]] = []
+        for item in data or []:
+            b64 = getattr(item, "b64_json", None)
+            url = getattr(item, "url", None)
+            if isinstance(item, dict):
+                b64 = item.get("b64_json") or item.get("b64")
+                url = item.get("url")
+            if b64:
+                images.append({"b64": b64, "mime_type": "image/png"})
+                continue
+            if url:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    downloaded = await client.get(url)
+                    downloaded.raise_for_status()
+                    mime_type = downloaded.headers.get("content-type", "image/png")
+                    images.append(
+                        {
+                            "b64": base64.b64encode(downloaded.content).decode("ascii"),
+                            "mime_type": mime_type,
+                        }
+                    )
+        return images
+
+    async def _publish_generated_image_preview(
+        self,
+        paths: List[Path],
+        caption: str,
+    ) -> None:
+        if not paths:
+            return
+
+        from core.context import tool_context
+        from core.events import OutboundMessage
+
+        ctx = tool_context.get() or {}
+        channel = (ctx.get("channel") or "").strip().lower()
+        chat_id = (ctx.get("chat_id") or "").strip()
+        if not channel or not chat_id:
+            return
+
+        first_path = paths[0]
+        relative_url = ""
+        try:
+            relative_url = f"/temp/{first_path.relative_to(Path('temp').resolve()).as_posix()}"
+        except ValueError:
+            relative_url = ""
+        mime_type = mimetypes.guess_type(first_path.name)[0] or "image/png"
+        attachment = {
+            "name": first_path.name,
+            "kind": "image",
+            "mime_type": mime_type,
+            "mimeType": mime_type,
+            "path": self._to_display_path(first_path),
+            "url": relative_url or self._to_display_path(first_path),
+        }
+
+        if channel in {"discord", "whatsapp"}:
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=channel,
+                    chat_id=chat_id,
+                    content="",
+                    metadata={
+                        "type": "file",
+                        "file_path": str(first_path),
+                        "caption": caption,
+                    },
+                )
+            )
+            return
+
+        if channel == "web":
+            try:
+                image_url = attachment["url"]
+                if not image_url.startswith(("/temp/", "data:", "http://", "https://")):
+                    blob = await asyncio.to_thread(first_path.read_bytes)
+                    image_url = (
+                        f"data:{mime_type};base64,"
+                        f"{base64.b64encode(blob).decode('ascii')}"
+                    )
+                    attachment["url"] = image_url
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=channel,
+                        chat_id=chat_id,
+                        content=caption,
+                        metadata={"image": image_url, "attachments": [attachment]},
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to publish generated image preview: {e}")
+
+    async def generate_image(
+        self,
+        prompt: str,
+        model: str = "",
+        size: str = "",
+        quality: str = "",
+        count: int = 1,
+    ) -> str:
+        """Generate image files using OpenAI-compatible or Gemini image models."""
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            return "Error: prompt is required."
+
+        image_cfg = getattr(self.config, "image_generation", None)
+        requested_model = model or getattr(image_cfg, "model", "") or ""
+        size = str(size or getattr(image_cfg, "size", "") or "1024x1024").strip()
+        quality = (
+            str(quality or getattr(image_cfg, "quality", "") or "auto")
+            .strip()
+            .lower()
+        )
+        try:
+            count = max(1, min(int(count or 1), 4))
+        except Exception:
+            count = 1
+
+        candidates = self._image_model_candidates(requested_model)
+        if not candidates:
+            return (
+                "Error: no image generation backend is configured. "
+                "Configure Codex OAuth, OPENAI_API_KEY, or GEMINI_API_KEY."
+            )
+
+        errors: List[str] = []
+        images: List[Dict[str, str]] = []
+        used_model = ""
+        for candidate in candidates:
+            try:
+                if self._is_gemini_image_model(candidate):
+                    candidate_images = await self._generate_gemini_image(
+                        prompt, candidate, count, size
+                    )
+                elif candidate.startswith("openai-codex/"):
+                    candidate_images = await self._generate_codex_image(
+                        prompt, candidate, count, size, quality
+                    )
+                elif self._is_openai_image_model(candidate):
+                    candidate_images = await self._generate_litellm_image(
+                        prompt, candidate, count, size, quality
+                    )
+                else:
+                    candidate_images = await self._generate_codex_image(
+                        prompt, candidate, count, size, quality
+                    )
+
+                if candidate_images:
+                    images = candidate_images
+                    used_model = candidate
+                    break
+                errors.append(f"{candidate}: returned no image data")
+            except Exception as e:
+                logger.warning(f"Image generation attempt failed with {candidate}: {e}")
+                errors.append(f"{candidate}: {e}")
+
+        if not images:
+            return (
+                "Error: image generation failed for all configured backends. "
+                + "; ".join(errors[:4])
+            )
+
+        output_dir = Path("temp/generated_images").resolve()
+        if not self._is_path_allowed(output_dir):
+            return "Error: Generated image output directory is not allowed."
+        await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
+
+        saved: List[Path] = []
+        for idx, image in enumerate(images[:count], start=1):
+            mime_type = image.get("mime_type") or "image/png"
+            ext = self._image_extension_for_mime(mime_type)
+            file_name = (
+                f"generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
+                f"{uuid.uuid4().hex[:8]}_{idx}{ext}"
+            )
+            out_path = output_dir / file_name
+            blob = base64.b64decode(image["b64"])
+            await asyncio.to_thread(out_path.write_bytes, blob)
+            saved.append(out_path)
+
+        display_paths = [self._to_display_path(path) for path in saved]
+        caption = f"Generated image: {display_paths[0]}"
+        await self._publish_generated_image_preview(saved, caption)
+
+        return json.dumps(
+            {
+                "status": "ok",
+                "model": used_model,
+                "count": len(saved),
+                "paths": display_paths,
+                "note": "Generated images were saved locally and sent to the active chat when supported.",
+            }
+        )
 
     async def send_discord_embed(
         self,

@@ -56,7 +56,8 @@ bridge/dist/
 
 # IDE settings
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 

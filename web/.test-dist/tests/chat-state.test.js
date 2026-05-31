@@ -1,6 +1,6 @@
 import test from "node:test";
 import { strict as assert } from "node:assert";
-import { applyFinalAssistantMessage, applyStopTyping, upsertStreamDelta, } from "../src/lib/chat-state.js";
+import { applyFinalAssistantMessage, applyStopTyping, upsertToolExecution, upsertStreamDelta, } from "../src/lib/chat-state.js";
 test("stream deltas and final message target the same bot bubble by message_id", () => {
     const initial = [
         { sender: "user", content: "ok do it" },
@@ -47,4 +47,69 @@ test("stop_typing only clears the targeted streaming assistant message", () => {
     const stopped = applyStopTyping(initial, { messageId: "msg-now", turnId: "turn-now" });
     assert.equal(stopped[0].isStreaming, true);
     assert.equal(stopped[1].isStreaming, false);
+});
+test("late tool execution is inserted before the final reply for the same turn", () => {
+    const initial = [
+        { sender: "user", content: "make an image" },
+        {
+            sender: "bot",
+            type: "text",
+            content: "The image model failed.",
+            isStreaming: false,
+            messageId: "msg-final",
+            turnId: "turn-image",
+        },
+    ];
+    const updated = upsertToolExecution(initial, {
+        turnId: "turn-image",
+        toolExecution: {
+            tool: "generate_image",
+            status: "error",
+            args: { prompt: "guinea pig" },
+            result: "model failed",
+            tool_call_id: "tool-1",
+        },
+    });
+    assert.equal(updated.length, 3);
+    assert.equal(updated[1].type, "tool");
+    assert.equal(updated[1].toolExecution?.tool, "generate_image");
+    assert.equal(updated[2].content, "The image model failed.");
+});
+test("updated tool execution is moved before an existing final reply for the same turn", () => {
+    const initial = [
+        { sender: "user", content: "make an image" },
+        {
+            sender: "bot",
+            type: "text",
+            content: "The image model failed.",
+            isStreaming: false,
+            messageId: "msg-final",
+            turnId: "turn-image",
+        },
+        {
+            sender: "bot",
+            type: "tool",
+            content: "",
+            turnId: "turn-image",
+            toolExecution: {
+                tool: "generate_image",
+                status: "running",
+                args: { prompt: "guinea pig" },
+                tool_call_id: "tool-1",
+            },
+        },
+    ];
+    const updated = upsertToolExecution(initial, {
+        turnId: "turn-image",
+        toolExecution: {
+            tool: "generate_image",
+            status: "error",
+            args: { prompt: "guinea pig" },
+            result: "model failed",
+            tool_call_id: "tool-1",
+        },
+    });
+    assert.equal(updated[1].type, "tool");
+    assert.equal(updated[1].toolExecution?.status, "error");
+    assert.equal(updated[2].content, "The image model failed.");
 });

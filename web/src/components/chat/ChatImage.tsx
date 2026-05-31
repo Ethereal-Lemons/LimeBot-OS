@@ -9,7 +9,7 @@ export function ChatImage({ src, alt }: { src: string; alt: string }) {
         <img
             src={src}
             alt={alt}
-            className="max-w-full rounded-lg mb-2 max-h-64 object-cover"
+            className="mb-2 max-h-[30rem] max-w-full rounded-lg border border-border/60 bg-muted/30 object-contain shadow-sm"
             onError={() => setError(true)}
         />
     );

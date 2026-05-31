@@ -28,6 +28,7 @@ TOOL_RESULT_LIMITS: Dict[str, int] = {
     "run_command": 2_000,
     "browser_list_media": 1_000,
     "list_dir": 500,
+    "generate_image": 2_000,
 }
 DEFAULT_TOOL_RESULT_LIMIT = 2_000
 
@@ -40,7 +41,7 @@ TOOL_INTENT_RE = re.compile(
     r"\b("
     # Exact tool names
     r"read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|"
-    r"cron_add|cron_list|cron_remove|spawn_agent|"
+    r"cron_add|cron_list|cron_remove|spawn_agent|generate_image|"
     # Browser tool names
     r"browser_navigate|browser_click|browser_type|browser_snapshot|browser_scroll|"
     r"browser_wait|browser_press_key|browser_go_back|browser_tabs|browser_switch_tab|"

@@ -259,6 +259,41 @@ BASE_TOOLS = [
         "required": ["path"],
     },
     {
+        "name": "generate_image",
+        "description": (
+            "Generate an image from a text prompt using the configured image-capable model. "
+            "Use this when the user asks to create, draw, render, or generate a new picture. "
+            "The tool saves generated files locally and sends the image back to the active chat when supported."
+        ),
+        "params": {
+            "prompt": {
+                "type": "string",
+                "description": "Detailed image prompt describing the desired visual result.",
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional image backend. Examples: openai-codex/gpt-5.4-mini, openai/gpt-image-1, "
+                    "gemini/gemini-3.1-flash-image, gemini/gemini-3-pro-image, "
+                    "gemini/gemini-2.5-flash-image."
+                ),
+            },
+            "size": {
+                "type": "string",
+                "description": "Optional output size or aspect ratio, e.g. 1024x1024, 1024x1536, 1536x1024, 16:9.",
+            },
+            "quality": {
+                "type": "string",
+                "description": "Optional quality hint such as auto, low, medium, or high.",
+            },
+            "count": {
+                "type": "integer",
+                "description": "Number of images to generate. Defaults to 1; currently capped at 4.",
+            },
+        },
+        "required": ["prompt"],
+    },
+    {
         "name": "send_discord_embed",
         "description": "Send a native Discord embed. Use this for structured Discord output instead of faking an embed with plain text. Defaults to the current Discord chat when used from Discord; otherwise pass channel_id explicitly.",
         "params": {
@@ -462,6 +497,7 @@ _TOOL_FAMILIES = {
     "create_skill": "filesystem",
     "run_command": "command",
     "memory_search": "memory",
+    "generate_image": "media",
     "spawn_agent": "agent",
     "cron_add": "scheduler",
     "cron_list": "scheduler",
@@ -566,6 +602,19 @@ _FAMILY_HINTS = {
         "complex",
         "long",
     },
+    "media": {
+        "image",
+        "images",
+        "picture",
+        "pictures",
+        "photo",
+        "draw",
+        "render",
+        "generate",
+        "create",
+        "art",
+        "illustration",
+    },
 }
 
 _MANDATORY_FAMILY_TOOLS = {
@@ -583,6 +632,7 @@ _MANDATORY_FAMILY_TOOLS = {
     "scheduler": {"cron_add", "cron_list", "cron_remove"},
     "memory": {"memory_search"},
     "agent": {"spawn_agent"},
+    "media": {"generate_image"},
 }
 
 _TOOL_HINTS = {
@@ -593,6 +643,7 @@ _TOOL_HINTS = {
     "search_files": {"search", "find", "grep", "rg", "ripgrep", "match", "locate"},
     "run_command": {"run", "command", "terminal", "shell", "script", "git", "pytest", "npm", "python"},
     "memory_search": {"memory", "remember", "recall", "history", "journal"},
+    "generate_image": {"image", "images", "picture", "photo", "draw", "render", "generate", "art"},
     "spawn_agent": {"delegate", "background", "subagent", "parallel"},
     "cron_add": {"remind", "schedule", "later", "daily", "weekly", "every"},
     "cron_list": {"scheduled", "reminders", "jobs", "cron"},

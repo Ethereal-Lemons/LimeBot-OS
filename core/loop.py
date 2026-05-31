@@ -192,6 +192,7 @@ class AgentLoop:
             "run_command": self.toolbox.run_command,
             "memory_search": self.toolbox.memory_search,
             "send_media": self.toolbox.send_media,
+            "generate_image": self.toolbox.generate_image,
             "send_discord_embed": self.toolbox.send_discord_embed,
             "list_discord_channels": self.toolbox.list_discord_channels,
             "cron_add": self.toolbox.cron_add,
@@ -2917,6 +2918,7 @@ class AgentLoop:
             "search_files": "query",
             "run_command": "command",
             "memory_search": "query",
+            "generate_image": "prompt",
             "google_search": "query",
             "browser_navigate": "url",
             "spawn_agent": "task",
@@ -3041,6 +3043,18 @@ class AgentLoop:
             if not isinstance(parsed, dict) or "name" in parsed:
                 return []
 
+            if isinstance(parsed.get("prompt"), str) and parsed["prompt"].strip():
+                image_keys = {"model", "size", "quality", "count"}
+                if image_keys.intersection(parsed.keys()):
+                    return _make_tool_call(
+                        "generate_image",
+                        {
+                            key: value
+                            for key, value in parsed.items()
+                            if key in {"prompt", "model", "size", "quality", "count"}
+                        },
+                    )
+
             if isinstance(parsed.get("url"), str) and parsed["url"].strip():
                 return _make_tool_call("browser_navigate", {"url": parsed["url"]})
 
@@ -3156,7 +3170,7 @@ class AgentLoop:
             bare_call_pattern = re.compile(
                 r"\b(?:list_dir|read_file|write_file|delete_file|search_files|"
                 r"run_command|memory_search|google_search|browser_navigate|"
-                r"spawn_agent|send_media|send_discord_embed|list_discord_channels|cron_remove|save_memory|log_memory|ls|dir|cat|"
+                r"spawn_agent|send_media|generate_image|send_discord_embed|list_discord_channels|cron_remove|save_memory|log_memory|ls|dir|cat|"
                 r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|"
                 r"powershell|cmd)\s*\([^)]*\)"
             )
@@ -3217,7 +3231,7 @@ class AgentLoop:
         marker_positions = []
         legacy_tag_pattern = (
             r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|"
-            r"memory_search|google_search|browser_navigate|spawn_agent|send_media|send_discord_embed|list_discord_channels|"
+            r"memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_embed|list_discord_channels|"
             r"save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|"
             r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>"
         )
@@ -3242,6 +3256,14 @@ class AgentLoop:
         )
         if json_tool_match:
             marker_positions.append(json_tool_match.start())
+
+        image_args_match = re.search(
+            r'\{\s*"prompt"\s*:\s*".*?"\s*,\s*"(?:model|size|quality|count)"\s*:',
+            cleaned,
+            flags=re.DOTALL,
+        )
+        if image_args_match:
+            marker_positions.append(image_args_match.start())
 
         legacy_tag_match = re.search(legacy_tag_pattern, cleaned, flags=re.IGNORECASE)
         if legacy_tag_match:
@@ -3300,6 +3322,12 @@ class AgentLoop:
             "",
             cleaned,
         )
+        cleaned = re.sub(
+            r'\{\s*"prompt"\s*:\s*".*?"\s*,\s*"(?:model|size|quality|count)"\s*:.*?\}\s*$',
+            "",
+            cleaned,
+            flags=re.DOTALL,
+        )
         cleaned = self._trim_leading_structural_lines(cleaned)
         cleaned_lines = []
         for line in cleaned.splitlines():
@@ -3312,6 +3340,13 @@ class AgentLoop:
         try:
             parsed = json.loads(cleaned)
             if isinstance(parsed, dict):
+                if isinstance(parsed.get("prompt"), str) and {
+                    "model",
+                    "size",
+                    "quality",
+                    "count",
+                }.intersection(parsed.keys()):
+                    return ""
                 if isinstance(parsed.get("url"), str) and parsed["url"].strip():
                     return ""
                 if isinstance(parsed.get("query"), str) and parsed["query"].strip():
@@ -3682,7 +3717,7 @@ class AgentLoop:
                     clean_content,
                 ).strip()
                 clean_content = re.sub(
-                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
                     "",
                     clean_content,
                     flags=re.DOTALL | re.IGNORECASE,

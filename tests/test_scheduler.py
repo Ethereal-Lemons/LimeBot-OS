@@ -32,7 +32,7 @@ class TestScheduler(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    async def test_stale_recurring_job_is_skipped_instead_of_replayed(self):
+    async def test_stale_recurring_job_executes_once_and_reschedules(self):
         from core.scheduler import CronManager
 
         class _TestCronManager(CronManager):
@@ -71,14 +71,65 @@ class TestScheduler(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             len(bus.messages),
-            0,
-            "Stale recurring jobs should be skipped after downtime.",
+            1,
+            "Stale recurring jobs should execute once after downtime.",
         )
         self.assertGreater(
             scheduler.jobs[0]["trigger"],
             time.time(),
             "Skipped recurring jobs should advance to a future trigger.",
         )
+        self.assertEqual(scheduler.job_state["stale123"]["lastStatus"], "ok")
+
+    async def test_future_trigger_replays_latest_missed_cron_slot(self):
+        from core.scheduler import CronManager
+
+        class _TestCronManager(CronManager):
+            def __init__(self, bus, data_file):
+                self.bus = bus
+                self.jobs = []
+                self.job_state = {}
+                self._running = False
+                self.data_file = data_file
+                self.state_file = data_file.with_name("cron_state.json")
+                self.runs_dir = data_file.parent / "cron_runs"
+                self.lock = asyncio.Lock()
+
+        bus = _TestBus()
+        scheduler = _TestCronManager(bus, self.temp_dir / "cron_missed_future.json")
+        now = time.time()
+        scheduler.jobs = [
+            {
+                "id": "future123",
+                "trigger": now + 3600,
+                "cron_expr": "* * * * *",
+                "tz_offset": None,
+                "payload": "missed slot",
+                "context": {
+                    "channel": "web",
+                    "chat_id": "dashboard",
+                    "sender_id": "tester",
+                },
+                "created_at": now - 3600,
+            }
+        ]
+        scheduler.job_state = {
+            "future123": {
+                "last_run_at": now - 180,
+                "lastStatus": "ok",
+            }
+        }
+
+        task = asyncio.create_task(scheduler.run())
+        try:
+            await asyncio.sleep(1.2)
+        finally:
+            await scheduler.stop()
+            await asyncio.wait_for(task, timeout=2)
+
+        self.assertEqual(len(bus.messages), 1)
+        self.assertIn("missed slot", bus.messages[0].content)
+        self.assertGreater(scheduler.jobs[0]["trigger"], time.time())
 
     async def test_recent_recurring_job_executes_once_and_reschedules(self):
         from core.scheduler import CronManager

@@ -22,8 +22,6 @@ try:
 except ImportError:
     croniter = None
 
-RECURRING_JOB_MAX_LAG_SECONDS = 300
-
 # Per-job in-memory dedup: job_id -> last fired unix timestamp.
 # Prevents duplicate fires when the bot restarts multiple times within a period.
 _job_last_fired: dict[str, float] = {}
@@ -133,6 +131,56 @@ class CronManager:
                 f.write(json.dumps(payload, default=str) + "\n")
         except Exception as e:
             logger.error(f"Error writing cron run event for {job_id}: {e}")
+
+    def _last_run_timestamp(self, job_id: str) -> float:
+        state = getattr(self, "job_state", {}).get(job_id, {}) or {}
+        last_run_ms = state.get("lastRunAtMs")
+        candidates = [
+            state.get("last_run_at"),
+            last_run_ms / 1000 if isinstance(last_run_ms, (int, float)) else None,
+            state.get("last_scheduled_trigger"),
+        ]
+        for value in candidates:
+            if isinstance(value, (int, float)) and value > 0:
+                return float(value)
+        return 0.0
+
+    def _missed_cron_slot(self, job: Dict[str, Any], now: float) -> Optional[float]:
+        """Return the latest missed cron slot when persisted next trigger is already future."""
+        if not job.get("cron_expr") or job.get("trigger") is None:
+            return None
+        if float(job.get("trigger") or 0) <= now:
+            return None
+        if not croniter:
+            return None
+        try:
+            tzinfo = self._resolve_timezone(job.get("tz"), job.get("tz_offset"))
+            previous = croniter(
+                job["cron_expr"], datetime.fromtimestamp(now, tz=tzinfo)
+            ).get_prev(float)
+            created_at = float(job.get("created_at") or 0)
+            last_run = self._last_run_timestamp(job["id"])
+            if previous > created_at and previous > last_run:
+                return previous
+        except Exception as e:
+            logger.warning(f"Unable to detect missed cron slot for {job.get('id')}: {e}")
+        return None
+
+    def _next_cron_trigger_after(
+        self,
+        job: Dict[str, Any],
+        scheduled_trigger: float,
+        now: float,
+    ) -> float:
+        tzinfo = self._resolve_timezone(job.get("tz"), job.get("tz_offset"))
+        scheduled_dt = datetime.fromtimestamp(scheduled_trigger, tz=tzinfo)
+        cron_it = croniter(job["cron_expr"], scheduled_dt)
+        next_trigger = cron_it.get_next(float)
+        while next_trigger <= now:
+            scheduled_dt = datetime.fromtimestamp(next_trigger, tz=tzinfo)
+            cron_it = croniter(job["cron_expr"], scheduled_dt)
+            next_trigger = cron_it.get_next(float)
+        return next_trigger
 
     @staticmethod
     def _resolve_timezone(tz_name: Optional[str], tz_offset: Optional[int]):
@@ -294,68 +342,48 @@ class CronManager:
                 now = time.time()
 
                 async with self.lock:
-                    due = [
-                        j
-                        for j in self.jobs
-                        if j.get("active", True)
-                        and j.get("trigger") is not None
-                        and j["trigger"] <= now
-                    ]
+                    due: List[Dict[str, Any]] = []
+                    for job in self.jobs:
+                        if not job.get("active", True) or job.get("trigger") is None:
+                            continue
+                        if job["trigger"] <= now:
+                            due.append(job)
+                            continue
+                        missed_slot = self._missed_cron_slot(job, now)
+                        if missed_slot is not None:
+                            job["_missed_trigger"] = missed_slot
+                            due.append(job)
 
                     for job in due:
                         job_id = job["id"]
+                        scheduled_trigger = float(
+                            job.pop("_missed_trigger", None) or job["trigger"]
+                        )
+                        job_to_execute = dict(job)
+                        job_to_execute["scheduled_trigger"] = scheduled_trigger
 
                         if job.get("cron_expr"):
-                            tz_off = job.get("tz_offset")
-                            tzinfo = self._resolve_timezone(job.get("tz"), tz_off)
-
-                            lag = max(0.0, now - float(job["trigger"]))
-                            scheduled_dt = datetime.fromtimestamp(job["trigger"], tz=tzinfo)
-                            cron_it = croniter(job["cron_expr"], scheduled_dt)
-                            next_trigger = cron_it.get_next(float)
-                            skipped_stale = lag > RECURRING_JOB_MAX_LAG_SECONDS
-
-                            while next_trigger <= now:
-                                skipped_stale = True
-                                scheduled_dt = datetime.fromtimestamp(next_trigger, tz=tzinfo)
-                                cron_it = croniter(job["cron_expr"], scheduled_dt)
-                                next_trigger = cron_it.get_next(float)
-
+                            lag = max(0.0, now - scheduled_trigger)
+                            next_trigger = (
+                                float(job["trigger"])
+                                if float(job["trigger"]) > now
+                                else self._next_cron_trigger_after(job, scheduled_trigger, now)
+                            )
                             job["trigger"] = next_trigger
+                            job_to_execute["next_trigger"] = next_trigger
                             self._update_job_state(
                                 job_id,
+                                last_scheduled_trigger=scheduled_trigger,
+                                lastScheduledTriggerMs=int(scheduled_trigger * 1000),
+                                last_lag_seconds=lag,
                                 next_trigger=next_trigger,
                                 next_run_at=next_trigger,
                                 nextRunAtMs=int(next_trigger * 1000),
                             )
                             logger.info(
-                                f"Rescheduled job {job_id} → {job['trigger']} (tz_offset={tz_off})"
+                                f"Rescheduled job {job_id} → {job['trigger']} "
+                                f"(missed lag={lag:.1f}s)"
                             )
-                            if skipped_stale:
-                                state = self._update_job_state(
-                                    job_id,
-                                    last_status="skipped_stale",
-                                    lastStatus="skipped_stale",
-                                    last_lag_seconds=lag,
-                                    consecutive_errors=0,
-                                )
-                                self._append_run_event(
-                                    job_id,
-                                    {
-                                        "type": "job_skipped",
-                                        "action": "skipped",
-                                        "status": "skipped_stale",
-                                        "payload": job.get("payload"),
-                                        "lag_seconds": lag,
-                                        "next_trigger": next_trigger,
-                                        "nextRunAtMs": int(next_trigger * 1000),
-                                        "state": state,
-                                    },
-                                )
-                                logger.info(
-                                    f"Skipping stale recurring job {job_id} (lag={lag:.1f}s)"
-                                )
-                                continue
 
                             # ── Dedup: skip if already fired in this same period ──
                             last_fired = _job_last_fired.get(job_id, 0.0)
@@ -372,13 +400,14 @@ class CronManager:
                         _job_last_fired[job_id] = now
                         self._update_job_state(
                             job_id,
-                            last_scheduled_trigger=job.get("trigger"),
+                            last_scheduled_trigger=scheduled_trigger,
+                            lastScheduledTriggerMs=int(scheduled_trigger * 1000),
                             lastRunAtMs=int(now * 1000),
                             last_run_at=now,
                             last_status="running",
                             lastStatus="running",
                         )
-                        asyncio.create_task(self._execute_job(job))
+                        asyncio.create_task(self._execute_job(job_to_execute))
 
                     if due:
                         self._save_jobs()
@@ -405,7 +434,8 @@ class CronManager:
         tracker = get_task_tracker()
         started_at = time.time()
         job_id = job["id"]
-        next_trigger = job.get("trigger")
+        scheduled_trigger = job.get("scheduled_trigger", job.get("trigger"))
+        next_trigger = job.get("next_trigger", job.get("trigger"))
         _task_id = await tracker.create_task(
             task_type="scheduled_job",
             summary=f"Cron job: {job['payload'][:80]}",
@@ -426,6 +456,7 @@ class CronManager:
                 "payload": job["payload"],
                 "context": job.get("context", {}),
                 "runAtMs": int(started_at * 1000),
+                "scheduledRunAtMs": int(scheduled_trigger * 1000) if scheduled_trigger else None,
                 "nextRunAtMs": int(next_trigger * 1000) if next_trigger else None,
             },
         )
@@ -439,6 +470,7 @@ class CronManager:
             metadata={
                 "is_scheduler": True,
                 "original_job_id": job["id"],
+                "scheduled_trigger": scheduled_trigger,
                 "reply_to": context.get("sender_id", "unknown"),
             },
         )
@@ -450,6 +482,8 @@ class CronManager:
                 job_id,
                 last_run_at=started_at,
                 lastRunAtMs=int(started_at * 1000),
+                last_scheduled_trigger=scheduled_trigger,
+                lastScheduledTriggerMs=int(scheduled_trigger * 1000) if scheduled_trigger else None,
                 last_status="ok",
                 lastStatus="ok",
                 last_run_status="ok",
@@ -474,6 +508,7 @@ class CronManager:
                     "channel": context.get("channel", "unknown"),
                     "chat_id": context.get("chat_id", "unknown"),
                     "runAtMs": int(started_at * 1000),
+                    "scheduledRunAtMs": int(scheduled_trigger * 1000) if scheduled_trigger else None,
                     "durationMs": duration_ms,
                     "nextRunAtMs": int(next_trigger * 1000) if next_trigger else None,
                     "previousStatus": prior.get("last_status") or prior.get("lastStatus"),
@@ -494,6 +529,8 @@ class CronManager:
                 job_id,
                 last_run_at=started_at,
                 lastRunAtMs=int(started_at * 1000),
+                last_scheduled_trigger=scheduled_trigger,
+                lastScheduledTriggerMs=int(scheduled_trigger * 1000) if scheduled_trigger else None,
                 last_status="error",
                 lastStatus="error",
                 last_run_status="error",
@@ -520,6 +557,7 @@ class CronManager:
                     "payload": job["payload"],
                     "error": str(e),
                     "runAtMs": int(started_at * 1000),
+                    "scheduledRunAtMs": int(scheduled_trigger * 1000) if scheduled_trigger else None,
                     "durationMs": duration_ms,
                     "nextRunAtMs": int(next_trigger * 1000) if next_trigger else None,
                     "state": state,

@@ -78,6 +78,20 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
             ),
             "Checking now.",
         )
+        self.assertEqual(
+            self.agent._sanitize_tool_call_content(
+                '{"prompt":"A realistic Peruvian guinea pig","model":"openai/gpt-image-1",'
+                '"size":"1024x1024","quality":"high","count":1}'
+            ),
+            "",
+        )
+        self.assertEqual(
+            self.agent._sanitize_tool_call_content(
+                'Generating it now.\n{"prompt":"A realistic Peruvian guinea pig",'
+                '"model":"openai/gpt-image-1","size":"1024x1024","quality":"high","count":1}'
+            ),
+            "Generating it now.",
+        )
 
     async def test_consume_stream_does_not_publish_residue_only_tool_preamble(self):
         from core.events import InboundMessage
@@ -215,6 +229,34 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(tool_calls), 1)
         self.assertEqual(tool_calls[0]["function"]["name"], "list_dir")
         self.assertEqual(tool_calls[0]["function"]["arguments"], '{"path": "."}')
+
+    async def test_consume_stream_extracts_generate_image_from_args_blob(self):
+        from core.events import InboundMessage
+
+        async def _stream():
+            yield self._chunk(
+                content=(
+                    '{"prompt":"A realistic Peruvian guinea pig",'
+                    '"model":"openai/gpt-image-1","size":"1024x1024",'
+                    '"quality":"high","count":1}'
+                )
+            )
+
+        msg = InboundMessage(
+            channel="web",
+            sender_id="web-user",
+            chat_id="chat-1",
+            content="generate a guinea pig",
+        )
+        result = await self.agent._consume_stream(_stream(), msg, msg.session_key)
+        full_content, tool_calls, _, streamed_to_web, _ = self.agent._unpack_stream_result(
+            result
+        )
+
+        self.assertEqual(full_content, "")
+        self.assertFalse(streamed_to_web)
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "generate_image")
 
     async def test_consume_stream_pairs_reasoning_tool_hint_with_windows_path_blob(self):
         from core.events import InboundMessage

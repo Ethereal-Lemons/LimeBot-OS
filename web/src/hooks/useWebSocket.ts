@@ -15,6 +15,7 @@ import {
     applyStopTyping,
     type ChatAttachment,
     type ChatMessage,
+    upsertToolExecution,
     upsertStreamDelta,
 } from '@/lib/chat-state';
 import type { ToolExecution } from '@/components/chat/ToolCard';
@@ -344,50 +345,23 @@ export function useWebSocket({
                         onRateLimit();
                     } else if (data.type === 'tool_execution') {
                         const toolData = data.metadata;
-                        setMessages(prev => {
-                            const existingIndex = prev.findIndex(m =>
-                                m.type === 'tool' && m.toolExecution?.tool_call_id === toolData.tool_call_id
-                            );
-                            if (existingIndex !== -1) {
-                                const newMessages = [...prev];
-                                const existingExec = newMessages[existingIndex].toolExecution!;
-                                let updatedLogs = existingExec.logs || [];
-                                if (toolData.status === 'progress') {
-                                    updatedLogs = [...updatedLogs, data.content];
-                                }
-                                newMessages[existingIndex] = {
-                                    ...newMessages[existingIndex],
-                                    messageId: eventMessageId || newMessages[existingIndex].messageId,
-                                    turnId: eventTurnId || newMessages[existingIndex].turnId,
-                                    toolExecution: {
-                                        ...existingExec,
-                                        status: toolData.status === 'progress' ? existingExec.status : toolData.status,
-                                        result: toolData.result,
-                                        conf_id: toolData.conf_id || existingExec.conf_id,
-                                        logs: updatedLogs,
-                                        preview: toolData.preview || existingExec.preview,
-                                    },
-                                };
-                                return newMessages;
-                            } else {
-                                return [...prev, {
-                                    sender: 'bot',
-                                    type: 'tool',
-                                    content: '',
-                                    messageId: eventMessageId || undefined,
-                                    turnId: eventTurnId || undefined,
-                                    toolExecution: {
-                                        tool: toolData.tool,
-                                        status: toolData.status,
-                                        args: toolData.args,
-                                        tool_call_id: toolData.tool_call_id,
-                                        conf_id: toolData.conf_id,
-                                        logs: [],
-                                        preview: toolData.preview,
-                                    },
-                                }];
-                            }
-                        });
+                        setMessages(prev =>
+                            upsertToolExecution(prev, {
+                                messageId: eventMessageId,
+                                turnId: eventTurnId,
+                                content: data.content,
+                                toolExecution: {
+                                    tool: toolData.tool,
+                                    status: toolData.status,
+                                    args: toolData.args,
+                                    tool_call_id: toolData.tool_call_id,
+                                    result: toolData.result,
+                                    conf_id: toolData.conf_id,
+                                    logs: [],
+                                    preview: toolData.preview,
+                                },
+                            })
+                        );
                     } else if (data.metadata?.type === 'activity') {
                         console.log('👻 Activity:', data.metadata.text);
                         onActivity(data.metadata.text);

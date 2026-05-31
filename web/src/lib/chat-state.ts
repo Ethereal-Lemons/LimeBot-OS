@@ -77,6 +77,11 @@ type FinalText = MessageTarget & {
   attachments?: ChatAttachment[];
 };
 
+type ToolUpdate = MessageTarget & {
+  content?: string;
+  toolExecution: ChatToolExecution;
+};
+
 const isBotTextMessage = (message: ChatMessage) =>
   message.sender === 'bot' && message.type !== 'tool' && !message.confirmation;
 
@@ -221,5 +226,96 @@ export function applyStopTyping(
     messageId: target.messageId || updated[index].messageId,
     turnId: target.turnId || updated[index].turnId,
   };
+  return updated;
+}
+
+function findFinalMessageIndexForTurn(
+  messages: ChatMessage[],
+  turnId?: string | null
+): number {
+  if (!turnId) return -1;
+  return messages.findIndex(
+    (message) =>
+      isBotTextMessage(message) &&
+      message.turnId === turnId &&
+      !message.isStreaming
+  );
+}
+
+function moveToolBeforeFinalMessage(
+  messages: ChatMessage[],
+  toolIndex: number,
+  turnId?: string | null
+): ChatMessage[] {
+  const finalIndex = findFinalMessageIndexForTurn(messages, turnId);
+  if (finalIndex === -1 || toolIndex < finalIndex) return messages;
+
+  const updated = [...messages];
+  const [toolMessage] = updated.splice(toolIndex, 1);
+  const insertionIndex = toolIndex < finalIndex ? finalIndex - 1 : finalIndex;
+  updated.splice(insertionIndex, 0, toolMessage);
+  return updated;
+}
+
+export function upsertToolExecution(
+  messages: ChatMessage[],
+  update: ToolUpdate
+): ChatMessage[] {
+  const execution = update.toolExecution;
+  const existingIndex = messages.findIndex(
+    (message) =>
+      message.type === 'tool' &&
+      message.toolExecution?.tool_call_id === execution.tool_call_id
+  );
+
+  if (existingIndex !== -1) {
+    const existingMessage = messages[existingIndex];
+    const existingExec = existingMessage.toolExecution!;
+    const logs =
+      execution.status === 'progress'
+        ? [...(existingExec.logs || []), update.content || '']
+        : existingExec.logs || [];
+    const updated = [...messages];
+    updated[existingIndex] = {
+      ...existingMessage,
+      messageId: update.messageId || existingMessage.messageId,
+      turnId: update.turnId || existingMessage.turnId,
+      toolExecution: {
+        ...existingExec,
+        ...execution,
+        status:
+          execution.status === 'progress'
+            ? existingExec.status
+            : execution.status,
+        result: execution.result,
+        conf_id: execution.conf_id || existingExec.conf_id,
+        logs,
+        preview: execution.preview || existingExec.preview,
+      },
+    };
+    return moveToolBeforeFinalMessage(
+      updated,
+      existingIndex,
+      update.turnId || existingMessage.turnId
+    );
+  }
+
+  const newMessage: ChatMessage = {
+    sender: 'bot',
+    type: 'tool',
+    content: '',
+    messageId: update.messageId || undefined,
+    turnId: update.turnId || undefined,
+    toolExecution: {
+      ...execution,
+      logs: execution.logs || [],
+    },
+  };
+
+  const finalIndex = findFinalMessageIndexForTurn(messages, update.turnId);
+  if (finalIndex === -1) return [...messages, newMessage];
+
+  const updated = [...messages];
+  updated.splice(finalIndex, 0, newMessage);
   return updated;
 }
