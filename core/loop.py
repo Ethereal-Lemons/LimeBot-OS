@@ -27,28 +27,45 @@ from core.tool_dispatcher import (
     TOOL_NAME_ALIASES,
 )
 
-from litellm import (
-    acompletion,
-    completion,
-    RateLimitError,
-    InternalServerError,
-    APIConnectionError,
-    ServiceUnavailableError,
-    AuthenticationError,
-)
+try:
+    from litellm import (
+        RateLimitError,
+        InternalServerError,
+        APIConnectionError,
+        ServiceUnavailableError,
+        AuthenticationError,
+    )
+except Exception:
+    class _LiteLLMFallbackError(Exception):
+        def __init__(self, *args, **kwargs):
+            message = kwargs.get("message")
+            if message is None and args:
+                message = args[0]
+            super().__init__(message or "")
+
+    class RateLimitError(_LiteLLMFallbackError):
+        pass
+
+    class InternalServerError(_LiteLLMFallbackError):
+        pass
+
+    class APIConnectionError(_LiteLLMFallbackError):
+        pass
+
+    class ServiceUnavailableError(_LiteLLMFallbackError):
+        pass
+
+    class AuthenticationError(_LiteLLMFallbackError):
+        pass
 from loguru import logger
 
 from config import load_config
 from core.browser import get_browser_manager
 from core.bus import MessageBus
 from core.cache import ToolCache
-from core.codex_bridge import (
-    complete_codex_response,
-    is_codex_model_name,
-    stream_codex_response,
-)
 from core.context import tool_context
 from core.events import InboundMessage, OutboundMessage
+from core.llm_client import ChatRequest, LimeLLMClient, ProviderConfig
 from core import prompt as prompt_module
 from core.metrics import MetricsCollector
 from core.session_manager import SessionManager
@@ -105,6 +122,40 @@ _CASUAL_WORDS = frozenset(
     }
 )
 
+_FAST_TOOL_ACTION_VERBS = frozenset(
+    {
+        "list",
+        "read",
+        "open",
+        "search",
+        "browse",
+        "send",
+        "schedule",
+        "remind",
+        "create",
+        "write",
+        "delete",
+        "run",
+        "install",
+        "show",
+        "find",
+        "inspect",
+    }
+)
+
+_CASUAL_PHRASE_PREFIXES = (
+    "how are you",
+    "how's it going",
+    "hows it going",
+    "what's up",
+    "whats up",
+    "good morning",
+    "good night",
+    "good evening",
+    "thank you",
+    "thanks",
+)
+
 _GHOST_TAG_RE = re.compile(
     r"</?(?:save_user|save_soul|save_identity|save_memory"
     r"|log_memory|save_mood|save_relationship"
@@ -157,6 +208,7 @@ class AgentLoop:
 
         self.session_manager = session_manager or SessionManager()
         self.metrics = MetricsCollector()
+        self.llm_client = LimeLLMClient()
         self.tool_cache = ToolCache()
         self.pending_confirmations: Dict[str, Dict[str, Any]] = {}
         self.active_tasks: Dict[str, asyncio.Task] = {}
@@ -277,6 +329,23 @@ class AgentLoop:
 
         # 3. Warm the chat LLM HTTP connection with a minimal 1-token call
         try:
+            provider = self.llm_client.resolve_provider(
+                self.primary_model,
+                default_base_url=self.config.llm.base_url,
+            )
+            await self.llm_client.complete(
+                provider,
+                ChatRequest(
+                    messages=[{"role": "user", "content": "hi"}],
+                    max_tokens=1,
+                    session_id="__warmup__",
+                ),
+            )
+            if provider.is_codex:
+                logger.info("âœ… Codex connection warmed.")
+                return
+            logger.info("âœ… LLM connection pool warmed.")
+            return
             if is_codex_model_name(self.primary_model):
                 await asyncio.to_thread(
                     complete_codex_response,
@@ -324,6 +393,9 @@ class AgentLoop:
         if self._tool_shortlist_enabled():
             selected = shortlist_tool_definitions(all_tools, user_text)
             strategy = "shortlist_env_opt_in"
+        elif self._is_fast_ai_harness_enabled():
+            selected = shortlist_tool_definitions(all_tools, user_text)
+            strategy = "shortlist_fast_mode"
         else:
             selected = list(all_tools)
             strategy = "full_schema_default"
@@ -380,37 +452,34 @@ class AgentLoop:
         Return (model, base_url, api_key, custom_llm_provider).
         Called once at init; call again via set_model() when the model changes.
         """
-        from core.llm_utils import resolve_provider_config
-
-        p_cfg = resolve_provider_config(
-            self.model, default_base_url=self.config.llm.base_url
+        provider = self.llm_client.resolve_provider(
+            self.model,
+            default_base_url=self.config.llm.base_url,
         )
         return (
-            p_cfg["model"],
-            p_cfg["base_url"],
-            p_cfg["api_key"],
-            p_cfg["custom_llm_provider"],
+            provider.model,
+            provider.base_url,
+            provider.api_key,
+            provider.custom_llm_provider,
         )
 
     def _resolve_provider_chain(
         self,
     ) -> List[Tuple[str, str, Optional[str], Optional[str], Optional[str]]]:
-        from core.llm_utils import build_provider_chain
-
-        chain = build_provider_chain(
+        chain = self.llm_client.resolve_chain(
             self.model,
             getattr(self, "fallback_models", []) or [],
             default_base_url=self.config.llm.base_url,
         )
         return [
             (
-                source_model,
-                cfg["model"],
-                cfg["base_url"],
-                cfg["api_key"],
-                cfg["custom_llm_provider"],
+                provider.source_model,
+                provider.model,
+                provider.base_url,
+                provider.api_key,
+                provider.custom_llm_provider,
             )
-            for source_model, cfg in chain
+            for provider in chain
         ]
 
     def set_model(self, model: str) -> None:
@@ -1106,6 +1175,85 @@ class AgentLoop:
     def _tool_shortlist_enabled(self) -> bool:
         return self._env_truthy("LIMEBOT_ENABLE_TOOL_SHORTLIST")
 
+    def _is_fast_ai_harness_enabled(self) -> bool:
+        ai_harness = getattr(getattr(self, "config", None), "ai_harness", None)
+        return getattr(ai_harness, "mode", "balanced") == "fast"
+
+    @staticmethod
+    def _looks_like_action_or_path_request(content: str) -> bool:
+        raw = str(content or "").strip()
+        if not raw:
+            return False
+        lowered = raw.lower()
+        first_token = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", lowered.split()[0])
+        if first_token in _FAST_TOOL_ACTION_VERBS:
+            return True
+        if lowered.startswith(("/", "@")):
+            return True
+        if re.search(r"https?://|www\.", raw, re.IGNORECASE):
+            return True
+        if re.search(r"(?:[A-Za-z]:\\|(?:\./|\.\./|/|\\))", raw):
+            return True
+        return bool(re.search(r"\b[\w.-]+\.[A-Za-z0-9]{1,8}\b", raw))
+
+    @staticmethod
+    def _is_fast_casual_turn(content: str) -> bool:
+        raw = str(content or "").strip()
+        if not raw:
+            return True
+        lowered = raw.lower()
+        if lowered in _CASUAL_WORDS:
+            return True
+        if len(raw) <= 10:
+            return True
+        return any(lowered.startswith(prefix) for prefix in _CASUAL_PHRASE_PREFIXES)
+
+    def _should_include_tools_for_turn(self, content: str) -> bool:
+        if not self._should_include_tools(content):
+            return False
+        if not self._is_fast_ai_harness_enabled():
+            return True
+        ai_harness = getattr(getattr(self, "config", None), "ai_harness", None)
+        if not getattr(ai_harness, "fast_disable_tools_for_casual", True):
+            return True
+        if self._looks_like_action_or_path_request(content):
+            return True
+        return not self._is_fast_casual_turn(content)
+
+    @staticmethod
+    def _build_provider_config(
+        source_model: str,
+        model: str,
+        base_url: Optional[str],
+        api_key: Optional[str],
+        custom_llm_provider: Optional[str],
+    ) -> ProviderConfig:
+        return ProviderConfig(
+            source_model=source_model,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            custom_llm_provider=custom_llm_provider,
+            is_codex=str(source_model or "").startswith("openai-codex/"),
+        )
+
+    def _record_stage_timing(
+        self,
+        session_key: str,
+        stage: str,
+        started_at: float,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        try:
+            self.metrics.record_stage_timing(
+                session_key,
+                stage,
+                time.perf_counter() - started_at,
+                metadata=metadata,
+            )
+        except Exception:
+            pass
+
     @staticmethod
     def _tool_definition_names(tool_defs: List[Dict[str, Any]]) -> List[str]:
         names: List[str] = []
@@ -1322,6 +1470,45 @@ class AgentLoop:
             return "\n\n".join(novel)
 
         return new_content
+
+    @staticmethod
+    def _dedupe_repeated_reply_sections(reply_to_user: str) -> str:
+        if not reply_to_user:
+            return reply_to_user
+
+        # 1. Exact-half string repetition (glued repeat)
+        n_chars = len(reply_to_user)
+        if n_chars > 80 and n_chars % 2 == 0:
+            half = n_chars // 2
+            if reply_to_user[:half] == reply_to_user[half:]:
+                logger.info("✂ Self-repetition detected (glued) — trimming duplicate half.")
+                return reply_to_user[:half]
+
+        # 2. Paragraph-level repetition
+        if len(reply_to_user) > 80:
+            _paras = [
+                p.strip()
+                for p in re.split(r"\n\s*\n", reply_to_user)
+                if p.strip()
+            ]
+            _n = len(_paras)
+            # Exact-half repetition (even paragraph count)
+            if _n >= 4 and _n % 2 == 0:
+                if _paras[: _n // 2] == _paras[_n // 2 :]:
+                    logger.info(
+                        "✂ Self-repetition detected — trimming duplicate."
+                    )
+                    return "\n\n".join(_paras[: _n // 2])
+            # Trailing-repeat (odd count or partial overlap)
+            if _n >= 3:
+                _half = _n // 2
+                if _half >= 2 and _paras[:_half] == _paras[-_half:]:
+                    logger.info(
+                        "✂ Self-repetition detected (trailing) — trimming."
+                    )
+                    return "\n\n".join(_paras[: _n - _half])
+
+        return reply_to_user
 
     @staticmethod
     def _estimate_tokens(messages: List[Dict]) -> int:
@@ -1734,18 +1921,17 @@ class AgentLoop:
         else:
             tools = self._get_tool_definitions_for_turn(tool_context_text)
         if model_override and model_override != "inherit":
-            from core.llm_utils import resolve_provider_config
-
-            cfg = resolve_provider_config(
-                model_override, default_base_url=self.config.llm.base_url
+            override_provider = self.llm_client.resolve_provider(
+                model_override,
+                default_base_url=self.config.llm.base_url,
             )
             provider_chain = [
                 (
-                    model_override,
-                    cfg["model"],
-                    cfg["base_url"],
-                    cfg["api_key"],
-                    cfg["custom_llm_provider"],
+                    override_provider.source_model,
+                    override_provider.model,
+                    override_provider.base_url,
+                    override_provider.api_key,
+                    override_provider.custom_llm_provider,
                 )
             ]
         else:
@@ -1773,23 +1959,22 @@ class AgentLoop:
 
         for attempt in range(max_retries):
             try:
-                if is_codex_model_name(active_source_model):
-                    if stream:
-                        return await asyncio.to_thread(
-                            stream_codex_response,
-                            active_source_model,
-                            messages,
-                            tools,
-                            session_key,
-                        )
-                    return await asyncio.to_thread(
-                        complete_codex_response,
-                        active_source_model,
-                        messages,
-                        tools,
-                        session_key,
-                    )
-
+                provider = self._build_provider_config(
+                    active_source_model,
+                    model,
+                    base_url,
+                    api_key,
+                    custom_llm_provider,
+                )
+                return await self.llm_client.complete(
+                    provider,
+                    ChatRequest(
+                        messages=messages,
+                        tools=tools or None,
+                        stream=stream,
+                        session_id=session_key,
+                    ),
+                )
                 kwargs: Dict[str, Any] = dict(
                     model=model,
                     messages=messages,
@@ -2098,7 +2283,19 @@ class AgentLoop:
                 },
                 {"role": "user", "content": json.dumps(to_summarise)},
             ]
-            if is_codex_model_name(self.model):
+            provider = self.llm_client.resolve_provider(
+                self.model,
+                default_base_url=self.config.llm.base_url,
+            )
+            resp = await self.llm_client.complete(
+                provider,
+                ChatRequest(
+                    messages=summary_messages,
+                    max_tokens=300,
+                    session_id=f"{session_key}::history-summary",
+                ),
+            )
+            if False and self.model:
                 resp = await asyncio.to_thread(
                     complete_codex_response,
                     self.model,
@@ -2106,7 +2303,7 @@ class AgentLoop:
                     None,
                     f"{session_key}::history-summary",
                 )
-            else:
+            elif False:
                 resp = await asyncio.to_thread(
                     completion,
                     model=self.model,
@@ -3844,21 +4041,27 @@ class AgentLoop:
         session_key = msg.session_key
         turn_id = f"turn_{uuid.uuid4().hex[:12]}"
         assistant_message_id = f"msg_{uuid.uuid4().hex[:12]}"
+        turn_started = time.perf_counter()
+        tool_batch_duration_s = 0.0
+        tool_batch_count = 0
+        tool_batch_blocked = False
 
         # ── Task tracking ────────────────────────────────────────────────
         from core.task_tracker import get_task_tracker
         _tracker = get_task_tracker()
-        _msg_task_id = await _tracker.create_task(
-            task_type="inbound_message",
-            summary=f"{msg.channel}: {(msg.content or '')[:80]}",
-            channel=msg.channel,
-            session_key=session_key,
-            chat_id=msg.chat_id,
-            metadata={"turn_id": turn_id, "sender_id": msg.sender_id},
-        )
-        await _tracker.update_task(_msg_task_id, status="running")
+        _msg_task_id = None
 
         try:
+            _msg_task_id = await _tracker.create_task(
+                task_type="inbound_message",
+                summary=f"{msg.channel}: {(msg.content or '')[:80]}",
+                channel=msg.channel,
+                session_key=session_key,
+                chat_id=msg.chat_id,
+                metadata={"turn_id": turn_id, "sender_id": msg.sender_id},
+            )
+            await _tracker.update_task(_msg_task_id, status="running")
+
             content = msg.content or ""
             attachments = [
                 attachment
@@ -4061,7 +4264,13 @@ class AgentLoop:
                         message_id=assistant_message_id,
                     )
 
-                    _RAG_TIMEOUT = 0.2
+                    rag_timeout_s = getattr(
+                        getattr(self.config, "ai_harness", None),
+                        "rag_timeout_s",
+                        0.2,
+                    )
+                    rag_stage_started = time.perf_counter()
+                    history_stage_started = time.perf_counter()
 
                     # Fast-path: skip RAG for short/casual messages.
                     async def _do_rag() -> Dict[str, Any]:
@@ -4153,18 +4362,28 @@ class AgentLoop:
                     )
 
                     if _rag_needed:
-                        rag_coro = asyncio.wait_for(_do_rag(), timeout=_RAG_TIMEOUT)
+                        rag_coro = asyncio.wait_for(_do_rag(), timeout=rag_timeout_s)
                         rag_task = asyncio.create_task(rag_coro)
                     else:
                         rag_task = None
 
                     hist_task = asyncio.create_task(_do_history_load())
 
+                    rag_stage_metadata = {
+                        "status": "skipped",
+                        "mode": "none",
+                        "timeout_s": rag_timeout_s,
+                    }
                     if rag_task is not None:
                         try:
                             rag_result = await rag_task
                             recalled_context = rag_result.get("recalled_context", "")
                             self._record_rag_trace(session_key, rag_result)
+                            rag_stage_metadata = {
+                                "status": rag_result.get("status", "completed"),
+                                "mode": rag_result.get("mode", "unknown"),
+                                "timeout_s": rag_timeout_s,
+                            }
                         except asyncio.TimeoutError:
                             recalled_context = ""
                             self._record_rag_trace(
@@ -4178,6 +4397,11 @@ class AgentLoop:
                                     "recalled_context": "",
                                 },
                             )
+                            rag_stage_metadata = {
+                                "status": "timeout",
+                                "mode": "timeout",
+                                "timeout_s": rag_timeout_s,
+                            }
                             logger.debug("Auto-RAG timeout - skipping.")
                         except Exception as e:
                             recalled_context = ""
@@ -4193,6 +4417,11 @@ class AgentLoop:
                                     "error": str(e),
                                 },
                             )
+                            rag_stage_metadata = {
+                                "status": "error",
+                                "mode": "error",
+                                "timeout_s": rag_timeout_s,
+                            }
                             logger.warning(f"Auto-RAG error: {e}")
                     else:
                         recalled_context = ""
@@ -4209,9 +4438,22 @@ class AgentLoop:
                         )
                         logger.debug("Auto-RAG skipped (short/casual message).")
 
+                    self._record_stage_timing(
+                        session_key,
+                        "rag",
+                        rag_stage_started,
+                        metadata=rag_stage_metadata,
+                    )
                     persisted = await hist_task
+                    self._record_stage_timing(
+                        session_key,
+                        "history_load",
+                        history_stage_started,
+                        metadata={"restored": bool(persisted)},
+                    )
 
                     sender_name = msg.metadata.get("sender_name", "")
+                    prompt_stage_started = time.perf_counter()
                     system_prompt = await self._build_full_system_prompt(
                         sender_id,
                         channel=msg.channel,
@@ -4219,6 +4461,12 @@ class AgentLoop:
                         recalled_context=recalled_context,
                         sender_name=sender_name,
                         current_message=content,
+                    )
+                    self._record_stage_timing(
+                        session_key,
+                        "prompt_build",
+                        prompt_stage_started,
+                        metadata={"has_recalled_context": bool(recalled_context)},
                     )
 
                     if session_key not in self.history:
@@ -4406,13 +4654,33 @@ class AgentLoop:
                     await self._trim_history(session_key)
                     asyncio.create_task(self._flush_history(session_key))
 
-                    include_tools = self._should_include_tools(content)
+                    include_tools = self._should_include_tools_for_turn(content)
                     self._log_tool_debug(
                         "tool_gate_decision",
                         session_key=session_key,
                         include_tools=include_tools,
                         content=content,
                     )
+                    initial_tool_definitions: Optional[List[Dict[str, Any]]] = None
+                    if include_tools:
+                        tool_schema_started = time.perf_counter()
+                        initial_tool_definitions = self._get_tool_definitions_for_turn(
+                            content
+                        )
+                        self._record_stage_timing(
+                            session_key,
+                            "tool_schema",
+                            tool_schema_started,
+                            metadata={
+                                "tool_count": len(initial_tool_definitions),
+                                "mode": getattr(
+                                    getattr(self.config, "ai_harness", None),
+                                    "mode",
+                                    "balanced",
+                                ),
+                            },
+                        )
+                    llm_first_call_started = time.perf_counter()
                     stream = await self._llm_call_with_retry(
                         messages=self.history[session_key],
                         session_key=session_key,
@@ -4422,7 +4690,18 @@ class AgentLoop:
                         tool_context_text=content,
                         turn_id=turn_id,
                         message_id=assistant_message_id,
+                        tool_definitions_override=initial_tool_definitions,
                     )
+                    self._record_stage_timing(
+                        session_key,
+                        "llm_first_call",
+                        llm_first_call_started,
+                        metadata={
+                            "include_tools": include_tools,
+                            "tool_count": len(initial_tool_definitions or []),
+                        },
+                    )
+                    stream_consume_started = time.perf_counter()
                     consume_result = await self._consume_stream(
                         stream,
                         msg,
@@ -4438,6 +4717,12 @@ class AgentLoop:
                         streamed_to_discord,
                     ) = (
                         self._unpack_stream_result(consume_result)
+                    )
+                    self._record_stage_timing(
+                        session_key,
+                        "stream_consume",
+                        stream_consume_started,
+                        metadata={"tool_call_count": len(tool_calls or [])},
                     )
                     accumulated_content = full_content
                     iterations_limit_reached = False
@@ -4490,6 +4775,7 @@ class AgentLoop:
                             turn_id=turn_id,
                             message_id=assistant_message_id,
                         )
+                        tool_batch_started = time.perf_counter()
                         is_blocked = await self._execute_tool_batch(
                             tool_calls,
                             session_key,
@@ -4497,6 +4783,9 @@ class AgentLoop:
                             turn_id=turn_id,
                             message_id=assistant_message_id,
                         )
+                        tool_batch_duration_s += time.perf_counter() - tool_batch_started
+                        tool_batch_count += 1
+                        tool_batch_blocked = bool(is_blocked)
 
                         if not is_blocked:
                             max_iterations = getattr(self.config, "max_iterations", 30)
@@ -4609,6 +4898,7 @@ class AgentLoop:
                                 self.history[session_key].append(nxt_am)
                                 self._mark_dirty(session_key)
 
+                                tool_batch_started = time.perf_counter()
                                 nxt_blocked = await self._execute_tool_batch(
                                     nxt_tool_calls,
                                     session_key,
@@ -4616,6 +4906,11 @@ class AgentLoop:
                                     turn_id=turn_id,
                                     message_id=assistant_message_id,
                                 )
+                                tool_batch_duration_s += (
+                                    time.perf_counter() - tool_batch_started
+                                )
+                                tool_batch_count += 1
+                                tool_batch_blocked = bool(nxt_blocked)
 
                                 if iteration % _INTERIM_SAVE_EVERY == 0:
                                     await self._flush_history(session_key)
@@ -4624,6 +4919,19 @@ class AgentLoop:
                                     logger.info("🛑 Tool blocked — stopping loop.")
                                     raw_reply = accumulated_content
                                     break
+                            if tool_batch_count:
+                                try:
+                                    self.metrics.record_stage_timing(
+                                        session_key,
+                                        "tool_batch",
+                                        tool_batch_duration_s,
+                                        metadata={
+                                            "batch_count": tool_batch_count,
+                                            "blocked": tool_batch_blocked,
+                                        },
+                                    )
+                                except Exception:
+                                    pass
                         else:
                             logger.info("🛑 Tool blocked — skipping tool loop.")
                     else:
@@ -4685,37 +4993,13 @@ class AgentLoop:
                         force_direct_reply = True
 
                     # ── Self-repetition dedup ────────────────────────────
-                    # Some models (e.g. Kimi K2) repeat their entire
-                    # response within a single generation.  Detect and
-                    # strip the duplicate half by comparing paragraphs.
-                    if reply_to_user and len(reply_to_user) > 80:
-                        _paras = [
-                            p.strip()
-                            for p in re.split(r"\n\s*\n", reply_to_user)
-                            if p.strip()
-                        ]
-                        _n = len(_paras)
-                        # Exact-half repetition (even paragraph count)
-                        if _n >= 4 and _n % 2 == 0:
-                            if _paras[: _n // 2] == _paras[_n // 2 :]:
-                                logger.info(
-                                    "✂ Self-repetition detected — trimming duplicate."
-                                )
-                                reply_to_user = "\n\n".join(_paras[: _n // 2])
-                        # Trailing-repeat (odd count or partial overlap)
-                        if _n >= 3:
-                            _half = _n // 2
-                            if _half >= 2 and _paras[:_half] == _paras[-_half:]:
-                                logger.info(
-                                    "✂ Self-repetition detected (trailing) — trimming."
-                                )
-                                reply_to_user = "\n\n".join(_paras[: _n - _half])
+                    reply_to_user = self._dedupe_repeated_reply_sections(reply_to_user)
 
                     if soul_updated or identity_updated:
                         self._invalidate_stable_prompt(sender_id)
                         logger.info("🔄 Stable prompt cache invalidated.")
 
-                    if not tool_calls:
+                    if not tool_calls and not (full_content or tool_calls):
                         self.history[session_key].append(
                             {"role": "assistant", "content": raw_reply}
                         )
@@ -4823,7 +5107,7 @@ class AgentLoop:
 
                     traceback.print_exc()
                     logger.exception(f"❌ Error processing message: {e}")
-                    await _tracker.complete_task(_msg_task_id, error=str(e))
+                    await _tracker.complete_task(_msg_task_id, error=str(e)) if _msg_task_id else None
                     self._log_session_event(
                         session_key,
                         {
@@ -4846,6 +5130,12 @@ class AgentLoop:
                     )
 
         finally:
+            self._record_stage_timing(
+                session_key,
+                "turn_total",
+                turn_started,
+                metadata={"channel": getattr(msg, "channel", "unknown")},
+            )
             if _msg_task_id:
                 task = await _tracker.get_task(_msg_task_id)
                 if task and task.status == "running":
