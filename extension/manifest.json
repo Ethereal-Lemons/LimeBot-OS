@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "LimeBot Companion",
+  "description": "Ask LimeBot about pages, send selected text, and approve tools from a browser companion.",
+  "version": "1.0.10",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_title": "Open LimeBot Companion",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "scripting",
+    "sidePanel",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "ws://localhost/*",
+    "ws://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*",
+    "ws://*/*",
+    "wss://*/*"
+  ],
+  "icons": {
+    "16": "limeLogo.png",
+    "32": "limeLogo.png",
+    "48": "limeLogo.png",
+    "128": "limeLogo.png"
+  }
+}

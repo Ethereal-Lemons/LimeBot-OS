@@ -49,8 +49,6 @@ function loadTimeThemeSettings(): TimeThemeSettings {
     }
 }
 
-// ── Theme Definitions ────────────────────────────────────────────────────────
-
 const standardThemes = [
     { id: 'lime', name: 'Cyber Lime', color: 'bg-[#84cc16]' },
     { id: 'purple', name: 'Nebula', color: 'bg-[#8b5cf6]' },
@@ -87,14 +85,13 @@ const specialThemes = [
 
 const allThemeOptions = [...standardThemes, ...specialThemes];
 
-// ── Main Component ───────────────────────────────────────────────────────────
-
-export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: AppearancePageProps) {
+export function AppearancePage({
+    onThemeChange,
+    onTimeThemeSettingsChange,
+}: AppearancePageProps) {
     const [currentTheme, setCurrentTheme] = useState(() => localStorage.getItem('limebot-theme') || 'lime');
     const [timeTheme, setTimeTheme] = useState<TimeThemeSettings>(() => loadTimeThemeSettings());
     const [openSection, setOpenSection] = useState<string | null>(null);
-
-    // Wallpaper state
     const [wallpaperUrl, setWallpaperUrl] = useState('');
     const [wallpaperOverlay, setWallpaperOverlay] = useState(60);
     const [wallpaperActive, setWallpaperActive] = useState(false);
@@ -108,7 +105,9 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                 setWallpaperOverlay(Math.round((wp.overlay ?? 0.6) * 100));
                 setWallpaperActive(!!wp.url);
             }
-        } catch { /* ignore */ }
+        } catch {
+            // Ignore malformed local wallpaper state.
+        }
     }, []);
 
     const hourOptions = Array.from({ length: 24 }, (_, hour) => ({
@@ -144,7 +143,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
         localStorage.removeItem('limebot-wallpaper');
         setWallpaperUrl('');
         setWallpaperActive(false);
-        // Re-apply current theme to restore original bg
         onThemeChange?.(currentTheme);
     };
 
@@ -161,7 +159,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                     </p>
                 </header>
 
-                {/* ── Color Themes (compact swatch grid) ──────────────── */}
                 <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
                     <div className="p-5 pb-4">
                         <h3 className="font-semibold text-sm flex items-center gap-2">
@@ -169,7 +166,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                             Color Themes
                         </h3>
 
-                        {/* Standard — compact circular swatches */}
                         <div className="flex flex-wrap gap-3 mt-4">
                             {standardThemes.map((theme) => (
                                 <button
@@ -192,7 +188,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                             ))}
                         </div>
 
-                        {/* Label row for active theme name */}
                         <p className="text-xs text-muted-foreground mt-2">
                             Active: <span className="text-foreground font-medium">{
                                 [...standardThemes, ...specialThemes].find(t => t.id === currentTheme)?.name
@@ -200,7 +195,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                             }</span>
                         </p>
 
-                        {/* Special themes divider */}
                         <div className="relative mt-5 mb-3">
                             <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
                             <div className="relative flex justify-center text-[10px] uppercase tracking-widest">
@@ -208,7 +202,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                             </div>
                         </div>
 
-                        {/* Special — grid of mini cards */}
                         <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                             {specialThemes.map((theme) => (
                                 <button
@@ -232,7 +225,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                     </div>
                 </div>
 
-                {/* ── Wallpaper (collapsible) ─────────────────────────── */}
                 <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
                     <button
                         onClick={() => toggleSection('wallpaper')}
@@ -264,7 +256,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                                 </Button>
                             </div>
 
-                            {/* Preview */}
                             {wallpaperUrl.trim() && (
                                 <div className="relative rounded-lg overflow-hidden border border-border h-28">
                                     <img
@@ -283,9 +274,8 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                                 </div>
                             )}
 
-                            {/* Overlay slider */}
                             <div className="space-y-1">
-                                <Label className="text-xs text-muted-foreground">Overlay Darkness — {wallpaperOverlay}%</Label>
+                                <Label className="text-xs text-muted-foreground">Overlay Darkness - {wallpaperOverlay}%</Label>
                                 <input
                                     type="range"
                                     min={0}
@@ -295,7 +285,7 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                                     className="w-full h-1.5 accent-primary cursor-pointer"
                                 />
                                 <p className="text-[10px] text-muted-foreground">
-                                    Higher values make text easier to read. Recommended: 50–70%.
+                                    Higher values make text easier to read. Recommended: 50-70%.
                                 </p>
                             </div>
 
@@ -308,7 +298,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                     )}
                 </div>
 
-                {/* ── Time-based Themes (inline collapsible) ──────────── */}
                 <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
                     <button
                         onClick={() => toggleSection('time')}
@@ -369,7 +358,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                     )}
                 </div>
 
-                {/* ── Custom Themes (collapsible) ─────────────────────── */}
                 <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
                     <button
                         onClick={() => toggleSection('custom')}
@@ -391,7 +379,6 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
                     )}
                 </div>
 
-                {/* ── Custom CSS (collapsible) ────────────────────────── */}
                 <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
                     <button
                         onClick={() => toggleSection('css')}
@@ -417,9 +404,7 @@ export function AppearancePage({ onThemeChange, onTimeThemeSettingsChange }: App
     );
 }
 
-// ── Custom CSS Editor ─────────────────────────────────────────────────────────
-
-const CSS_PLACEHOLDER = `/* Paste any CSS here — it's injected live into the page.
+const CSS_PLACEHOLDER = `/* Paste any CSS here - it's injected live into the page.
 
 Examples:
 
@@ -440,7 +425,6 @@ function CustomCssEditor() {
     const [copied, setCopied] = useState(false);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Apply saved CSS on mount
     useEffect(() => { injectCss(css); }, []);
 
     const handleChange = (value: string) => {

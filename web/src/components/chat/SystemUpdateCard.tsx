@@ -1,5 +1,4 @@
-import { Sparkles, Database, ShieldCheck, Cpu, Zap, RefreshCw } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Sparkles, Database, ShieldCheck, Zap, RefreshCw } from "lucide-react";
 
 interface SystemUpdateCardProps {
     content: string;

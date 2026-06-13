@@ -19,14 +19,17 @@
     "skill": "node bin/cli.js skill",
     "install-browser": "node bin/cli.js install-browser",
     "web:dev": "cd web && npm run dev -- --host 0.0.0.0",
-    "backend:dev": "python main.py"
+    "backend:dev": "python main.py",
+    "extension:dev": "npm run dev --workspace extension",
+    "extension:build": "npm run build --workspace extension"
   },
   "dependencies": {
     "@mariozechner/pi-ai": "^0.68.1"
   },
   "workspaces": [
     "web",
-    "bridge"
+    "bridge",
+    "extension"
   ],
   "type": "module"
 }

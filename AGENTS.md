@@ -2,6 +2,11 @@
 
 This document is the authoritative source of truth for the LimeBot codebase. It is read by developers building on LimeBot **and** by the agent itself at runtime. Everything here is accurate to the current implementation.
 
+Documentation split:
+- `README.md` is the user-facing setup guide for installing LimeBot and the browser companion.
+- `extension/README.md` is the user-facing setup guide for the extension itself.
+- `AGENTS.md` stays implementation-focused and should not be used as the main onboarding doc for end users.
+
 ---
 
 ## 🏛️ Architecture Overview
@@ -240,6 +245,14 @@ FastAPI application serving:
 - WebSocket auth: `api_key` query param checked against `APP_API_KEY`
 - Caches the WhatsApp QR code and re-sends it to new WebSocket connections
 - Chat UI renders `SUB-AGENT REPORT` replies as structured cards and suppresses adjacent empty orchestration thoughts/tool groups when they only describe `spawn_agent` handoff noise
+
+### Browser Companion Extension (`extension/`)
+- Manifest V3 browser companion for page help, selected text handoff, live task status, and tool approvals
+- Reuses the web channel backend over REST and WebSocket instead of introducing a separate backend service
+- Uses LimeBot's persona name and avatar when `/api/identity` returns them
+- Chrome and Edge open the companion with `chrome.sidePanel`
+- Opera GX falls back to opening the same companion surface in a regular extension tab when native side panel support is unavailable
+- The old web mascot pop-out flow is not part of the current product surface
 
 ### Discord Channel (`channels/discord.py`)
 - Responds to DMs and `@mentions` only (ignores ambient channel messages)

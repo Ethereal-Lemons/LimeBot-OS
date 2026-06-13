@@ -21,8 +21,6 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { useTheme, applyThemeWithSchedule } from "@/hooks/useTheme";
 import { useIdentity } from "@/hooks/useIdentity";
 
-// ── Lazy-loaded views ─────────────────────────────────────────────────────────
-
 const InstancesList = lazy(() =>
   import("@/components/sessions/SessionsList").then((module) => ({
     default: module.InstancesList,
@@ -104,8 +102,6 @@ const BrowserSessionsPanel = lazy(() =>
   }))
 );
 
-// ── View metadata ─────────────────────────────────────────────────────────────
-
 const VIEW_META: Record<string, { title: string; description: string }> = {
   chat: { title: "Chat", description: "Live conversation and tool execution." },
   overview: { title: "Overview", description: "System health, gateway access, and controls." },
@@ -138,8 +134,6 @@ type LlmRuntimeStatus = {
   using_fallback: boolean;
 };
 
-// ── Root component ────────────────────────────────────────────────────────────
-
 function App() {
   const setupRouteRequested = window.location.pathname === '/setup';
   const [currentView, setCurrentView] = useState('chat');
@@ -153,7 +147,6 @@ function App() {
   const [personaSetupPending, setPersonaSetupPending] = useState(false);
   const setupKickoffSessionRef = useRef<string | null>(null);
 
-  // ── Custom hooks ────────────────────────────────────────────────────────
   const { botIdentity, setBotIdentity, refreshIdentity, lastExplicitFetch } = useIdentity();
   const { handleThemeChange, handleTimeThemeSettingsChange } = useTheme();
 
@@ -174,7 +167,21 @@ function App() {
     onActivityClear: () => setActivity(null),
   });
 
-  // ── Auth ────────────────────────────────────────────────────────────────
+  const pendingApprovals = messages.filter(
+    (message) =>
+      message.type === 'tool' &&
+      (
+        message.toolExecution?.status === 'waiting_confirmation' ||
+        message.toolExecution?.status === 'pending_confirmation'
+      )
+  ).length;
+  const currentViewMeta = VIEW_META[currentView] || VIEW_META.chat;
+  const shellRuntimeStatus: ShellRuntimeStatus = {
+    isConnected,
+    autonomousMode,
+    pendingApprovals,
+  };
+
   const handleAuthSuccess = (key: string) => {
     localStorage.setItem('limebot_api_key', key);
     axios.defaults.headers.common['X-API-Key'] = key;
@@ -182,7 +189,6 @@ function App() {
     window.location.reload();
   };
 
-  // ── Initialization effect ───────────────────────────────────────────────
   useEffect(() => {
     document.documentElement.classList.add('dark');
 
@@ -268,7 +274,7 @@ function App() {
       setIsInitialized(true);
     };
 
-    init();
+    void init();
     if (!setupRouteRequested) {
       connectWebSocket();
     }
@@ -278,7 +284,7 @@ function App() {
       window.clearInterval(themeTimer);
       document.removeEventListener('visibilitychange', reapplyScheduledTheme);
     };
-  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let cancelled = false;
@@ -296,7 +302,7 @@ function App() {
       }
     };
 
-    fetchLlmRuntime();
+    void fetchLlmRuntime();
     const interval = window.setInterval(fetchLlmRuntime, 15000);
     return () => {
       cancelled = true;
@@ -324,23 +330,6 @@ function App() {
     sessionId,
   ]);
 
-  // ── Derived state ───────────────────────────────────────────────────────
-  const pendingApprovals = messages.filter(
-    (message) =>
-      message.type === 'tool' &&
-      (
-        message.toolExecution?.status === 'waiting_confirmation' ||
-        message.toolExecution?.status === 'pending_confirmation'
-      )
-  ).length;
-  const currentViewMeta = VIEW_META[currentView] || VIEW_META.chat;
-  const shellRuntimeStatus: ShellRuntimeStatus = {
-    isConnected,
-    autonomousMode,
-    pendingApprovals,
-  };
-
-  // ── Loading screen ──────────────────────────────────────────────────────
   if (!isInitialized) {
     return (
       <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
@@ -376,7 +365,6 @@ function App() {
     );
   }
 
-  // ── Main layout ─────────────────────────────────────────────────────────
   return (
     <AppLayout
       botIdentity={botIdentity}
@@ -469,7 +457,6 @@ function App() {
       <Toaster position="top-right" />
     </AppLayout >
   );
-
 }
 
 export default App;

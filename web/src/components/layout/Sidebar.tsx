@@ -44,7 +44,13 @@ interface SidebarProps {
     };
 }
 
-export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigate, runtimeStatus }: SidebarProps) {
+export function Sidebar({
+    className,
+    botIdentity,
+    activeView = 'chat',
+    onNavigate,
+    runtimeStatus,
+}: SidebarProps) {
     const [activeModel, setActiveModel] = useState("Loading...");
     const [memoryLabel, setMemoryLabel] = useState("Checking...");
     const [memoryTone, setMemoryTone] = useState("text-muted-foreground");
@@ -165,7 +171,7 @@ export function Sidebar({ className, botIdentity, activeView = 'chat', onNavigat
     }, []);
 
     return (
-        <div className={cn("hidden h-[calc(100vh-2rem)] m-4 w-64 flex-col rounded-2xl bg-card border border-border md:flex shadow-xl", className)}>
+        <div className={cn("hidden h-[calc(100vh-2rem)] m-4 w-72 flex-col rounded-2xl bg-card border border-border md:flex shadow-xl", className)}>
             <div className="flex h-20 items-center px-6">
                 <a
                     className="flex items-center gap-3 font-bold text-xl cursor-pointer group"
