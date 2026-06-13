@@ -35,7 +35,15 @@ DEFAULT_TOOL_RESULT_LIMIT = 2_000
 # Browser tools operate on mutable, session-local state — caching is unsafe.
 BROWSER_CACHEABLE: frozenset = frozenset()
 
-TAG_COMPAT_TOOLS = frozenset({"save_memory", "log_memory"})
+TAG_COMPAT_TOOLS = frozenset({
+    "save_memory",
+    "log_memory",
+    "save_soul",
+    "save_identity",
+    "save_mood",
+    "save_relationship",
+    "save_user",
+})
 
 TOOL_INTENT_RE = re.compile(
     r"\b("

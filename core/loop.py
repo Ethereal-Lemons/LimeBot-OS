@@ -2440,21 +2440,41 @@ class AgentLoop:
             return f"Error executing browser tool: {e}"
 
     async def _execute_tag_compat_tool(
-        self, function_name: str, function_args: Dict[str, Any]
+        self, function_name: str, function_args: Dict[str, Any], session_key: str = "default"
     ) -> str:
-        content = str(
-            function_args.get("content")
-            or function_args.get("entry")
-            or function_args.get("text")
-            or ""
-        ).strip()
+        content = ""
+        # Check explicit priority keys first
+        for key in ["content", "entry", "text", "context", "mood", "soul", "identity", "relationship", "value"]:
+            if key in function_args and function_args[key]:
+                content = str(function_args[key]).strip()
+                break
+
+        # Fallback: find the first non-empty string value in function_args
         if not content:
-            return f"Error: '{function_name}' requires 'content'"
+            for k, v in function_args.items():
+                if isinstance(v, str) and v.strip():
+                    content = v.strip()
+                    break
+
+        if not content:
+            return f"Error: '{function_name}' requires content"
+
+        # Resolve sender_id safely
+        sender_id = None
+        from core.context import tool_context
+        ctx = tool_context.get() or {}
+        if ctx.get("sender_id"):
+            sender_id = ctx["sender_id"]
+        elif ":" in session_key:
+            sender_id = session_key.split(":", 1)[1]
+        
+        if not sender_id:
+            sender_id = "tool-compat"
 
         raw_reply = f"<{function_name}>{content}</{function_name}>"
-        await process_tags(
+        tag_result = await process_tags(
             raw_reply=raw_reply,
-            sender_id="tool-compat",
+            sender_id=sender_id,
             validate_soul=prompt_module.validate_and_save_soul,
             validate_identity=prompt_module.validate_and_save_identity,
             validate_mood=prompt_module.validate_and_save_mood,
@@ -2465,10 +2485,23 @@ class AgentLoop:
             config=self.config,
         )
 
+        if tag_result.soul_updated or tag_result.identity_updated:
+            self._invalidate_stable_prompt(sender_id)
+
         if function_name == "save_memory":
             return "Long-term memory saved."
         if function_name == "log_memory":
             return "Memory logged."
+        if function_name == "save_soul":
+            return "Soul saved."
+        if function_name == "save_identity":
+            return "Identity saved."
+        if function_name == "save_mood":
+            return "Mood saved."
+        if function_name == "save_relationship":
+            return "Relationship saved."
+        if function_name == "save_user":
+            return "User profile saved."
         return "Tag action completed."
 
     async def _execute_tool(
@@ -2532,7 +2565,7 @@ class AgentLoop:
                 )
             elif function_name in _TAG_COMPAT_TOOLS:
                 result = await self._execute_tag_compat_tool(
-                    function_name, function_args
+                    function_name, function_args, session_key
                 )
             else:
                 handler = self._tool_registry.get(function_name)

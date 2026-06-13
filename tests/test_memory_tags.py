@@ -136,3 +136,68 @@ class TestMemoryTags(unittest.IsolatedAsyncioTestCase):
             "Compat episodic memory entry.",
             self.today_file.read_text(encoding="utf-8"),
         )
+
+    async def test_compat_save_relationship_and_others(self):
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+        from core.paths import RELATIONSHIPS_FILE, MOOD_FILE
+        import os
+        import shutil
+
+        # Setup temporary backup for relationships & mood
+        rel_existed = RELATIONSHIPS_FILE.exists()
+        rel_content = RELATIONSHIPS_FILE.read_text(encoding="utf-8") if rel_existed else None
+        mood_existed = MOOD_FILE.exists()
+        mood_content = MOOD_FILE.read_text(encoding="utf-8") if mood_existed else None
+
+        try:
+            class _TestAgentLoop(AgentLoop):
+                async def _init_skills_and_tools(self) -> None:
+                    self._tool_definitions = []
+                    self._warmed = True
+
+            agent = _TestAgentLoop(bus=MessageBus())
+            agent.vector_service = None
+            agent.config.llm.enable_dynamic_personality = True
+
+            # 1. Test save_relationship
+            res = await agent._execute_tool(
+                "save_relationship",
+                {"context": "we are dating"},
+                session_key="web:test_user",
+            )
+            self.assertEqual(res, "Relationship saved.")
+            self.assertTrue(RELATIONSHIPS_FILE.exists())
+            self.assertIn("we are dating", RELATIONSHIPS_FILE.read_text(encoding="utf-8"))
+
+            # 2. Test save_mood
+            res2 = await agent._execute_tool(
+                "save_mood",
+                {"mood": "happy"},
+                session_key="web:test_user",
+            )
+            self.assertEqual(res2, "Mood saved.")
+            self.assertTrue(MOOD_FILE.exists())
+            self.assertEqual("happy", MOOD_FILE.read_text(encoding="utf-8").strip())
+
+            # 3. Test parameter fallback (non-standard argument names)
+            res3 = await agent._execute_tool(
+                "save_mood",
+                {"arbitrary_arg": "excited"},
+                session_key="web:test_user",
+            )
+            self.assertEqual(res3, "Mood saved.")
+            self.assertEqual("excited", MOOD_FILE.read_text(encoding="utf-8").strip())
+
+        finally:
+            # Clean up relationships file
+            if rel_existed:
+                RELATIONSHIPS_FILE.write_text(rel_content, encoding="utf-8")
+            elif RELATIONSHIPS_FILE.exists():
+                RELATIONSHIPS_FILE.unlink()
+
+            # Clean up mood file
+            if mood_existed:
+                MOOD_FILE.write_text(mood_content, encoding="utf-8")
+            elif MOOD_FILE.exists():
+                MOOD_FILE.unlink()
