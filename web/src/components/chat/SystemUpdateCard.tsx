@@ -1,4 +1,4 @@
-import { Sparkles, Database, CheckCircle2, ShieldCheck, Cpu } from "lucide-react";
+import { Sparkles, Database, ShieldCheck, Cpu, Zap, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface SystemUpdateCardProps {
@@ -12,89 +12,161 @@ export function SystemUpdateCard({ content }: SystemUpdateCardProps) {
         ? "AI behavior profiles, identity parameters, and core response guidelines have been dynamically compiled and synchronized."
         : "Workspace system state, dynamic memory indices, and persistent environment buffers have been successfully synchronized.";
 
-    const themeColors = isPersonaUpdate
+    const theme = isPersonaUpdate
         ? {
-              border: "border-emerald-500/30 dark:border-emerald-400/20 border-l-emerald-500 dark:border-l-emerald-400",
-              bg: "bg-emerald-500/[0.04] dark:bg-emerald-500/[0.02]",
-              glow: "shadow-[0_4px_24px_-4px_rgba(16,185,129,0.12)]",
-              text: "text-emerald-700 dark:text-emerald-400 font-extrabold tracking-tight",
-              iconBg: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20",
-              badge: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20",
-              pillLabel: "Identity Sync"
+              accent: "#10b981",
+              accentMuted: "rgba(16,185,129,0.15)",
+              accentDim: "rgba(16,185,129,0.06)",
+              accentGlow: "rgba(16,185,129,0.35)",
+              accentSoft: "rgba(16,185,129,0.08)",
+              badge: "emerald",
+              label: "Identity Sync",
           }
         : {
-              border: "border-cyan-500/30 dark:border-cyan-400/20 border-l-cyan-500 dark:border-l-cyan-400",
-              bg: "bg-cyan-500/[0.04] dark:bg-cyan-500/[0.02]",
-              glow: "shadow-[0_4px_24px_-4px_rgba(6,182,212,0.12)]",
-              text: "text-cyan-700 dark:text-cyan-400 font-extrabold tracking-tight",
-              iconBg: "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/20",
-              badge: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400 border border-cyan-500/20",
-              pillLabel: "Storage Write"
+              accent: "#06b6d4",
+              accentMuted: "rgba(6,182,212,0.15)",
+              accentDim: "rgba(6,182,212,0.06)",
+              accentGlow: "rgba(6,182,212,0.35)",
+              accentSoft: "rgba(6,182,212,0.08)",
+              badge: "cyan",
+              label: "Memory Write",
           };
 
     return (
         <div
-            className={cn(
-                "group relative my-3.5 w-full max-w-xl overflow-hidden rounded-xl border border-l-4 p-4.5 transition-all duration-300 hover:-translate-y-0.5",
-                themeColors.border,
-                "bg-card/90 dark:bg-card/75",
-                themeColors.bg,
-                themeColors.glow,
-                "backdrop-blur-md shadow-lg"
-            )}
+            className="group relative my-3.5 w-full max-w-xl overflow-hidden rounded-2xl transition-all duration-500 hover:-translate-y-0.5"
+            style={{
+                background: `linear-gradient(135deg, hsl(var(--card)/0.95) 0%, hsl(var(--card)/0.80) 100%)`,
+                border: `1px solid ${theme.accentMuted}`,
+                boxShadow: `0 0 0 1px ${theme.accentDim}, 0 8px 32px -8px ${theme.accentGlow}, 0 2px 8px rgba(0,0,0,0.25)`,
+                backdropFilter: "blur(16px)",
+            }}
         >
-            {/* Soft decorative background pulse */}
-            <div className={cn(
-                "absolute -right-16 -top-16 h-36 w-36 rounded-full blur-[60px] transition-all duration-500 group-hover:scale-125 opacity-30",
-                isPersonaUpdate ? "bg-emerald-500/20" : "bg-cyan-500/20"
-            )} />
+            {/* Top accent glow bar */}
+            <div
+                className="absolute top-0 inset-x-0 h-px"
+                style={{
+                    background: `linear-gradient(90deg, transparent 0%, ${theme.accent} 40%, ${theme.accent} 60%, transparent 100%)`,
+                    opacity: 0.7,
+                }}
+            />
 
-            <div className="relative flex items-start gap-4">
-                <div className={cn(
-                    "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg shadow-sm transition-transform duration-500 group-hover:rotate-[360deg]",
-                    themeColors.iconBg
-                )}>
-                    {isPersonaUpdate ? (
-                        <Sparkles className="h-5 w-5 animate-pulse" />
-                    ) : (
-                        <Database className="h-5 w-5" />
-                    )}
-                </div>
+            {/* Ambient background gradient */}
+            <div
+                className="absolute inset-0 opacity-100 pointer-events-none"
+                style={{
+                    background: `radial-gradient(ellipse 80% 60% at 90% -10%, ${theme.accentSoft} 0%, transparent 70%)`,
+                }}
+            />
 
-                <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
-                        <h4 className={cn("text-[14px] uppercase tracking-wide", themeColors.text)}>
-                            {title}
-                        </h4>
-                        <span className={cn(
-                            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-bold tracking-wider",
-                            themeColors.badge
-                        )}>
-                            <CheckCircle2 className="h-3 w-3" />
-                            SUCCESS
-                        </span>
-                        <span className="text-[10px] text-muted-foreground/60 font-mono ml-auto">
-                            {themeColors.pillLabel}
-                        </span>
+            {/* Subtle scan-line shimmer */}
+            <div
+                className="absolute inset-0 opacity-[0.03] pointer-events-none"
+                style={{
+                    backgroundImage: `repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255,255,255,0.5) 2px, rgba(255,255,255,0.5) 3px)`,
+                }}
+            />
+
+            <div className="relative p-4">
+                <div className="flex items-start gap-3.5">
+                    {/* Icon */}
+                    <div
+                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-all duration-700 group-hover:rotate-[360deg]"
+                        style={{
+                            background: `linear-gradient(135deg, ${theme.accentMuted} 0%, ${theme.accentDim} 100%)`,
+                            border: `1px solid ${theme.accentMuted}`,
+                            boxShadow: `0 0 12px -2px ${theme.accentGlow}`,
+                            color: theme.accent,
+                        }}
+                    >
+                        {isPersonaUpdate ? (
+                            <Sparkles className="h-4.5 w-4.5" style={{ filter: `drop-shadow(0 0 4px ${theme.accent})` }} />
+                        ) : (
+                            <Database className="h-4.5 w-4.5" style={{ filter: `drop-shadow(0 0 4px ${theme.accent})` }} />
+                        )}
                     </div>
 
-                    <p className="text-[13px] leading-[1.6] text-foreground/80 dark:text-foreground/90 font-medium font-sans mb-3.5">
-                        {description}
-                    </p>
+                    <div className="flex-1 min-w-0">
+                        {/* Header row */}
+                        <div className="flex flex-wrap items-center gap-2 mb-2.5">
+                            <h4
+                                className="text-[12px] font-black uppercase tracking-[0.12em]"
+                                style={{
+                                    color: theme.accent,
+                                    textShadow: `0 0 16px ${theme.accentGlow}`,
+                                }}
+                            >
+                                {title}
+                            </h4>
 
-                    <div className="flex items-center gap-4 text-[10.5px] font-mono text-muted-foreground/65 dark:text-muted-foreground/50 border-t border-border/40 pt-3">
-                        <div className="flex items-center gap-1.5">
-                            <ShieldCheck className="h-3.5 w-3.5 text-foreground/40" />
-                            <span>Integrity: Validated</span>
+                            {/* Success badge */}
+                            <span
+                                className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[9px] font-bold tracking-[0.1em]"
+                                style={{
+                                    background: theme.accentMuted,
+                                    border: `1px solid ${theme.accentMuted}`,
+                                    color: theme.accent,
+                                }}
+                            >
+                                <span
+                                    className="h-1.5 w-1.5 rounded-full animate-pulse"
+                                    style={{ background: theme.accent, boxShadow: `0 0 6px ${theme.accent}` }}
+                                />
+                                SUCCESS
+                            </span>
+
+                            {/* Pill label */}
+                            <span
+                                className="ml-auto text-[9.5px] font-mono tracking-wider opacity-50"
+                                style={{ color: theme.accent }}
+                            >
+                                {theme.label}
+                            </span>
                         </div>
-                        <div className="h-3 w-px bg-border/40" />
-                        <div className="flex items-center gap-1.5">
-                            <Cpu className="h-3.5 w-3.5 text-foreground/40" />
-                            <span>Agent Hot-Reloaded</span>
+
+                        {/* Description */}
+                        <p className="text-[12.5px] leading-[1.65] text-foreground/70 mb-3.5 font-normal">
+                            {description}
+                        </p>
+
+                        {/* Footer */}
+                        <div
+                            className="flex items-center gap-5 pt-3"
+                            style={{ borderTop: `1px solid ${theme.accentDim}` }}
+                        >
+                            <div
+                                className="flex items-center gap-1.5 text-[10px] font-mono tracking-wide"
+                                style={{ color: theme.accent, opacity: 0.55 }}
+                            >
+                                <ShieldCheck className="h-3 w-3" />
+                                <span>Integrity: Validated</span>
+                            </div>
+                            <div
+                                className="h-2.5 w-px"
+                                style={{ background: theme.accentMuted }}
+                            />
+                            <div
+                                className="flex items-center gap-1.5 text-[10px] font-mono tracking-wide"
+                                style={{ color: theme.accent, opacity: 0.55 }}
+                            >
+                                <RefreshCw className="h-3 w-3" />
+                                <span>Agent Hot-Reloaded</span>
+                            </div>
+                            <div className="ml-auto flex items-center gap-1" style={{ color: theme.accent, opacity: 0.4 }}>
+                                <Zap className="h-2.5 w-2.5" />
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
+
+            {/* Bottom accent glow bar */}
+            <div
+                className="absolute bottom-0 inset-x-0 h-px opacity-30"
+                style={{
+                    background: `linear-gradient(90deg, transparent 0%, ${theme.accent} 50%, transparent 100%)`,
+                }}
+            />
         </div>
     );
 }

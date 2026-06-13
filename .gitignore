@@ -105,3 +105,4 @@ allowed_paths.txt
 
 # Local-only skills (never commit)
 skills/twitter-engagement/
+plans/*

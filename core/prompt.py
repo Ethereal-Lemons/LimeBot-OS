@@ -442,15 +442,6 @@ def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
     needs_user_profile = not soul_exists and not identity_exists
 
     missing = setup_state["missing"]
-    interview_focus = []
-    if not soul_exists:
-        interview_focus.append("who you are at your core")
-    if not identity_exists:
-        interview_focus.append("how you present yourself")
-    if needs_user_profile:
-        interview_focus.append("who the primary user is")
-    if not interview_focus:
-        interview_focus.append("the missing setup details")
 
     existing_context = ""
     if soul_content:
@@ -462,41 +453,73 @@ def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
             f"\n--- YOUR CURRENT IDENTITY (for reference) ---\n{identity_content}\n"
         )
 
+    # ── Build the streamlined setup prompt ────────────────────────────
     parts = [
-        f"SYSTEM STATUS: SETUP MODE - INCOMPLETE INITIALIZATION\n"
-        f"You are an AI assistant currently in 'Setup Mode'. The following configuration is MISSING or INCOMPLETE: {', '.join(missing)}.\n"
-        f"Your absolute priority is to interview the user to learn {', '.join(interview_focus)}. DO NOT break character, but weave the setup into your conversation.\n"
+        f"SYSTEM STATUS: SETUP MODE — INCOMPLETE INITIALIZATION\n"
+        f"Missing or incomplete: {', '.join(missing)}.\n"
         f"{existing_context}\n"
-        f"--- CRITICAL INSTRUCTIONS ---\n"
-        f"1. Do NOT start your response or the setup interview with formulaic/robotic transitions, filler agreement words, or prefaces like 'Absolutely', 'Sure', 'Of course', or 'Let's get started'.\n"
-        f"2. For the very first message initiating the setup interview, start directly with: \"Before I complete, let's set us up.\" or a very close variant, and immediately present/ask the targeted questions directly, with NO conversational fluff.\n"
-        f"3. Ask targeted questions only for the missing or incomplete setup pieces.\n"
-        f"4. As soon as you have COMPLETE info, you MUST output the FULL updated file content in XML tags.\n"
-        f"5. DO NOT just acknowledge or say 'I understand'. You MUST EMIT THE COMPLETE TAG if you have info to save.\n"
-        f"6. IMPORTANT: Your saved content must be COMPLETE. For IDENTITY, you MUST include Name and Style at minimum.\n\n"
-        f"7. If identity is already valid, do not ask the user to redefine it unless they explicitly want to change it.\n"
-        f"8. If the soul is still starter content, replace the soul instead of restarting the full interview.\n\n"
-        f"--- REQUIRED FORMAT EXAMPLES (Template) ---\n"
-        f"You MUST use the following exact markdown structure. Fill in the values based on what the user tells you.\n"
-        f"Note: If the user doesn't give you a specific Emoji or Style, INFER it based on who you are becoming.\n"
-        f"CRITICAL: If the user provides a URL for their avatar/profile picture, put that EXACT URL STRING into the Pfp_URL field. Do NOT download the image. Do NOT use any skills. Just COPY the URL text.\n\n"
+        f"--- INTERVIEW RULES (STRICT) ---\n"
+        f"Your job is to get the setup done FAST. One short message, one reply from the user, done.\n\n"
+        f"QUICK-START BYPASS: If the user's message ALREADY contains persona details (e.g. 'You are Jennie, my dev copilot' "
+        f"or 'I'm Leo, make yourself a sarcastic coder named ByteBot'), skip the interview ENTIRELY. "
+        f"Extract what they gave you, infer the rest, and immediately emit all save tags. Do NOT ask follow-up questions.\n\n"
+        f"IF YOU MUST ASK (no persona info in the user's message yet):\n"
+        f"- Open with: \"Before I complete, let's set us up.\" (or close variant)\n"
+        f"- Ask AT MOST 5 short bullet questions, covering ONLY:\n",
+    ]
+
+    # ── Build the question list based on what's actually missing ──────
+    questions = []
+    if needs_user_profile:
+        questions.append("What should I call you? (and what's your role — my operator, teammate, coach?)")
+    if not identity_exists:
+        questions.append("Who am I? (give me a name + personality/vibe in a sentence or two)")
+    if not soul_exists:
+        questions.append("Any hard boundaries I should know? (things I should never do or always ask before doing)")
+    if not identity_exists:
+        questions.append("Profile picture URL? (optional — paste a link or say skip)")
+    if needs_user_profile:
+        questions.append("Anything else important to remember about you or how you want me to behave?")
+
+    for i, q in enumerate(questions, 1):
+        parts.append(f"  {i}. {q}\n")
+
+    parts.append(
+        f"\n- That's IT. Do NOT ask about: channel-specific styles, catchphrases, interests, birthday, "
+        f"communication preferences, opinions, tone, conciseness, or any other optional field. INFER reasonable defaults.\n"
+        f"- Do NOT number sections or create headers like '1) You' '2) Me'. Just a flat bullet list.\n"
+        f"- Keep the entire message SHORT — it should fit on one screen without scrolling.\n"
+        f"- Tell the user they can answer with short bullets or a quick paragraph.\n\n"
+
+        f"AFTER THE USER REPLIES:\n"
+        f"- You should have enough info after ONE reply. Emit ALL save tags immediately.\n"
+        f"- Do NOT ask follow-up questions unless the user's answer is genuinely too vague to construct any persona "
+        f"(e.g. they replied with just 'ok' or 'idk').\n"
+        f"- For anything the user didn't specify, INFER it. Pick a fitting emoji, write a reasonable soul, "
+        f"choose a style that matches the vibe they described. Be creative.\n\n"
+
+        f"--- STYLE RULES ---\n"
+        f"1. Do NOT start with filler words: 'Absolutely', 'Sure', 'Of course', 'Great', 'Let's get started'.\n"
+        f"2. If identity is already valid, do not ask the user to redefine it.\n"
+        f"3. If the soul is still starter/template content, replace it — don't restart the full interview.\n\n"
+
+        f"--- SAVE TAG TEMPLATES ---\n"
+        f"You MUST use these exact markdown structures. Fill values from what the user tells you + your inferences.\n"
+        f"CRITICAL: If the user provides a profile picture URL, put that EXACT URL string into Pfp_URL. Do NOT download it.\n\n"
+
         f"<save_identity>\n# IDENTITY.md - Who I Am\n\n"
         f"*   **Name:** [Chosen Name]\n"
-        f"*   **Emoji:** [Emoji associated with this persona]\n"
-        f"*   **Pfp_URL:** [The exact URL string provided by the user, e.g. https://example.com/image.jpg]\n"
-        f"*   **Style:** [Describe your personality and speech style]\n"
-        f"*   **Catchphrases:** [Optional: specific lines you naturally slip into]\n"
-        f"*   **Interests:** [Optional: topics you get genuinely excited about]\n"
-        f"*   **Birthday:** [Optional: your birthday, so you can acknowledge your age]\n"
-        f"*   **Discord Style:** [Optional: how you behave on Discord specifically]\n"
-        f"*   **Telegram Style:** [Optional: how you behave on Telegram specifically]\n"
-        f"*   **WhatsApp Style:** [Optional: how you behave on WhatsApp specifically]\n"
+        f"*   **Emoji:** [Infer a fitting emoji]\n"
+        f"*   **Pfp_URL:** [URL if provided, otherwise omit this line]\n"
+        f"*   **Style:** [Personality and speech style — infer from context]\n"
+        f"*   **Catchphrases:** [Infer or omit]\n"
+        f"*   **Interests:** [Infer or omit]\n"
         f"</save_identity>\n\n"
-        f"Note: Channel styles are optional. If not provided, your default Style applies everywhere.\n\n"
+
         f"<save_soul>\n# SOUL.md - Core Being\n\n"
-        f"[Write a comprehensive description of your core values, boundaries, personality traits, and what makes you unique]\n</save_soul>\n\n"
-        f"REQUIRED TAGS FOR THIS SESSION:\n",
-    ]
+        f"[Comprehensive description of core values, boundaries, personality traits — minimum 100 chars]\n"
+        f"</save_soul>\n\n"
+    )
 
     if needs_user_profile:
         parts.append(
@@ -508,22 +531,21 @@ def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
             "</save_user>\n\n"
         )
 
+    parts.append(
+        f"REQUIRED TAGS THIS SESSION: "
+    )
+    required_tags = []
     if not soul_exists:
-        parts.append(
-            "<save_soul>\n... COMPLETE markdown content for SOUL.md (minimum 100 characters) ...\n</save_soul>\n\n"
-        )
+        required_tags.append("<save_soul>")
     if not identity_exists:
-        parts.append(
-            "<save_identity>\n... COMPLETE markdown content for IDENTITY.md (must include Name and Style) ...\n</save_identity>\n\n"
-        )
+        required_tags.append("<save_identity>")
+    if needs_user_profile:
+        required_tags.append("<save_user>")
+    parts.append(", ".join(required_tags) + "\n")
 
     parts.append(
-        (
-            "When the user gives personal profile details, also emit <save_user> with COMPLETE content. "
-            if needs_user_profile
-            else ""
-        )
-        + "Once you've emitted the required persona tags with COMPLETE content and saved your core, you will fully initialize."
+        "Once you've emitted ALL required tags with COMPLETE content, you will fully initialize. "
+        "Do NOT emit partial tags or placeholder values like '[TBD]'."
     )
 
     return "".join(parts)

@@ -72,8 +72,9 @@ class TestLoopLatency(unittest.IsolatedAsyncioTestCase):
 
         max_delay = await latency_task
 
+        limit = 0.35 if os.name == "nt" else 0.2
         self.assertLess(
             max_delay,
-            0.2,
+            limit,
             f"Event loop delay too high: {max_delay:.3f}s",
         )

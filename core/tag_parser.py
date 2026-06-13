@@ -221,7 +221,9 @@ async def process_tags(
                     encoding="utf-8"
                 ).strip()
 
-            LONG_TERM_MEMORY_FILE.write_text(content, encoding="utf-8")
+            tmp_file = LONG_TERM_MEMORY_FILE.with_suffix(".md.tmp")
+            tmp_file.write_text(content, encoding="utf-8")
+            tmp_file.replace(LONG_TERM_MEMORY_FILE)
 
             if vector_service is not None:
                 is_template = (

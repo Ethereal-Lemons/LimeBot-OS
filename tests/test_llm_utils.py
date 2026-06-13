@@ -1,6 +1,23 @@
+import sys
+import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+
+if "dotenv" not in sys.modules:
+    dotenv = types.ModuleType("dotenv")
+    dotenv.load_dotenv = lambda *args, **kwargs: None
+    sys.modules["dotenv"] = dotenv
+
+if "loguru" not in sys.modules:
+    loguru = types.ModuleType("loguru")
+
+    class _DummyLogger:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    loguru.logger = _DummyLogger()
+    sys.modules["loguru"] = loguru
 
 from core.llm_utils import build_provider_chain, get_api_key_for_model, resolve_provider_config
 

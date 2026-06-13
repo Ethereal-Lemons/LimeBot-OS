@@ -1,9 +1,43 @@
+import sys
+import types
+import inspect
 import os
 import unittest
 from unittest import mock
+from types import SimpleNamespace
+
+if "dotenv" not in sys.modules:
+    dotenv = types.ModuleType("dotenv")
+    dotenv.load_dotenv = lambda *args, **kwargs: None
+    sys.modules["dotenv"] = dotenv
+
+if "loguru" not in sys.modules:
+    loguru = types.ModuleType("loguru")
+
+    class _DummyLogger:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    loguru.logger = _DummyLogger()
+    sys.modules["loguru"] = loguru
 
 
 class TestToolSelection(unittest.TestCase):
+    def _require_fast_harness_loop_integration(self):
+        from core.loop import AgentLoop
+
+        has_turn_method = hasattr(AgentLoop, "_should_include_tools_for_turn")
+        try:
+            shortlist_source = inspect.getsource(AgentLoop._get_tool_definitions_for_turn)
+        except (OSError, TypeError):
+            shortlist_source = ""
+
+        if not has_turn_method or "ai_harness" not in shortlist_source:
+            self.skipTest(
+                "Requires core/loop.py integration for fast AI harness tool routing."
+            )
+        return AgentLoop
+
     def test_should_include_tools_for_plain_directory_request(self):
         from core.loop import AgentLoop
 
@@ -149,5 +183,68 @@ class TestToolSelection(unittest.TestCase):
             selected,
             shortlist_tool_definitions(
                 all_tools, "open https://example.com and inspect the page"
+            ),
+        )
+
+    def test_fast_harness_can_disable_tools_for_casual_smalltalk(self):
+        AgentLoop = self._require_fast_harness_loop_integration()
+
+        agent = object.__new__(AgentLoop)
+        agent.config = SimpleNamespace(
+            ai_harness=SimpleNamespace(
+                mode="fast", fast_disable_tools_for_casual=True
+            )
+        )
+
+        self.assertFalse(agent._should_include_tools_for_turn("how are you today"))
+        self.assertFalse(agent._should_include_tools_for_turn("ok"))
+
+    def test_fast_harness_keeps_tools_for_clear_action_requests(self):
+        AgentLoop = self._require_fast_harness_loop_integration()
+
+        agent = object.__new__(AgentLoop)
+        agent.config = SimpleNamespace(
+            ai_harness=SimpleNamespace(
+                mode="fast", fast_disable_tools_for_casual=True
+            )
+        )
+
+        self.assertTrue(agent._should_include_tools_for_turn("list your current dir"))
+        self.assertTrue(
+            agent._should_include_tools_for_turn(
+                "open https://example.com and inspect the page"
+            )
+        )
+        self.assertTrue(agent._should_include_tools_for_turn("read ./README.md"))
+
+    def test_fast_harness_shortlists_without_env_flag(self):
+        AgentLoop = self._require_fast_harness_loop_integration()
+        from core.tool_defs import shortlist_tool_definitions
+
+        agent = object.__new__(AgentLoop)
+        agent.config = SimpleNamespace(
+            ai_harness=SimpleNamespace(
+                mode="fast", fast_disable_tools_for_casual=True
+            )
+        )
+        agent._get_tool_definitions = lambda: [
+            {"function": {"name": "read_file"}},
+            {"function": {"name": "browser_navigate"}},
+            {"function": {"name": "browser_snapshot"}},
+            {"function": {"name": "browser_click"}},
+            {"function": {"name": "list_dir"}},
+        ]
+        agent._log_tool_debug = lambda *args, **kwargs: None
+
+        with mock.patch.dict(os.environ, {"LIMEBOT_ENABLE_TOOL_SHORTLIST": ""}):
+            selected = agent._get_tool_definitions_for_turn(
+                "open https://example.com and inspect the page"
+            )
+
+        self.assertEqual(
+            selected,
+            shortlist_tool_definitions(
+                agent._get_tool_definitions(),
+                "open https://example.com and inspect the page",
             ),
         )

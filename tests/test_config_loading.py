@@ -24,6 +24,13 @@ class TestConfigLoading(unittest.TestCase):
 
         config_module._cached_config = None
 
+    def _load_config_with_env(self, overrides):
+        import config as config_module
+
+        config_module._cached_config = None
+        with patch.dict("os.environ", overrides, clear=False):
+            return config_module.load_config(force_reload=True)
+
     def test_empty_json_model_does_not_override_env_model(self):
         self.config_path.write_text(
             json.dumps({"llm": {"model": ""}}, indent=2),
@@ -87,24 +94,66 @@ class TestConfigLoading(unittest.TestCase):
         )
 
     def test_telegram_config_is_loaded_from_env(self):
-        import config as config_module
-
-        config_module._cached_config = None
-        with patch.dict(
-            "os.environ",
+        loaded = self._load_config_with_env(
             {
                 "ENABLE_TELEGRAM": "true",
                 "TELEGRAM_BOT_TOKEN": "telegram-token",
                 "TELEGRAM_ALLOW_FROM": "123,456",
                 "TELEGRAM_ALLOW_CHATS": "-1001,-1002",
                 "TELEGRAM_POLL_TIMEOUT": "45",
-            },
-            clear=False,
-        ):
-            loaded = config_module.load_config(force_reload=True)
+            }
+        )
 
         self.assertTrue(loaded.telegram.enabled)
         self.assertEqual(loaded.telegram.token, "telegram-token")
         self.assertEqual(loaded.telegram.allow_from, ["123", "456"])
         self.assertEqual(loaded.telegram.allow_chats, ["-1001", "-1002"])
         self.assertEqual(loaded.telegram.poll_timeout, 45)
+
+    def test_ai_harness_defaults_to_balanced_mode(self):
+        loaded = self._load_config_with_env(
+            {
+                "LIMEBOT_AI_HARNESS_MODE": "",
+                "LIMEBOT_FAST_RAG_TIMEOUT": "",
+                "LIMEBOT_BALANCED_RAG_TIMEOUT": "",
+                "LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL": "",
+            }
+        )
+
+        self.assertEqual(loaded.ai_harness.mode, "balanced")
+        self.assertAlmostEqual(loaded.ai_harness.fast_rag_timeout_s, 0.08)
+        self.assertAlmostEqual(loaded.ai_harness.balanced_rag_timeout_s, 0.2)
+        self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.2)
+        self.assertTrue(loaded.ai_harness.fast_disable_tools_for_casual)
+
+    def test_ai_harness_fast_mode_uses_fast_timeout(self):
+        loaded = self._load_config_with_env(
+            {
+                "LIMEBOT_AI_HARNESS_MODE": "fast",
+                "LIMEBOT_FAST_RAG_TIMEOUT": "0.05",
+                "LIMEBOT_BALANCED_RAG_TIMEOUT": "0.25",
+                "LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL": "false",
+            }
+        )
+
+        self.assertEqual(loaded.ai_harness.mode, "fast")
+        self.assertAlmostEqual(loaded.ai_harness.fast_rag_timeout_s, 0.05)
+        self.assertAlmostEqual(loaded.ai_harness.balanced_rag_timeout_s, 0.25)
+        self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.05)
+        self.assertFalse(loaded.ai_harness.fast_disable_tools_for_casual)
+
+    def test_ai_harness_invalid_mode_and_timeout_fall_back_to_defaults(self):
+        loaded = self._load_config_with_env(
+            {
+                "LIMEBOT_AI_HARNESS_MODE": "warp-speed",
+                "LIMEBOT_FAST_RAG_TIMEOUT": "nope",
+                "LIMEBOT_BALANCED_RAG_TIMEOUT": "still-nope",
+                "LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL": "maybe",
+            }
+        )
+
+        self.assertEqual(loaded.ai_harness.mode, "balanced")
+        self.assertAlmostEqual(loaded.ai_harness.fast_rag_timeout_s, 0.08)
+        self.assertAlmostEqual(loaded.ai_harness.balanced_rag_timeout_s, 0.2)
+        self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.2)
+        self.assertTrue(loaded.ai_harness.fast_disable_tools_for_casual)

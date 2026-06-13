@@ -1,6 +1,28 @@
 import os
+import sys
+import tempfile
+import types
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+if "dotenv" not in sys.modules:
+    dotenv = types.ModuleType("dotenv")
+    dotenv.load_dotenv = lambda *args, **kwargs: None
+    sys.modules["dotenv"] = dotenv
+
+if "loguru" not in sys.modules:
+    loguru = types.ModuleType("loguru")
+
+    class _DummyLogger:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    loguru.logger = _DummyLogger()
+    sys.modules["loguru"] = loguru
+
+from core.llm_client import ChatRequest, ProviderConfig
 
 
 class TestWebConfig(unittest.TestCase):
@@ -15,6 +37,20 @@ class TestWebConfig(unittest.TestCase):
         config_module._cached_config = None
         with patch.dict(os.environ, env_updates, clear=False):
             return config_module.load_config(force_reload=True)
+
+    def _make_web_channel(self, model="openai/gpt-4o", base_url="https://api.example.test/v1"):
+        try:
+            from channels.web import WebChannel
+            from core.bus import MessageBus
+        except Exception:
+            raise unittest.SkipTest("Missing web channel dependencies.")
+
+        config = SimpleNamespace(
+            whitelist=SimpleNamespace(api_key=None, allowed_paths=[]),
+            web=SimpleNamespace(port=8000, allowed_origins=[]),
+            llm=SimpleNamespace(model=model, base_url=base_url),
+        )
+        return WebChannel(config=config, bus=MessageBus())
 
     def test_web_config_exists_with_port(self):
         try:
@@ -63,6 +99,125 @@ class TestWebConfig(unittest.TestCase):
             cfg.web.allowed_origins,
             ["http://localhost:5179", "http://127.0.0.1:5179"],
         )
+
+    def test_persona_preview_uses_llm_client(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel()
+        provider = ProviderConfig(
+            source_model="openai/gpt-4o",
+            model="gpt-4o",
+            base_url="https://api.example.test/v1",
+            api_key="openai-secret",
+            custom_llm_provider=None,
+            is_codex=False,
+        )
+        fake_response = type(
+            "Response",
+            (),
+            {
+                "choices": [
+                    type(
+                        "Choice",
+                        (),
+                        {
+                            "message": type(
+                                "Message", (), {"content": "Preview reply"}
+                            )()
+                        },
+                    )()
+                ]
+            },
+        )()
+        channel.llm_client = SimpleNamespace(
+            resolve_provider=MagicMock(return_value=provider),
+            complete=AsyncMock(return_value=fake_response),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "config.load_config", return_value=channel.config
+        ), patch(
+            "core.prompt.build_stable_system_prompt", return_value="system prompt"
+        ), patch(
+            "core.prompt.get_identity_data",
+            return_value={"style": "Base style", "web_style": "Web style"},
+        ), patch(
+            "core.prompt.SOUL_FILE", Path(tmpdir) / "SOUL.md"
+        ):
+            client = TestClient(channel.app)
+            response = client.post(
+                "/api/persona/preview",
+                json={
+                    "persona": {"name": "Lime"},
+                    "channel": "web",
+                    "user_message": "Say hi",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["preview_text"], "Preview reply")
+        self.assertEqual(payload["effective_style"], "Web style")
+        channel.llm_client.resolve_provider.assert_called_once_with(
+            "openai/gpt-4o", default_base_url="https://api.example.test/v1"
+        )
+        channel.llm_client.complete.assert_awaited_once()
+        request = channel.llm_client.complete.await_args.args[1]
+        self.assertIsInstance(request, ChatRequest)
+        self.assertEqual(request.max_tokens, 180)
+        self.assertEqual(request.session_id, "persona-preview")
+        self.assertEqual(
+            request.messages,
+            [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "Say hi"},
+            ],
+        )
+
+    def test_llm_health_uses_llm_client(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel(
+            model="openai-codex/gpt-5.4",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        provider = ProviderConfig(
+            source_model="openai-codex/gpt-5.4",
+            model="gpt-5.4",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-secret",
+            custom_llm_provider="openai",
+            is_codex=True,
+        )
+        channel.llm_client = SimpleNamespace(
+            resolve_provider=MagicMock(return_value=provider),
+            complete=AsyncMock(return_value=object()),
+        )
+
+        with patch("config.load_config", return_value=channel.config):
+            client = TestClient(channel.app)
+            response = client.get("/api/llm/health")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "Healthy")
+        self.assertEqual(payload["model"], "openai-codex/gpt-5.4")
+        channel.llm_client.resolve_provider.assert_called_once_with(
+            "openai-codex/gpt-5.4",
+            default_base_url="https://chatgpt.com/backend-api/codex",
+        )
+        channel.llm_client.complete.assert_awaited_once()
+        request = channel.llm_client.complete.await_args.args[1]
+        self.assertIsInstance(request, ChatRequest)
+        self.assertEqual(request.max_tokens, 5)
+        self.assertEqual(request.session_id, "llm-health")
+        self.assertEqual(request.messages, [{"role": "user", "content": "hi"}])
 
 
 if __name__ == "__main__":

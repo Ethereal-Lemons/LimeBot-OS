@@ -325,7 +325,7 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
             tool_context.reset(token)
 
         self.assertIn('"status": "ok"', result)
-        self.assertIn("temp/generated_images", result)
+        self.assertIn("temp/generated_images", result.replace("\\\\", "/").replace("\\", "/"))
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0].channel, "web")
         self.assertTrue(sent[0].metadata["image"].startswith("/temp/generated_images/"))

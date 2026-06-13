@@ -11,7 +11,7 @@ import json
 import threading
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from contextlib import contextmanager
 
 METRICS_FILE = Path("persona/sessions/metrics.jsonl")
@@ -138,6 +138,25 @@ class MetricsCollector:
             }
         )
 
+    def record_stage_timing(
+        self,
+        session_key: str,
+        stage: str,
+        duration_s: float,
+        metadata: Optional[dict] = None,
+    ):
+        """Record a per-stage timing event for turn-level latency analysis."""
+        event = {
+            "type": "stage_timing",
+            "session": session_key,
+            "stage": str(stage or "").strip() or "unknown",
+            "duration_s": round(float(duration_s), 3),
+            "ts": time.time(),
+        }
+        if metadata is not None:
+            event["metadata"] = self._normalize_metadata_value(metadata)
+        self._log_event(event)
+
     @contextmanager
     def time_llm(self, session_key: str):
         """Context manager that times an LLM call. Caller sets tokens after."""
@@ -187,6 +206,34 @@ class MetricsCollector:
         with self._lock:
             sm = self._sessions.get(session_key)
             return asdict(sm) if sm else None
+
+    def _normalize_metadata_value(self, value: Any, depth: int = 0) -> Any:
+        if depth >= 4:
+            return "<truncated>"
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            return value[:500]
+        if isinstance(value, dict):
+            normalized = {}
+            for index, (key, nested_value) in enumerate(value.items()):
+                if index >= 20:
+                    normalized["__truncated__"] = max(len(value) - 20, 0)
+                    break
+                normalized[str(key)[:100]] = self._normalize_metadata_value(
+                    nested_value, depth + 1
+                )
+            return normalized
+        if isinstance(value, (list, tuple, set)):
+            items = list(value)
+            normalized = [
+                self._normalize_metadata_value(item, depth + 1)
+                for item in items[:20]
+            ]
+            if len(items) > 20:
+                normalized.append(f"<truncated:{len(items) - 20}>")
+            return normalized
+        return str(value)[:500]
 
     def _log_event(self, event: dict):
         """Append a structured event to the metrics JSONL file."""

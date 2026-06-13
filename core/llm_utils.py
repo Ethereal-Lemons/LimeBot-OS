@@ -1,7 +1,11 @@
-import httpx
 import logging
 import os
 from typing import List, Dict, Any, Optional, Tuple
+
+try:
+    import httpx
+except Exception:
+    httpx = None
 
 from core.oauth_profiles import resolve_codex_oauth_api_key
 
@@ -89,6 +93,12 @@ async def fetch_openai_compatible_models(
     """
     if not api_key:
         return []
+    if httpx is None:
+        logger.warning(
+            "httpx is not installed; skipping OpenAI-compatible model fetch for %s",
+            provider_name,
+        )
+        return []
 
     url = f"{base_url.rstrip('/')}/models"
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -154,6 +164,9 @@ async def fetch_anthropic_models(api_key: str) -> List[Dict[str, Any]]:
     As of early 2026, standard listing might be limited, but we'll try the standard endpoint.
     """
     if not api_key:
+        return []
+    if httpx is None:
+        logger.warning("httpx is not installed; skipping Anthropic model fetch")
         return []
 
     url = "https://api.anthropic.com/v1/models"

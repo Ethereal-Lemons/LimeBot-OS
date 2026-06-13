@@ -5,6 +5,8 @@ import unittest
 
 class TestPortReuseMechanism(unittest.TestCase):
     def test_reuseaddr_prevents_time_wait_errors(self):
+        if sys.platform == "win32":
+            raise unittest.SkipTest("SO_REUSEADDR behavior in TIME_WAIT is platform-dependent and does not restrict bind on Windows.")
         # We will use an ephemeral port for testing
         test_port = 28193
 

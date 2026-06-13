@@ -1,8 +1,33 @@
+import sys
+import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from litellm import AuthenticationError
+if "dotenv" not in sys.modules:
+    dotenv = types.ModuleType("dotenv")
+    dotenv.load_dotenv = lambda *args, **kwargs: None
+    sys.modules["dotenv"] = dotenv
+
+if "loguru" not in sys.modules:
+    loguru = types.ModuleType("loguru")
+
+    class _DummyLogger:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    loguru.logger = _DummyLogger()
+    sys.modules["loguru"] = loguru
+
+try:
+    from litellm import AuthenticationError
+except Exception:
+    class AuthenticationError(Exception):
+        def __init__(self, *args, **kwargs):
+            message = kwargs.get("message")
+            if message is None and args:
+                message = args[0]
+            super().__init__(message or "")
 
 
 class TestLlmFallbacks(unittest.IsolatedAsyncioTestCase):
@@ -29,6 +54,9 @@ class TestLlmFallbacks(unittest.IsolatedAsyncioTestCase):
             llm_provider="xai",
             model="grok-4-fast-reasoning",
         )
+        loop.llm_client = SimpleNamespace(
+            complete=AsyncMock(side_effect=[auth_error, response]),
+        )
 
         with patch.object(
             loop,
@@ -49,7 +77,7 @@ class TestLlmFallbacks(unittest.IsolatedAsyncioTestCase):
                     "gemini",
                 ),
             ],
-        ), patch("core.loop.acompletion", new=AsyncMock(side_effect=[auth_error, response])) as mocked:
+        ):
             result = await loop._llm_call_with_retry(
                 messages=[{"role": "user", "content": "hi"}],
                 session_key="web_demo",
@@ -60,8 +88,9 @@ class TestLlmFallbacks(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIs(result, response)
+        mocked = loop.llm_client.complete
         self.assertEqual(mocked.await_count, 2)
-        first_call = mocked.await_args_list[0].kwargs
-        second_call = mocked.await_args_list[1].kwargs
-        self.assertEqual(first_call["model"], "grok-4-fast-reasoning")
-        self.assertEqual(second_call["model"], "gemini-2.0-flash")
+        first_provider = mocked.await_args_list[0].args[0]
+        second_provider = mocked.await_args_list[1].args[0]
+        self.assertEqual(first_provider.model, "grok-4-fast-reasoning")
+        self.assertEqual(second_provider.model, "gemini-2.0-flash")

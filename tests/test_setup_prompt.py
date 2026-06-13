@@ -108,7 +108,7 @@ class TestSetupPrompt(unittest.IsolatedAsyncioTestCase):
 
         prompt = await self._get_prompt()
         self.assertIn("SYSTEM STATUS: SETUP MODE", prompt)
-        self.assertIn("who you are at your core, how you present yourself, who the primary user is", prompt)
+        self.assertIn("Missing or incomplete: Soul (Core Truths, Boundaries, Vibe), Identity (Name, Emoji, Style)", prompt)
         self.assertIn("<save_user>", prompt)
 
     async def test_template_soul_with_valid_identity_only_requests_soul(self):
@@ -131,8 +131,8 @@ class TestSetupPrompt(unittest.IsolatedAsyncioTestCase):
 
         prompt = await self._get_prompt()
         self.assertIn("SYSTEM STATUS: SETUP MODE", prompt)
-        self.assertIn("who you are at your core", prompt)
-        self.assertNotIn("who the primary user is", prompt)
+        self.assertIn("Missing or incomplete: Soul (Core Truths, Boundaries, Vibe)", prompt)
+        self.assertNotIn("Identity (Name, Emoji, Style)", prompt)
         self.assertNotIn("<save_user>", prompt)
 
     async def test_valid_persona_content_exits_setup_prompt(self):

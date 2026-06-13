@@ -1,15 +1,23 @@
 import asyncio
 from datetime import datetime
 from typing import Optional, Any
-from litellm import completion
-from loguru import logger
-from config import load_config
-from core.codex_bridge import complete_codex_response, is_codex_model_name
+try:
+    from loguru import logger
+except Exception:
+    import logging
+
+    logger = logging.getLogger(__name__)
 from core.events import InboundMessage
-from core.llm_utils import resolve_provider_config
+from core.llm_client import ChatRequest, LimeLLMClient
 
 
 from core.paths import MEMORY_DIR, LONG_TERM_MEMORY_FILE
+
+
+def _load_config():
+    from config import load_config
+
+    return load_config()
 
 
 class ReflectiveService:
@@ -20,6 +28,7 @@ class ReflectiveService:
     def __init__(self, bus: Any, model: str = "gpt-4o"):
         self.bus = bus
         self.model = model
+        self.llm_client = LimeLLMClient()
         self._running = False
 
     async def trigger_reflection(self):
@@ -43,7 +52,7 @@ class ReflectiveService:
         Called by AgentLoop when it sees the @reflect_and_distill trigger.
         """
         try:
-            cfg = load_config()
+            cfg = _load_config()
 
             today_str = datetime.now().strftime("%Y-%m-%d")
             journal_file = MEMORY_DIR / f"{today_str}.md"
@@ -82,26 +91,13 @@ class ReflectiveService:
             ]
 
             logger.info("Generating reflected memory distillation...")
-            if is_codex_model_name(self.model):
-                response = await asyncio.to_thread(
-                    complete_codex_response,
-                    self.model,
-                    prompt,
-                    None,
-                    "reflection-cycle",
-                )
-            else:
-                provider_cfg = resolve_provider_config(
-                    self.model, default_base_url=cfg.llm.base_url
-                )
-                response = await asyncio.to_thread(
-                    completion,
-                    model=provider_cfg["model"],
-                    messages=prompt,
-                    base_url=provider_cfg["base_url"],
-                    api_key=provider_cfg["api_key"],
-                    custom_llm_provider=provider_cfg["custom_llm_provider"],
-                )
+            provider = self.llm_client.resolve_provider(
+                self.model, default_base_url=cfg.llm.base_url
+            )
+            response = await self.llm_client.complete(
+                provider,
+                ChatRequest(messages=prompt, session_id="reflection-cycle"),
+            )
 
             result_text = response.choices[0].message.content
             return result_text
