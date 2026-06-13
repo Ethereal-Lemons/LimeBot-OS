@@ -13,13 +13,13 @@
     "installed": {}
   },
   "voice": {
-    "enabled": true,
-    "voice_id": "j3wcUvnCifbP17NEf3OE",
-    "stability": 1,
-    "similarity_boost": 1,
-    "style": 0,
+    "enabled": false,
+    "voice_id": "21m00Tcm4TlvDq8ikWAM",
+    "stability": 0.5,
+    "similarity_boost": 0.75,
+    "style": 0.0,
     "use_speaker_boost": true,
-    "speed": 0.7,
+    "speed": 1.0,
     "model_id": "eleven_multilingual_v2",
     "output_format": "mp3_44100_128"
   }
