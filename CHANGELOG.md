@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.10 - 2026-06-13
+### Added
+- ElevenLabs voice and text-to-speech integration, plus image generation support.
+- Discord DM support and a configurable tool shortlist for tighter agent workflows.
+- Curated embedding model auto-detection and wider provider support for vector memory.
+
+### Changed
+- `save_*` tag handling now works through compatibility tool interception with parameter fallback.
+- Scheduler state tracking and cron catch-up behavior are more resilient across restarts.
+- Default voice configuration has been reset to a safer baseline in `limebot.json`.
+
+### Fixed
+- Duplicate assistant history appends and repeated tool-continuation replies in the agent loop.
+- Stream parsing and Windows compatibility regressions in the core runtime.
+- Cross-user dedup behavior in shared Discord channels.
+
 ## 1.0.9 - 2026-05-02
 ### Added
 - OpenAI Codex integration with OAuth flow and configuration UI.
