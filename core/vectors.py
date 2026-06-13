@@ -29,6 +29,8 @@ class VectorService:
         "qwen": "qwen/text-embedding-v4",
         "ollama": "ollama/nomic-embed-text",
         "local": "ollama/nomic-embed-text",
+        "openrouter": "openrouter/openai/text-embedding-3-small",
+        "moonshot": "moonshot/moonshot-embed-v1",
     }
 
     PROVIDER_API_KEYS = {
@@ -43,6 +45,8 @@ class VectorService:
         "qwen": ["DASHSCOPE_API_KEY"],
         "ollama": [],
         "local": [],
+        "openrouter": ["OPENROUTER_API_KEY"],
+        "moonshot": ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
     }
 
     LEGACY_MODEL_ALIASES = {
@@ -112,6 +116,10 @@ class VectorService:
     def _get_provider(self) -> str:
         """Infer provider keyword from the current embedding model string."""
         model = (self.model or "").lower()
+        if "openrouter/" in model or model.startswith("openrouter/"):
+            return "openrouter"
+        if "moonshot/" in model or model.startswith("moonshot/"):
+            return "moonshot"
         for provider in self.PROVIDER_API_KEYS:
             if provider in model:
                 return provider
@@ -495,13 +503,18 @@ def get_vector_service(config=None) -> VectorService:
             model = config.llm.embedding_model
         else:
             chat_model = (config.llm.model or "").lower()
-            for (
-                provider,
-                embedding_model,
-            ) in VectorService.PROVIDER_EMBEDDING_MODELS.items():
-                if provider in chat_model:
-                    model = embedding_model
-                    break
+            if "openrouter/" in chat_model or chat_model.startswith("openrouter/"):
+                model = VectorService.PROVIDER_EMBEDDING_MODELS["openrouter"]
+            elif "moonshot/" in chat_model or chat_model.startswith("moonshot/"):
+                model = VectorService.PROVIDER_EMBEDDING_MODELS["moonshot"]
+            else:
+                for (
+                    provider,
+                    embedding_model,
+                ) in VectorService.PROVIDER_EMBEDDING_MODELS.items():
+                    if provider in chat_model:
+                        model = embedding_model
+                        break
 
     # Normalize known legacy/non-prefixed values to provider-qualified ids.
     model = VectorService.LEGACY_MODEL_ALIASES.get(model, model)

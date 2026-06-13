@@ -65,3 +65,36 @@ class TestVectorProviderResolution(unittest.TestCase):
         self.assertEqual(
             mock_embedding.call_args.kwargs["custom_llm_provider"], "nvidia_nim"
         )
+
+    def test_openrouter_chat_model_uses_openrouter_embedding_model(self):
+        cfg = SimpleNamespace(
+            llm=SimpleNamespace(
+                model="openrouter/openai/gpt-5.2-pro",
+                embedding_model="",
+            )
+        )
+        service = vectors_module.get_vector_service(cfg)
+        self.assertEqual(service.model, "openrouter/openai/text-embedding-3-small")
+        self.assertEqual(service._get_provider(), "openrouter")
+
+    def test_moonshot_chat_model_uses_moonshot_embedding_model(self):
+        cfg = SimpleNamespace(
+            llm=SimpleNamespace(
+                model="moonshot/kimi-latest",
+                embedding_model="",
+            )
+        )
+        service = vectors_module.get_vector_service(cfg)
+        self.assertEqual(service.model, "moonshot/moonshot-embed-v1")
+        self.assertEqual(service._get_provider(), "moonshot")
+
+    def test_custom_embedding_model_override_wins(self):
+        cfg = SimpleNamespace(
+            llm=SimpleNamespace(
+                model="gemini/gemini-2.0-flash",
+                embedding_model="openrouter/openai/text-embedding-3-small",
+            )
+        )
+        service = vectors_module.get_vector_service(cfg)
+        self.assertEqual(service.model, "openrouter/openai/text-embedding-3-small")
+        self.assertEqual(service._get_provider(), "openrouter")

@@ -17,6 +17,37 @@ else:
 
 
 _cached_config = None
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def _load_bool_env(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    normalized = str(raw_value).strip().lower()
+    if not normalized:
+        return default
+    if normalized in _TRUE_ENV_VALUES:
+        return True
+    if normalized in _FALSE_ENV_VALUES:
+        return False
+
+    logger.warning(f"Invalid {name} in .env, defaulting to {default}.")
+    return default
+
+
+def _load_float_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None or not str(raw_value).strip():
+        return default
+
+    try:
+        return float(raw_value)
+    except ValueError:
+        logger.warning(f"Invalid {name} in .env, defaulting to {default}.")
+        return default
 
 
 def load_config(force_reload=False):
@@ -136,11 +167,39 @@ def load_config(force_reload=False):
         logger.warning("Invalid STALL_TIMEOUT in .env, defaulting to 30.")
         config.stall_timeout = 30
 
+    config.ai_harness = SimpleNamespace()
+    ai_harness_mode = str(
+        os.getenv("LIMEBOT_AI_HARNESS_MODE", "balanced") or "balanced"
+    ).strip().lower()
+    if not ai_harness_mode:
+        ai_harness_mode = "balanced"
+    if ai_harness_mode not in {"balanced", "fast"}:
+        logger.warning(
+            "Invalid LIMEBOT_AI_HARNESS_MODE in .env, defaulting to balanced."
+        )
+        ai_harness_mode = "balanced"
+    config.ai_harness.mode = ai_harness_mode
+    config.ai_harness.fast_rag_timeout_s = _load_float_env(
+        "LIMEBOT_FAST_RAG_TIMEOUT", 0.08
+    )
+    config.ai_harness.balanced_rag_timeout_s = _load_float_env(
+        "LIMEBOT_BALANCED_RAG_TIMEOUT", 0.2
+    )
+    config.ai_harness.rag_timeout_s = (
+        config.ai_harness.fast_rag_timeout_s
+        if config.ai_harness.mode == "fast"
+        else config.ai_harness.balanced_rag_timeout_s
+    )
+    config.ai_harness.fast_disable_tools_for_casual = _load_bool_env(
+        "LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL", default=True
+    )
+
     from core.llm_utils import get_api_key_for_model
 
     config.llm = SimpleNamespace()
     default_llm_model = "gemini/gemini-2.0-flash"
     config.llm.model = str(os.getenv("LLM_MODEL") or "").strip() or default_llm_model
+    config.llm.embedding_model = str(os.getenv("LLM_EMBEDDING_MODEL") or "").strip() or None
     raw_fallback_models = str(os.getenv("LLM_FALLBACK_MODELS") or "").strip()
     config.llm.fallback_models = [
         item.strip()
