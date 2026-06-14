@@ -75,8 +75,50 @@ export async function ensureBackendAccess(settings: LimeBotExtensionSettings, in
 }
 
 export async function getActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   return tab;
+}
+
+function pickInspectableTab(tabs: chrome.tabs.Tab[]) {
+  return [...tabs]
+    .filter((tab) => typeof tab.id === "number" && isSupportedPageUrl(tab.url))
+    .sort((left, right) => {
+      const activeScore = Number(Boolean(right.active)) - Number(Boolean(left.active));
+      if (activeScore !== 0) {
+        return activeScore;
+      }
+
+      return (right.lastAccessed ?? 0) - (left.lastAccessed ?? 0);
+    })[0];
+}
+
+async function getFallbackInspectableTab(windowId?: number) {
+  const tabs = typeof windowId === "number"
+    ? await chrome.tabs.query({ windowId })
+    : await chrome.tabs.query({ lastFocusedWindow: true });
+
+  return pickInspectableTab(tabs);
+}
+
+function formatUnsupportedPageReason(rawUrl: string | undefined) {
+  if (!rawUrl) {
+    return "This page cannot be inspected yet. Switch to a normal http or https webpage and try again.";
+  }
+
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol === "edge:") {
+      return "Edge internal pages like edge:// cannot be inspected. Switch to a normal website tab and try again.";
+    }
+
+    if (url.protocol === "chrome-extension:") {
+      return "The companion itself cannot be inspected. Switch back to the webpage you want LimeBot to read.";
+    }
+
+    return `This page uses ${url.protocol} and cannot be inspected. Try a normal http or https webpage.`;
+  } catch {
+    return "This page cannot be inspected. Try a normal http or https webpage.";
+  }
 }
 
 export function supportsNativeSidePanel() {
@@ -120,7 +162,11 @@ export async function captureTabContext(
   visibleTextLimit: number,
   tabArg?: chrome.tabs.Tab
 ): Promise<TabContextResult> {
-  const tab = tabArg ?? (await getActiveTab());
+  const initialTab = tabArg ?? (await getActiveTab());
+  const tab =
+    !tabArg && (!initialTab?.url || !isSupportedPageUrl(initialTab.url))
+      ? (await getFallbackInspectableTab(initialTab?.windowId)) ?? initialTab
+      : initialTab;
   const tabId = tab?.id;
   if (typeof tabId !== "number") {
     return { ok: false, reason: "No active browser tab was available." };
@@ -131,7 +177,7 @@ export async function captureTabContext(
     return {
       ok: false,
       windowId: tab.windowId,
-      reason: "This page cannot be inspected. Try a normal http or https webpage.",
+      reason: formatUnsupportedPageReason(tabUrl),
     };
   }
 
