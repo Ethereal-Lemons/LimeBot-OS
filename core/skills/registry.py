@@ -214,15 +214,6 @@ class SkillRegistry:
             "filesystem": {"file", "folder", "directory", "path", "read", "write"},
             "github": {"github", "repo", "repository", "pull", "pr", "branch"},
             "jira": {"jira", "ticket", "issue", "attachment", "attachments"},
-            "manage_cafeteria_credit": {
-                "cafeteria",
-                "credit",
-                "badge",
-                "ftps",
-                "ftp",
-                "cafeteria_credit",
-            },
-            "manage_vendor_charges": {"vendor", "charges", "charge", "mysql", "cuota"},
             "scrapling": {"scrape", "scraping", "selector", "html", "extract"},
             "whatsapp": {"whatsapp", "jid", "media", "send"},
         }
