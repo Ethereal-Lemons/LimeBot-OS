@@ -32,6 +32,10 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
 
+    --message-gap: 1.25rem;
+    --user-bubble: 240 4% 16%;
+    --user-bubble-foreground: 0 0% 100%;
+
     --radius: 0.5rem;
   }
 
@@ -63,6 +67,9 @@
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
     --ring: 84 81% 44%;
+
+    --user-bubble: 240 4% 16%;
+    --user-bubble-foreground: 0 0% 100%;
   }
 
   html {
@@ -487,7 +494,7 @@
   }
 
   /* Override User Bubble for Coffee Shop to match theme */
-  [data-theme='coffee-shop'] .bg-zinc-800 {
+  [data-theme='coffee-shop'] .bg-user-bubble {
     background-color: hsl(25, 40%, 35%);
     /* Espresso */
     color: white;
@@ -804,7 +811,7 @@
   }
 
   /* Override User Bubble for Glacier to match theme */
-  [data-theme='glacier'] .bg-zinc-800 {
+  [data-theme='glacier'] .bg-user-bubble {
     background-color: hsl(200, 90%, 35%);
     /* Deep Glacier Blue */
     color: white;
@@ -831,7 +838,7 @@
     background: linear-gradient(145deg, rgba(33, 28, 23, 0.82), rgba(18, 15, 13, 0.88));
   }
 
-  [data-theme='noir-dossier'] .bg-zinc-800 {
+  [data-theme='noir-dossier'] .bg-user-bubble {
     background: linear-gradient(120deg, hsl(38, 82%, 42%), hsl(2, 66%, 38%));
     color: white;
   }
@@ -846,7 +853,7 @@
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(255, 247, 237, 0.66));
   }
 
-  [data-theme='solar-flare'] .bg-zinc-800 {
+  [data-theme='solar-flare'] .bg-user-bubble {
     background: linear-gradient(120deg, hsl(14, 92%, 54%), hsl(45, 96%, 54%));
     color: white;
   }
@@ -865,7 +872,7 @@
     background-size: 18px 18px, 18px 18px, auto;
   }
 
-  [data-theme='circuit-board'] .bg-zinc-800 {
+  [data-theme='circuit-board'] .bg-user-bubble {
     background: linear-gradient(120deg, hsl(84, 86%, 38%), hsl(166, 84%, 34%));
     color: white;
   }
@@ -885,7 +892,7 @@
     background: linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(236, 254, 255, 0.62));
   }
 
-  [data-theme='prism-desk'] .bg-zinc-800 {
+  [data-theme='prism-desk'] .bg-user-bubble {
     background: linear-gradient(120deg, hsl(190, 86%, 42%), hsl(319, 72%, 62%));
     color: white;
   }
@@ -1000,7 +1007,7 @@
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.62));
   }
 
-  [data-theme='sunset-mirage'] .bg-zinc-800 {
+  [data-theme='sunset-mirage'] .bg-user-bubble {
     background: linear-gradient(120deg, hsl(18, 92%, 58%), hsl(334, 90%, 62%));
     color: white;
   }
@@ -1015,7 +1022,7 @@
     background: linear-gradient(145deg, rgba(15, 42, 39, 0.76), rgba(8, 32, 30, 0.82));
   }
 
-  [data-theme='emerald-depths'] .bg-zinc-800 {
+  [data-theme='emerald-depths'] .bg-user-bubble {
     background: linear-gradient(120deg, hsl(158, 72%, 42%), hsl(188, 85%, 44%));
     color: white;
   }
@@ -1031,7 +1038,7 @@
   }
 
   /* Override User Bubble for Sakura to match theme */
-  [data-theme='sakura'] .bg-zinc-800 {
+  [data-theme='sakura'] .bg-user-bubble {
     background-color: hsl(330, 80%, 60%);
     color: white;
   }
@@ -1211,7 +1218,7 @@
   }
 
   /* Win7 user bubble */
-  [data-theme='windows-7'] .bg-zinc-800 {
+  [data-theme='windows-7'] .bg-user-bubble {
     background: linear-gradient(180deg, #4fade4 0%, #1a6ebe 100%);
     color: white;
     border: 1px solid rgba(0, 40, 100, 0.3);
@@ -1292,7 +1299,7 @@
   }
 
   /* Win95 user bubble */
-  [data-theme='windows-95'] .bg-zinc-800 {
+  [data-theme='windows-95'] .bg-user-bubble {
     background: #000080;
     color: white;
     border: 2px outset #0000b0;
@@ -1436,7 +1443,7 @@
   }
 
   /* User bubble — EVA-01 purple */
-  [data-theme='evangelion'] .bg-zinc-800 {
+  [data-theme='evangelion'] .bg-user-bubble {
     background: linear-gradient(135deg, rgba(100, 0, 180, 0.8), rgba(60, 0, 120, 0.9));
     color: #e8c0ff;
     border: 1px solid rgba(150, 50, 255, 0.4);
@@ -1526,7 +1533,7 @@
   }
 
   /* User bubble — sage green */
-  [data-theme='ghibli-garden'] .bg-zinc-800 {
+  [data-theme='ghibli-garden'] .bg-user-bubble {
     background: hsl(142, 35%, 45%);
     color: white;
     border: 1px solid hsl(142, 35%, 38%);
@@ -1558,6 +1565,56 @@
     background-color: rgba(200, 180, 140, 0.15);
     border-color: rgba(140, 120, 80, 0.15);
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   USER BUBBLE THEME TOKENS
+   Defines the user-message bubble accent per theme.
+   Themes with gradients or extra chrome keep their overrides above.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+[data-theme='purple'] { --user-bubble: 262 75% 52%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='blue'] { --user-bubble: 217 85% 51%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='orange'] { --user-bubble: 25 90% 46%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='red'] { --user-bubble: 0 68% 46%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='pink'] { --user-bubble: 330 75% 56%; --user-bubble-foreground: 0 0% 100%; }
+
+[data-theme='autumn-harvest'] { --user-bubble: 36 95% 45%; --user-bubble-foreground: 30 40% 8%; }
+[data-theme='arctic-aurora'] { --user-bubble: 174 70% 45%; --user-bubble-foreground: 180 30% 6%; }
+[data-theme='frutiger-aero'] { --user-bubble: 200 90% 45%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='angelcore-racing'] { --user-bubble: 0 0% 18%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='cyberpunk'] { --user-bubble: 320 95% 48%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='retro-terminal'] { --user-bubble: 120 90% 38%; --user-bubble-foreground: 0 0% 0%; }
+[data-theme='midnight-synth'] { --user-bubble: 45 95% 45%; --user-bubble-foreground: 0 0% 0%; }
+[data-theme='paperback'] { --user-bubble: 25 70% 28%; --user-bubble-foreground: 35 30% 95%; }
+[data-theme='synthwave-84'] { --user-bubble: 320 95% 55%; --user-bubble-foreground: 0 0% 100%; }
+
+/* Solid overrides that match the existing hardcoded values: */
+[data-theme='glacier'] { --user-bubble: 200 90% 35%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='coffee-shop'] { --user-bubble: 25 40% 35%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='sakura'] { --user-bubble: 330 80% 60%; --user-bubble-foreground: 0 0% 100%; }
+
+/* Gradient themes keep their gradient overrides on .bg-user-bubble; these tokens provide fallbacks. */
+[data-theme='noir-dossier'] { --user-bubble: 38 82% 48%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='solar-flare'] { --user-bubble: 14 92% 54%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='circuit-board'] { --user-bubble: 84 86% 42%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='prism-desk'] { --user-bubble: 190 86% 42%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='sunset-mirage'] { --user-bubble: 18 92% 58%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='emerald-depths'] { --user-bubble: 158 72% 42%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='evangelion'] { --user-bubble: 270 60% 50%; --user-bubble-foreground: 274 100% 88%; }
+[data-theme='windows-7'] { --user-bubble: 210 78% 50%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='windows-95'] { --user-bubble: 240 100% 25%; --user-bubble-foreground: 0 0% 100%; }
+[data-theme='ghibli-garden'] { --user-bubble: 142 35% 45%; --user-bubble-foreground: 0 0% 100%; }
+
+/* Legacy fallback for any remaining .bg-zinc-800 usage */
+.bg-zinc-800 {
+  background-color: hsl(var(--user-bubble));
+}
+
+/* Explicit user-bubble surface so it works even before Tailwind picks up the new token */
+.bg-user-bubble {
+  background-color: hsl(var(--user-bubble));
+  color: hsl(var(--user-bubble-foreground));
 }
 
 @keyframes lime-avatar-pulse {

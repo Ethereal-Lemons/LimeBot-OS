@@ -41,6 +41,10 @@ export default {
                     DEFAULT: "hsl(var(--card))",
                     foreground: "hsl(var(--card-foreground))",
                 },
+                userBubble: {
+                    DEFAULT: "hsl(var(--user-bubble))",
+                    foreground: "hsl(var(--user-bubble-foreground))",
+                },
                 lime: {
                     50: "#f7fee7",
                     100: "#ecfccb",

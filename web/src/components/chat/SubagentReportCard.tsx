@@ -45,7 +45,7 @@ export function SubagentReportCard({
 
     return (
         <div className="w-full overflow-hidden rounded-2xl border border-border/70 bg-card/70 shadow-sm">
-            <div className="flex items-center gap-2 border-b border-border/70 bg-muted/30 px-4 py-3">
+            <div className="flex items-center gap-2 border-b border-border/70 bg-muted/30 px-4 py-2.5">
                 <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/10 text-primary">
                     <Bot className="h-4 w-4" />
                 </div>
@@ -62,7 +62,7 @@ export function SubagentReportCard({
                 </div>
             </div>
 
-            <div className="space-y-4 px-4 py-4">
+            <div className="space-y-3 px-4 py-3">
                 {report.task ? (
                     <div className="space-y-1">
                         <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">

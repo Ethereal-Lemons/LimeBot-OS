@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
-import { Send, Bot, Power, Paperclip, X, User, Plus, Zap, ArrowDown, ShieldAlert, Wifi, WifiOff, Play, Pause, Volume2, VolumeX, Download } from "lucide-react";
+import { Send, Bot, Power, Paperclip, X, User, Plus, ArrowDown, ShieldAlert, Wifi, WifiOff, Play, Pause, Volume2, VolumeX, Download, Square } from "lucide-react";
 import {
     AlertDialog,
     AlertDialogCancel,
@@ -57,13 +57,6 @@ interface ChatInterfaceProps {
     onReconnect: () => void;
     onNewChat?: () => void;
     activeChatId: string;
-    autonomousMode?: boolean;
-    llmRuntime?: {
-        configured_model: string;
-        active_model: string;
-        fallback_models: string[];
-        using_fallback: boolean;
-    } | null;
     activityText?: string | null;
 }
 
@@ -371,7 +364,7 @@ const MemoizedMessageItem = memo(({
             )}
 
             <div className={cn(
-                "flex min-w-0 flex-1 flex-col gap-1",
+                "flex min-w-0 flex-1 flex-col gap-0.5",
                 isUser ? "items-end" : "items-start"
             )}>
                 {!isUser && showHeader && (
@@ -419,7 +412,7 @@ const MemoizedMessageItem = memo(({
                             <div className={cn(
                                 "relative max-w-full overflow-hidden transition-all duration-200",
                                 isUser
-                                    ? "group max-w-[min(82%,30rem)] rounded-2xl rounded-tr-none bg-zinc-800 px-3.5 py-2 text-[14px] leading-tight text-white shadow-sm transition-all duration-300 hover:bg-zinc-700/90 hover:shadow-md"
+                                    ? "group max-w-[min(82%,30rem)] rounded-2xl rounded-tr-none bg-user-bubble px-3.5 py-2 text-[14px] leading-tight text-user-bubble-foreground shadow-sm transition-all duration-300 hover:shadow-md"
                                     : "w-full bg-transparent px-0 py-0 text-foreground"
                             )}>
                                 <div className="max-w-full overflow-x-auto whitespace-pre-wrap break-words">
@@ -471,8 +464,6 @@ export function ChatInterface({
     onSendMessage,
     onNewChat,
     activeChatId,
-    autonomousMode,
-    llmRuntime,
     activityText,
 }: ChatInterfaceProps) {
     const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -584,7 +575,6 @@ export function ChatInterface({
     const sessionLabel = activeChatId.slice(0, 8).toUpperCase();
     const waitingExecution = waitingTool?.toolExecution;
     const runningExecution = runningTool?.toolExecution;
-    const runtimeModelLabel = llmRuntime?.active_model?.split('/').pop() || llmRuntime?.active_model || '';
 
     let railTitle = "Ready";
     let railTone: 'default' | 'good' | 'warn' = isConnected ? 'good' : 'default';
@@ -749,43 +739,6 @@ export function ChatInterface({
         }
     };
 
-    // --- SKILLS MANAGEMENT ---
-    const [skillsModalOpen, setSkillsModalOpen] = useState(false);
-    const [skills, setSkills] = useState<any[]>([]);
-    const [skillsLoading, setSkillsLoading] = useState(false);
-
-    const fetchSkills = async () => {
-        setSkillsLoading(true);
-        try {
-            const res = await axios.get(`${API_BASE_URL}/api/skills`);
-            setSkills(res.data.skills);
-        } catch (err) {
-            console.error("Failed to fetch skills:", err);
-        } finally {
-            setSkillsLoading(false);
-        }
-    };
-
-    const toggleSkill = async (skillId: string, currentStatus: boolean, missingDeps: boolean) => {
-        if (missingDeps && !currentStatus) {
-            return;
-        }
-        // Optimistic update
-        setSkills(prev => prev.map(s => s.id === skillId ? { ...s, active: !currentStatus } : s));
-
-        try {
-            const res = await axios.post(`${API_BASE_URL}/api/skills/${skillId}/toggle`, { enable: !currentStatus });
-            console.log(res.data);
-            if (res.data.status === "success") {
-                // Backend restarts automatically
-            }
-        } catch (err) {
-            console.error("Failed to toggle skill:", err);
-            // Revert
-            setSkills(prev => prev.map(s => s.id === skillId ? { ...s, active: currentStatus } : s));
-        }
-    };
-
     const handleToolConfirmSideChannel = async (confId: string, approved: boolean, sessionWhitelist: boolean) => {
         try {
             const apiKey = localStorage.getItem('limebot_api_key');
@@ -804,190 +757,42 @@ export function ChatInterface({
         }
     };
 
-    useEffect(() => {
-        if (skillsModalOpen) {
-            fetchSkills();
-        }
-    }, [skillsModalOpen]);
-
-    const formatMissingDeps = (skill: any) => {
-        const missing = skill?.missing_deps || {};
-        const python = missing.python || [];
-        const node = missing.node || [];
-        const binaries = missing.binaries || [];
-        const parts: string[] = [];
-        if (python.length) parts.push(`python: ${python.join(", ")}`);
-        if (node.length) parts.push(`node: ${node.join(", ")}`);
-        if (binaries.length) parts.push(`binaries: ${binaries.join(", ")}`);
-        return parts.join(" | ");
-    };
-
-    const formatRequiredDeps = (skill: any) => {
-        const required = skill?.required_deps || {};
-        const python = required.python || [];
-        const node = required.node || [];
-        const binaries = required.binaries || [];
-        const parts: string[] = [];
-        if (python.length) parts.push(`python: ${python.join(", ")}`);
-        if (node.length) parts.push(`node: ${node.join(", ")}`);
-        if (binaries.length) parts.push(`binaries: ${binaries.join(", ")}`);
-        return parts.join(" | ");
-    };
-
 
     return (
         <div className="flex flex-col h-full bg-background relative">
             {/* Chat Header - Hidden on mobile, shown on md+ */}
-            <header className="hidden md:flex h-14 items-center gap-3 px-6 border-b border-border bg-card z-10 transition-all duration-200">
-                <div className="flex-1 min-w-0">
+            <header className="hidden md:flex h-14 items-center justify-between gap-3 px-6 border-b border-border bg-card z-10 transition-all duration-200">
+                <div className="flex items-center gap-3 min-w-0">
                     <h1 className="text-base font-bold text-foreground leading-tight">Chat</h1>
-                </div>
 
-                {/* Inline status chips */}
-                <div className="flex items-center gap-2">
-                    <StatusChip
-                        label="Gateway"
-                        value={isConnected ? "Live" : "Reconnecting"}
-                        tone={isConnected ? 'good' : 'default'}
-                    />
-                    <StatusChip
-                        label="Mode"
-                        value={autonomousMode ? "Autonomous" : "Guarded"}
-                        tone={autonomousMode ? 'warn' : 'default'}
-                    />
-                    {llmRuntime?.using_fallback && runtimeModelLabel && (
-                        <StatusChip
-                            label="AI"
-                            value={`Fallback · ${runtimeModelLabel}`}
-                            tone="warn"
-                        />
-                    )}
-                    <StatusChip label="Session" value={sessionLabel} />
-                    {waitingToolCount > 0 && (
-                        <StatusChip label="Approvals" value={String(waitingToolCount)} tone="warn" />
-                    )}
-                    {runningToolCount > 0 && (
-                        <StatusChip label="Tools" value={String(runningToolCount)} tone="good" />
-                    )}
-                </div>
-
-                {/* Compact rail status pill */}
-                <div
-                    className={cn(
-                        "flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] transition-all",
-                        railTone === 'good' && "border-primary/20 bg-primary/5 text-primary",
-                        railTone === 'warn' && "border-amber-500/20 bg-amber-500/5 text-amber-500",
-                        railTone === 'default' && "border-border bg-card/70 text-muted-foreground"
-                    )}
-                >
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center">
-                        {!isConnected ? (
-                            <WifiOff className="h-3.5 w-3.5" />
-                        ) : waitingExecution ? (
-                            <ShieldAlert className="h-3.5 w-3.5" />
-                        ) : isTyping || runningExecution || activityText ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                            <Wifi className="h-3.5 w-3.5" />
+                    {/* Compact rail status pill */}
+                    <div
+                        className={cn(
+                            "flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] transition-all",
+                            railTone === 'good' && "border-primary/20 bg-primary/5 text-primary",
+                            railTone === 'warn' && "border-amber-500/20 bg-amber-500/5 text-amber-500",
+                            railTone === 'default' && "border-border bg-card/70 text-muted-foreground"
                         )}
-                    </span>
-                    <span className="font-semibold">{railTitle}</span>
-                    <span className="uppercase tracking-[0.14em] opacity-60">
-                        {waitingExecution ? "review" : runningExecution || isTyping || activityText ? "live" : "idle"}
-                    </span>
+                    >
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                            {!isConnected ? (
+                                <WifiOff className="h-3.5 w-3.5" />
+                            ) : waitingExecution ? (
+                                <ShieldAlert className="h-3.5 w-3.5" />
+                            ) : isTyping || runningExecution || activityText ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                                <Wifi className="h-3.5 w-3.5" />
+                            )}
+                        </span>
+                        <span className="font-semibold">{railTitle}</span>
+                        <span className="uppercase tracking-[0.14em] opacity-60">
+                            {waitingExecution ? "review" : runningExecution || isTyping || activityText ? "live" : "idle"}
+                        </span>
+                    </div>
                 </div>
 
                 <div className="flex items-center gap-2">
-
-                    {/* Skills Button */}
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setSkillsModalOpen(true)}
-                        title="Manage Skills"
-                        className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                    >
-                        <Zap className="h-4 w-4" />
-                    </Button>
-
-                    <AlertDialog open={skillsModalOpen} onOpenChange={setSkillsModalOpen}>
-                        <AlertDialogContent className="border-primary/20 max-w-2xl max-h-[80vh] overflow-hidden flex flex-col p-0">
-                            <AlertDialogHeader className="px-6 pt-6 pb-2">
-                                <AlertDialogTitle className="flex items-center gap-2">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-zap text-primary"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
-                                    Skill Management
-                                </AlertDialogTitle>
-                                <AlertDialogDescription>
-                                    Enable or disable skills to optimize context usage.
-                                    <br /><span className="text-xs text-yellow-500 font-medium">⚠️ Toggling a skill triggers a backend restart.</span>
-                                </AlertDialogDescription>
-                            </AlertDialogHeader>
-
-                            <div className="flex-1 overflow-y-auto px-6 py-2">
-                                {skillsLoading ? (
-                                    <div className="flex justify-center py-8">
-                                        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                                    </div>
-                                ) : (
-                                    <div className="grid grid-cols-1 gap-3">
-                                        {skills.map(skill => (
-                                            <div key={skill.id} className={cn(
-                                                "flex items-center justify-between p-3 rounded-lg border transition-all",
-                                                skill.active
-                                                    ? "bg-primary/5 border-primary/20"
-                                                    : "bg-muted/50 border-border opacity-70 hover:opacity-100"
-                                            )}>
-                                                <div className="flex-1 min-w-0 mr-4">
-                                                    <div className="flex items-center gap-2 mb-1">
-                                                        <span className="font-semibold text-sm">{skill.name}</span>
-                                                        {!skill.active && <span className="text-[10px] bg-muted-foreground/20 text-muted-foreground px-1.5 rounded">DISABLED</span>}
-                                                        {skill.deps_ok === false && (
-                                                            <span
-                                                                className="text-[10px] bg-red-500/10 text-red-500 px-1.5 rounded border border-red-500/20"
-                                                                title={formatMissingDeps(skill)}
-                                                            >
-                                                                MISSING DEPS
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <p className="text-xs text-muted-foreground truncate" title={skill.description}>
-                                                        {skill.description}
-                                                    </p>
-                                                    {formatRequiredDeps(skill) && (
-                                                        <div className="mt-2 text-[10px] text-muted-foreground font-mono bg-muted/40 rounded px-2 py-1 border border-border/60">
-                                                            <span className="uppercase tracking-wide text-[8px] text-muted-foreground/70 block mb-0.5">Dependencies</span>
-                                                            <div className="whitespace-pre-wrap break-words">{formatRequiredDeps(skill)}</div>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                    <Button
-                                                        variant={skill.active ? "destructive" : "default"}
-                                                        size="sm"
-                                                        className="h-7 text-xs"
-                                                        disabled={skill.deps_ok === false && !skill.active}
-                                                        onClick={() => toggleSkill(skill.id, skill.active, skill.deps_ok === false)}
-                                                    >
-                                                        {skill.active ? "Disable" : "Enable"}
-                                                    </Button>
-                                                </div>
-                                            </div>
-                                        ))}
-                                        {skills.length === 0 && !skillsLoading && (
-                                            <div className="text-center text-muted-foreground text-sm py-4">
-                                                No skills found.
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
-
-                            <AlertDialogFooter className="p-6 pt-2">
-                                <AlertDialogCancel>Close</AlertDialogCancel>
-                            </AlertDialogFooter>
-                        </AlertDialogContent>
-                    </AlertDialog>
-
                     {onNewChat && (
                         <Button
                             variant="outline"
@@ -1004,8 +809,9 @@ export function ChatInterface({
                         variant="ghost"
                         size="icon"
                         onClick={() => setPowerModalOpen(true)}
+                        aria-label="Power controls"
                         title="Power Controls"
-                        className={cn("h-8 w-8 text-muted-foreground hover:text-foreground", isConnected ? "hover:text-red-500" : "")}
+                        className={cn("h-8 w-8 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", isConnected ? "hover:text-red-500" : "")}
                     >
                         <Power className="h-4 w-4" />
                     </Button>
@@ -1057,10 +863,10 @@ export function ChatInterface({
 
             {/* Chat Messages */}
             <div className="flex-1 overflow-hidden relative">
-                <ScrollArea ref={scrollAreaRef} className="h-full p-4 md:p-8" onScroll={handleScroll}>
-                    <div className="mx-auto flex max-w-[48rem] flex-col gap-8 pb-10 font-sans">
+                <ScrollArea ref={scrollAreaRef} className="h-full p-3 md:p-5" onScroll={handleScroll}>
+                    <div className="mx-auto flex max-w-[48rem] flex-col gap-[var(--message-gap)] pb-8 font-sans">
                         {messages.length === 0 && (
-                            <div className="flex flex-col items-center justify-center py-16 text-center">
+                            <div className="flex flex-col items-center justify-center py-12 text-center">
                                 <Avatar className="h-14 w-14 shadow-lg shadow-primary/20">
                                     <AvatarImage src={botIdentity?.avatar || undefined} className="object-cover" />
                                     <AvatarFallback className="bg-primary/10 text-primary">
@@ -1204,6 +1010,7 @@ export function ChatInterface({
                             variant="outline"
                             size="sm"
                             onClick={() => scrollToLatest('smooth')}
+                            aria-label="Jump to latest message"
                             className="pointer-events-auto h-9 rounded-full border-primary/20 bg-background/95 pl-3 pr-3 shadow-lg backdrop-blur hover:bg-background"
                         >
                             <ArrowDown className="mr-1.5 h-4 w-4" />
@@ -1216,7 +1023,7 @@ export function ChatInterface({
             {/* Input Area */}
             <div className="p-4 bg-background border-t border-border relative z-20">
                 <div className="mx-auto max-w-[48rem] relative group font-sans">
-                    <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
+                    <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
                         <StatusChip
                             label="Compose"
                             value="Enter sends"
@@ -1237,12 +1044,13 @@ export function ChatInterface({
                     {selectedAttachment && (
                         <div className="absolute bottom-full left-0 mb-4 bg-background border border-border p-2 rounded-xl shadow-lg animate-in fade-in slide-in-from-bottom-2">
                             <div className="relative">
-                                <div className="max-w-sm">
+                                <div className="max-w-[min(20rem,90vw)]">
                                     <AttachmentPreview attachment={selectedAttachment} compact={selectedAttachment.kind !== 'image'} />
                                 </div>
                                 <button
                                     onClick={clearSelectedAttachment}
-                                    className="absolute -top-2 -right-2 bg-destructive text-white rounded-full p-1 shadow-sm hover:bg-destructive/90 transition-colors"
+                                    aria-label="Remove attachment"
+                                    className="absolute -top-2 -right-2 bg-destructive text-white rounded-full p-1 shadow-sm hover:bg-destructive/90 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 >
                                     <X className="w-3 h-3" />
                                 </button>
@@ -1256,6 +1064,8 @@ export function ChatInterface({
                             size="icon"
                             className="h-10 w-10 mb-1 ml-1 text-muted-foreground hover:text-foreground"
                             onClick={() => fileInputRef.current?.click()}
+                            aria-label="Attach file"
+                            title="Attach file"
                         >
                             <Paperclip className="h-5 w-5" />
                         </Button>
@@ -1289,8 +1099,9 @@ export function ChatInterface({
                                     }
                                 }}
                                 title="Stop generating"
+                                aria-label="Stop generating"
                             >
-                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-square"><rect width="18" height="18" x="3" y="3" rx="2" /></svg>
+                                <Square className="h-5 w-5" />
                             </Button>
                         )}
 
@@ -1321,6 +1132,7 @@ export function ChatInterface({
                                 onClick={handleSend}
                                 disabled={!isConnected || isTyping || (!inputValue.trim() && !selectedAttachment)}
                                 size="icon"
+                                aria-label="Send message"
                                 className={cn(
                                     "h-9 w-9 rounded-lg transition-all duration-200",
                                     (inputValue.trim() || selectedAttachment)
@@ -1341,7 +1153,7 @@ export function ChatInterface({
                                     key={label}
                                     type="button"
                                     onClick={() => onSendMessage(prompt)}
-                                    className="rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground"
+                                    className="rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 >
                                     {label}
                                 </button>

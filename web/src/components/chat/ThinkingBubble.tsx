@@ -15,7 +15,7 @@ export function ThinkingBubble({ content, isComplete, defaultCollapsed = false }
     if (!content) return null;
 
     return (
-        <div className="mb-3 flex max-w-[48rem] flex-col gap-2 font-sans">
+        <div className="mb-2 flex max-w-[48rem] flex-col gap-2 font-sans">
             <div
                 className={cn(
                     "flex cursor-pointer select-none items-center gap-2 text-[11px] font-medium tracking-[0.02em] transition-colors",

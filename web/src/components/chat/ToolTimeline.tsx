@@ -111,7 +111,7 @@ export function ToolTimeline({ executions, botIdentity, onConfirmSideChannel }: 
             <div className="flex-1 min-w-0 overflow-hidden">
                 <div
                     className={cn(
-                        "rounded-2xl rounded-tl-none border border-border bg-muted/70 px-4 py-3",
+                        "rounded-2xl rounded-tl-none border border-border bg-muted/70 px-3.5 py-2.5",
                         "shadow-sm hover:border-primary/30 transition-colors cursor-pointer"
                     )}
                     onClick={() => setExpanded(!expanded)}
@@ -146,7 +146,7 @@ export function ToolTimeline({ executions, botIdentity, onConfirmSideChannel }: 
                 </div>
 
                 {expanded && (
-                    <div className="mt-2 rounded-xl border border-border/50 bg-background/60">
+                    <div className="mt-1.5 rounded-xl border border-border/50 bg-background/60">
                         <div className="max-h-64 overflow-y-auto">
                             {executions.map((exec, idx) => {
                                 const isSelected = selectedExecution?.tool_call_id === exec.tool_call_id;
