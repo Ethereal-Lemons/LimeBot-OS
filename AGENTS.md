@@ -294,6 +294,15 @@ skills/
 npm run lime-bot skill install https://github.com/user/skill-repo
 ```
 
+**Invoke enabled skills from chat:**
+```text
+/skill <skill_name> <task>
+/<skill_name> <task>
+/skills
+```
+
+Only registered enabled skill names and their configured aliases can be invoked this way. Raw `SKILL.md` paths or arbitrary filesystem-style slash strings are rejected.
+
 ---
 
 ## 🗂️ Persona File Reference

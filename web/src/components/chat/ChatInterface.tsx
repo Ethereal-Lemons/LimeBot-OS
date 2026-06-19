@@ -46,6 +46,15 @@ interface Message {
     voiceUrl?: string;
 }
 
+interface SkillOption {
+    id: string;
+    name: string;
+    description: string;
+    enabled: boolean;
+    active: boolean;
+    source?: string;
+}
+
 type ChatSendOptions = {
     echoUserMessage?: boolean;
     metadata?: Record<string, unknown>;
@@ -94,6 +103,118 @@ const WORD_DOCUMENT_MIME_TYPES = new Set([
 type PonytailMode = 'off' | 'full';
 
 const PONYTAIL_MODE_STORAGE_KEY = 'limebot_ponytail_mode';
+
+type SlashSuggestion = {
+    id: string;
+    title: string;
+    description: string;
+    insertText: string;
+    badge: string;
+    kind: 'command' | 'skill';
+};
+
+type SelectedSkillState = {
+    id: string;
+    name: string;
+    description: string;
+};
+
+const BASE_SLASH_COMMANDS: SlashSuggestion[] = [
+    {
+        id: 'command-skills',
+        title: '/skills',
+        description: 'List the skills currently enabled for this session.',
+        insertText: '/skills',
+        badge: 'Command',
+        kind: 'command',
+    },
+    {
+        id: 'command-skill',
+        title: '/skill',
+        description: 'Choose a skill and then describe the task.',
+        insertText: '/skill ',
+        badge: 'Command',
+        kind: 'command',
+    },
+];
+
+function getSlashSuggestions(inputValue: string, skills: SkillOption[]): SlashSuggestion[] {
+    if (!inputValue.startsWith('/') || inputValue.includes('\n')) {
+        return [];
+    }
+
+    const activeSkills = skills
+        .filter((skill) => skill.enabled && skill.active)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    const trimmed = inputValue.trimEnd();
+
+    if (trimmed === '/') {
+        const skillSuggestions: SlashSuggestion[] = activeSkills.map((skill) => ({
+            id: `skill-${skill.id}`,
+            title: `/${skill.name}`,
+            description: skill.description || 'Enabled skill',
+            insertText: `/${skill.name} `,
+            badge: 'Skill',
+            kind: 'skill',
+        }));
+        return [
+            ...BASE_SLASH_COMMANDS,
+            ...skillSuggestions,
+        ];
+    }
+
+    if (trimmed.startsWith('/skill ')) {
+        const nameQuery = trimmed.slice('/skill '.length).trimStart();
+        if (nameQuery.includes(' ')) {
+            return [];
+        }
+        const normalizedQuery = nameQuery.toLowerCase();
+        return activeSkills
+            .filter((skill) => {
+                if (!normalizedQuery) return true;
+                return (
+                    skill.name.toLowerCase().includes(normalizedQuery) ||
+                    skill.description.toLowerCase().includes(normalizedQuery)
+                );
+            })
+            .map<SlashSuggestion>((skill) => ({
+                id: `skill-verbose-${skill.id}`,
+                title: skill.name,
+                description: skill.description || 'Enabled skill',
+                insertText: `/skill ${skill.name} `,
+                badge: 'Skill',
+                kind: 'skill',
+            }));
+    }
+
+    const shorthandQuery = trimmed.slice(1);
+    if (shorthandQuery.includes(' ')) {
+        return [];
+    }
+    const normalizedQuery = shorthandQuery.toLowerCase();
+    const commandSuggestions = BASE_SLASH_COMMANDS.filter((suggestion) =>
+        suggestion.title.toLowerCase().includes(`/${normalizedQuery}`)
+    );
+
+    const skillSuggestions: SlashSuggestion[] = activeSkills
+        .filter((skill) => {
+            if (!normalizedQuery) return true;
+            return (
+                skill.name.toLowerCase().includes(normalizedQuery) ||
+                skill.description.toLowerCase().includes(normalizedQuery)
+            );
+        })
+        .map((skill) => ({
+            id: `skill-${skill.id}`,
+            title: `/${skill.name}`,
+            description: skill.description || 'Enabled skill',
+            insertText: `/${skill.name} `,
+            badge: 'Skill',
+            kind: 'skill',
+        }));
+
+    return [...commandSuggestions, ...skillSuggestions];
+}
 
 function StatusChip({
     label,
@@ -487,15 +608,33 @@ export function ChatInterface({
     const [isAtBottom, setIsAtBottom] = useState(true);
     const [unreadAnchorIndex, setUnreadAnchorIndex] = useState<number | null>(null);
     const [unreadCount, setUnreadCount] = useState(0);
+    const [skills, setSkills] = useState<SkillOption[]>([]);
+    const [skillsLoading, setSkillsLoading] = useState(false);
+    const [dismissedSlashValue, setDismissedSlashValue] = useState<string | null>(null);
+    const [highlightedSlashIndex, setHighlightedSlashIndex] = useState(0);
+    const [selectedSkill, setSelectedSkill] = useState<SelectedSkillState | null>(null);
     const [ponytailMode, setPonytailMode] = useState<PonytailMode>(() =>
         localStorage.getItem(PONYTAIL_MODE_STORAGE_KEY) === 'full' ? 'full' : 'off'
     );
     const isAtBottomRef = useRef(true);
     const prevMessageCountRef = useRef(messages.length);
     const ponytailActive = ponytailMode === 'full';
-    const ponytailSendOptions: ChatSendOptions | undefined = ponytailActive
-        ? { metadata: { ponytail_mode: ponytailMode } }
-        : undefined;
+    const sendMetadata: Record<string, unknown> = {};
+    if (ponytailActive) {
+        sendMetadata.ponytail_mode = ponytailMode;
+    }
+    if (selectedSkill?.name) {
+        sendMetadata.skill_name = selectedSkill.name;
+    }
+    const ponytailSendOptions: ChatSendOptions | undefined =
+        Object.keys(sendMetadata).length > 0
+            ? { metadata: sendMetadata }
+            : undefined;
+    const slashSuggestions = getSlashSuggestions(inputValue, skills);
+    const showSlashMenu =
+        slashSuggestions.length > 0 &&
+        dismissedSlashValue !== inputValue &&
+        !selectedAttachment;
 
     const getScrollViewport = () =>
         scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLDivElement | null;
@@ -562,6 +701,45 @@ export function ChatInterface({
     useEffect(() => {
         localStorage.setItem(PONYTAIL_MODE_STORAGE_KEY, ponytailMode);
     }, [ponytailMode]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadSkills = async () => {
+            setSkillsLoading(true);
+            try {
+                const res = await axios.get(`${API_BASE_URL}/api/skills`);
+                if (!cancelled) {
+                    setSkills(Array.isArray(res.data?.skills) ? res.data.skills : []);
+                }
+            } catch (err) {
+                console.error("Failed to load slash skills:", err);
+            } finally {
+                if (!cancelled) {
+                    setSkillsLoading(false);
+                }
+            }
+        };
+
+        loadSkills();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    useEffect(() => {
+        setHighlightedSlashIndex(0);
+    }, [inputValue]);
+
+    useEffect(() => {
+        if (!showSlashMenu) {
+            setHighlightedSlashIndex(0);
+            return;
+        }
+        setHighlightedSlashIndex((current) =>
+            Math.min(current, Math.max(slashSuggestions.length - 1, 0))
+        );
+    }, [showSlashMenu, slashSuggestions.length]);
 
     useEffect(() => {
         if (unreadAnchorIndex === null) {
@@ -680,6 +858,56 @@ export function ChatInterface({
         });
 
     const handleKeyPress = (e: React.KeyboardEvent) => {
+        if (showSlashMenu && slashSuggestions.length > 0) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setHighlightedSlashIndex((current) => (current + 1) % slashSuggestions.length);
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setHighlightedSlashIndex((current) =>
+                    current === 0 ? slashSuggestions.length - 1 : current - 1
+                );
+                return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                const selectedSuggestion = slashSuggestions[highlightedSlashIndex];
+                if (selectedSuggestion) {
+                    if (selectedSuggestion.kind === 'skill') {
+                        const matchedSkill = skills.find(
+                            (skill) => `/${skill.name}` === selectedSuggestion.title
+                        );
+                        if (matchedSkill) {
+                            setSelectedSkill({
+                                id: matchedSkill.id,
+                                name: matchedSkill.name,
+                                description: matchedSkill.description || 'Enabled skill',
+                            });
+                            setDismissedSlashValue(null);
+                            onInputChange('');
+                            requestAnimationFrame(() => textareaRef.current?.focus());
+                        }
+                    } else {
+                        setDismissedSlashValue(null);
+                        onInputChange(selectedSuggestion.insertText);
+                        requestAnimationFrame(() => {
+                            textareaRef.current?.focus();
+                            const length = selectedSuggestion.insertText.length;
+                            textareaRef.current?.setSelectionRange(length, length);
+                        });
+                    }
+                }
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                setDismissedSlashValue(inputValue);
+                return;
+            }
+        }
+
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             handleSend();
@@ -690,6 +918,7 @@ export function ChatInterface({
         if (inputValue.trim() || selectedAttachment) {
             onSendMessage(null, selectedAttachment, ponytailSendOptions);
             clearSelectedAttachment();
+            setSelectedSkill(null);
             if (textareaRef.current) {
                 textareaRef.current.style.height = 'auto';
             }
@@ -1147,28 +1376,57 @@ export function ChatInterface({
                             </Button>
                         )}
 
-                        <Textarea
-                            ref={textareaRef}
-                            placeholder={
-                                !isConnected
-                                    ? "Waiting for the gateway to reconnect..."
-                                    : waitingToolCount > 0
-                                        ? "Approve or deny the waiting action below, or send a clarification..."
-                                        : "Ask LimeBot to inspect, plan, code, or explain..."
-                            }
-                            value={inputValue}
-                            onChange={(e) => onInputChange(e.target.value)}
-                            onKeyDown={handleKeyPress}
-                            onPaste={handlePaste}
-                            disabled={!isConnected}
-                            className="flex-1 min-h-[50px] max-h-[200px] border-0 bg-transparent py-4 px-4 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground text-sm resize-none"
-                            rows={1}
-                            onInput={(e: React.FormEvent<HTMLTextAreaElement>) => {
-                                const target = e.target as HTMLTextAreaElement;
-                                target.style.height = 'auto';
-                                target.style.height = `${target.scrollHeight}px`;
-                            }}
-                        />
+                        <div className="flex-1">
+                            {selectedSkill && (
+                                <div className="mb-1 mt-2 flex max-w-max items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/12 px-3 py-1.5 text-xs text-emerald-300 shadow-sm">
+                                    <span className="font-semibold uppercase tracking-[0.18em] text-emerald-400">
+                                        Skill
+                                    </span>
+                                    <span className="truncate font-medium text-emerald-100">
+                                        {selectedSkill.name}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setSelectedSkill(null);
+                                            requestAnimationFrame(() => textareaRef.current?.focus());
+                                        }}
+                                        className="rounded-full p-0.5 text-emerald-200/80 transition-colors hover:bg-emerald-500/20 hover:text-emerald-50"
+                                        aria-label={`Remove ${selectedSkill.name} skill`}
+                                        title={`Remove ${selectedSkill.name} skill`}
+                                    >
+                                        <X className="h-3 w-3" />
+                                    </button>
+                                </div>
+                            )}
+                            <Textarea
+                                ref={textareaRef}
+                                placeholder={
+                                    !isConnected
+                                        ? "Waiting for the gateway to reconnect..."
+                                        : waitingToolCount > 0
+                                            ? "Approve or deny the waiting action below, or send a clarification..."
+                                            : selectedSkill
+                                                ? `Message with ${selectedSkill.name} skill context...`
+                                                : "Ask LimeBot to inspect, plan, code, or explain..."
+                                }
+                                value={inputValue}
+                                onChange={(e) => {
+                                    setDismissedSlashValue(null);
+                                    onInputChange(e.target.value);
+                                }}
+                                onKeyDown={handleKeyPress}
+                                onPaste={handlePaste}
+                                disabled={!isConnected}
+                                className="min-h-[50px] max-h-[200px] border-0 bg-transparent py-4 px-4 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground text-sm resize-none"
+                                rows={1}
+                                onInput={(e: React.FormEvent<HTMLTextAreaElement>) => {
+                                    const target = e.target as HTMLTextAreaElement;
+                                    target.style.height = 'auto';
+                                    target.style.height = `${target.scrollHeight}px`;
+                                }}
+                            />
+                        </div>
                         <div className="pb-2 pr-2">
                             <Button
                                 onClick={handleSend}
@@ -1187,6 +1445,72 @@ export function ChatInterface({
                             </Button>
                         </div>
                     </div>
+
+                    {(showSlashMenu || (skillsLoading && inputValue === '/')) && (
+                        <div className="absolute bottom-full left-0 right-0 z-30 mb-3 overflow-hidden rounded-2xl border border-border/80 bg-background/98 shadow-2xl backdrop-blur">
+                            <div className="border-b border-border/70 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                                Slash Skills
+                            </div>
+                            <div className="max-h-80 overflow-y-auto p-2">
+                                {showSlashMenu && slashSuggestions.map((suggestion, index) => (
+                                    <button
+                                        key={suggestion.id}
+                                        type="button"
+                                        onClick={() => {
+                                            if (suggestion.kind === 'skill') {
+                                                const matchedSkill = skills.find(
+                                                    (skill) => `/${skill.name}` === suggestion.title
+                                                );
+                                                if (matchedSkill) {
+                                                    setSelectedSkill({
+                                                        id: matchedSkill.id,
+                                                        name: matchedSkill.name,
+                                                        description: matchedSkill.description || 'Enabled skill',
+                                                    });
+                                                    setDismissedSlashValue(null);
+                                                    onInputChange('');
+                                                    requestAnimationFrame(() => textareaRef.current?.focus());
+                                                }
+                                                return;
+                                            }
+                                            setDismissedSlashValue(null);
+                                            onInputChange(suggestion.insertText);
+                                            requestAnimationFrame(() => {
+                                                textareaRef.current?.focus();
+                                                const length = suggestion.insertText.length;
+                                                textareaRef.current?.setSelectionRange(length, length);
+                                            });
+                                        }}
+                                        className={cn(
+                                            "flex w-full items-start justify-between gap-3 rounded-xl px-3 py-3 text-left transition-colors",
+                                            index === highlightedSlashIndex
+                                                ? "bg-primary/10 text-foreground"
+                                                : "hover:bg-muted/70 text-foreground"
+                                        )}
+                                    >
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-medium">{suggestion.title}</div>
+                                            <div className="mt-1 text-xs text-muted-foreground">
+                                                {suggestion.description}
+                                            </div>
+                                        </div>
+                                        <span className="shrink-0 rounded-full border border-border bg-muted/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                                            {suggestion.badge}
+                                        </span>
+                                    </button>
+                                ))}
+                                {!showSlashMenu && skillsLoading && (
+                                    <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Loading skills...
+                                    </div>
+                                )}
+                            </div>
+                            <div className="border-t border-border/70 px-4 py-2 text-[11px] text-muted-foreground">
+                                Enter or Tab inserts. Use <span className="font-medium text-foreground">/skills</span> to inspect what is enabled.
+                            </div>
+                        </div>
+                    )}
 
                     {showComposerPrompts && (
                         <div className="mt-2 flex flex-wrap gap-1.5">

@@ -72,6 +72,7 @@ from core.prompt_modes import (
     build_ponytail_prompt_addition,
     normalize_ponytail_mode,
 )
+from core.skill_invocation import parse_skill_invocation
 from core.session_manager import SessionManager
 from core.skills import SkillRegistry
 from core.subagents import SubagentRegistry, normalize_subagent_tool_name
@@ -1027,11 +1028,19 @@ class AgentLoop:
         recalled_context: str = "",
         sender_name: str = "",
         current_message: str = "",
+        forced_skill_name: Optional[str] = None,
         ponytail_mode: str = "off",
     ) -> str:
         """Stable (cached) + volatile (per-message: memory + RAG + timestamp)."""
         stable = await self._get_stable_prompt(sender_id, channel, chat_id, sender_name)
-        skills_docs = self.skill_registry.get_relevant_prompt_additions(current_message)
+        if forced_skill_name:
+            skills_docs = self.skill_registry.get_forced_prompt_addition(
+                forced_skill_name
+            )
+        else:
+            skills_docs = self.skill_registry.get_relevant_prompt_additions(
+                current_message
+            )
         subagent_docs = self.subagent_registry.get_prompt_additions(current_message)
         ponytail_docs = build_ponytail_prompt_addition(ponytail_mode)
         include_private_memory = prompt_module.should_load_private_context(
@@ -1049,6 +1058,46 @@ class AgentLoop:
             + (ponytail_docs + "\n" if ponytail_docs else "")
             + volatile
         )
+
+    def _resolve_skill_invocation(
+        self, content: str
+    ) -> Tuple[str, Optional[str], Optional[str]]:
+        parsed = parse_skill_invocation(content)
+        if parsed.kind == "none":
+            return content, None, None
+
+        if parsed.kind == "inventory":
+            return "what skills do you have right now", None, None
+
+        return self._resolve_requested_skill(
+            parsed.requested_name,
+            parsed.task,
+            raw_content=content,
+        )
+
+    def _resolve_requested_skill(
+        self, requested_name: str, task: str = "", raw_content: Optional[str] = None
+    ) -> Tuple[str, Optional[str], Optional[str]]:
+        resolved_name = self.skill_registry.resolve_active_skill_name(
+            requested_name
+        )
+        if not resolved_name:
+            active_skills = self.skill_registry.list_active_skill_names()
+            if active_skills:
+                active_text = ", ".join(f"`{name}`" for name in active_skills)
+                error = (
+                    f"Unknown or inactive skill `{requested_name}`. "
+                    f"Active skills: {active_text}."
+                )
+            else:
+                error = (
+                    f"Unknown or inactive skill `{requested_name}`. "
+                    "No active skills are enabled right now."
+                )
+            return raw_content if raw_content is not None else task, None, error
+
+        task = task.strip() or f"Use the {resolved_name} skill."
+        return task, resolved_name, None
 
     async def _cleanup_persisted_histories(self) -> None:
         """Best-effort cleanup of malformed assistant residue in persisted sessions."""
@@ -4172,6 +4221,31 @@ class AgentLoop:
                 return
 
             sender_id = msg.sender_id
+            metadata_skill_name = str(msg.metadata.get("skill_name") or "").strip()
+            if metadata_skill_name:
+                content, forced_skill_name, skill_error = self._resolve_requested_skill(
+                    metadata_skill_name,
+                    content,
+                    raw_content=content,
+                )
+            else:
+                content, forced_skill_name, skill_error = self._resolve_skill_invocation(
+                    content
+                )
+            if skill_error:
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=skill_error,
+                        metadata=self._with_trace_metadata(
+                            {"reply_to": msg.sender_id, "type": "warning"},
+                            turn_id=turn_id,
+                            message_id=assistant_message_id,
+                        ),
+                    )
+                )
+                return
             normalized = content.strip().lower()
             is_stop_request = normalized in _DENY_WORDS or any(
                 normalized.startswith(k + " ") for k in _DENY_WORDS
@@ -4504,11 +4578,14 @@ class AgentLoop:
                         recalled_context=recalled_context,
                         sender_name=sender_name,
                         current_message=content,
+                        forced_skill_name=forced_skill_name,
                         ponytail_mode=ponytail_mode,
                     )
                     prompt_stage_metadata = {
                         "has_recalled_context": bool(recalled_context)
                     }
+                    if forced_skill_name:
+                        prompt_stage_metadata["forced_skill"] = forced_skill_name
                     if ponytail_mode != "off":
                         prompt_stage_metadata["ponytail_mode"] = ponytail_mode
                     self._record_stage_timing(

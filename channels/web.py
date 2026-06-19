@@ -75,11 +75,16 @@ def _extract_client_prompt_metadata(msg: Any) -> dict[str, str]:
     if not isinstance(client_metadata, dict):
         return {}
 
+    extracted: dict[str, str] = {}
     ponytail_mode = normalize_ponytail_mode(client_metadata.get("ponytail_mode"))
-    if ponytail_mode == "off":
-        return {}
+    if ponytail_mode != "off":
+        extracted["ponytail_mode"] = ponytail_mode
 
-    return {"ponytail_mode": ponytail_mode}
+    skill_name = str(client_metadata.get("skill_name") or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]+", skill_name):
+        extracted["skill_name"] = skill_name
+
+    return extracted
 
 
 def _mask_secret(value: str) -> str:

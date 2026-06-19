@@ -262,6 +262,17 @@ class SkillRegistry:
 
         return "\n".join(sections)
 
+    @staticmethod
+    def _metadata_aliases(skill: Dict[str, Any]) -> list[str]:
+        metadata = skill.get("metadata") or {}
+        aliases = metadata.get("aliases", [])
+        if isinstance(aliases, list):
+            return [str(alias).strip() for alias in aliases if str(alias).strip()]
+        if aliases:
+            alias = str(aliases).strip()
+            return [alias] if alias else []
+        return []
+
     def get_system_prompt_additions(self) -> str:
         """
         Generate skill documentation to append to LLM system prompt.
@@ -281,6 +292,56 @@ class SkillRegistry:
 
         self._cached_prompt_additions = self._format_prompt_additions(active_skills)
         return self._cached_prompt_additions
+
+    def list_active_skill_names(self) -> List[str]:
+        return sorted(self._get_active_skills().keys())
+
+    def resolve_active_skill_name(self, requested_name: str) -> Optional[str]:
+        requested = str(requested_name or "").strip()
+        if not requested:
+            return None
+
+        active_skills = self._get_active_skills()
+        if not active_skills:
+            return None
+
+        exact_matches = [
+            name for name in active_skills if name.lower() == requested.lower()
+        ]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+        if len(exact_matches) > 1:
+            return None
+
+        normalized_requested = self._normalized_name(requested)
+        matches: list[str] = []
+        for name, skill in active_skills.items():
+            candidates = {self._normalized_name(name)}
+            candidates.update(
+                self._normalized_name(alias)
+                for alias in self._metadata_aliases(skill)
+                if alias
+            )
+            if normalized_requested in candidates:
+                matches.append(name)
+
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def get_forced_prompt_addition(self, skill_name: str) -> str:
+        active_skills = self._get_active_skills()
+        skill = active_skills.get(skill_name)
+        if not skill:
+            return ""
+
+        preface = (
+            "\n## Forced Skill\n"
+            "The user explicitly invoked this skill with a slash command. "
+            "Follow this skill manual for the current turn unless it conflicts "
+            "with higher-priority system, safety, or tool-confirmation rules.\n"
+        )
+        return preface + self._format_prompt_additions({skill_name: skill})
 
     def get_relevant_prompt_additions(
         self, user_text: str, max_skills: int = 3
