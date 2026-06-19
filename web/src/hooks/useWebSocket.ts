@@ -339,6 +339,7 @@ export function useWebSocket({
                         }));
                     } else if (data.type === 'stop_typing' || data.metadata?.type === 'stop_typing') {
                         setIsTyping(false);
+                        flushStreamBuffer();
                         setMessages(prev => applyStopTyping(prev, { messageId: eventMessageId, turnId: eventTurnId }));
                     } else if (data.type === 'typing' || data.metadata?.type === 'typing') {
                         setIsTyping(true);

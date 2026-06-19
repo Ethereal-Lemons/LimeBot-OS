@@ -60,6 +60,53 @@ class TestDedupWindow(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_web_final_reply_suppression_ignores_tags_and_duplicate_sections(self):
+        try:
+            import loguru  # noqa: F401
+        except Exception:
+            raise unittest.SkipTest("Missing dependencies (loguru).")
+
+        from core.loop import AgentLoop
+
+        final_reply = "Saved, baby.\n\nI'll remember that 244069957187534848 is you on Discord."
+        raw_reply = (
+            final_reply
+            + "\n\n<save_user>discord user id 244069957187534848 belongs to this user</save_user>\n\n"
+            + final_reply
+        )
+
+        self.assertTrue(
+            AgentLoop._should_suppress_web_final_reply(
+                channel="web",
+                any_tool_calls_in_turn=True,
+                iterations_limit_reached=False,
+                web_streamed_reply=True,
+                force_direct_reply=False,
+                reply_to_user=final_reply,
+                raw_reply=raw_reply,
+            )
+        )
+
+    async def test_web_final_reply_suppression_keeps_distinct_follow_up_messages(self):
+        try:
+            import loguru  # noqa: F401
+        except Exception:
+            raise unittest.SkipTest("Missing dependencies (loguru).")
+
+        from core.loop import AgentLoop
+
+        self.assertFalse(
+            AgentLoop._should_suppress_web_final_reply(
+                channel="web",
+                any_tool_calls_in_turn=True,
+                iterations_limit_reached=False,
+                web_streamed_reply=True,
+                force_direct_reply=False,
+                reply_to_user="Done. I also scheduled the follow-up for tomorrow.",
+                raw_reply="Done.",
+            )
+        )
+
     async def test_identical_message_only_deduped_within_2s(self):
         try:
             import loguru  # noqa: F401

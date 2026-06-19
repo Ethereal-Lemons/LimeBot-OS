@@ -135,3 +135,43 @@ test("updated tool execution is moved before an existing final reply for the sam
   assert.equal(updated[1].toolExecution?.status, "error");
   assert.equal(updated[2].content, "The image model failed.");
 });
+
+test("final replies replace a stopped streaming bubble for the same turn", () => {
+  const initial: ChatMessage[] = [
+    { sender: "bot", content: "Saving...", isStreaming: true, turnId: "turn-save" },
+  ];
+
+  const stopped = applyStopTyping(initial, { turnId: "turn-save" });
+  const finalized = applyFinalAssistantMessage(stopped, {
+    turnId: "turn-save",
+    content: "Saved once.",
+    variant: "default",
+  });
+
+  assert.equal(finalized.length, 1);
+  assert.equal(finalized[0].content, "Saved once.");
+  assert.equal(finalized[0].isStreaming, false);
+});
+
+test("final replies trim repeated sections before rendering", () => {
+  const repeated = [
+    "Saved, baby.",
+    "I'll remember that 244069957187534848 is you on Discord.",
+    "Saved, baby.",
+    "I'll remember that 244069957187534848 is you on Discord.",
+  ].join("\n\n");
+
+  const finalized = applyFinalAssistantMessage([], {
+    turnId: "turn-memory",
+    content: repeated,
+    variant: "default",
+  });
+
+  assert.equal(finalized.length, 1);
+  assert.equal(
+    finalized[0].content,
+    ["Saved, baby.", "I'll remember that 244069957187534848 is you on Discord."].join(
+      "\n\n"
+    )
+  );
+});

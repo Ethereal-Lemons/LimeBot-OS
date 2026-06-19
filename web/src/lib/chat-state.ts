@@ -87,6 +87,49 @@ type ToolUpdate = MessageTarget & {
 const isBotTextMessage = (message: ChatMessage) =>
   message.sender === 'bot' && message.type !== 'tool' && !message.confirmation;
 
+function dedupeRepeatedSections(content: string): string {
+  if (!content) return content;
+
+  const trimmed = content.trim();
+  const length = trimmed.length;
+  if (length > 80 && length % 2 === 0) {
+    const half = length / 2;
+    if (trimmed.slice(0, half) === trimmed.slice(half)) {
+      return trimmed.slice(0, half);
+    }
+  }
+
+  if (length <= 80) return trimmed;
+
+  const paragraphs = trimmed
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  const count = paragraphs.length;
+
+  if (count >= 4 && count % 2 === 0) {
+    const half = count / 2;
+    const firstHalf = paragraphs.slice(0, half);
+    const secondHalf = paragraphs.slice(half);
+    if (firstHalf.join('\n\n') === secondHalf.join('\n\n')) {
+      return firstHalf.join('\n\n');
+    }
+  }
+
+  if (count >= 3) {
+    const half = Math.floor(count / 2);
+    if (half >= 2) {
+      const firstHalf = paragraphs.slice(0, half);
+      const trailingHalf = paragraphs.slice(count - half);
+      if (firstHalf.join('\n\n') === trailingHalf.join('\n\n')) {
+        return paragraphs.slice(0, count - half).join('\n\n');
+      }
+    }
+  }
+
+  return trimmed;
+}
+
 function findMessageIndex(
   messages: ChatMessage[],
   target: MessageTarget,
@@ -180,6 +223,7 @@ export function applyFinalAssistantMessage(
   messages: ChatMessage[],
   payload: FinalText
 ): ChatMessage[] {
+  const content = dedupeRepeatedSections(payload.content);
   const index = findMessageIndex(messages, payload);
 
   if (index === -1) {
@@ -187,7 +231,7 @@ export function applyFinalAssistantMessage(
       ...messages,
       {
         sender: 'bot',
-        content: payload.content,
+        content,
         variant: payload.variant,
         type: 'text',
         isStreaming: false,
@@ -203,7 +247,7 @@ export function applyFinalAssistantMessage(
   const updated = [...messages];
   updated[index] = {
     ...updated[index],
-    content: payload.content,
+    content,
     variant: payload.variant,
     type: 'text',
     isStreaming: false,
