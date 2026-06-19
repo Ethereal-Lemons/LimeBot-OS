@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
-import { Send, Bot, Power, Paperclip, X, User, Plus, ArrowDown, ShieldAlert, Wifi, WifiOff, Play, Pause, Volume2, VolumeX, Download, Square } from "lucide-react";
+import { Send, Bot, Brain, Power, Paperclip, X, User, Plus, ArrowDown, ShieldAlert, Wifi, WifiOff, Play, Pause, Volume2, VolumeX, Download, Square } from "lucide-react";
 import {
     AlertDialog,
     AlertDialogCancel,
@@ -46,6 +46,11 @@ interface Message {
     voiceUrl?: string;
 }
 
+type ChatSendOptions = {
+    echoUserMessage?: boolean;
+    metadata?: Record<string, unknown>;
+};
+
 interface ChatInterfaceProps {
     messages: Message[];
     inputValue: string;
@@ -53,7 +58,11 @@ interface ChatInterfaceProps {
     isTyping?: boolean;
     botIdentity?: { name: string; avatar: string | null };
     onInputChange: (value: string) => void;
-    onSendMessage: (content?: string | null, attachment?: ChatAttachment | null) => void;
+    onSendMessage: (
+        content?: string | null,
+        attachment?: ChatAttachment | null,
+        options?: ChatSendOptions,
+    ) => void;
     onReconnect: () => void;
     onNewChat?: () => void;
     activeChatId: string;
@@ -81,6 +90,10 @@ const WORD_DOCUMENT_MIME_TYPES = new Set([
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
+
+type PonytailMode = 'off' | 'full';
+
+const PONYTAIL_MODE_STORAGE_KEY = 'limebot_ponytail_mode';
 
 function StatusChip({
     label,
@@ -474,8 +487,15 @@ export function ChatInterface({
     const [isAtBottom, setIsAtBottom] = useState(true);
     const [unreadAnchorIndex, setUnreadAnchorIndex] = useState<number | null>(null);
     const [unreadCount, setUnreadCount] = useState(0);
+    const [ponytailMode, setPonytailMode] = useState<PonytailMode>(() =>
+        localStorage.getItem(PONYTAIL_MODE_STORAGE_KEY) === 'full' ? 'full' : 'off'
+    );
     const isAtBottomRef = useRef(true);
     const prevMessageCountRef = useRef(messages.length);
+    const ponytailActive = ponytailMode === 'full';
+    const ponytailSendOptions: ChatSendOptions | undefined = ponytailActive
+        ? { metadata: { ponytail_mode: ponytailMode } }
+        : undefined;
 
     const getScrollViewport = () =>
         scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLDivElement | null;
@@ -538,6 +558,10 @@ export function ChatInterface({
 
         prevMessageCountRef.current = nextCount;
     }, [messages.length]);
+
+    useEffect(() => {
+        localStorage.setItem(PONYTAIL_MODE_STORAGE_KEY, ponytailMode);
+    }, [ponytailMode]);
 
     useEffect(() => {
         if (unreadAnchorIndex === null) {
@@ -664,7 +688,7 @@ export function ChatInterface({
 
     const handleSend = () => {
         if (inputValue.trim() || selectedAttachment) {
-            onSendMessage(null, selectedAttachment);
+            onSendMessage(null, selectedAttachment, ponytailSendOptions);
             clearSelectedAttachment();
             if (textareaRef.current) {
                 textareaRef.current.style.height = 'auto';
@@ -1035,6 +1059,9 @@ export function ChatInterface({
                         {waitingToolCount > 0 && (
                             <StatusChip label="Pending approval" value={String(waitingToolCount)} tone="warn" />
                         )}
+                        {ponytailActive && (
+                            <StatusChip label="Ponytail" value="Full" tone="good" />
+                        )}
                         {selectedAttachment && (
                             <StatusChip label="Attachment" value={selectedAttachment.name} tone="good" />
                         )}
@@ -1068,6 +1095,21 @@ export function ChatInterface({
                             title="Attach file"
                         >
                             <Paperclip className="h-5 w-5" />
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className={cn(
+                                "h-10 w-10 mb-1 text-muted-foreground hover:text-foreground",
+                                ponytailActive && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
+                            )}
+                            onClick={() => setPonytailMode((mode) => mode === 'full' ? 'off' : 'full')}
+                            title={ponytailActive ? "Ponytail mode: Full" : "Activate Ponytail mode"}
+                            aria-label={ponytailActive ? "Deactivate Ponytail mode" : "Activate Ponytail mode"}
+                            aria-pressed={ponytailActive}
+                        >
+                            <Brain className="h-5 w-5" />
                         </Button>
                         <input
                             type="file"
@@ -1152,7 +1194,7 @@ export function ChatInterface({
                                 <button
                                     key={label}
                                     type="button"
-                                    onClick={() => onSendMessage(prompt)}
+                                    onClick={() => onSendMessage(prompt, null, ponytailSendOptions)}
                                     className="rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 >
                                     {label}

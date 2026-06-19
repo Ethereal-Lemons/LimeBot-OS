@@ -68,6 +68,10 @@ from core.events import InboundMessage, OutboundMessage
 from core.llm_client import ChatRequest, LimeLLMClient, ProviderConfig
 from core import prompt as prompt_module
 from core.metrics import MetricsCollector
+from core.prompt_modes import (
+    build_ponytail_prompt_addition,
+    normalize_ponytail_mode,
+)
 from core.session_manager import SessionManager
 from core.skills import SkillRegistry
 from core.subagents import SubagentRegistry, normalize_subagent_tool_name
@@ -1023,11 +1027,13 @@ class AgentLoop:
         recalled_context: str = "",
         sender_name: str = "",
         current_message: str = "",
+        ponytail_mode: str = "off",
     ) -> str:
         """Stable (cached) + volatile (per-message: memory + RAG + timestamp)."""
         stable = await self._get_stable_prompt(sender_id, channel, chat_id, sender_name)
         skills_docs = self.skill_registry.get_relevant_prompt_additions(current_message)
         subagent_docs = self.subagent_registry.get_prompt_additions(current_message)
+        ponytail_docs = build_ponytail_prompt_addition(ponytail_mode)
         include_private_memory = prompt_module.should_load_private_context(
             sender_id, channel, self.config
         )
@@ -1040,6 +1046,7 @@ class AgentLoop:
             stable
             + (skills_docs + "\n" if skills_docs else "")
             + (subagent_docs + "\n" if subagent_docs else "")
+            + (ponytail_docs + "\n" if ponytail_docs else "")
             + volatile
         )
 
@@ -4486,6 +4493,9 @@ class AgentLoop:
                     )
 
                     sender_name = msg.metadata.get("sender_name", "")
+                    ponytail_mode = normalize_ponytail_mode(
+                        msg.metadata.get("ponytail_mode")
+                    )
                     prompt_stage_started = time.perf_counter()
                     system_prompt = await self._build_full_system_prompt(
                         sender_id,
@@ -4494,12 +4504,18 @@ class AgentLoop:
                         recalled_context=recalled_context,
                         sender_name=sender_name,
                         current_message=content,
+                        ponytail_mode=ponytail_mode,
                     )
+                    prompt_stage_metadata = {
+                        "has_recalled_context": bool(recalled_context)
+                    }
+                    if ponytail_mode != "off":
+                        prompt_stage_metadata["ponytail_mode"] = ponytail_mode
                     self._record_stage_timing(
                         session_key,
                         "prompt_build",
                         prompt_stage_started,
-                        metadata={"has_recalled_context": bool(recalled_context)},
+                        metadata=prompt_stage_metadata,
                     )
 
                     if session_key not in self.history:

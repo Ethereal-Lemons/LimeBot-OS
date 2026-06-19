@@ -72,6 +72,7 @@ interface UseWebSocketOptions {
 
 type SendMessageOptions = {
     echoUserMessage?: boolean;
+    metadata?: Record<string, unknown>;
 };
 
 const STREAM_FLUSH_INTERVAL_MS = 40;
@@ -384,7 +385,7 @@ export function useWebSocket({
     ) => {
         const finalContent = contentOverride || inputValue.trim();
         if ((!finalContent && !attachment) || !ws.current || ws.current.readyState !== WebSocket.OPEN || isTyping) return;
-        const { echoUserMessage = true } = options;
+        const { echoUserMessage = true, metadata } = options;
 
         setIsTyping(true);
         const attachments = attachment
@@ -398,8 +399,17 @@ export function useWebSocket({
             ]
             : [];
         const image = attachment?.kind === 'image' ? attachment.url : null;
+        const payload: Record<string, unknown> = {
+            content: finalContent,
+            image,
+            attachments,
+            chat_id: sessionId,
+        };
+        if (metadata && Object.keys(metadata).length > 0) {
+            payload.metadata = metadata;
+        }
 
-        ws.current.send(JSON.stringify({ content: finalContent, image, attachments, chat_id: sessionId }));
+        ws.current.send(JSON.stringify(payload));
         if (echoUserMessage) {
             setMessages(prev => [
                 ...prev,

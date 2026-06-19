@@ -27,18 +27,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from channels.base import BaseChannel
-from core.bus import MessageBus
-from core.events import OutboundMessage
-from core.llm_client import ChatRequest, LimeLLMClient
-from core.oauth_profiles import get_codex_oauth_status
-from core.session_manager import SessionManager
-from core.tools import Toolbox
+from channels.base import BaseChannel
+from core.bus import MessageBus
+from core.events import OutboundMessage
+from core.llm_client import ChatRequest, LimeLLMClient
+from core.prompt_modes import normalize_ponytail_mode
+from core.oauth_profiles import get_codex_oauth_status
+from core.session_manager import SessionManager
+from core.tools import Toolbox
 
 _CONTACTS_PATH_REL = ("data", "contacts.json")
-_MAX_WEB_ATTACHMENT_BYTES = 8 * 1024 * 1024
-_DOCUMENT_EXTENSIONS = frozenset({".pdf", ".doc", ".docx"})
-_DOCUMENT_MIME_TYPES = frozenset(
+_MAX_WEB_ATTACHMENT_BYTES = 8 * 1024 * 1024
+_DOCUMENT_EXTENSIONS = frozenset({".pdf", ".doc", ".docx"})
+_DOCUMENT_MIME_TYPES = frozenset(
     {
         "application/pdf",
         "application/msword",
@@ -62,8 +63,23 @@ _SECRET_CONFIG_KEYS = frozenset(
 )
 _PIAI_MODELS_JS_PATH = (
     Path.cwd() / "node_modules" / "@mariozechner" / "pi-ai" / "dist" / "models.generated.js"
-)
-_PIAI_PROVIDER_MODEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
+)
+_PIAI_PROVIDER_MODEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
+
+
+def _extract_client_prompt_metadata(msg: Any) -> dict[str, str]:
+    if not isinstance(msg, dict):
+        return {}
+
+    client_metadata = msg.get("metadata")
+    if not isinstance(client_metadata, dict):
+        return {}
+
+    ponytail_mode = normalize_ponytail_mode(client_metadata.get("ponytail_mode"))
+    if ponytail_mode == "off":
+        return {}
+
+    return {"ponytail_mode": ponytail_mode}
 
 
 def _mask_secret(value: str) -> str:
@@ -2546,9 +2562,10 @@ class WebChannel(BaseChannel):
                 sender_id = msg.get("sender_id") or "web-user"
                 sender_name = msg.get("sender_name") or ""
 
-                metadata = {"source": "web"}
-                if sender_name:
-                    metadata["sender_name"] = sender_name
+                metadata = {"source": "web"}
+                metadata.update(_extract_client_prompt_metadata(msg))
+                if sender_name:
+                    metadata["sender_name"] = sender_name
                 attachment_paths: list[str] = []
                 if raw_attachments := msg.get("attachments"):
                     try:
