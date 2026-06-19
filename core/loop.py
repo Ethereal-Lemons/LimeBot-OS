@@ -888,17 +888,18 @@ class AgentLoop:
             return False
         if iterations_limit_reached or not web_streamed_reply or force_direct_reply:
             return False
-        # Compare tag-stripped versions so that embedded <log_memory> etc.
-        # tags in raw_reply don't defeat the match.
-        raw_cleaned = _GHOST_TAG_RE.sub("", str(raw_reply or ""))
-        raw_cleaned = re.sub(
-            r"<(?:" + "|".join(_GHOST_TAG_NAMES) + r")[^>]*>.*?</(?:"
-            + "|".join(_GHOST_TAG_NAMES) + r")>",
-            "",
-            raw_cleaned,
-            flags=re.DOTALL,
-        ).strip()
-        return str(reply_to_user or "").strip() == raw_cleaned
+        normalized_final = AgentLoop._normalize_user_visible_reply_for_compare(
+            reply_to_user
+        )
+        normalized_streamed = AgentLoop._normalize_user_visible_reply_for_compare(
+            raw_reply
+        )
+        if not normalized_final or not normalized_streamed:
+            return False
+        return (
+            normalized_final == normalized_streamed
+            or normalized_final in normalized_streamed
+        )
 
     @staticmethod
     def _messages_have_image_inputs(messages: List[Dict[str, Any]]) -> bool:
@@ -1565,6 +1566,22 @@ class AgentLoop:
                     return "\n\n".join(_paras[: _n - _half])
 
         return reply_to_user
+
+    @staticmethod
+    def _normalize_user_visible_reply_for_compare(value: str) -> str:
+        if not value:
+            return ""
+
+        cleaned = _GHOST_TAG_RE.sub("", str(value))
+        cleaned = re.sub(
+            r"<(?:" + "|".join(_GHOST_TAG_NAMES) + r")[^>]*>.*?</(?:"
+            + "|".join(_GHOST_TAG_NAMES) + r")>",
+            "",
+            cleaned,
+            flags=re.DOTALL,
+        )
+        cleaned = AgentLoop._dedupe_repeated_reply_sections(cleaned.strip())
+        return re.sub(r"\s+", " ", cleaned).strip()
 
     @staticmethod
     def _estimate_tokens(messages: List[Dict]) -> int:
@@ -4407,14 +4424,10 @@ class AgentLoop:
                             return trace
                         try:
                             results: list = []
-                            resolved_key = self.vector_service._resolve_api_key(
-                                self.config
-                            )
-                            provider = self.vector_service._get_provider()
-                            if provider in ("ollama", "local") or resolved_key:
+                            if self.vector_service.has_semantic_candidate():
                                 try:
                                     semantic_results = (
-                                        await self.vector_service.search(
+                                        await self.vector_service.search_semantic(
                                             content, limit=3
                                         )
                                         or []

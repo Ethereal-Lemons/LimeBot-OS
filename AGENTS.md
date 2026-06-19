@@ -168,8 +168,10 @@ LanceDB-backed semantic memory with automatic provider detection.
 
 **Embedding model selection** (priority order):
 1. `config.llm.embedding_model` if explicitly set
-2. Auto-detected from `config.llm.model` provider prefix
-3. Default: `gemini/gemini-embedding-001`
+2. Auto-detected provider-compatible default from `config.llm.model` when that embedding provider is actually available
+3. Gemini fallback when `GEMINI_API_KEY` or `GOOGLE_API_KEY` is available
+4. Local Ollama fallback when `LLM_EMBEDDING_ALLOW_LOCAL_FALLBACK=true`
+5. Grep-only lexical recall when no semantic embedding candidate is available
 
 | Chat model provider | Embedding model used |
 |---------------------|---------------------|
@@ -177,9 +179,9 @@ LanceDB-backed semantic memory with automatic provider detection.
 | `openai` / `azure` | `text-embedding-3-small` |
 | `nvidia` | `nvidia_nim/NV-Embed-v2` |
 | `ollama` / `local` | `ollama/nomic-embed-text` |
-| `deepseek`, `anthropic`, `xai` | Falls back to `gemini/gemini-embedding-001` |
+| `deepseek`, `anthropic`, `xai` | Falls back to `gemini/gemini-embedding-001` when a Gemini/Google key exists |
 
-If the embedding API fails or no key is found, vector search is disabled for the session and grep fallback takes over. The disable state is session-local (resets on restart).
+Embedding credentials are separate from chat-model credentials and may be billed separately by the provider. If no semantic candidate works, LimeBot falls back to grep recall instead of treating memory as broken. Local Ollama embeddings avoid provider billing but use local compute.
 
 **`search_grep(query, limit)`** — keyword scan of all `persona/memory/*.md` files. Results are scored by keyword hit count. Results are cached with a 30-second TTL.
 

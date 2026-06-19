@@ -199,7 +199,12 @@ def load_config(force_reload=False):
     config.llm = SimpleNamespace()
     default_llm_model = "gemini/gemini-2.0-flash"
     config.llm.model = str(os.getenv("LLM_MODEL") or "").strip() or default_llm_model
-    config.llm.embedding_model = str(os.getenv("LLM_EMBEDDING_MODEL") or "").strip() or None
+    config.llm.embedding_model = (
+        str(os.getenv("LLM_EMBEDDING_MODEL") or "").strip() or None
+    )
+    config.llm.embedding_allow_local_fallback = _load_bool_env(
+        "LLM_EMBEDDING_ALLOW_LOCAL_FALLBACK", default=False
+    )
     raw_fallback_models = str(os.getenv("LLM_FALLBACK_MODELS") or "").strip()
     config.llm.fallback_models = [
         item.strip()

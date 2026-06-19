@@ -1,6 +1,7 @@
 """Web channel implementation using FastAPI and WebSockets."""
 
-import asyncio
+import asyncio
+from dataclasses import asdict
 import base64
 import binascii
 import json
@@ -2413,7 +2414,125 @@ class WebChannel(BaseChannel):
         async def get_tasks():
             from core.task_tracker import get_task_tracker
             tasks = await get_task_tracker().list_tasks()
-            return {"tasks": tasks}
+            return {"tasks": tasks}
+
+        @self.app.get("/api/workspaces", dependencies=[Depends(self.verify_auth)])
+
+        async def get_workspaces(
+            status: Optional[str] = None,
+            origin: Optional[str] = None,
+            active_only: bool = False,
+            limit: int = 100,
+        ):
+
+            from core.task_tracker import get_task_tracker
+
+            workspaces = await get_task_tracker().list_workspaces(
+                status_filter=status,
+                origin_filter=origin,
+                active_only=active_only,
+                limit=limit,
+            )
+
+            return {"workspaces": [asdict(workspace) for workspace in workspaces]}
+
+        @self.app.get(
+            "/api/workspaces/{workspace_id}", dependencies=[Depends(self.verify_auth)]
+        )
+
+        async def get_workspace(workspace_id: str):
+
+            from core.task_tracker import get_task_tracker
+
+            workspace = await get_task_tracker().get_workspace(workspace_id)
+            if workspace is None:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+
+            return {"workspace": asdict(workspace)}
+
+        @self.app.post("/api/workspaces", dependencies=[Depends(self.verify_auth)])
+
+        async def create_workspace(data: dict):
+
+            from core.task_tracker import get_task_tracker
+
+            title = str(data.get("title") or "").strip()
+            origin = str(data.get("origin") or "").strip() or "web"
+            if not title:
+                raise HTTPException(status_code=400, detail="title is required")
+
+            workspace = await get_task_tracker().create_workspace(
+                title,
+                origin,
+                session_key=str(data.get("session_key") or "").strip(),
+                chat_id=str(data.get("chat_id") or "").strip(),
+                parent_workspace_id=str(data.get("parent_workspace_id") or "").strip(),
+                metadata=(
+                    data.get("metadata")
+                    if isinstance(data.get("metadata"), dict)
+                    else None
+                ),
+            )
+
+            return {"workspace": asdict(workspace)}
+
+        @self.app.post(
+            "/api/workspaces/{workspace_id}/status",
+            dependencies=[Depends(self.verify_auth)],
+        )
+
+        async def update_workspace_status(workspace_id: str, data: dict):
+
+            from core.task_tracker import get_task_tracker
+
+            workspace = await get_task_tracker().update_workspace(
+                workspace_id,
+                status=str(data.get("status") or "").strip() or None,
+                title=str(data.get("title") or "").strip() or None,
+                error=str(data.get("error") or "").strip() or None,
+                metadata_update=(
+                    data.get("metadata")
+                    if isinstance(data.get("metadata"), dict)
+                    else None
+                ),
+            )
+            if workspace is None:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+
+            return {"workspace": asdict(workspace)}
+
+        @self.app.post(
+            "/api/workspaces/{workspace_id}/artifacts",
+            dependencies=[Depends(self.verify_auth)],
+        )
+
+        async def add_workspace_artifact(workspace_id: str, data: dict):
+
+            from core.task_tracker import get_task_tracker
+
+            kind = str(data.get("kind") or "").strip()
+            title = str(data.get("title") or "").strip()
+            if not kind or not title:
+                raise HTTPException(
+                    status_code=400, detail="kind and title are required"
+                )
+
+            artifact = await get_task_tracker().add_workspace_artifact(
+                workspace_id,
+                kind=kind,
+                title=title,
+                path=str(data.get("path") or "").strip(),
+                url=str(data.get("url") or "").strip(),
+                metadata=(
+                    data.get("metadata")
+                    if isinstance(data.get("metadata"), dict)
+                    else None
+                ),
+            )
+            if artifact is None:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+
+            return {"artifact": asdict(artifact)}
 
         @self.app.get("/api/deliveries", dependencies=[Depends(self.verify_auth)])
         async def get_deliveries():

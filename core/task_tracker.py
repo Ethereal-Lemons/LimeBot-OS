@@ -1,5 +1,5 @@
 """
-TaskTracker — in-memory task registry with bounded JSON persistence.
+TaskTracker - in-memory task registry with bounded JSON persistence.
 
 Tracks all significant work units flowing through the agent loop so the
 operator dashboard can answer "what is LimeBot doing right now?" without
@@ -17,9 +17,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
-
-
-# ── Enums ──────────────────────────────────────────────────────────────────────
 
 
 class TaskType(str, Enum):
@@ -42,10 +39,19 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-_TERMINAL_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED})
-
-
-# ── Data model ─────────────────────────────────────────────────────────────────
+_TERMINAL_STATUSES = frozenset(
+    {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+)
+_WORKSPACE_TERMINAL_STATUSES = frozenset(
+    {
+        TaskStatus.COMPLETED.value,
+        TaskStatus.FAILED.value,
+        TaskStatus.CANCELLED.value,
+        "archived",
+    }
+)
+_MAX_HISTORY = 500
+_FLUSH_DEBOUNCE_SECONDS = 2.0
 
 
 @dataclass
@@ -67,10 +73,48 @@ class Task:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-# ── Tracker ────────────────────────────────────────────────────────────────────
+@dataclass
+class WorkspaceAttempt:
+    attempt_id: str
+    status: str = TaskStatus.QUEUED.value
+    model: str = ""
+    summary: str = ""
+    created_at: float = 0.0
+    updated_at: float = 0.0
+    started_at: float = 0.0
+    completed_at: float = 0.0
+    error: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-_MAX_HISTORY = 500
-_FLUSH_DEBOUNCE_SECONDS = 2.0
+
+@dataclass
+class WorkspaceArtifact:
+    artifact_id: str
+    kind: str
+    title: str
+    path: str = ""
+    url: str = ""
+    created_at: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TaskWorkspace:
+    workspace_id: str
+    title: str
+    origin: str
+    status: str = TaskStatus.QUEUED.value
+    session_key: str = ""
+    chat_id: str = ""
+    parent_workspace_id: str = ""
+    created_at: float = 0.0
+    updated_at: float = 0.0
+    started_at: float = 0.0
+    completed_at: float = 0.0
+    error: str = ""
+    attempts: List[WorkspaceAttempt] = field(default_factory=list)
+    artifacts: List[WorkspaceArtifact] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class TaskTracker:
@@ -80,23 +124,79 @@ class TaskTracker:
         self._data_file = Path(data_dir) / "tasks.json"
         self._active: Dict[str, Task] = {}
         self._history: deque[Task] = deque(maxlen=_MAX_HISTORY)
+        self._workspaces: Dict[str, TaskWorkspace] = {}
         self._lock = asyncio.Lock()
         self._last_flush: float = 0.0
         self._flush_pending: bool = False
         self._load()
 
-    # ── Persistence ────────────────────────────────────────────────────────
+    @staticmethod
+    def _coerce_task(item: Dict[str, Any]) -> Task:
+        cleaned = {
+            key: value
+            for key, value in (item or {}).items()
+            if key in Task.__dataclass_fields__
+        }
+        return Task(**cleaned)
+
+    @staticmethod
+    def _coerce_attempt(item: Dict[str, Any]) -> WorkspaceAttempt:
+        cleaned = {
+            key: value
+            for key, value in (item or {}).items()
+            if key in WorkspaceAttempt.__dataclass_fields__
+        }
+        return WorkspaceAttempt(**cleaned)
+
+    @staticmethod
+    def _coerce_artifact(item: Dict[str, Any]) -> WorkspaceArtifact:
+        cleaned = {
+            key: value
+            for key, value in (item or {}).items()
+            if key in WorkspaceArtifact.__dataclass_fields__
+        }
+        return WorkspaceArtifact(**cleaned)
+
+    @classmethod
+    def _coerce_workspace(cls, item: Dict[str, Any]) -> TaskWorkspace:
+        cleaned = {
+            key: value
+            for key, value in (item or {}).items()
+            if key in TaskWorkspace.__dataclass_fields__
+        }
+        cleaned["attempts"] = [
+            cls._coerce_attempt(attempt)
+            for attempt in cleaned.get("attempts", []) or []
+        ]
+        cleaned["artifacts"] = [
+            cls._coerce_artifact(artifact)
+            for artifact in cleaned.get("artifacts", []) or []
+        ]
+        return TaskWorkspace(**cleaned)
+
+    @classmethod
+    def _copy_workspace(cls, workspace: TaskWorkspace) -> TaskWorkspace:
+        return cls._coerce_workspace(asdict(workspace))
 
     def _load(self) -> None:
         if not self._data_file.exists():
             return
         try:
             raw = json.loads(self._data_file.read_text(encoding="utf-8"))
+            for item in raw.get("active", []):
+                task = self._coerce_task(item)
+                self._active[task.task_id] = task
             for item in raw.get("history", []):
-                self._history.append(Task(**{
-                    k: v for k, v in item.items() if k in Task.__dataclass_fields__
-                }))
-            logger.info(f"TaskTracker: loaded {len(self._history)} history entries.")
+                self._history.append(self._coerce_task(item))
+            for item in raw.get("workspaces", []):
+                workspace = self._coerce_workspace(item)
+                self._workspaces[workspace.workspace_id] = workspace
+            logger.info(
+                "TaskTracker: loaded "
+                f"{len(self._active)} active tasks, "
+                f"{len(self._history)} history entries, and "
+                f"{len(self._workspaces)} workspaces."
+            )
         except Exception as e:
             logger.error(f"TaskTracker: failed to load history: {e}")
 
@@ -104,8 +204,11 @@ class TaskTracker:
         try:
             self._data_file.parent.mkdir(parents=True, exist_ok=True)
             snapshot = {
-                "active": [asdict(t) for t in self._active.values()],
-                "history": [asdict(t) for t in self._history],
+                "active": [asdict(task) for task in self._active.values()],
+                "history": [asdict(task) for task in self._history],
+                "workspaces": [
+                    asdict(workspace) for workspace in self._workspaces.values()
+                ],
             }
             self._data_file.write_text(
                 json.dumps(snapshot, indent=2, default=str), encoding="utf-8"
@@ -131,8 +234,6 @@ class TaskTracker:
     async def _do_deferred_flush(self) -> None:
         self._flush_pending = False
         await asyncio.to_thread(self._flush_sync)
-
-    # ── Public API ─────────────────────────────────────────────────────────
 
     async def create_task(
         self,
@@ -190,16 +291,17 @@ class TaskTracker:
                 task.metadata.update(metadata_update)
             task.updated_at = now
 
-            # Move to history if terminal
-            if task.status in {s.value for s in _TERMINAL_STATUSES}:
+            if task.status in {status.value for status in _TERMINAL_STATUSES}:
                 task.completed_at = now
                 self._active.pop(task_id, None)
                 self._history.append(task)
 
             await self._schedule_flush()
-            return task
+            return Task(**asdict(task))
 
-    async def complete_task(self, task_id: str, error: Optional[str] = None) -> Optional[Task]:
+    async def complete_task(
+        self, task_id: str, error: Optional[str] = None
+    ) -> Optional[Task]:
         status = TaskStatus.FAILED.value if error else TaskStatus.COMPLETED.value
         return await self.update_task(task_id, status=status, error=error)
 
@@ -208,7 +310,10 @@ class TaskTracker:
             task = self._active.get(task_id)
             if task is None:
                 return None
-            if task.status not in {TaskStatus.QUEUED.value, TaskStatus.WAITING.value}:
+            if task.status not in {
+                TaskStatus.QUEUED.value,
+                TaskStatus.WAITING.value,
+            }:
                 return None
             task.status = TaskStatus.CANCELLED.value
             task.completed_at = time.time()
@@ -216,16 +321,16 @@ class TaskTracker:
             self._active.pop(task_id, None)
             self._history.append(task)
             await self._schedule_flush()
-            return task
+            return Task(**asdict(task))
 
     async def get_task(self, task_id: str) -> Optional[Task]:
         async with self._lock:
             task = self._active.get(task_id)
             if task:
-                return task
-            for t in reversed(self._history):
-                if t.task_id == task_id:
-                    return t
+                return Task(**asdict(task))
+            for row in reversed(self._history):
+                if row.task_id == task_id:
+                    return Task(**asdict(row))
         return None
 
     async def list_tasks(
@@ -256,29 +361,208 @@ class TaskTracker:
                     continue
                 if failed_only and task.status != TaskStatus.FAILED.value:
                     continue
-                results.append(task)
+                results.append(Task(**asdict(task)))
 
-            results.sort(key=lambda t: t.updated_at, reverse=True)
+            results.sort(key=lambda item: item.updated_at, reverse=True)
             return results[:limit]
 
     async def get_active_tasks(self) -> List[Task]:
         async with self._lock:
             return sorted(
-                self._active.values(),
-                key=lambda t: t.created_at,
+                [Task(**asdict(task)) for task in self._active.values()],
+                key=lambda item: item.created_at,
                 reverse=True,
             )
 
     async def get_recent_failures(self, limit: int = 20) -> List[Task]:
         async with self._lock:
             failures = [
-                t for t in self._history if t.status == TaskStatus.FAILED.value
+                Task(**asdict(task))
+                for task in self._history
+                if task.status == TaskStatus.FAILED.value
             ]
-            failures.sort(key=lambda t: t.completed_at, reverse=True)
+            failures.sort(key=lambda item: item.completed_at, reverse=True)
             return failures[:limit]
 
+    async def create_workspace(
+        self,
+        title: str,
+        origin: str,
+        *,
+        session_key: str = "",
+        chat_id: str = "",
+        parent_workspace_id: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> TaskWorkspace:
+        now = time.time()
+        workspace = TaskWorkspace(
+            workspace_id=uuid.uuid4().hex[:12],
+            title=title,
+            origin=origin,
+            session_key=session_key,
+            chat_id=chat_id,
+            parent_workspace_id=parent_workspace_id,
+            created_at=now,
+            updated_at=now,
+            metadata=metadata or {},
+        )
+        async with self._lock:
+            self._workspaces[workspace.workspace_id] = workspace
+            await self._schedule_flush()
+            return self._copy_workspace(workspace)
 
-# ── Singleton ──────────────────────────────────────────────────────────────────
+    async def update_workspace(
+        self,
+        workspace_id: str,
+        *,
+        status: Optional[str] = None,
+        title: Optional[str] = None,
+        error: Optional[str] = None,
+        metadata_update: Optional[Dict[str, Any]] = None,
+    ) -> Optional[TaskWorkspace]:
+        async with self._lock:
+            workspace = self._workspaces.get(workspace_id)
+            if workspace is None:
+                return None
+
+            now = time.time()
+            if title is not None:
+                workspace.title = title
+            if status is not None:
+                workspace.status = status
+                if status == TaskStatus.RUNNING.value and workspace.started_at == 0.0:
+                    workspace.started_at = now
+                if status in _WORKSPACE_TERMINAL_STATUSES:
+                    workspace.completed_at = now
+            if error is not None:
+                workspace.error = error
+            if metadata_update:
+                workspace.metadata.update(metadata_update)
+            workspace.updated_at = now
+            await self._schedule_flush()
+            return self._copy_workspace(workspace)
+
+    async def get_workspace(self, workspace_id: str) -> Optional[TaskWorkspace]:
+        async with self._lock:
+            workspace = self._workspaces.get(workspace_id)
+            if workspace is None:
+                return None
+            return self._copy_workspace(workspace)
+
+    async def list_workspaces(
+        self,
+        *,
+        status_filter: Optional[str] = None,
+        origin_filter: Optional[str] = None,
+        active_only: bool = False,
+        limit: int = 100,
+    ) -> List[TaskWorkspace]:
+        async with self._lock:
+            results: List[TaskWorkspace] = []
+            for workspace in self._workspaces.values():
+                if status_filter and workspace.status != status_filter:
+                    continue
+                if origin_filter and workspace.origin != origin_filter:
+                    continue
+                if active_only and workspace.status in _WORKSPACE_TERMINAL_STATUSES:
+                    continue
+                results.append(self._copy_workspace(workspace))
+
+            results.sort(key=lambda item: item.updated_at, reverse=True)
+            return results[:limit]
+
+    async def add_workspace_attempt(
+        self,
+        workspace_id: str,
+        *,
+        model: str = "",
+        summary: str = "",
+        status: str = TaskStatus.QUEUED.value,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[WorkspaceAttempt]:
+        async with self._lock:
+            workspace = self._workspaces.get(workspace_id)
+            if workspace is None:
+                return None
+
+            now = time.time()
+            attempt = WorkspaceAttempt(
+                attempt_id=uuid.uuid4().hex[:12],
+                status=status,
+                model=model,
+                summary=summary,
+                created_at=now,
+                updated_at=now,
+                started_at=now if status == TaskStatus.RUNNING.value else 0.0,
+                metadata=metadata or {},
+            )
+            workspace.attempts.append(attempt)
+            workspace.updated_at = now
+            if status == TaskStatus.RUNNING.value and workspace.started_at == 0.0:
+                workspace.started_at = now
+            await self._schedule_flush()
+            return WorkspaceAttempt(**asdict(attempt))
+
+    async def complete_workspace_attempt(
+        self,
+        workspace_id: str,
+        attempt_id: str,
+        *,
+        status: str = TaskStatus.COMPLETED.value,
+        error: str = "",
+    ) -> Optional[WorkspaceAttempt]:
+        async with self._lock:
+            workspace = self._workspaces.get(workspace_id)
+            if workspace is None:
+                return None
+
+            attempt = next(
+                (item for item in workspace.attempts if item.attempt_id == attempt_id),
+                None,
+            )
+            if attempt is None:
+                return None
+
+            now = time.time()
+            attempt.status = status
+            attempt.error = error
+            attempt.updated_at = now
+            attempt.completed_at = now
+            if attempt.started_at == 0.0:
+                attempt.started_at = now
+            workspace.updated_at = now
+            await self._schedule_flush()
+            return WorkspaceAttempt(**asdict(attempt))
+
+    async def add_workspace_artifact(
+        self,
+        workspace_id: str,
+        *,
+        kind: str,
+        title: str,
+        path: str = "",
+        url: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[WorkspaceArtifact]:
+        async with self._lock:
+            workspace = self._workspaces.get(workspace_id)
+            if workspace is None:
+                return None
+
+            artifact = WorkspaceArtifact(
+                artifact_id=uuid.uuid4().hex[:12],
+                kind=kind,
+                title=title,
+                path=path,
+                url=url,
+                created_at=time.time(),
+                metadata=metadata or {},
+            )
+            workspace.artifacts.append(artifact)
+            workspace.updated_at = time.time()
+            await self._schedule_flush()
+            return WorkspaceArtifact(**asdict(artifact))
+
 
 _instance: Optional[TaskTracker] = None
 
