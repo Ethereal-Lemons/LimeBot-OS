@@ -21,15 +21,28 @@
     "web:dev": "cd web && npm run dev -- --host 0.0.0.0",
     "backend:dev": "python main.py",
     "extension:dev": "npm run dev --workspace extension",
-    "extension:build": "npm run build --workspace extension"
-  },
-  "dependencies": {
-    "@mariozechner/pi-ai": "^0.68.1"
+    "extension:build": "npm run build --workspace extension",
+    "vscode:build": "npm run build --workspace vscode-extension",
+    "vscode:test": "npm run test --workspace vscode-extension",
+    "test:cli": "node --test tests-js/*.test.js"
   },
   "workspaces": [
     "web",
     "bridge",
-    "extension"
+    "extension",
+    "vscode-extension"
   ],
-  "type": "module"
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.74.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
 }

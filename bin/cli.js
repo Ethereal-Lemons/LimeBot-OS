@@ -5,6 +5,17 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import fs from 'fs';
 import net from 'net';
+import {
+    buildNpmFingerprint,
+    buildPythonFingerprint,
+    createDependencyState,
+    evaluateDependencyState,
+    loadDependencyState,
+    recordSuccessfulInstall,
+    writeDependencyStateAtomic,
+} from './dependency-state.js';
+import { waitForBackendReadiness } from './readiness-client.js';
+import { describeSupportedNode, isSupportedNodeVersion } from './runtime-support.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,6 +23,7 @@ const rootDir = path.resolve(__dirname, '..');
 const UPDATE_CHECK_TTL_MS = 1000 * 60 * 60 * 6;
 const UPDATE_CHECK_TIMEOUT_MS = 2500;
 const UPDATE_CHECK_CACHE_PATH = path.join(rootDir, 'data', 'cli-update-check.json');
+const DEPENDENCY_STATE_PATH = path.join(rootDir, 'data', 'dependency-state.json');
 const WIN_MAX_PATH_SAFE = 259;
 const MIN_PYTHON_MAJOR = 3;
 const MIN_PYTHON_MINOR = 11;
@@ -192,6 +204,10 @@ class Spinner {
         }, 80);
     }
 
+    update(text) {
+        this.text = text;
+    }
+
     stop(msg, success = true) {
         if (this.interval) clearInterval(this.interval);
         process.stdout.write(`\r\x1b[K`); // Clear line
@@ -214,6 +230,50 @@ async function runWithSpinner(text, fn) {
         s.stop(text, false);
         throw e;
     }
+}
+
+function appendBoundedOutput(current, chunk, maxChars = 8000) {
+    const combined = current + String(chunk || '');
+    return combined.length > maxChars ? combined.slice(-maxChars) : combined;
+}
+
+async function runDependencyCommand(command, args, { env, shell = false, label, retryCommand }) {
+    return new Promise((resolve, reject) => {
+        let output = '';
+        let child;
+        try {
+            child = spawn(command, args, {
+                cwd: rootDir,
+                shell,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                env,
+            });
+        } catch (err) {
+            reject(new Error(`${label} could not start: ${err.message}\nRetry: ${retryCommand}`));
+            return;
+        }
+
+        child.stdout?.on('data', (chunk) => {
+            output = appendBoundedOutput(output, chunk);
+        });
+        child.stderr?.on('data', (chunk) => {
+            output = appendBoundedOutput(output, chunk);
+        });
+        child.on('error', (err) => {
+            reject(new Error(`${label} could not start: ${err.message}\nRetry: ${retryCommand}`));
+        });
+        child.on('close', (code) => {
+            if (code === 0) {
+                resolve();
+                return;
+            }
+            const detail = output.trim();
+            reject(new Error(
+                `${label} failed with exit code ${code}.` +
+                `${detail ? `\n${detail}` : ''}\nRetry: ${retryCommand}`
+            ));
+        });
+    });
 }
 
 // ── Utilities ──────────────────────────────────────────────────────
@@ -783,7 +843,13 @@ function getVersion(cmd, args = ['--version']) {
         if (!cmd) return resolve(null);
         try {
             if (path.isAbsolute(cmd) || !cmd.includes(' ')) {
-                execFile(cmd, args, { windowsHide: true }, (err, stdout, stderr) => {
+                const isWindowsShim = process.platform === 'win32'
+                    && ['npm', 'npx', 'pnpm', 'yarn'].includes(cmd.toLowerCase());
+                const executable = isWindowsShim ? (process.env.ComSpec || 'cmd.exe') : cmd;
+                const commandArgs = isWindowsShim
+                    ? ['/d', '/s', '/c', [cmd, ...args].join(' ')]
+                    : args;
+                execFile(executable, commandArgs, { windowsHide: true }, (err, stdout, stderr) => {
                     if (err) resolve(null);
                     else resolve((stdout || stderr).trim().split('\n')[0]);
                 });
@@ -996,6 +1062,7 @@ ${colors.reset}
     ${colors.cyan}skill${colors.reset}            Manage skills (install, uninstall, update, list)
     ${colors.cyan}doctor${colors.reset}           Diagnose common issues + run tests
     ${colors.cyan}logs${colors.reset}             Show recent logs
+    ${colors.cyan}review-diff${colors.reset}      Build a redacted, review-only diff artifact
     ${colors.cyan}install-browser${colors.reset}  Install Chromium for browser tool (optional)
     ${colors.cyan}autorun${colors.reset}          Configure LimeBot to start automatically
     ${colors.cyan}help${colors.reset}             Show this help message
@@ -1021,6 +1088,11 @@ ${colors.reset}
     ${colors.dim}limebot skill uninstall <name>${colors.reset}
     ${colors.dim}limebot skill update <name>${colors.reset}
 
+  ${colors.bright}Review Options:${colors.reset}
+    ${colors.dim}limebot review-diff --diff-file change.patch --output review.json${colors.reset}
+    ${colors.gray}--invoke-model${colors.reset}     Call the configured LLM without tools
+    ${colors.gray}--format markdown${colors.reset}  Write a Markdown artifact instead of JSON
+
   ${colors.bright}Examples:${colors.reset}
     ${colors.dim}limebot start${colors.reset}
     ${colors.dim}limebot update-check${colors.reset}
@@ -1029,8 +1101,32 @@ ${colors.reset}
     ${colors.dim}limebot doctor${colors.reset}
     ${colors.dim}limebot doctor --skip-tests${colors.reset}
     ${colors.dim}limebot doctor --skip-perf${colors.reset}
+    ${colors.dim}limebot review-diff --diff-file change.patch --output review.json${colors.reset}
     ${colors.dim}limebot install-browser${colors.reset}
 `);
+}
+
+async function cmdReviewDiff(args = []) {
+    const scriptPath = path.join(rootDir, 'scripts', 'review_diff.py');
+    if (!fs.existsSync(scriptPath)) {
+        throw new Error(`Review helper not found at ${scriptPath}`);
+    }
+    const venvPython = venvPythonPath();
+    const systemPython = await getSystemPython();
+    const pythonCmd = fs.existsSync(venvPython) ? venvPython : systemPython;
+
+    return new Promise((resolve, reject) => {
+        const child = spawn(pythonCmd, [scriptPath, ...args], {
+            cwd: rootDir,
+            stdio: 'inherit',
+            env: buildChildEnv(),
+        });
+        child.on('error', reject);
+        child.on('close', (code) => {
+            if (code !== 0) process.exitCode = code || 1;
+            resolve(code || 0);
+        });
+    });
 }
 
 async function loadCodexAuthHelper() {
@@ -1142,13 +1238,26 @@ async function cmdDoctor(args = []) {
     }
 
     if (await commandExists('node')) {
-        success(`Node.js installed: ${await getVersion('node', ['-v'])}`);
+        const nodeVersion = await getVersion('node', ['-v']);
+        if (isSupportedNodeVersion(nodeVersion)) {
+            success(`Node.js installed: ${nodeVersion}`);
+        } else {
+            error(`Unsupported Node.js installed: ${nodeVersion || 'unknown version'}`);
+            info(`Expected ${describeSupportedNode()}.`);
+            issues++;
+        }
     } else {
         error('Node.js not found in PATH'); issues++;
     }
 
     if (await commandExists('npm')) {
-        success(`npm installed: v${await getVersion('npm', ['-v'])}`);
+        const npmVersion = await getVersion('npm', ['-v']);
+        if (npmVersion) {
+            success(`npm installed: v${npmVersion.replace(/^v/, '')}`);
+        } else {
+            error('npm was found but its version could not be read.');
+            issues++;
+        }
     } else {
         error('npm not found in PATH'); issues++;
     }
@@ -1179,9 +1288,11 @@ async function cmdDoctor(args = []) {
         }
     }
 
-    fs.existsSync(path.join(rootDir, 'web', 'node_modules'))
-        ? success('Frontend dependencies installed')
-        : warning('Frontend dependencies not installed (will be installed on first start)');
+    const npmInstallReady = fs.existsSync(path.join(rootDir, 'node_modules'))
+        && fs.existsSync(path.join(rootDir, 'node_modules', '.package-lock.json'));
+    npmInstallReady
+        ? success('NPM workspace dependencies installed')
+        : warning('NPM workspace dependencies not installed (will be installed on first start)');
 
     console.log('');
     info('Checking ports...');
@@ -1633,51 +1744,90 @@ async function cmdStart(args, updateStatus = null) {
     // ── Dependency installation ──────────────────────────────────
 
     if (!quickMode) {
+        const dependencyStartedAt = Date.now();
+        let dependencyState = loadDependencyState(DEPENDENCY_STATE_PATH) || createDependencyState();
         const nodeModules = path.join(rootDir, 'node_modules');
-        const webModules = path.join(rootDir, 'web', 'node_modules');
-        const bridgeModules = path.join(rootDir, 'bridge', 'node_modules');
-        const needsBridge = !backendOnly && !fs.existsSync(bridgeModules);
+        const npmSentinels = [
+            nodeModules,
+            path.join(nodeModules, '.package-lock.json'),
+        ];
+        const npmFingerprint = buildNpmFingerprint({
+            lockfilePath: path.join(rootDir, 'package-lock.json'),
+            nodeVersion: process.version,
+        });
+        const npmDecision = evaluateDependencyState(
+            'npm', dependencyState.npm, npmFingerprint, npmSentinels
+        );
 
-        if (!fs.existsSync(nodeModules) || !fs.existsSync(webModules) || needsBridge) {
+        if (npmDecision.installRequired) {
+            info(`Refreshing NPM dependencies: ${npmDecision.reason}.`);
             await runWithSpinner('Installing NPM dependencies (root & workspaces)...', () => {
-                return new Promise((resolve, reject) => {
-                    const p = spawn('npm', ['install'], { cwd: rootDir, shell: true, stdio: 'pipe', env: childEnv });
-                    let stderr = '';
-                    p.stderr.on('data', (d) => { stderr += d.toString(); });
-                    p.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr || `npm install exited ${code}`)));
+                return runDependencyCommand('npm', ['install'], {
+                    env: childEnv,
+                    shell: process.platform === 'win32',
+                    label: 'NPM dependency installation',
+                    retryCommand: 'npm install',
                 });
             });
+            const installedNpmFingerprint = buildNpmFingerprint({
+                lockfilePath: path.join(rootDir, 'package-lock.json'),
+                nodeVersion: process.version,
+            });
+            dependencyState = recordSuccessfulInstall(
+                dependencyState, 'npm', installedNpmFingerprint
+            );
+            writeDependencyStateAtomic(DEPENDENCY_STATE_PATH, dependencyState);
         } else {
-            success('NPM dependencies up to date.');
+            success('NPM dependencies unchanged.');
         }
 
         // FIX: venv is for the backend — only needed when NOT frontend-only
         if (!frontendOnly) {
             if (!fs.existsSync(venvDir)) {
                 await runWithSpinner('Creating Python virtual environment...', () => {
-                    return new Promise((resolve, reject) => {
-                        const systemPython = getSystemPython();
-                        systemPython.then(py => {
-                            const p = spawn(py, ['-m', 'venv', venvDir], { cwd: rootDir, shell: true, stdio: 'pipe' });
-                            p.on('close', (code) => code === 0 ? resolve() : reject(new Error(`venv creation failed (code ${code})`)));
-                        });
+                    return runDependencyCommand(systemPython, ['-m', 'venv', venvDir], {
+                        env: childEnv,
+                        label: 'Python virtual environment creation',
+                        retryCommand: `${systemPython} -m venv "${venvDir}"`,
                     });
                 });
             }
 
             const pythonCmd = fs.existsSync(venvPython) ? venvPython : systemPython;
-
-            await runWithSpinner('Checking backend requirements...', () => {
-                return new Promise((resolve, reject) => {
-                    const p = spawn(pythonCmd, ['-m', 'pip', 'install', '-r', 'requirements.txt', '--quiet'], {
-                        cwd: rootDir, shell: true, stdio: 'pipe', env: childEnv,
-                    });
-                    let stderr = '';
-                    p.stderr.on('data', (d) => { stderr += d.toString(); });
-                    p.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr || `pip install exited ${code}`)));
-                });
+            const pythonInfo = await ensureSupportedPython(
+                pythonCmd, 'Virtual environment Python', venvDir
+            );
+            const pythonFingerprint = buildPythonFingerprint({
+                requirementsPath: path.join(rootDir, 'requirements.txt'),
+                venvPython: pythonCmd,
+                pythonVersion: pythonInfo.version,
             });
+            const pythonDecision = evaluateDependencyState(
+                'python', dependencyState.python, pythonFingerprint, [pythonCmd]
+            );
+
+            if (pythonDecision.installRequired) {
+                info(`Refreshing Python dependencies: ${pythonDecision.reason}.`);
+                await runWithSpinner('Installing backend requirements...', () => {
+                    return runDependencyCommand(
+                        pythonCmd,
+                        ['-m', 'pip', 'install', '-r', 'requirements.txt', '--quiet'],
+                        {
+                            env: childEnv,
+                            label: 'Python dependency installation',
+                            retryCommand: `"${pythonCmd}" -m pip install -r requirements.txt`,
+                        },
+                    );
+                });
+                dependencyState = recordSuccessfulInstall(
+                    dependencyState, 'python', pythonFingerprint
+                );
+                writeDependencyStateAtomic(DEPENDENCY_STATE_PATH, dependencyState);
+            } else {
+                success('Python dependencies unchanged.');
+            }
         }
+        success(`Dependency phase completed in ${Date.now() - dependencyStartedAt} ms.`);
     }
 
     // ── Process management ────────────────────────────────────────
@@ -1766,14 +1916,30 @@ async function cmdStart(args, updateStatus = null) {
     // Vite proxies /api and /ws immediately on startup. If the backend
     // isn't listening yet, every request gets ECONNREFUSED. We wait up
     // to 30 s for the backend port before spawning Vite so the proxy is warm.
-    if (!frontendOnly && !backendOnly) {
-        const spinner = new Spinner('Waiting for backend to be ready...');
+    let backendStartupStatus = null;
+    if (!frontendOnly) {
+        const spinner = new Spinner('Waiting for backend process...');
         spinner.start();
-        const backendReady = await waitForServer(backendPort, 30);
-        if (backendReady) {
-            spinner.stop('Backend is ready.');
+        backendStartupStatus = await waitForBackendReadiness(backendPort, {
+            configured: isConfigured,
+            apiKey: readEnvValue('APP_API_KEY'),
+            maxAttempts: 30,
+            onPhase: (phase) => spinner.update(`Preparing backend: ${phase}...`),
+        });
+        if (backendStartupStatus.ready) {
+            const suffix = backendStartupStatus.status === 'degraded'
+                ? ` (degraded: ${(backendStartupStatus.degraded_reasons || []).join(', ')})`
+                : '';
+            spinner.stop(`Backend capabilities are ready${suffix}.`);
+        } else if (backendStartupStatus.status === 'setup') {
+            spinner.stop('Backend is live; first-run setup is ready.');
+        } else if (backendStartupStatus.live) {
+            spinner.stop(
+                `Backend is live but capabilities are ${backendStartupStatus.status} (${backendStartupStatus.phase}).`,
+                false,
+            );
         } else {
-            spinner.stop('Backend did not respond in 30 s — starting frontend anyway.', false);
+            spinner.stop('Backend did not respond in 30 s - continuing in diagnostic mode.', false);
         }
     }
 
@@ -1813,10 +1979,13 @@ async function cmdStart(args, updateStatus = null) {
             error('Timeout waiting for UI. Check logs above.');
         }
     } else {
-        info('Backend-only mode. Waiting for backend...');
-        (await waitForServer(backendPort))
-            ? success(`Backend ready on port ${backendPort}`)
-            : error('Backend did not start in time. Check logs.');
+        if (backendStartupStatus?.ready) {
+            success(`Backend ready on port ${backendPort}`);
+        } else if (backendStartupStatus?.live) {
+            warning(`Backend is live on port ${backendPort}, but agent capabilities are not ready.`);
+        } else {
+            error('Backend did not start in time. Check logs.');
+        }
     }
 
     let cleaned = false;
@@ -1838,6 +2007,12 @@ async function cmdStart(args, updateStatus = null) {
 // ── Entry point ───────────────────────────────────────────────────
 
 async function main() {
+    if (!isSupportedNodeVersion(process.version)) {
+        error(`LimeBot requires ${describeSupportedNode()}; found ${process.version}.`);
+        info('Upgrade Node.js, then run this command again. No setup files were changed.');
+        process.exit(1);
+    }
+
     const args = process.argv.slice(2);
     const command = args[0]?.toLowerCase() || 'help';
     const updateStatusCommands = new Set(['start', 'status', 'doctor', 'skill', 'install-browser']);
@@ -1856,6 +2031,7 @@ async function main() {
         case 'auth': await cmdAuth(args.slice(1)); break;
         case 'doctor': await cmdDoctor(args.slice(1)); break;
         case 'logs': await cmdLogs(args.slice(1)); break;
+        case 'review-diff': await cmdReviewDiff(args.slice(1)); break;
         case 'install-browser': await cmdInstallBrowser(); break;
         case 'skill': await cmdSkill(args.slice(1)); break;
         case 'autorun': await cmdAutorun(args.slice(1)); break;
