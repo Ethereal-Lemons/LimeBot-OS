@@ -19,6 +19,7 @@ else:
 _cached_config = None
 _TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
 _FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+_APPROVAL_POLICY_PROFILES = {"manual", "session", "autonomous", "review"}
 
 
 def _load_bool_env(name: str, default: bool = False) -> bool:
@@ -133,7 +134,19 @@ def load_config(force_reload=False):
         "BROWSER_PROFILE_DIRECTORY", ""
     ).strip()
 
-    config.autonomous_mode = os.getenv("AUTONOMOUS_MODE", "false").lower() == "true"
+    legacy_autonomous_mode = _load_bool_env("AUTONOMOUS_MODE", default=False)
+    raw_approval_profile = str(os.getenv("APPROVAL_POLICY_PROFILE") or "").strip().lower()
+    if raw_approval_profile and raw_approval_profile not in _APPROVAL_POLICY_PROFILES:
+        logger.warning(
+            "Invalid APPROVAL_POLICY_PROFILE in .env, defaulting to manual."
+        )
+        raw_approval_profile = "manual"
+    config.approval_policy_profile = (
+        raw_approval_profile
+        or ("autonomous" if legacy_autonomous_mode else "manual")
+    )
+    # Keep old integrations working while the named profile remains authoritative.
+    config.autonomous_mode = config.approval_policy_profile == "autonomous"
     config.allow_unsafe_commands = (
         os.getenv("ALLOW_UNSAFE_COMMANDS", "false").lower() == "true"
     )

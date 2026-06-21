@@ -171,10 +171,13 @@ _GHOST_TAG_RE = re.compile(
 _GHOST_TAG_NAMES = (
     "save_user",
     "save_soul",
+    "save_identity",
     "save_memory",
     "log_memory",
     "save_mood",
     "save_relationship",
+    "discord_send",
+    "discord_embed",
 )
 
 # Backward-compat aliases for code that still uses the underscore-prefixed names
@@ -185,6 +188,7 @@ _TAG_COMPAT_TOOLS = TAG_COMPAT_TOOLS
 _SENSITIVE_TOOLS = SENSITIVE_TOOLS
 _APPROVE_WORDS = APPROVE_WORDS
 _DENY_WORDS = DENY_WORDS
+_AGENT_READINESS_TIMEOUT_S = 20.0
 
 from core.paths import PERSONA_DIR, USERS_DIR, MEMORY_DIR, SOUL_FILE, IDENTITY_FILE
 
@@ -276,7 +280,16 @@ class AgentLoop:
 
         self._tool_definitions: Optional[List[Dict]] = None
         self._warmed = False
-        asyncio.create_task(self._init_skills_and_tools())
+        self._readiness_started_at = time.perf_counter()
+        self._readiness_phase = "created"
+        self._readiness_phase_history = ["created"]
+        self._readiness_status = "starting"
+        self._readiness_degraded_reasons: List[str] = []
+        self._readiness_failure_code: Optional[str] = None
+        self._readiness_event = asyncio.Event()
+        self._initialization_task = asyncio.create_task(
+            self._initialize_capabilities()
+        )
 
         self._stable_prompt_cache: Dict[str, Tuple[str, float]] = {}
         self._STABLE_PROMPT_TTL = 30.0
@@ -285,20 +298,84 @@ class AgentLoop:
         self._image_input_fallback_sessions: Set[str] = set()
         self._sessions_pending_tool_image_reply: Set[str] = set()
 
+    def _set_readiness_phase(self, phase: str) -> None:
+        self._readiness_phase = phase
+        if not self._readiness_phase_history or self._readiness_phase_history[-1] != phase:
+            self._readiness_phase_history.append(phase)
+        logger.debug(f"Agent readiness phase: {phase}")
+
+    def _add_readiness_degradation(self, reason: str) -> None:
+        if reason not in self._readiness_degraded_reasons:
+            self._readiness_degraded_reasons.append(reason)
+
+    def get_readiness_status(self) -> Dict[str, Any]:
+        ready = self._readiness_status in {"ready", "degraded"}
+        return {
+            "status": self._readiness_status,
+            "phase": self._readiness_phase,
+            "ready": ready,
+            "elapsed_ms": int(
+                max(0.0, time.perf_counter() - self._readiness_started_at) * 1000
+            ),
+            "degraded_reasons": list(self._readiness_degraded_reasons),
+            "failure_code": self._readiness_failure_code,
+        }
+
+    async def await_ready(self, timeout: float = _AGENT_READINESS_TIMEOUT_S) -> Dict[str, Any]:
+        if not self._readiness_event.is_set():
+            try:
+                await asyncio.wait_for(self._readiness_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                status = self.get_readiness_status()
+                return {
+                    **status,
+                    "status": "timeout",
+                    "ready": False,
+                    "failure_code": "agent_readiness_timeout",
+                }
+        return self.get_readiness_status()
+
+    async def _initialize_capabilities(self) -> None:
+        try:
+            await self._init_skills_and_tools()
+            if self._readiness_degraded_reasons:
+                self._readiness_status = "degraded"
+                self._set_readiness_phase("degraded")
+            else:
+                self._readiness_status = "ready"
+                self._set_readiness_phase("ready")
+        except asyncio.CancelledError:
+            self._readiness_status = "failed"
+            self._readiness_failure_code = "initialization_cancelled"
+            self._set_readiness_phase("failed")
+            raise
+        except Exception:
+            self._readiness_status = "failed"
+            self._readiness_failure_code = "required_capability_initialization_failed"
+            self._set_readiness_phase("failed")
+            logger.exception("Required agent capability initialization failed")
+        finally:
+            self._readiness_event.set()
+
     async def _init_skills_and_tools(self) -> None:
         """Background: discover skills, build tool definitions, then warm up slow services."""
+        self._set_readiness_phase("skills")
         await asyncio.to_thread(self.skill_registry.discover_and_load)
+        self._set_readiness_phase("subagents")
         await asyncio.to_thread(self.subagent_registry.discover_and_load)
         asyncio.create_task(self._cleanup_persisted_histories())
 
         # Initialize MCP servers if available
+        self._set_readiness_phase("mcp")
         try:
             from core.mcp_client import get_mcp_manager
 
-            await get_mcp_manager().initialize()
+            await asyncio.wait_for(get_mcp_manager().initialize(), timeout=8.0)
         except Exception as e:
             logger.error(f"Failed to initialize MCP servers: {e}")
+            self._add_readiness_degradation("mcp_unavailable")
 
+        self._set_readiness_phase("tools")
         self._refresh_tool_definitions()
         # Pre-initialize LanceDB and HTTP connection pools so the first user
         # message doesn't pay the cold-start penalty.
@@ -891,6 +968,22 @@ class AgentLoop:
         normalized_final = AgentLoop._normalize_user_visible_reply_for_compare(
             reply_to_user
         )
+        if _GHOST_TAG_RE.search(raw_reply or ""):
+            tag_names = "|".join(_GHOST_TAG_NAMES)
+            visible_stream = re.sub(
+                rf"<(?:{tag_names})[^>]*>.*?</(?:{tag_names})>",
+                "",
+                raw_reply,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            visible_stream = _GHOST_TAG_RE.sub("", visible_stream)
+            normalized_visible_stream = re.sub(
+                r"\s+", " ", visible_stream
+            ).strip()
+            return bool(
+                normalized_final
+                and normalized_visible_stream.count(normalized_final) >= 2
+            )
         normalized_streamed = AgentLoop._normalize_user_visible_reply_for_compare(
             raw_reply
         )
@@ -1454,6 +1547,73 @@ class AgentLoop:
     ) -> Dict[str, Any]:
         return self.confirm.build_preview(function_name, function_args, session_key)
 
+    def _get_tool_approval_decision(
+        self,
+        session_key: str,
+        function_name: str,
+        is_internal: bool = False,
+        is_whatsapp: bool = False,
+    ) -> Dict[str, Any]:
+        profile = str(
+            getattr(self.config, "approval_policy_profile", "manual") or "manual"
+        ).strip().lower()
+        if profile not in {"manual", "session", "autonomous", "review"}:
+            profile = "manual"
+
+        if is_whatsapp:
+            allowed = function_name != "delete_file"
+            return {
+                "allowed": allowed,
+                "requires_confirmation": not allowed,
+                "reason": "channel_whatsapp_legacy" if allowed else "manual_required",
+                "policy_profile": profile,
+            }
+        if is_internal:
+            return {
+                "allowed": True,
+                "requires_confirmation": False,
+                "reason": "internal",
+                "policy_profile": profile,
+            }
+        if profile == "autonomous":
+            return {
+                "allowed": True,
+                "requires_confirmation": False,
+                "reason": "policy_autonomous",
+                "policy_profile": profile,
+            }
+        if (
+            profile != "review"
+            and function_name in self.session_whitelists.get(session_key, set())
+        ):
+            return {
+                "allowed": True,
+                "requires_confirmation": False,
+                "reason": "session_whitelist",
+                "policy_profile": profile,
+            }
+        return {
+            "allowed": False,
+            "requires_confirmation": True,
+            "reason": "manual_required",
+            "policy_profile": profile,
+        }
+
+    @staticmethod
+    def _approval_audit_preview(preview: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep audit metadata useful without persisting commands or file contents."""
+        safe: Dict[str, Any] = {"kind": str(preview.get("kind") or "unknown")}
+        risk_flags = preview.get("risk_flags")
+        if isinstance(risk_flags, list):
+            safe["risk_flags"] = [str(flag)[:80] for flag in risk_flags[:10]]
+        for key in ("mode", "target_type"):
+            if preview.get(key):
+                safe[key] = str(preview[key])[:80]
+        affected_paths = preview.get("affected_paths")
+        if isinstance(affected_paths, list):
+            safe["affected_path_count"] = len(affected_paths)
+        return safe
+
     def _build_confirmation_embed(
         self,
         function_name: str,
@@ -1609,6 +1769,9 @@ class AgentLoop:
 
     async def stop(self) -> None:
         self._running = False
+        if self._initialization_task and not self._initialization_task.done():
+            self._initialization_task.cancel()
+            await asyncio.gather(self._initialization_task, return_exceptions=True)
 
     async def cancel_session(self, session_key: str) -> bool:
         cancelled_any = False
@@ -1664,22 +1827,45 @@ class AgentLoop:
         return cancelled_any
 
     async def confirm_tool(
-        self, conf_id: str, approved: bool, session_whitelist: bool = False
+        self,
+        conf_id: str,
+        approved: bool,
+        session_whitelist: bool = False,
+        source: str = "api",
     ) -> bool:
         if conf_id in self.pending_confirmations:
             conf = self.pending_confirmations[conf_id]
+            source = str(source or "api").strip().lower()
+            if source not in {
+                "api",
+                "app",
+                "web",
+                "discord",
+                "extension",
+                "whatsapp",
+            }:
+                source = "api"
+            profile = str(conf.get("policy_profile") or "manual")
+            effective_whitelist = bool(
+                approved
+                and session_whitelist
+                and profile in {"manual", "session"}
+            )
             self._log_session_event(
                 conf.get("session_key", "unknown"),
                 {
-                    "type": "confirmation_resolved",
-                    "confirmation_id": conf_id,
+                    "type": "approval_decided",
+                    "conf_id": conf_id,
                     "approved": approved,
                     "tool": conf.get("tool"),
-                    "session_whitelist": session_whitelist,
+                    "session_whitelist": effective_whitelist,
+                    "policy_profile": profile,
+                    "decision_reason": "user_approved" if approved else "user_denied",
+                    "client_source": source,
                 },
             )
             conf["approved"] = approved
-            if approved and session_whitelist:
+            if effective_whitelist:
                 sk = conf["session_key"]
                 self.session_whitelists.setdefault(sk, set()).add(conf["tool"])
                 logger.info(f"🔓 Added {conf['tool']} to whitelist for {sk}")
@@ -2923,16 +3109,31 @@ class AgentLoop:
                 )
 
                 if function_name in _SENSITIVE_TOOLS:
-                    is_whitelisted = (
-                        session_key in self.session_whitelists
-                        and function_name in self.session_whitelists[session_key]
+                    approval = self._get_tool_approval_decision(
+                        session_key,
+                        function_name,
+                        is_internal=is_internal,
+                        is_whatsapp=is_whatsapp,
                     )
-                    if is_whatsapp:
-                        is_whitelisted = function_name != "delete_file"
-                    elif getattr(self.config, "autonomous_mode", False) or is_internal:
-                        is_whitelisted = True
+                    client_source = str(
+                        getattr(msg, "channel", "") or "system"
+                    ).strip().lower()
+                    if approval["allowed"]:
+                        self._log_session_event(
+                            session_key,
+                            {
+                                "type": "approval_decided",
+                                "conf_id": f"policy_{uuid.uuid4().hex[:8]}",
+                                "tool": function_name,
+                                "approved": True,
+                                "session_whitelist": approval["reason"] == "session_whitelist",
+                                "policy_profile": approval["policy_profile"],
+                                "decision_reason": approval["reason"],
+                                "client_source": client_source,
+                            },
+                        )
 
-                    if not is_whitelisted:
+                    if approval["requires_confirmation"]:
                         conf_id = f"conf_{uuid.uuid4().hex[:8]}"
                         event = asyncio.Event()
                         confirmation_preview = self._build_confirmation_preview(
@@ -2944,14 +3145,22 @@ class AgentLoop:
                             "session_key": session_key,
                             "tool": function_name,
                             "preview": confirmation_preview,
+                            "policy_profile": approval["policy_profile"],
+                            "decision_reason": approval["reason"],
+                            "client_source": client_source,
                         }
                         self._log_session_event(
                             session_key,
                             {
-                                "type": "confirmation_requested",
-                                "confirmation_id": conf_id,
+                                "type": "approval_requested",
+                                "conf_id": conf_id,
                                 "tool": function_name,
-                                "args": function_args,
+                                "preview": self._approval_audit_preview(
+                                    confirmation_preview
+                                ),
+                                "policy_profile": approval["policy_profile"],
+                                "decision_reason": approval["reason"],
+                                "client_source": client_source,
                             },
                         )
 
@@ -2973,6 +3182,8 @@ class AgentLoop:
                             "preview": confirmation_preview,
                             "tool_call_id": tc_id,
                             "conf_id": conf_id,
+                            "policy_profile": approval["policy_profile"],
+                            "decision_reason": approval["reason"],
                             "turn_id": turn_id,
                             "message_id": message_id,
                             "embed": {
@@ -3008,7 +3219,20 @@ class AgentLoop:
                                     False,
                                     is_internal,
                                 )
-                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                        except asyncio.TimeoutError:
+                            self._log_session_event(
+                                session_key,
+                                {
+                                    "type": "approval_timed_out",
+                                    "conf_id": conf_id,
+                                    "tool": function_name,
+                                    "approved": False,
+                                    "session_whitelist": False,
+                                    "policy_profile": approval["policy_profile"],
+                                    "decision_reason": "timeout",
+                                    "client_source": client_source,
+                                },
+                            )
                             return (
                                 tc_id,
                                 function_name,
@@ -3017,6 +3241,21 @@ class AgentLoop:
                                 False,
                                 is_internal,
                             )
+                        except asyncio.CancelledError:
+                            self._log_session_event(
+                                session_key,
+                                {
+                                    "type": "approval_decided",
+                                    "conf_id": conf_id,
+                                    "tool": function_name,
+                                    "approved": False,
+                                    "session_whitelist": False,
+                                    "policy_profile": approval["policy_profile"],
+                                    "decision_reason": "run_cancelled",
+                                    "client_source": client_source,
+                                },
+                            )
+                            raise
                         finally:
                             self.pending_confirmations.pop(conf_id, None)
 
@@ -3039,7 +3278,11 @@ class AgentLoop:
                         "type": "tool_started",
                         "tool": function_name,
                         "tool_call_id": tc_id,
-                        "args": function_args,
+                        "args": (
+                            {"redacted": True}
+                            if function_name in _SENSITIVE_TOOLS
+                            else function_args
+                        ),
                     },
                 )
 
@@ -4237,6 +4480,44 @@ class AgentLoop:
             ):
                 return
 
+            if not msg.metadata.get("is_scheduler"):
+                if not self.get_readiness_status()["ready"]:
+                    await self._publish_activity(
+                        msg,
+                        "Preparing skills and tools...",
+                        turn_id=turn_id,
+                        message_id=assistant_message_id,
+                    )
+                readiness = await self.await_ready()
+                if not readiness["ready"]:
+                    failure_code = readiness.get("failure_code") or "agent_not_ready"
+                    if _msg_task_id:
+                        await _tracker.complete_task(
+                            _msg_task_id, error=failure_code
+                        )
+                    reply = (
+                        "LimeBot is still preparing its skills and tools. Please retry in a moment."
+                        if readiness["status"] == "timeout"
+                        else "LimeBot could not load its required capabilities. Run `limebot doctor` and check the startup logs."
+                    )
+                    await self.bus.publish_outbound(
+                        OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=reply,
+                            metadata=self._with_trace_metadata(
+                                {
+                                    "is_error": True,
+                                    "reply_to": msg.sender_id,
+                                    "error_code": failure_code,
+                                },
+                                turn_id=turn_id,
+                                message_id=assistant_message_id,
+                            ),
+                        )
+                    )
+                    return
+
             sender_id = msg.sender_id
             metadata_skill_name = str(msg.metadata.get("skill_name") or "").strip()
             if metadata_skill_name:
@@ -4336,7 +4617,11 @@ class AgentLoop:
                     )
                     if is_approve or is_deny:
                         for conf_id, _ in pending_for_session:
-                            await self.confirm_tool(conf_id, approved=is_approve)
+                            await self.confirm_tool(
+                                conf_id,
+                                approved=is_approve,
+                                source=msg.channel,
+                            )
                         reply_text = (
                             "✅ Approved — executing..."
                             if is_approve

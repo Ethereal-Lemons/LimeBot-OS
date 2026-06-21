@@ -432,6 +432,9 @@ class TaskTracker:
                 workspace.status = status
                 if status == TaskStatus.RUNNING.value and workspace.started_at == 0.0:
                     workspace.started_at = now
+                if status == TaskStatus.RUNNING.value:
+                    workspace.completed_at = 0.0
+                    workspace.error = ""
                 if status in _WORKSPACE_TERMINAL_STATUSES:
                     workspace.completed_at = now
             if error is not None:

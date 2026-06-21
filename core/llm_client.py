@@ -8,8 +8,49 @@ most providers. core.codex_bridge is the adapter for openai-codex/*.
 from __future__ import annotations
 
 import asyncio
+import base64
+import copy
 from dataclasses import dataclass
+import logging
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_local_image_urls(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Scan messages for local image URLs (e.g. starting with '/temp/') and resolve them to base64 data URLs.
+    
+    This avoids LiteLLM/OpenAI throwing 'Invalid URL format' for relative/absolute local file paths.
+    """
+    copied_messages = copy.deepcopy(messages)
+    for msg in copied_messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    image_url_obj = part.get("image_url")
+                    if isinstance(image_url_obj, dict):
+                        url = image_url_obj.get("url")
+                        if isinstance(url, str) and (url.startswith("/temp/") or url.startswith("temp/")):
+                            # Remove leading slash to make it relative to current working directory
+                            local_path = Path.cwd() / url.lstrip('/')
+                            if local_path.exists() and local_path.is_file():
+                                try:
+                                    mime_type, _ = mimetypes.guess_type(local_path)
+                                    if not mime_type:
+                                        mime_type = "image/png"
+                                    data = local_path.read_bytes()
+                                    encoded = base64.b64encode(data).decode("utf-8")
+                                    image_url_obj["url"] = f"data:{mime_type};base64,{encoded}"
+                                except Exception as e:
+                                    logger.error(f"Error encoding local image {local_path}: {e}")
+                            else:
+                                logger.warning(f"Local image path {local_path} does not exist or is not a file.")
+    return copied_messages
 
 try:
     from litellm import acompletion
@@ -81,12 +122,13 @@ class LimeLLMClient:
         ]
 
     async def complete(self, provider: ProviderConfig, request: ChatRequest) -> Any:
+        messages = _resolve_local_image_urls(request.messages)
         if provider.is_codex:
             helper = stream_codex_response if request.stream else complete_codex_response
             return await asyncio.to_thread(
                 helper,
                 provider.source_model,
-                request.messages,
+                messages,
                 request.tools,
                 request.session_id,
             )
@@ -96,7 +138,7 @@ class LimeLLMClient:
 
         kwargs: Dict[str, Any] = {
             "model": provider.model,
-            "messages": request.messages,
+            "messages": messages,
             "stream": request.stream,
             "base_url": provider.base_url,
             "api_key": provider.api_key,

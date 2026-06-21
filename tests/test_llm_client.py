@@ -144,6 +144,63 @@ class TestLlmClient(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("max_tokens", kwargs)
         self.assertNotIn("stream_options", kwargs)
 
+    async def test_complete_resolves_local_image_paths(self):
+        import base64
+        from pathlib import Path
+
+        client = LimeLLMClient()
+        provider = ProviderConfig(
+            source_model="openai/gpt-4o",
+            model="gpt-4o",
+            base_url="https://api.openai.com/v1",
+            api_key="openai-secret",
+            custom_llm_provider=None,
+            is_codex=False,
+        )
+
+        # Create a temp file in Path.cwd() / "temp" / "web_uploads" / "test_session"
+        temp_dir = Path.cwd() / "temp" / "web_uploads" / "test_session"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        img_file = temp_dir / "test_image.png"
+        img_content = b"fake image bytes"
+        img_file.write_bytes(img_content)
+
+        relative_url = f"/temp/web_uploads/test_session/test_image.png"
+
+        request = ChatRequest(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "here is an image:"},
+                        {"type": "image_url", "image_url": {"url": relative_url}},
+                    ],
+                }
+            ]
+        )
+
+        response = object()
+        try:
+            with patch("core.llm_client.acompletion", new=AsyncMock(return_value=response)) as mock_completion:
+                result = await client.complete(provider, request)
+
+            self.assertIs(result, response)
+            kwargs = mock_completion.await_args.kwargs
+            processed_messages = kwargs["messages"]
+            self.assertEqual(len(processed_messages), 1)
+            content = processed_messages[0]["content"]
+            self.assertEqual(content[0]["type"], "text")
+            self.assertEqual(content[1]["type"], "image_url")
+            
+            expected_base64 = base64.b64encode(img_content).decode("utf-8")
+            self.assertEqual(
+                content[1]["image_url"]["url"],
+                f"data:image/png;base64,{expected_base64}"
+            )
+        finally:
+            if img_file.exists():
+                img_file.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

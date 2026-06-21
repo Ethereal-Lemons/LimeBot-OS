@@ -157,3 +157,35 @@ class TestConfigLoading(unittest.TestCase):
         self.assertAlmostEqual(loaded.ai_harness.balanced_rag_timeout_s, 0.2)
         self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.2)
         self.assertTrue(loaded.ai_harness.fast_disable_tools_for_casual)
+
+    def test_approval_policy_defaults_to_manual(self):
+        loaded = self._load_config_with_env(
+            {"APPROVAL_POLICY_PROFILE": "", "AUTONOMOUS_MODE": "false"}
+        )
+
+        self.assertEqual(loaded.approval_policy_profile, "manual")
+        self.assertFalse(loaded.autonomous_mode)
+
+    def test_legacy_autonomous_mode_maps_to_named_policy(self):
+        loaded = self._load_config_with_env(
+            {"APPROVAL_POLICY_PROFILE": "", "AUTONOMOUS_MODE": "true"}
+        )
+
+        self.assertEqual(loaded.approval_policy_profile, "autonomous")
+        self.assertTrue(loaded.autonomous_mode)
+
+    def test_named_approval_policy_takes_precedence_over_legacy_toggle(self):
+        loaded = self._load_config_with_env(
+            {"APPROVAL_POLICY_PROFILE": "review", "AUTONOMOUS_MODE": "true"}
+        )
+
+        self.assertEqual(loaded.approval_policy_profile, "review")
+        self.assertFalse(loaded.autonomous_mode)
+
+    def test_invalid_approval_policy_falls_back_to_manual(self):
+        loaded = self._load_config_with_env(
+            {"APPROVAL_POLICY_PROFILE": "unlimited", "AUTONOMOUS_MODE": "true"}
+        )
+
+        self.assertEqual(loaded.approval_policy_profile, "manual")
+        self.assertFalse(loaded.autonomous_mode)

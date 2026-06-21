@@ -148,11 +148,13 @@ class TestScheduler(unittest.IsolatedAsyncioTestCase):
         bus = _TestBus()
         scheduler = _TestCronManager(bus, self.temp_dir / "cron_recent.json")
         now = time.time()
+        # Keep the next slot outside this test's 1.2s observation window.
+        next_minute = (time.gmtime(now).tm_min + 2) % 60
         scheduler.jobs = [
             {
                 "id": "recent123",
                 "trigger": now - 5,
-                "cron_expr": "* * * * *",
+                "cron_expr": f"{next_minute} * * * *",
                 "tz_offset": None,
                 "payload": "@reflect_and_distill",
                 "context": {
