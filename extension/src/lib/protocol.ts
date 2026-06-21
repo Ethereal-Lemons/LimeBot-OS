@@ -32,6 +32,8 @@ export type ToolExecution = {
   args: unknown;
   toolCallId: string;
   confId?: string;
+  policyProfile?: string;
+  decisionReason?: string;
   result?: string;
   preview?: ToolPreview;
   updatedAt: number;
@@ -59,8 +61,46 @@ export type ToolExecutionPayload = {
   args: unknown;
   tool_call_id: string;
   conf_id?: string;
+  policy_profile?: string;
+  decision_reason?: string;
   result?: string;
   preview?: ToolPreview;
+};
+
+export type AppWorkspaceSummary = {
+  workspace_id: string;
+  title: string;
+  origin: string;
+  status: string;
+  session_key: string;
+  chat_id: string;
+  updated_at: number;
+};
+
+export type AppServerState = {
+  version: string;
+  boot_id: string;
+  timestamp: number;
+  workspaces: AppWorkspaceSummary[];
+  tasks: Array<Record<string, unknown>>;
+  pending_approvals: Array<Record<string, unknown>>;
+  channels: Array<{ name: string; running: boolean }>;
+  runtime: {
+    model: string;
+    readiness: Record<string, unknown>;
+    inbound_queue: number;
+    outbound_queue: number;
+    app_clients: number;
+  };
+};
+
+export type WorkspaceEvent = {
+  type: "workspace_event";
+  workspace_id: string;
+  session_key: string;
+  event: string;
+  payload: Record<string, unknown>;
+  timestamp: number;
 };
 
 function createId(prefix: string) {
@@ -214,6 +254,8 @@ export function upsertToolExecution(executions: ToolExecution[], payload: ToolEx
     args: payload.args,
     toolCallId: payload.tool_call_id,
     confId: payload.conf_id,
+    policyProfile: payload.policy_profile,
+    decisionReason: payload.decision_reason,
     result: payload.result,
     preview: payload.preview,
     updatedAt: Date.now(),

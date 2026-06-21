@@ -317,18 +317,21 @@ export function useLimeBotClient(settings: LimeBotExtensionSettings) {
   async function approveTool(confId: string, approved: boolean, sessionWhitelist: boolean) {
     setApprovalInFlight(confId);
     try {
-      const response = await fetch(`${settings.apiBaseUrl}/api/confirm-tool`, {
+      const response = await fetch(
+        `${settings.apiBaseUrl}/api/app/approvals/${encodeURIComponent(confId)}`,
+        {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-API-Key": settings.apiKey,
         },
         body: JSON.stringify({
-          conf_id: confId,
           approved,
           session_whitelist: sessionWhitelist,
+          source: "extension",
         }),
-      });
+        }
+      );
 
       if (!response.ok) {
         throw new Error(`Approval request failed with status ${response.status}`);
