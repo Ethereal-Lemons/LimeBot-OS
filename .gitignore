@@ -107,3 +107,7 @@ allowed_paths.txt
 skills/twitter-engagement/
 skills/social_actions/
 plans/*
+
+# Scratch and VS Code extension
+scratch/
+vscode-extension/
