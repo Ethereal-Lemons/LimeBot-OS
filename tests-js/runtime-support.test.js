@@ -1,0 +1,43 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import test from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import {
+    describeSupportedNode,
+    isSupportedNodeVersion,
+    parseNodeVersion,
+} from '../bin/runtime-support.js';
+
+test('Node version parsing accepts runtime and plain semver strings', () => {
+    assert.deepEqual(parseNodeVersion('v20.19.0'), { major: 20, minor: 19, patch: 0 });
+    assert.deepEqual(parseNodeVersion('22.12.1'), { major: 22, minor: 12, patch: 1 });
+    assert.equal(parseNodeVersion('unknown'), null);
+});
+
+test('LimeBot rejects runtimes below the frontend toolchain minimum', () => {
+    assert.equal(isSupportedNodeVersion('v18.20.8'), false);
+    assert.equal(isSupportedNodeVersion('v20.18.9'), false);
+    assert.equal(isSupportedNodeVersion('v20.19.0'), true);
+    assert.equal(isSupportedNodeVersion('v22.0.0'), true);
+    assert.match(describeSupportedNode(), /20\.19\.0/);
+});
+
+test('CLI rejects an old Node runtime before command dispatch', () => {
+    const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const cliUrl = pathToFileURL(path.join(rootDir, 'bin', 'cli.js')).href;
+    const script = [
+        "Object.defineProperty(process, 'version', { value: 'v18.20.8' });",
+        "process.argv = [process.execPath, 'bin/cli.js', 'help'];",
+        `await import(${JSON.stringify(cliUrl)});`,
+    ].join('');
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+        cwd: rootDir,
+        encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /requires Node\.js 20\.19\.0 or newer/);
+    assert.doesNotMatch(result.stdout, /Commands:/);
+});

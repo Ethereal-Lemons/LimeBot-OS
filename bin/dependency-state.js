@@ -1,0 +1,111 @@
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+
+export const DEPENDENCY_STATE_SCHEMA = 1;
+
+function hashFile(filePath) {
+    if (!fs.existsSync(filePath)) return null;
+    return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function runtimeMajor(version) {
+    const match = String(version || '').match(/v?(\d+)/);
+    return match ? Number(match[1]) : null;
+}
+
+function pythonMajorMinor(version) {
+    if (!version) return null;
+    if (typeof version === 'object' && Number.isInteger(version.major) && Number.isInteger(version.minor)) {
+        return `${version.major}.${version.minor}`;
+    }
+    const match = String(version).match(/(\d+)\.(\d+)/);
+    return match ? `${match[1]}.${match[2]}` : null;
+}
+
+function normalizeRuntimePath(value) {
+    const resolved = path.resolve(String(value || ''));
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+export function createDependencyState() {
+    return { schemaVersion: DEPENDENCY_STATE_SCHEMA, npm: null, python: null };
+}
+
+export function buildNpmFingerprint({ lockfilePath, nodeVersion = process.version }) {
+    return {
+        manifestHash: hashFile(lockfilePath),
+        nodeMajor: runtimeMajor(nodeVersion),
+    };
+}
+
+export function buildPythonFingerprint({ requirementsPath, venvPython, pythonVersion }) {
+    return {
+        manifestHash: hashFile(requirementsPath),
+        pythonMajorMinor: pythonMajorMinor(pythonVersion),
+        venvPython: normalizeRuntimePath(venvPython),
+    };
+}
+
+export function loadDependencyState(filePath) {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        if (!parsed || parsed.schemaVersion !== DEPENDENCY_STATE_SCHEMA) return null;
+        return {
+            schemaVersion: DEPENDENCY_STATE_SCHEMA,
+            npm: parsed.npm && typeof parsed.npm === 'object' ? parsed.npm : null,
+            python: parsed.python && typeof parsed.python === 'object' ? parsed.python : null,
+        };
+    } catch {
+        return null;
+    }
+}
+
+export function writeDependencyStateAtomic(filePath, state) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const tempPath = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    try {
+        fs.writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
+        fs.renameSync(tempPath, filePath);
+    } finally {
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    }
+}
+
+export function evaluateDependencyState(kind, stored, current, sentinels = []) {
+    if (!current?.manifestHash) {
+        return { installRequired: true, reason: `${kind} manifest missing` };
+    }
+    const missingSentinel = sentinels.find((sentinel) => !fs.existsSync(sentinel));
+    if (missingSentinel) {
+        return { installRequired: true, reason: `${kind} dependencies missing` };
+    }
+    if (!stored) {
+        return { installRequired: true, reason: `${kind} state not recorded` };
+    }
+    if (stored.manifestHash !== current.manifestHash) {
+        return { installRequired: true, reason: `${kind} manifest changed` };
+    }
+
+    if (kind === 'npm' && stored.nodeMajor !== current.nodeMajor) {
+        return { installRequired: true, reason: 'Node.js major version changed' };
+    }
+    if (kind === 'python') {
+        if (stored.pythonMajorMinor !== current.pythonMajorMinor) {
+            return { installRequired: true, reason: 'Python version changed' };
+        }
+        if (stored.venvPython !== current.venvPython) {
+            return { installRequired: true, reason: 'Python environment changed' };
+        }
+    }
+
+    return { installRequired: false, reason: `${kind} dependencies unchanged` };
+}
+
+export function recordSuccessfulInstall(state, kind, fingerprint) {
+    const next = state?.schemaVersion === DEPENDENCY_STATE_SCHEMA
+        ? { ...state }
+        : createDependencyState();
+    next[kind] = fingerprint;
+    return next;
+}

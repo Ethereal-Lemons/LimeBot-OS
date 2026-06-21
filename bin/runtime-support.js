@@ -1,0 +1,27 @@
+export const MIN_NODE_VERSION = Object.freeze({ major: 20, minor: 19, patch: 0 });
+
+export function parseNodeVersion(value) {
+    const match = String(value || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)/);
+    if (!match) return null;
+    return {
+        major: Number(match[1]),
+        minor: Number(match[2]),
+        patch: Number(match[3]),
+    };
+}
+
+export function isSupportedNodeVersion(value) {
+    const parsed = parseNodeVersion(value);
+    if (!parsed) return false;
+    const current = [parsed.major, parsed.minor, parsed.patch];
+    const minimum = [MIN_NODE_VERSION.major, MIN_NODE_VERSION.minor, MIN_NODE_VERSION.patch];
+    for (let index = 0; index < current.length; index += 1) {
+        if (current[index] !== minimum[index]) return current[index] > minimum[index];
+    }
+    return true;
+}
+
+export function describeSupportedNode() {
+    const { major, minor, patch } = MIN_NODE_VERSION;
+    return `Node.js ${major}.${minor}.${patch} or newer`;
+}
