@@ -78,6 +78,12 @@ For complex multi-step tasks, LimeBot can delegate work to an isolated backgroun
 - The web chat renders delegated results as a dedicated sub-agent report card instead of raw trace text
 - Useful for long-running research, file processing, or anything that shouldn't block the main conversation
 
+LimeBot also exposes an authenticated local companion API at `/api/app/*` for inspecting durable workspaces, steering a workspace with messages, resolving approvals, and streaming normalized workspace events. It remains local-first and does not expose direct shell execution, credentials, artifact paths, or file-reading endpoints.
+
+An optional VS Code companion spike lives in `vscode-extension/`. It can securely configure the local app-server, send explicitly selected code into a durable workspace, and inspect task state without reading whole files or applying edits. See `vscode-extension/README.md`.
+
+For CI review, `limebot review-diff --diff-file change.patch --output review.json` creates a capped, secret-redacted artifact. `.github/workflows/limebot-review.yml` is artifact-only with `contents: read`; model invocation is opt-in and it never posts PR comments, edits files, or pushes commits.
+
 ### 🔌 Model Context Protocol (MCP) Support
 LimeBot is a fully-featured MCP client:
 - **Universal Tool Integration**  connect to any MCP server (Fetch, Filesystem, Brave Search, etc.) to immediately expand the bot's capabilities.
@@ -179,7 +185,7 @@ Skills can also be managed from the **Skills** tab in the web dashboard.
 - **CPU**: Dual-core (Quad-core recommended for browser tools)
 - **RAM**: 4GB Minimum (8GB recommended for multitasking)
 - **Disk**: ~2GB for installation (venv, node_modules, Chromium)
-- **Software**: Node.js 18+, Python 3.11-3.14
+- **Software**: Node.js 20.19+, Python 3.11-3.14
 - **Windows asyncio**: LimeBot relies on asyncio's default Proactor loop on Windows instead of manually forcing a deprecated event loop policy, which keeps Python 3.11-3.14 on one runtime path.
 - **Connectivity**: Stable internet for LLM API and web browsing
 
@@ -190,7 +196,7 @@ cd LimeBot
 npm run lime-bot start
 ```
 
-The CLI handles everything on first run: creates a Python venv, installs backend + frontend dependencies, and opens the web UI. On first chat, LimeBot will interview you to build its persona.
+The CLI handles everything on first run: creates a Python venv, installs backend + frontend dependencies, and opens the web UI. Later starts fingerprint the dependency manifests and runtimes, so unchanged installations skip npm and pip entirely. Startup waits until required skills and tools are ready rather than treating an open port as success. On first chat, LimeBot will interview you to build its persona.
 
 ### Browser Companion Setup
 

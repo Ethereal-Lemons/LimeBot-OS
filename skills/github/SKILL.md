@@ -11,6 +11,8 @@ dependencies:
 
 The GitHub skill allows LimeBot to interact with the GitHub API to manage repositories, invitations, pull requests, and collaborator permissions.
 
+For review-only CI, use `limebot review-diff` and `.github/workflows/limebot-review.yml` instead. That entrypoint parses only an explicit unified diff, redacts likely credentials, uses no GitHub API mutation, and uploads an artifact without posting comments or pushing code. This skill is intentionally separate because its PAT-backed commands can modify repository state.
+
 ## Setup
 
 This skill requires a GitHub Personal Access Token (PAT) with appropriate scopes (e.g., `repo`, `user`).

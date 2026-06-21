@@ -43,6 +43,7 @@ The heart of the system. Manages:
 - **Auto-RAG** — before every LLM call, runs semantic vector search (falls back to grep if embeddings are unavailable). Injects matching memories into the prompt automatically.
 - **Tool execution loop** — after each LLM response, if tool calls are returned, executes them in parallel and loops back to the LLM (up to 30 iterations). Sensitive tools require user confirmation.
 - **Sub-agent delegation** — `spawn_agent` creates an isolated session that runs its own tool loop, can use named specialist profiles, and reports back to the parent session.
+- **Capability readiness gate** — skill, subagent, MCP, and tool discovery run through explicit startup phases. User turns wait for required skills/tools before prompt or schema construction; optional MCP failures produce `degraded` readiness rather than blocking chat. Embedding and LLM warmups are not part of the required gate.
 - **Per-session dedup** — identical consecutive messages within 2 seconds are silently dropped, keyed per session (not globally).
 - **History summarization** — when token count exceeds limit, older messages are summarized by the LLM and squashed; large tool outputs from old turns are truncated in-place.
 
@@ -78,6 +79,8 @@ Builds the system prompt from persona files. Two-part architecture:
 - `validate_and_save_relationships(content)` — atomic write for `RELATIONSHIPS.md`
 
 **Setup mode** — on startup, LimeBot bootstraps local `SOUL.md`, `IDENTITY.md`, and `MEMORY.md` from their `.example` templates when they are missing. If `SOUL.md` or `IDENTITY.md` are still missing or invalid after that, `is_setup_complete()` returns False and the entire system prompt is replaced with a setup interview prompt. The agent must emit `<save_soul>` and `<save_identity>` tags with valid content to exit setup mode.
+
+The web first-run wizard completes through `POST /api/setup/complete`. The backend atomically writes configuration, performs a real minimal LLM request, and schedules exactly one restart only after validation succeeds. The browser stores only a restart token, boot ID, model ID, and timestamp in `sessionStorage`, so it can resume after a refresh without persisting provider credentials there. It waits for a new backend boot ID instead of assuming a fixed restart duration. Once `APP_API_KEY` exists, API authentication is active even while the persona interview is still incomplete.
 
 ---
 
@@ -247,6 +250,7 @@ FastAPI application serving:
 - WebSocket auth: `api_key` query param checked against `APP_API_KEY`
 - Caches the WhatsApp QR code and re-sends it to new WebSocket connections
 - Chat UI renders `SUB-AGENT REPORT` replies as structured cards and suppresses adjacent empty orchestration thoughts/tool groups when they only describe `spawn_agent` handoff noise
+- `GET /api/live` reports process liveness without authentication-sensitive configuration. Authenticated `GET /api/ready` reports redacted capability phases and returns HTTP 503 until required skills/tools are loaded; `degraded` is HTTP 200.
 
 ### Browser Companion Extension (`extension/`)
 - Manifest V3 browser companion for page help, selected text handoff, live task status, and tool approvals
@@ -255,6 +259,27 @@ FastAPI application serving:
 - Chrome and Edge open the companion with `chrome.sidePanel`
 - Opera GX falls back to opening the same companion surface in a regular extension tab when native side panel support is unavailable
 - The old web mascot pop-out flow is not part of the current product surface
+
+### VS Code Companion (`vscode-extension/`)
+
+- Thin TypeScript client over `/api/app/*`; it does not contain an agent loop.
+- `LimeBot: Configure Connection` stores `APP_API_KEY` in VS Code `SecretStorage`; only the non-secret base URL is kept in global state.
+- `LimeBot: Send Selection` sends only the explicit editor selection, relative file label, language ID, workspace name, and user instruction. It never reads the rest of the file or workspace.
+- `LimeBot: Open Task State` renders the redacted app-server state in an output channel.
+- The spike intentionally cannot apply patches, write files, or run shell commands from VS Code.
+
+### Local App-Server API
+
+Authenticated companion clients share a local-first contract under `/api/app/*`:
+The app-server remains disabled with HTTP 503 (and rejects `/ws/app`) until `APP_API_KEY` is configured, even though setup-time APIs can operate before authentication is enabled globally.
+
+- `GET /api/app/state` returns active workspaces/tasks, redacted pending approvals, channel status, and agent readiness.
+- `GET /api/app/workspaces/{workspace_id}/events` returns bounded, normalized workspace/session events without raw tool arguments, command text, artifact paths, or arbitrary metadata.
+- `POST /api/app/workspaces/{workspace_id}/message` creates a durable attempt and enqueues an ordinary `InboundMessage` with workspace context; it does not execute tools directly.
+- `POST /api/app/approvals/{conf_id}` delegates to the same policy-audited `confirm_tool()` path as web/Discord approvals.
+- `/ws/app` emits stable `workspace_event` envelopes and supports only state refresh/ping messages. Existing `/ws` and `/ws/client` chat protocols remain separate.
+
+Artifact serializers reveal only identity/title/type and whether a local artifact exists; they never return artifact paths or file contents. There is intentionally no shell, filesystem-read, credential, or OAuth endpoint in this API.
 
 ### Discord Channel (`channels/discord.py`)
 - Responds to DMs and `@mentions` only (ignores ambient channel messages)
@@ -329,10 +354,13 @@ Only registered enabled skill names and their configured aliases can be invoked 
 
 **Confirmation gate** — tools that modify state require the user to click Approve in the web dashboard. The agent loop waits up to 5 minutes for confirmation before timing out. Per-session whitelist: once approved for a session, a tool type doesn't ask again.
 
+**Approval policy profiles** — `APPROVAL_POLICY_PROFILE` accepts `manual`, `session`, `review`, or `autonomous`. Manual preserves the existing confirmation/session-whitelist flow; session makes that remembered-approval intent explicit; review ignores session whitelists; autonomous bypasses prompts but not hard path and command safety checks. Legacy `AUTONOMOUS_MODE=true` maps to `autonomous` only when no named profile is configured. Requests, decisions, and timeouts are appended to the session event log with redacted metadata and client source.
+
 Sensitive tools: `write_file`, `delete_file`, `run_command`, `cron_remove`
 
 **Bypass conditions:**
-- `AUTONOMOUS_MODE=true` in `.env` — skips confirmation for all tools
+- `APPROVAL_POLICY_PROFILE=autonomous` in `.env` — skips confirmation for sensitive tools
+- `AUTONOMOUS_MODE=true` — legacy alias used only when no named profile is set
 - Per-session whitelist — user clicked "Always allow this session"
 
 **Path enforcement:** Every filesystem tool call goes through `_is_path_allowed()`. Blocked:
@@ -369,6 +397,8 @@ Enabled by `ENABLE_DYNAMIC_PERSONALITY=true`.
 
 ## 🛠️ CLI Reference
 
+The JavaScript toolchain requires Node.js 20.19 or newer. Both `start` and `doctor` reject an older runtime before dependency installation begins.
+
 ```bash
 npm run lime-bot <command> [options]
 ```
@@ -388,6 +418,7 @@ npm run lime-bot <command> [options]
 | `skill enable <name>` | Enable a disabled skill |
 | `skill disable <name>` | Disable without uninstalling |
 | `install-browser` | Install Chromium for Playwright |
+| `review-diff --diff-file <path> --output <path>` | Parse only the supplied unified diff and write a redacted review artifact; `--invoke-model` optionally calls the configured LLM without tools. |
 
 **Codex OAuth notes:**
 - The OAuth sign-in flow is intentionally CLI-only (`limebot auth codex ...`), not browser-dashboard driven.
@@ -410,6 +441,9 @@ npm link
 - **Per-tool result limits** — each tool has its own character limit instead of one global cap, preserving context window budget proportionally
 - **Grep cache** — `search_grep` results are cached for 30 seconds to avoid scanning all memory files on every message
 - **History summarization** — when the session exceeds the token budget, the LLM summarizes older turns before they're evicted; the summary is inserted back into history as a system message
+- **Dependency fingerprints** — normal CLI startup hashes `package-lock.json` and `requirements.txt` together with the relevant Node/Python runtime and environment path. Unchanged installations skip both npm and pip; state is written atomically to ignored `data/dependency-state.json` only after a successful install.
+- **Readiness-aware startup** — the CLI waits for `/api/live` and then `/api/ready` instead of treating an open TCP port as a usable agent. The web composer and automatic persona kickoff use the same readiness contract.
+- **Lazy code highlighting** — ordinary Markdown loads without Prism. Fenced code dynamically loads a small `PrismLight` bundle with common languages; unknown languages render safely as plain text.
 
 ---
 
