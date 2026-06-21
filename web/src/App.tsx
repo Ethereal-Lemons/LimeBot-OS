@@ -20,6 +20,18 @@ import { Toaster } from "@/components/ui/sonner";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useTheme, applyThemeWithSchedule } from "@/hooks/useTheme";
 import { useIdentity } from "@/hooks/useIdentity";
+import {
+  INITIAL_AGENT_READINESS,
+  normalizeAgentReadiness,
+  type AgentReadiness,
+} from "@/lib/agent-readiness";
+
+async function fetchAgentReadiness(): Promise<AgentReadiness> {
+  const response = await axios.get(`${API_BASE_URL}/api/ready`, {
+    validateStatus: (status) => status === 200 || status === 503,
+  });
+  return normalizeAgentReadiness(response.data);
+}
 
 const InstancesList = lazy(() =>
   import("@/components/sessions/SessionsList").then((module) => ({
@@ -137,6 +149,8 @@ function App() {
   const [rateLimitAlertOpen, setRateLimitAlertOpen] = useState(false);
   const [activity, setActivity] = useState<{ text: string } | null>(null);
   const [personaSetupPending, setPersonaSetupPending] = useState(false);
+  const [agentReadiness, setAgentReadiness] = useState<AgentReadiness>(INITIAL_AGENT_READINESS);
+  const [readinessPollNonce, setReadinessPollNonce] = useState(0);
   const setupKickoffSessionRef = useRef<string | null>(null);
 
   const { botIdentity, setBotIdentity, refreshIdentity, lastExplicitFetch } = useIdentity();
@@ -248,6 +262,7 @@ function App() {
                   setAutonomousMode(true);
                 }
               }),
+            fetchAgentReadiness().then(setAgentReadiness),
           ]);
 
           break;
@@ -279,7 +294,39 @@ function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!isInitialized || forceSetup || !personaSetupPending || !isConnected) return;
+    if (!isInitialized || forceSetup) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    let attempts = 0;
+
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const next = await fetchAgentReadiness();
+        if (cancelled) return;
+        setAgentReadiness(next);
+        if (next.ready || next.status === 'failed') return;
+      } catch {
+        if (cancelled) return;
+      }
+
+      if (attempts >= 60) {
+        setAgentReadiness((current) => ({ ...current, status: 'timeout' }));
+        return;
+      }
+      timer = window.setTimeout(() => void poll(), 500);
+    };
+
+    timer = window.setTimeout(() => void poll(), 500);
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [forceSetup, isInitialized, readinessPollNonce]);
+
+  useEffect(() => {
+    if (!isInitialized || forceSetup || !personaSetupPending || !isConnected || !agentReadiness.ready) return;
     if (messages.length > 0 || setupKickoffSessionRef.current === sessionId) return;
 
     setupKickoffSessionRef.current = sessionId;
@@ -290,6 +337,7 @@ function App() {
     );
   }, [
     forceSetup,
+    agentReadiness.ready,
     handleSendMessage,
     isConnected,
     isInitialized,
@@ -412,10 +460,15 @@ function App() {
               botIdentity={botIdentity}
               activeChatId={sessionId}
               activityText={activity?.text || null}
+              agentReadiness={agentReadiness}
               onInputChange={setInputValue}
               onSendMessage={handleSendMessage}
               onReconnect={connectWebSocket}
               onNewChat={handleNewChat}
+              onRetryReadiness={() => {
+                setAgentReadiness(INITIAL_AGENT_READINESS);
+                setReadinessPollNonce((value) => value + 1);
+              }}
             />
           )
         }

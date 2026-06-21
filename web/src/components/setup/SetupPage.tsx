@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useEffectEvent, useRef } from 'react';
 import axios from 'axios';
-import { api, API_BASE_URL } from "@/lib/api";
+import { API_BASE_URL } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,6 +10,15 @@ import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card"
 import { Key, Bot, ShieldCheck, ArrowRight, CheckCircle2, RefreshCw, Trash, Plus } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { DEFAULT_MODEL_BY_PROVIDER, getAdditionalModels, getInitialModelForProvider, getRecommendedModels, PROVIDER_LABELS, type LlmModelOption } from '@/lib/llm-models';
+import {
+    clearSetupProgress,
+    loadSetupProgress,
+    normalizeSetupError,
+    saveSetupProgress,
+    setupRetryDelay,
+    type SetupPhase,
+    type SetupProgress,
+} from '@/lib/setup-state';
 
 const FALLBACK_MODELS: LlmModelOption[] = [
     { id: 'gemini/gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash-Lite (Preview)', provider: 'gemini' },
@@ -40,35 +49,58 @@ const FALLBACK_MODELS: LlmModelOption[] = [
     { id: 'nvidia/deepseek-ai/deepseek-v3.2', name: 'DeepSeek V3.2', provider: 'nvidia' },
 ];
 
+type SetupConfig = {
+    LLM_MODEL: string;
+    GEMINI_API_KEY: string;
+    OPENROUTER_API_KEY: string;
+    OPENAI_API_KEY: string;
+    ANTHROPIC_API_KEY: string;
+    XAI_API_KEY: string;
+    DEEPSEEK_API_KEY: string;
+    DASHSCOPE_API_KEY: string;
+    NVIDIA_API_KEY: string;
+    DISCORD_TOKEN: string;
+    ENABLE_WHATSAPP: string;
+    WHATSAPP_BRIDGE_URL: string;
+    ALLOWED_PATHS: string[];
+    ENABLE_DYNAMIC_PERSONALITY: string;
+    APP_API_KEY: string;
+};
+
 export function SetupPage() {
     const [step, setStep] = useState(1);
-    const [config, setConfig] = useState({
+    const [config, setConfig] = useState<SetupConfig>({
         LLM_MODEL: 'gemini/gemini-2.0-flash',
         GEMINI_API_KEY: '',
         OPENROUTER_API_KEY: '',
+        OPENAI_API_KEY: '',
+        ANTHROPIC_API_KEY: '',
+        XAI_API_KEY: '',
+        DEEPSEEK_API_KEY: '',
+        DASHSCOPE_API_KEY: '',
+        NVIDIA_API_KEY: '',
         DISCORD_TOKEN: '',
         ENABLE_WHATSAPP: 'false',
         WHATSAPP_BRIDGE_URL: 'ws://localhost:3000',
         ALLOWED_PATHS: ['./persona', './logs'] as string[],
         ENABLE_DYNAMIC_PERSONALITY: 'false',
-        APP_API_KEY: crypto.randomUUID()
+        APP_API_KEY: localStorage.getItem('limebot_api_key') || crypto.randomUUID()
     });
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [setupPhase, setSetupPhase] = useState<SetupPhase>('editing');
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
+    const reconnectRunRef = useRef(0);
 
     const [availableModels, setAvailableModels] = useState<LlmModelOption[]>(FALLBACK_MODELS);
     const [isLoadingModels, setIsLoadingModels] = useState(false);
     const [showAllModels, setShowAllModels] = useState(false);
     const [codexAuth, setCodexAuth] = useState<{ configured: boolean; email?: string } | null>(null);
 
-    useEffect(() => {
-        fetchModels();
-    }, []);
-
     const fetchModels = async (retries = 3) => {
         setIsLoadingModels(true);
         try {
-            const res = await api.get("/api/llm/models");
+            const res = await axios.get(`${API_BASE_URL}/api/llm/models`);
             if (res.data.models && res.data.models.length > 0) {
                 setAvailableModels(res.data.models);
             }
@@ -85,14 +117,20 @@ export function SetupPage() {
         }
     };
 
+    const fetchModelsEvent = useEffectEvent(fetchModels);
+
+    useEffect(() => {
+        fetchModelsEvent();
+    }, []);
+
     // Polling for Codex OAuth configuration
     useEffect(() => {
-        let timer: any;
+        let timer: ReturnType<typeof setInterval> | undefined;
         const currentProvider = config.LLM_MODEL.split('/')[0] || 'gemini';
         
         if (currentProvider === 'openai-codex' && !codexAuth?.configured) {
             timer = setInterval(() => {
-                fetchModels(0); // poll without retries
+                fetchModelsEvent(0); // poll without retries
             }, 3000);
         }
         
@@ -117,24 +155,69 @@ export function SetupPage() {
             if (codexAuth?.configured === false) return 'Codex OAuth authentication is required.';
             return null;
         }
-        if (config.LLM_MODEL.startsWith('openrouter') && !(config as any).OPENROUTER_API_KEY) return 'OpenRouter API Key is required.';
+        if (config.LLM_MODEL.startsWith('openrouter') && !config.OPENROUTER_API_KEY) return 'OpenRouter API Key is required.';
         if (config.LLM_MODEL.startsWith('gemini') && !config.GEMINI_API_KEY) return 'Gemini API Key is required.';
-        if (config.LLM_MODEL.startsWith('openai') && !(config as any).OPENAI_API_KEY) return 'OpenAI API Key is required.';
-        if (config.LLM_MODEL.startsWith('anthropic') && !(config as any).ANTHROPIC_API_KEY) return 'Anthropic API Key is required.';
-        if (config.LLM_MODEL.startsWith('xai') && !(config as any).XAI_API_KEY) return 'xAI API Key is required.';
-        if (config.LLM_MODEL.startsWith('deepseek') && !(config as any).DEEPSEEK_API_KEY) return 'DeepSeek API Key is required.';
-        if (config.LLM_MODEL.startsWith('qwen') && !(config as any).DASHSCOPE_API_KEY) return 'Qwen API Key is required.';
-        if (config.LLM_MODEL.startsWith('nvidia') && !(config as any).NVIDIA_API_KEY) return 'NVIDIA API Key is required.';
+        if (config.LLM_MODEL.startsWith('openai') && !config.OPENAI_API_KEY) return 'OpenAI API Key is required.';
+        if (config.LLM_MODEL.startsWith('anthropic') && !config.ANTHROPIC_API_KEY) return 'Anthropic API Key is required.';
+        if (config.LLM_MODEL.startsWith('xai') && !config.XAI_API_KEY) return 'xAI API Key is required.';
+        if (config.LLM_MODEL.startsWith('deepseek') && !config.DEEPSEEK_API_KEY) return 'DeepSeek API Key is required.';
+        if (config.LLM_MODEL.startsWith('qwen') && !config.DASHSCOPE_API_KEY) return 'Qwen API Key is required.';
+        if (config.LLM_MODEL.startsWith('nvidia') && !config.NVIDIA_API_KEY) return 'NVIDIA API Key is required.';
         return null;
     };
 
-    const handleChange = (key: string, value: any) => {
+    const handleChange = <K extends keyof SetupConfig>(key: K, value: SetupConfig[K]) => {
         setConfig(prev => ({ ...prev, [key]: value }));
     };
+
+    const pollForRestart = async (progress: SetupProgress) => {
+        const runId = ++reconnectRunRef.current;
+        setStep(5);
+        setSetupPhase('reconnecting');
+        setError(null);
+        saveSetupProgress(sessionStorage, { ...progress, phase: 'reconnecting' });
+
+        for (let attempt = 0; attempt < 22; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, setupRetryDelay(attempt)));
+            if (runId !== reconnectRunRef.current) return;
+
+            setElapsedSeconds(Math.max(0, Math.round((Date.now() - progress.startedAt) / 1000)));
+            try {
+                const response = await axios.get(`${API_BASE_URL}/api/setup/status`, {
+                    params: { restart_token: progress.restartToken },
+                    timeout: 4_000,
+                });
+                const status = response.data;
+                const restarted = status.boot_id && status.boot_id !== progress.previousBootId;
+                if (status.configured && status.restart_recognized && restarted) {
+                    clearSetupProgress(sessionStorage);
+                    setSetupPhase('ready');
+                    window.location.assign('/');
+                    return;
+                }
+            } catch {
+                // A brief connection failure is expected while the backend replaces itself.
+            }
+        }
+
+        setSetupPhase('failed');
+        setError(normalizeSetupError({ code: 'restart_timeout' }).message);
+    };
+
+    useEffect(() => {
+        const progress = loadSetupProgress(sessionStorage);
+        if (!progress) return;
+        setSaving(true);
+        void pollForRestart(progress).finally(() => setSaving(false));
+        return () => {
+            reconnectRunRef.current += 1;
+        };
+    }, []); // Resume is intentionally evaluated once from session storage.
 
     const handleSave = async () => {
         setSaving(true);
         setError(null);
+        setSetupPhase('validating');
         try {
             if (!config.LLM_MODEL.trim()) {
                 throw new Error('Please select an LLM model.');
@@ -144,26 +227,45 @@ export function SetupPage() {
                 throw new Error(keyError);
             }
 
-            const res = await axios.post(`${API_BASE_URL}/api/config`, { env: config });
-            const data = res.data;
-            if (data.error) throw new Error(data.error);
-
-            // Save API Key to LocalStorage for future requests
-            if (config.APP_API_KEY) {
-                localStorage.setItem('limebot_api_key', config.APP_API_KEY);
+            const previousApiKey = localStorage.getItem('limebot_api_key');
+            const response = await axios.post(
+                `${API_BASE_URL}/api/setup/complete`,
+                { env: config },
+                previousApiKey ? { headers: { 'X-API-Key': previousApiKey } } : undefined,
+            );
+            const data = response.data;
+            if (data.status !== 'restarting' || !data.restart_token || !data.boot_id) {
+                throw new Error('LimeBot returned an incomplete setup response.');
             }
 
+            localStorage.setItem('limebot_api_key', config.APP_API_KEY);
+            axios.defaults.headers.common['X-API-Key'] = config.APP_API_KEY;
 
-            // Trigger Backend Restart
-            await axios.post(`${API_BASE_URL}/api/control/restart`);
-
-            // Give it a moment then redirect
-            setStep(5);
-            setTimeout(() => {
-                window.location.href = '/';
-            }, 3000);
-        } catch (err: any) {
-            setError(err.message || "Failed to save configuration.");
+            const progress: SetupProgress = {
+                phase: 'restarting',
+                restartToken: data.restart_token,
+                previousBootId: data.boot_id,
+                model: config.LLM_MODEL,
+                startedAt: Date.now(),
+            };
+            saveSetupProgress(sessionStorage, progress);
+            setSetupPhase('restarting');
+            await pollForRestart(progress);
+        } catch (err: unknown) {
+            setSetupPhase('failed');
+            const payload = axios.isAxiosError(err)
+                ? (err.response?.data?.detail ?? err.response?.data)
+                : { message: err instanceof Error ? err.message : undefined };
+            if (
+                payload &&
+                typeof payload === 'object' &&
+                'config_saved' in payload &&
+                payload.config_saved === true
+            ) {
+                localStorage.setItem('limebot_api_key', config.APP_API_KEY);
+                axios.defaults.headers.common['X-API-Key'] = config.APP_API_KEY;
+            }
+            setError(normalizeSetupError(payload).message);
         } finally {
             setSaving(false);
         }
@@ -372,7 +474,7 @@ export function SetupPage() {
                                             id="openai_key"
                                             type="password"
                                             placeholder="sk-..."
-                                            value={(config as any).OPENAI_API_KEY || ''}
+                                            value={config.OPENAI_API_KEY}
                                             onChange={(e) => handleChange('OPENAI_API_KEY', e.target.value)}
                                             className="bg-background/50"
                                         />
@@ -385,7 +487,7 @@ export function SetupPage() {
                                             id="openrouter_key"
                                             type="password"
                                             placeholder="sk-or-..."
-                                            value={(config as any).OPENROUTER_API_KEY || ''}
+                                            value={config.OPENROUTER_API_KEY}
                                             onChange={(e) => handleChange('OPENROUTER_API_KEY', e.target.value)}
                                             className="bg-background/50"
                                         />
@@ -398,7 +500,7 @@ export function SetupPage() {
                                             id="anthropic_key"
                                             type="password"
                                             placeholder="sk-ant-..."
-                                            value={(config as any).ANTHROPIC_API_KEY || ''}
+                                            value={config.ANTHROPIC_API_KEY}
                                             onChange={(e) => handleChange('ANTHROPIC_API_KEY', e.target.value)}
                                             className="bg-background/50"
                                         />
@@ -411,7 +513,7 @@ export function SetupPage() {
                                             id="xai_key"
                                             type="password"
                                             placeholder="xai-..."
-                                            value={(config as any).XAI_API_KEY || ''}
+                                            value={config.XAI_API_KEY}
                                             onChange={(e) => handleChange('XAI_API_KEY', e.target.value)}
                                             className="bg-background/50"
                                         />
@@ -424,7 +526,7 @@ export function SetupPage() {
                                             id="deepseek_key"
                                             type="password"
                                             placeholder="sk-..."
-                                            value={(config as any).DEEPSEEK_API_KEY || ''}
+                                            value={config.DEEPSEEK_API_KEY}
                                             onChange={(e) => handleChange('DEEPSEEK_API_KEY', e.target.value)}
                                             className="bg-background/50"
                                         />
@@ -437,7 +539,7 @@ export function SetupPage() {
                                             id="dashscope_key"
                                             type="password"
                                             placeholder="sk-..."
-                                            value={(config as any).DASHSCOPE_API_KEY || ''}
+                                            value={config.DASHSCOPE_API_KEY}
                                             onChange={(e) => handleChange('DASHSCOPE_API_KEY', e.target.value)}
                                             className="bg-background/50"
                                         />
@@ -450,7 +552,7 @@ export function SetupPage() {
                                             id="nvidia_key"
                                             type="password"
                                             placeholder="nvapi-..."
-                                            value={(config as any).NVIDIA_API_KEY || ''}
+                                            value={config.NVIDIA_API_KEY}
                                             onChange={(e) => handleChange('NVIDIA_API_KEY', e.target.value)}
                                             className="bg-background/50"
                                         />
@@ -560,7 +662,7 @@ export function SetupPage() {
                                                     onChange={(e) => {
                                                         const paths = [...(config.ALLOWED_PATHS || [])];
                                                         paths[idx] = e.target.value;
-                                                        handleChange("ALLOWED_PATHS", paths as any);
+                                                        handleChange("ALLOWED_PATHS", paths);
                                                     }}
                                                     placeholder="Absolute path..."
                                                     className="bg-background/50"
@@ -572,7 +674,7 @@ export function SetupPage() {
                                                     onClick={() => {
                                                         const paths = [...(config.ALLOWED_PATHS || [])];
                                                         paths.splice(idx, 1);
-                                                        handleChange("ALLOWED_PATHS", paths as any);
+                                                        handleChange("ALLOWED_PATHS", paths);
                                                     }}
                                                 >
                                                     <Trash className="h-4 w-4" />
@@ -586,7 +688,7 @@ export function SetupPage() {
                                             onClick={() => {
                                                 const paths = [...(config.ALLOWED_PATHS || [])];
                                                 paths.push("");
-                                                handleChange("ALLOWED_PATHS", paths as any);
+                                                handleChange("ALLOWED_PATHS", paths);
                                             }}
                                         >
                                             <Plus className="h-4 w-4" />
@@ -665,17 +767,62 @@ export function SetupPage() {
                 return (
                     <div className="text-center space-y-6 py-8 animate-in zoom-in duration-500">
                         <div className="inline-flex items-center justify-center p-6 bg-primary/10 rounded-full">
-                            <CheckCircle2 className="h-16 w-16 text-primary animate-bounce-subtle" />
+                            {setupPhase === 'ready' ? (
+                                <CheckCircle2 className="h-16 w-16 text-primary animate-bounce-subtle" />
+                            ) : (
+                                <RefreshCw className="h-16 w-16 text-primary animate-spin" />
+                            )}
                         </div>
                         <div className="space-y-2">
-                            <h2 className="text-3xl font-bold text-primary">Setup Complete!</h2>
+                            <h2 className="text-3xl font-bold text-primary">
+                                {setupPhase === 'failed'
+                                    ? 'Restart needs attention'
+                                    : setupPhase === 'ready'
+                                        ? 'Setup verified'
+                                        : 'Preparing LimeBot'}
+                            </h2>
                             <p className="text-muted-foreground text-lg">
-                                LimeBot is now ready to serve you.
+                                {setupPhase === 'restarting'
+                                    ? 'Configuration verified. Starting the secured backend...'
+                                    : setupPhase === 'failed'
+                                        ? error
+                                        : 'Waiting for the new backend process to become ready...'}
                             </p>
                         </div>
-                        <p className="text-sm text-muted-foreground pt-4 animate-pulse">
-                            Redirecting you to the dashboard...
-                        </p>
+                        {setupPhase !== 'failed' && (
+                            <p className="text-sm text-muted-foreground pt-4 animate-pulse">
+                                Reconnecting securely{elapsedSeconds > 0 ? ` - ${elapsedSeconds}s` : '...'}
+                            </p>
+                        )}
+                        {setupPhase === 'failed' && (
+                            <div className="flex gap-3 pt-2">
+                                <Button
+                                    variant="outline"
+                                    className="flex-1"
+                                    onClick={() => {
+                                        clearSetupProgress(sessionStorage);
+                                        setSetupPhase('editing');
+                                        setStep(4);
+                                    }}
+                                >
+                                    Edit setup
+                                </Button>
+                                <Button
+                                    className="flex-1"
+                                    onClick={() => {
+                                        const progress = loadSetupProgress(sessionStorage);
+                                        if (progress) {
+                                            setSaving(true);
+                                            void pollForRestart(progress).finally(() => setSaving(false));
+                                        } else {
+                                            setStep(4);
+                                        }
+                                    }}
+                                >
+                                    Retry reconnect
+                                </Button>
+                            </div>
+                        )}
                     </div>
                 );
 

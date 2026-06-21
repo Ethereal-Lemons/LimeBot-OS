@@ -19,10 +19,13 @@ import {
 import { DEFAULT_MODEL_BY_PROVIDER, getAdditionalModels, getInitialModelForProvider, getModelProvider, getRecommendedModels, PROVIDER_LABELS, type LlmModelOption } from "@/lib/llm-models";
 import { type ConfigApiResponse, type ConfigSecretsMap, getSecretInfo, getSecretPlaceholder } from "@/lib/config-secrets";
 
+type ConfigValue = string | string[] | undefined;
+
 interface ConfigState {
     LLM_MODEL?: string;
     ALLOWED_PATHS?: string[];
     AUTONOMOUS_MODE?: string;
+    APPROVAL_POLICY_PROFILE?: 'manual' | 'session' | 'autonomous' | 'review';
     LIMEBOT_ENABLE_TOOL_SHORTLIST?: string;
     MAX_ITERATIONS?: string;
     WEB_PORT?: string;
@@ -32,7 +35,7 @@ interface ConfigState {
     BROWSER_CDP_URL?: string;
     BROWSER_USER_DATA_DIR?: string;
     BROWSER_PROFILE_DIRECTORY?: string;
-    [key: string]: any;
+    [key: string]: ConfigValue;
 }
 
 type SecretDrafts = Record<string, string>;
@@ -168,7 +171,7 @@ export function ConfigPage() {
         }
     };
 
-    const handleChange = (key: string, value: any) => {
+    const handleChange = (key: string, value: ConfigValue) => {
         setConfig(prev => ({ ...prev, [key]: value }));
     };
 
@@ -598,25 +601,32 @@ export function ConfigPage() {
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <Cpu className="h-5 w-5 text-yellow-500" />
-                                    Autonomous Mode
+                                    Approval Policy
                                 </CardTitle>
                                 <CardDescription className="text-yellow-500/80">
-                                    DANGER: Allow the bot to execute ANY command without confirmation.
+                                    Choose how sensitive tools are reviewed before LimeBot runs them.
                                 </CardDescription>
                             </CardHeader>
                             <CardContent>
-                                <div className="flex items-center justify-between p-4 bg-yellow-500/10 rounded-lg border border-yellow-500/20">
-                                    <div className="space-y-0.5">
-                                        <Label htmlFor="autonomous_mode" className="text-yellow-500 font-bold">Enable Full Autonomy</Label>
-                                        <p className="text-xs text-muted-foreground mt-1">
-                                            Bypasses all confirmation prompts for tools like code execution and file writing.
-                                        </p>
-                                    </div>
-                                    <Switch
-                                        id="autonomous_mode"
-                                        checked={config.AUTONOMOUS_MODE === 'true'}
-                                        onCheckedChange={(checked) => handleChange('AUTONOMOUS_MODE', checked ? 'true' : 'false')}
-                                    />
+                                <div className="grid gap-3 p-4 bg-yellow-500/10 rounded-lg border border-yellow-500/20">
+                                    <Label htmlFor="approval_policy" className="text-yellow-500 font-bold">Sensitive tool policy</Label>
+                                    <Select
+                                        value={config.APPROVAL_POLICY_PROFILE || (config.AUTONOMOUS_MODE === 'true' ? 'autonomous' : 'manual')}
+                                        onValueChange={(value) => handleChange('APPROVAL_POLICY_PROFILE', value)}
+                                    >
+                                        <SelectTrigger id="approval_policy">
+                                            <SelectValue placeholder="Select an approval policy" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="manual">Manual - confirm sensitive actions</SelectItem>
+                                            <SelectItem value="session">Session - remember explicit approvals</SelectItem>
+                                            <SelectItem value="review">Review - confirm every sensitive action</SelectItem>
+                                            <SelectItem value="autonomous">Autonomous - bypass confirmations</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <p className="text-xs text-muted-foreground">
+                                        Review ignores session approvals. Autonomous still obeys hard path and command safety checks.
+                                    </p>
                                 </div>
                                 <div className="mt-4 grid gap-3 p-4 bg-card/50 rounded-lg border border-border/50">
                                     <div className="space-y-1">
@@ -911,8 +921,18 @@ export function ConfigPage() {
     );
 }
 
+type NetworkInterface = {
+    ip: string;
+    is_tailscale: boolean;
+};
+
+type RemoteNetworkStatus = {
+    error?: string;
+    interfaces?: NetworkInterface[];
+};
+
 function RemoteStatus({ port }: { port: string }) {
-    const [status, setStatus] = useState<any>(null);
+    const [status, setStatus] = useState<RemoteNetworkStatus | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -928,8 +948,8 @@ function RemoteStatus({ port }: { port: string }) {
         return <div className="text-xs text-destructive">Network check failed.</div>;
     }
 
-    const tailscale = status.interfaces?.find((i: any) => i.is_tailscale);
-    const lan = status.interfaces?.find((i: any) => !i.is_tailscale && i.ip !== '127.0.0.1');
+    const tailscale = status.interfaces?.find((item) => item.is_tailscale);
+    const lan = status.interfaces?.find((item) => !item.is_tailscale && item.ip !== '127.0.0.1');
 
     return (
         <div className="space-y-3">

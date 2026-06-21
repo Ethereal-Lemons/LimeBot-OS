@@ -1,11 +1,17 @@
-import { memo, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { lazy, memo, Suspense } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { classifyMarkdownCode } from "@/lib/markdown-code";
 import { cn } from "@/lib/utils";
 import { ChatImage } from "./ChatImage";
+
+const CodeBlock = lazy(() => import("./CodeBlock"));
+
+function withoutMarkdownNode<T extends { node?: unknown }>(props: T): Omit<T, "node"> {
+    const domProps = { ...props };
+    delete domProps.node;
+    return domProps;
+}
 
 const normalizeStreamingMarkdown = (content: string) => {
     const value = content || "";
@@ -13,50 +19,18 @@ const normalizeStreamingMarkdown = (content: string) => {
     return fenceCount % 2 === 1 ? `${value}\n\`\`\`` : value;
 };
 
-const MemoizedCodeBlock = memo(({ language, value }: { language: string; value: string }) => {
-    const [copied, setCopied] = useState(false);
-
-    const handleCopy = () => {
-        navigator.clipboard.writeText(value);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-    };
-
+function CodeBlockFallback({ language, value }: { language: string; value: string }) {
     return (
         <div className="rounded-lg my-3 border border-border overflow-hidden text-sm shadow-sm group">
             <div className="bg-zinc-900 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-zinc-800 flex justify-between items-center">
                 <span>{language}</span>
-                <button
-                    onClick={handleCopy}
-                    className="opacity-0 group-hover:opacity-100 transition-all duration-200 hover:text-foreground flex items-center gap-1.5 bg-zinc-800/50 px-2 py-0.5 rounded border border-white/5"
-                >
-                    {copied ? (
-                        <>
-                            <Check className="h-3 w-3 text-green-500" />
-                            <span className="text-green-500">Copied!</span>
-                        </>
-                    ) : (
-                        <>
-                            <Copy className="h-3 w-3" />
-                            <span>Copy</span>
-                        </>
-                    )}
-                </button>
             </div>
-            <div className="max-h-[450px] overflow-x-auto overflow-y-auto custom-scrollbar">
-                <SyntaxHighlighter
-                    style={vscDarkPlus}
-                    language={language}
-                    PreTag="div"
-                    wrapLongLines={true}
-                    customStyle={{ margin: 0, padding: "1.1rem 1.25rem", background: "#09090b", fontSize: "13.5px", lineHeight: "1.7" }}
-                >
-                    {value}
-                </SyntaxHighlighter>
-            </div>
+            <pre className="max-h-[450px] overflow-auto whitespace-pre-wrap bg-zinc-950 px-5 py-4 font-mono text-[13.5px] leading-[1.7] text-zinc-100 custom-scrollbar">
+                <code>{value}</code>
+            </pre>
         </div>
     );
-});
+}
 
 function MarkdownMessageRenderer({
     content,
@@ -81,24 +55,25 @@ function MarkdownMessageRenderer({
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                    a: ({ node, ...props }) => (
+                    a: (props) => (
                         <a
-                            {...props}
+                            {...withoutMarkdownNode(props)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="font-bold underline text-primary decoration-primary/60 underline-offset-2 hover:decoration-primary hover:brightness-125 transition-all"
                         />
                     ),
-                    p: ({ node, ...props }) => <p {...props} className="mb-1.5 last:mb-0 leading-[1.5]" />,
-                    ul: ({ node, ...props }) => <ul {...props} className="list-disc pl-5 my-1.5 space-y-0.5" />,
-                    ol: ({ node, ...props }) => <ol {...props} className="list-decimal pl-5 my-1.5 space-y-0.5" />,
-                    li: ({ node, ...props }) => <li {...props} className="leading-[1.45] pl-0.5 text-[14px]" />,
-                    code: ({ node, className, children, ...props }: any) => {
-                        const codeContent = String(children || "").trim();
-                        if (!codeContent) return null;
-                        const match = /language-(\w+)/.exec(className || "");
+                    p: (props) => <p {...withoutMarkdownNode(props)} className="mb-1.5 last:mb-0 leading-[1.5]" />,
+                    ul: (props) => <ul {...withoutMarkdownNode(props)} className="list-disc pl-5 my-1.5 space-y-0.5" />,
+                    ol: (props) => <ol {...withoutMarkdownNode(props)} className="list-decimal pl-5 my-1.5 space-y-0.5" />,
+                    li: (props) => <li {...withoutMarkdownNode(props)} className="leading-[1.45] pl-0.5 text-[14px]" />,
+                    pre: ({ children }) => <>{children}</>,
+                    code: (componentProps) => {
+                        const { className, children, ...props } = withoutMarkdownNode(componentProps);
+                        const code = classifyMarkdownCode(className, children);
+                        if (!code.value && code.kind === "inline") return null;
 
-                        return !match ? (
+                        return code.kind === "inline" ? (
                             <code
                                 className={cn(
                                     "rounded-md px-1.5 py-0.5 font-mono text-[12.5px] break-all",
@@ -109,26 +84,31 @@ function MarkdownMessageRenderer({
                                 {children}
                             </code>
                         ) : (
-                            <MemoizedCodeBlock language={match[1]} value={codeContent} />
+                            <Suspense fallback={<CodeBlockFallback language={code.language} value={code.value} />}>
+                                <CodeBlock language={code.language} value={code.value} />
+                            </Suspense>
                         );
                     },
-                    table: ({ node, ...props }) => (
+                    table: (props) => (
                         <div className="my-2.5 w-full overflow-x-auto rounded-xl border border-border bg-card/30 backdrop-blur-sm shadow-sm">
-                            <table className="w-full text-left text-[13px]" {...props} />
+                            <table className="w-full text-left text-[13px]" {...withoutMarkdownNode(props)} />
                         </div>
                     ),
-                    thead: ({ node, ...props }) => <thead className="bg-muted/50 text-muted-foreground border-b border-border" {...props} />,
-                    tbody: ({ node, ...props }) => <tbody className="divide-y divide-border/30" {...props} />,
-                    tr: ({ node, ...props }) => <tr className="hover:bg-muted/20 transition-colors" {...props} />,
-                    th: ({ node, ...props }) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...props} />,
-                    td: ({ node, ...props }) => <td className="px-4 py-3 align-top" {...props} />,
-                    h1: ({ node, ...props }) => <h1 className="text-base font-bold mt-2.5 mb-1 text-foreground tracking-tight" {...props} />,
-                    h2: ({ node, ...props }) => <h2 className="text-[14.5px] font-bold mt-2 mb-0.5 text-foreground/90 tracking-tight" {...props} />,
-                    h3: ({ node, ...props }) => <h3 className="text-[13.5px] font-bold mt-1.5 mb-0.5 text-foreground/80 tracking-tight" {...props} />,
-                    blockquote: ({ node, ...props }) => (
-                        <blockquote className="my-2.5 rounded-xl border-l-4 border-primary/30 bg-muted/30 px-3.5 py-2 text-muted-foreground/90 italic text-[13.5px]" {...props} />
+                    thead: (props) => <thead className="bg-muted/50 text-muted-foreground border-b border-border" {...withoutMarkdownNode(props)} />,
+                    tbody: (props) => <tbody className="divide-y divide-border/30" {...withoutMarkdownNode(props)} />,
+                    tr: (props) => <tr className="hover:bg-muted/20 transition-colors" {...withoutMarkdownNode(props)} />,
+                    th: (props) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...withoutMarkdownNode(props)} />,
+                    td: (props) => <td className="px-4 py-3 align-top" {...withoutMarkdownNode(props)} />,
+                    h1: (props) => <h1 className="text-base font-bold mt-2.5 mb-1 text-foreground tracking-tight" {...withoutMarkdownNode(props)} />,
+                    h2: (props) => <h2 className="text-[14.5px] font-bold mt-2 mb-0.5 text-foreground/90 tracking-tight" {...withoutMarkdownNode(props)} />,
+                    h3: (props) => <h3 className="text-[13.5px] font-bold mt-1.5 mb-0.5 text-foreground/80 tracking-tight" {...withoutMarkdownNode(props)} />,
+                    blockquote: (props) => (
+                        <blockquote className="my-2.5 rounded-xl border-l-4 border-primary/30 bg-muted/30 px-3.5 py-2 text-muted-foreground/90 italic text-[13.5px]" {...withoutMarkdownNode(props)} />
                     ),
-                    img: ({ node, ...props }: any) => <ChatImage src={props.src || ""} alt={props.alt || ""} />,
+                    img: (props) => {
+                        const { src, alt } = withoutMarkdownNode(props);
+                        return <ChatImage src={src || ""} alt={alt || ""} />;
+                    },
                 }}
             >
                 {normalizedContent}

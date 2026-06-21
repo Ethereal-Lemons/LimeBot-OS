@@ -23,6 +23,7 @@ import { AlertTriangle, Info } from "lucide-react";
 import { ThinkingBubble } from './ThinkingBubble';
 import { toast } from "sonner";
 import type { ChatAttachment } from "@/lib/chat-state";
+import { readinessLabel, type AgentReadiness } from "@/lib/agent-readiness";
 
 
 import { ToolTimeline } from './ToolTimeline';
@@ -76,6 +77,8 @@ interface ChatInterfaceProps {
     onNewChat?: () => void;
     activeChatId: string;
     activityText?: string | null;
+    agentReadiness: AgentReadiness;
+    onRetryReadiness: () => void;
 }
 
 const QUICK_ACTIONS = [
@@ -512,7 +515,8 @@ const MemoizedMessageItem = memo(({
                         <ToolCard
                             execution={msg.toolExecution}
                             onConfirmSideChannel={handleToolConfirmSideChannel}
-                            onConfirm={(_id, approved) => {
+                            onConfirm={(toolCallId, approved) => {
+                                if (toolCallId !== msg.toolExecution?.tool_call_id) return;
                                 if (approved) {
                                     const argsStr = JSON.stringify(msg.toolExecution?.args).slice(0, 500);
                                     onSendMessage(`[CONFIRM_EXECUTION] Proceed with ${msg.toolExecution?.tool} using args: ${argsStr}`);
@@ -520,7 +524,7 @@ const MemoizedMessageItem = memo(({
                                     onSendMessage(`Cancel execution of ${msg.toolExecution?.tool}`);
                                 }
                             }}
-                            onConfirmSession={(_id) => {
+                            onConfirmSession={() => {
                                 const argsStr = JSON.stringify(msg.toolExecution?.args).slice(0, 500);
                                 onSendMessage(`[CONFIRM_SESSION] Proceed with ${msg.toolExecution?.tool} using args: ${argsStr}`);
                             }}
@@ -599,6 +603,8 @@ export function ChatInterface({
     onNewChat,
     activeChatId,
     activityText,
+    agentReadiness,
+    onRetryReadiness,
 }: ChatInterfaceProps) {
     const scrollAreaRef = useRef<HTMLDivElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -915,6 +921,7 @@ export function ChatInterface({
     };
 
     const handleSend = () => {
+        if (!isConnected || !agentReadiness.ready) return;
         if (inputValue.trim() || selectedAttachment) {
             onSendMessage(null, selectedAttachment, ponytailSendOptions);
             clearSelectedAttachment();
@@ -1377,6 +1384,27 @@ export function ChatInterface({
                         )}
 
                         <div className="flex-1">
+                            {!agentReadiness.ready && (
+                                <div className="mb-1 mt-2 flex items-center justify-between gap-3 rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-xs text-amber-100">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                        {agentReadiness.status === 'failed' || agentReadiness.status === 'timeout' ? (
+                                            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+                                        ) : (
+                                            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-amber-400" />
+                                        )}
+                                        <span className="truncate">{readinessLabel(agentReadiness)}</span>
+                                    </div>
+                                    {(agentReadiness.status === 'failed' || agentReadiness.status === 'timeout') && (
+                                        <button
+                                            type="button"
+                                            onClick={onRetryReadiness}
+                                            className="shrink-0 rounded-md border border-amber-400/30 px-2 py-1 font-semibold text-amber-200 hover:bg-amber-400/10"
+                                        >
+                                            Retry
+                                        </button>
+                                    )}
+                                </div>
+                            )}
                             {selectedSkill && (
                                 <div className="mb-1 mt-2 flex max-w-max items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/12 px-3 py-1.5 text-xs text-emerald-300 shadow-sm">
                                     <span className="font-semibold uppercase tracking-[0.18em] text-emerald-400">
@@ -1404,6 +1432,8 @@ export function ChatInterface({
                                 placeholder={
                                     !isConnected
                                         ? "Waiting for the gateway to reconnect..."
+                                        : !agentReadiness.ready
+                                            ? readinessLabel(agentReadiness)
                                         : waitingToolCount > 0
                                             ? "Approve or deny the waiting action below, or send a clarification..."
                                             : selectedSkill
@@ -1417,7 +1447,7 @@ export function ChatInterface({
                                 }}
                                 onKeyDown={handleKeyPress}
                                 onPaste={handlePaste}
-                                disabled={!isConnected}
+                                disabled={!isConnected || !agentReadiness.ready}
                                 className="min-h-[50px] max-h-[200px] border-0 bg-transparent py-4 px-4 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground text-sm resize-none"
                                 rows={1}
                                 onInput={(e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -1430,7 +1460,7 @@ export function ChatInterface({
                         <div className="pb-2 pr-2">
                             <Button
                                 onClick={handleSend}
-                                disabled={!isConnected || isTyping || (!inputValue.trim() && !selectedAttachment)}
+                                disabled={!isConnected || !agentReadiness.ready || isTyping || (!inputValue.trim() && !selectedAttachment)}
                                 size="icon"
                                 aria-label="Send message"
                                 className={cn(
@@ -1519,6 +1549,7 @@ export function ChatInterface({
                                     key={label}
                                     type="button"
                                     onClick={() => onSendMessage(prompt, null, ponytailSendOptions)}
+                                    disabled={!isConnected || !agentReadiness.ready}
                                     className="rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 >
                                     {label}

@@ -28,13 +28,18 @@ export default defineConfig(({ mode }) => {
         output: {
           manualChunks(id) {
             if (!id.includes("node_modules")) return;
-            if (id.includes("react-markdown") || id.includes("remark-gfm") || id.includes("react-syntax-highlighter")) {
+            const normalizedId = id.replaceAll("\\", "/");
+            if (normalizedId.includes("/react-markdown/") || normalizedId.includes("/remark-gfm/")) {
               return "markdown-vendor";
             }
-            if (id.includes("@radix-ui")) {
+            if (normalizedId.includes("/@radix-ui/")) {
               return "radix-vendor";
             }
-            if (id.includes("react") || id.includes("scheduler")) {
+            if (
+              normalizedId.includes("/node_modules/react/")
+              || normalizedId.includes("/node_modules/react-dom/")
+              || normalizedId.includes("/node_modules/scheduler/")
+            ) {
               return "react-vendor";
             }
           },
