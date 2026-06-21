@@ -85,7 +85,9 @@ class ToolConfirmationView(discord.ui.View):
 
         if hasattr(self, "agent") and self.agent:
             try:
-                success = await self.agent.confirm_tool(self.conf_id, approved, False)
+                success = await self.agent.confirm_tool(
+                    self.conf_id, approved, False, source="discord"
+                )
                 if not success:
                     err_msg = "Confirmation request not found or expired."
             except Exception as e:
@@ -102,6 +104,7 @@ class ToolConfirmationView(discord.ui.View):
                 "conf_id": self.conf_id,
                 "approved": approved,
                 "session_whitelist": False,
+                "source": "discord",
             }
 
             try:

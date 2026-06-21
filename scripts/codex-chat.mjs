@@ -1,4 +1,4 @@
-import { complete, getModel } from '@mariozechner/pi-ai';
+import { complete, getModel } from '@earendil-works/pi-ai';
 import { fileURLToPath } from 'url';
 
 import { resolveCodexApiKey } from './codex-oauth.mjs';

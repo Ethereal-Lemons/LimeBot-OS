@@ -5,7 +5,7 @@ import path from 'path';
 import readline from 'readline/promises';
 import { fileURLToPath } from 'url';
 
-import { getOAuthApiKey, loginOpenAICodex } from '@mariozechner/pi-ai/oauth';
+import { getOAuthApiKey, loginOpenAICodex } from '@earendil-works/pi-ai/oauth';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
