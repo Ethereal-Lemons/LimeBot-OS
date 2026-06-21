@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import tempfile
@@ -218,6 +219,289 @@ class TestWebConfig(unittest.TestCase):
         self.assertEqual(request.max_tokens, 5)
         self.assertEqual(request.session_id, "llm-health")
         self.assertEqual(request.messages, [{"role": "user", "content": "hi"}])
+
+    def test_liveness_is_public_and_minimal(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel()
+        channel.config.whitelist.api_key = "private-app-key"
+        response = TestClient(channel.app).get("/api/live")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "live")
+        self.assertIn("version", response.json())
+        self.assertIn("boot_id", response.json())
+        self.assertNotIn("private-app-key", response.text)
+        self.assertNotIn("model", response.json())
+
+    def test_readiness_returns_503_until_agent_is_available(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel()
+        response = TestClient(channel.app).get("/api/ready")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(response.json()["ready"])
+        self.assertEqual(response.json()["phase"], "agent")
+
+    def test_degraded_readiness_is_healthy_and_redacted(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel()
+        channel.config.whitelist.api_key = "private-app-key"
+        channel.agent = SimpleNamespace(
+            get_readiness_status=lambda: {
+                "status": "degraded",
+                "phase": "degraded",
+                "ready": True,
+                "elapsed_ms": 12,
+                "degraded_reasons": ["mcp_unavailable"],
+                "failure_code": None,
+            }
+        )
+        client = TestClient(channel.app)
+
+        unauthorized = client.get("/api/ready")
+        response = client.get(
+            "/api/ready", headers={"X-API-Key": "private-app-key"}
+        )
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ready"])
+        self.assertEqual(response.json()["degraded_reasons"], ["mcp_unavailable"])
+        self.assertNotIn("private-app-key", response.text)
+
+    def test_setup_complete_validates_model_and_schedules_one_restart(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel(
+            model="ollama/llama3", base_url="http://127.0.0.1:11434/v1"
+        )
+        channel._persist_config_values = AsyncMock(return_value=channel.config)
+        channel._probe_setup_llm = AsyncMock(return_value=17)
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "channels.web._SETUP_STATE_PATH", Path(tmpdir) / "setup-state.json"
+        ), patch("channels.web._schedule_restart") as schedule_restart:
+            client = TestClient(channel.app)
+            response = client.post(
+                "/api/setup/complete",
+                json={
+                    "env": {
+                        "LLM_MODEL": "ollama/llama3",
+                        "APP_API_KEY": "bootstrap-secret",
+                        "ALLOWED_PATHS": ["./persona"],
+                    }
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "restarting")
+        self.assertEqual(payload["latency_ms"], 17)
+        self.assertNotIn("bootstrap-secret", response.text)
+        schedule_restart.assert_called_once_with()
+        channel._probe_setup_llm.assert_awaited_once()
+
+    def test_setup_complete_does_not_restart_when_llm_validation_fails(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel(
+            model="ollama/llama3", base_url="http://127.0.0.1:11434/v1"
+        )
+        channel._persist_config_values = AsyncMock(return_value=channel.config)
+        channel._probe_setup_llm = AsyncMock(
+            side_effect=RuntimeError("401 unauthorized: rejected credential")
+        )
+
+        with patch("channels.web._schedule_restart") as schedule_restart:
+            client = TestClient(channel.app)
+            response = client.post(
+                "/api/setup/complete",
+                json={
+                    "env": {
+                        "LLM_MODEL": "ollama/llama3",
+                        "APP_API_KEY": "do-not-echo",
+                    }
+                },
+            )
+
+        self.assertEqual(response.status_code, 422)
+        payload = response.json()
+        self.assertEqual(payload["stage"], "llm_check")
+        self.assertEqual(payload["code"], "invalid_credentials")
+        self.assertTrue(payload["config_saved"])
+        self.assertNotIn("do-not-echo", response.text)
+        self.assertNotIn("rejected credential", response.text)
+        schedule_restart.assert_not_called()
+        channel._persist_config_values.assert_awaited_once_with(
+            {
+                "LLM_MODEL": "ollama/llama3",
+                "APP_API_KEY": "do-not-echo",
+            },
+            activate_config=False,
+        )
+
+    def test_setup_complete_rejects_unknown_fields_before_persisting(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel(model="ollama/llama3", base_url=None)
+        channel._persist_config_values = AsyncMock(return_value=channel.config)
+        client = TestClient(channel.app)
+        response = client.post(
+            "/api/setup/complete",
+            json={
+                "env": {
+                    "LLM_MODEL": "ollama/llama3",
+                    "APP_API_KEY": "secret",
+                    "UNSUPPORTED_SETUP_VALUE": "nope",
+                }
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["code"], "unknown_fields")
+        channel._persist_config_values.assert_not_awaited()
+
+    def test_setup_status_correlates_restart_without_echoing_token(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel(
+            model="ollama/llama3", base_url="http://127.0.0.1:11434/v1"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "setup-state.json"
+            state_path.write_text(
+                '{"restart_token":"restart-secret"}', encoding="utf-8"
+            )
+            with patch("channels.web._SETUP_STATE_PATH", state_path), patch(
+                "config.load_config", return_value=channel.config
+            ), patch(
+                "core.prompt.get_setup_state",
+                return_value={"complete": False, "missing": ["SOUL.md"]},
+            ):
+                client = TestClient(channel.app)
+                response = client.get(
+                    "/api/setup/status",
+                    params={"restart_token": "restart-secret"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["restart_recognized"])
+        self.assertEqual(payload["boot_id"], channel._boot_id)
+        self.assertNotIn("restart-secret", response.text)
+
+    def test_configured_api_key_requires_auth_before_persona_is_complete(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel()
+        channel.config.whitelist.api_key = "app-secret"
+        client = TestClient(channel.app)
+
+        unauthorized = client.get("/api/config")
+        authorized = client.get("/api/config", headers={"X-API-Key": "app-secret"})
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(authorized.status_code, 200)
+
+    def test_config_api_exposes_effective_approval_policy(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel()
+        loaded = self._load_config_with_env(
+            {"APPROVAL_POLICY_PROFILE": "review", "AUTONOMOUS_MODE": "true"}
+        )
+        with patch("config.load_config", return_value=loaded):
+            response = TestClient(channel.app).get("/api/config")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["env"]["APPROVAL_POLICY_PROFILE"], "review")
+        self.assertEqual(response.json()["env"]["AUTONOMOUS_MODE"], "false")
+
+    def test_merge_env_lines_preserves_comments_and_clears_secret(self):
+        from channels.web import _merge_env_lines
+
+        merged = _merge_env_lines(
+            ["# keep this", "LLM_MODEL=old", "OPENAI_API_KEY=old", "OTHER=1"],
+            {"LLM_MODEL": "openai/gpt-4o-mini"},
+            {"OPENAI_API_KEY"},
+        )
+
+        self.assertEqual(
+            merged,
+            [
+                "# keep this",
+                "LLM_MODEL=openai/gpt-4o-mini",
+                "OPENAI_API_KEY=",
+                "OTHER=1",
+            ],
+        )
+
+    def test_persist_config_values_writes_env_and_paths_atomically(self):
+        channel = self._make_web_channel(model="ollama/llama3", base_url=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "config.reload_config", return_value=channel.config
+        ), patch.dict(os.environ, {}, clear=False):
+            previous_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                Path(".env").write_text(
+                    "# existing comment\nLLM_MODEL=old\nOTHER=keep\n",
+                    encoding="utf-8",
+                )
+                asyncio.run(
+                    channel._persist_config_values(
+                        {
+                            "LLM_MODEL": "ollama/llama3",
+                            "APP_API_KEY": "new-app-key",
+                            "ALLOWED_PATHS": ["./persona", "./logs"],
+                        },
+                        activate_config=False,
+                    )
+                )
+
+                env_text = Path(".env").read_text(encoding="utf-8")
+                self.assertIn("# existing comment", env_text)
+                self.assertIn("LLM_MODEL=ollama/llama3", env_text)
+                self.assertIn("OTHER=keep", env_text)
+                self.assertIn("APP_API_KEY=new-app-key", env_text)
+                self.assertEqual(
+                    Path("allowed_paths.txt").read_text(encoding="utf-8"),
+                    "./persona\n./logs",
+                )
+                self.assertEqual(list(Path(".").glob(".*.tmp")), [])
+            finally:
+                os.chdir(previous_cwd)
 
 
 if __name__ == "__main__":
