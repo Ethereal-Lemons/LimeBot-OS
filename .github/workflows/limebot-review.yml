@@ -1,0 +1,94 @@
+name: LimeBot Diff Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Base branch or commit for the diff
+        required: false
+        default: main
+      invoke_model:
+        description: Invoke the configured review model (requires provider secret)
+        type: boolean
+        required: false
+        default: false
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  review-only:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install LimeBot dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Generate review diff
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MANUAL_BASE: ${{ inputs.base_ref }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            BASE="$PR_BASE_SHA"
+          else
+            BASE="${MANUAL_BASE:-main}"
+            if [[ ! "$BASE" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$BASE" == -* ]]; then
+              echo "Invalid base_ref" >&2
+              exit 2
+            fi
+            git fetch origin "$BASE" --depth=1
+            BASE="origin/$BASE"
+          fi
+          git diff --no-ext-diff --unified=3 "$BASE"...HEAD > limebot-review.diff
+
+      - name: Build redacted review artifact
+        run: >
+          python scripts/review_diff.py
+          --diff-file limebot-review.diff
+          --output artifacts/limebot-review.json
+
+      - name: Optionally invoke configured model
+        if: github.event_name == 'workflow_dispatch' && inputs.invoke_model
+        env:
+          LIMEBOT_REVIEW_MODEL: ${{ vars.LIMEBOT_REVIEW_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: >
+          python scripts/review_diff.py
+          --diff-file limebot-review.diff
+          --output artifacts/limebot-review.json
+          --invoke-model
+
+      - name: Remove raw diff
+        if: always()
+        shell: bash
+        run: rm -f limebot-review.diff
+
+      - name: Upload review artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: limebot-review-${{ github.run_id }}
+          path: artifacts/limebot-review.json
+          if-no-files-found: error
+          retention-days: 14
+
+      # Deliberately no pull_request_target, PR comments, commits, pushes, or
+      # write permissions. A future opt-in workflow may consume this artifact.

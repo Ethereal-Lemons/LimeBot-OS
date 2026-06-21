@@ -1,0 +1,39 @@
+name: Frontend and CLI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  frontend-cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Test CLI dependency decisions
+        run: npm run test:cli
+
+      - name: Test web state reducers
+        run: npm --prefix web run test:chat-state
+
+      - name: Build web application
+        run: npm --prefix web run build
+
+      - name: Build and test VS Code companion
+        run: |
+          npm run vscode:build
+          npm run vscode:test
