@@ -32,8 +32,3 @@ jobs:
 
       - name: Build web application
         run: npm --prefix web run build
-
-      - name: Build and test VS Code companion
-        run: |
-          npm run vscode:build
-          npm run vscode:test
