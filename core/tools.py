@@ -1098,13 +1098,22 @@ class Toolbox:
             full_output = []
             last_activity = _time.monotonic()
             stall_detected = False
-            STALL_TIMEOUT = 30
+            STALL_TIMEOUT = 0
             if self.config:
                 try:
-                    STALL_TIMEOUT = float(getattr(self.config, "stall_timeout", 30))
+                    STALL_TIMEOUT = float(getattr(self.config, "stall_timeout", 0))
                 except (ValueError, TypeError):
                     pass
-            if STALL_TIMEOUT <= 0:
+
+            # Bypass stall watchdog for installation/download/update commands
+            is_install_cmd = any(
+                keyword in command.lower()
+                for keyword in ("install", "download", "setup", "update", "upgrade", "clone", "pull")
+            )
+            if is_install_cmd:
+                STALL_TIMEOUT = None
+
+            if STALL_TIMEOUT is not None and STALL_TIMEOUT <= 0:
                 STALL_TIMEOUT = None
 
             last_progress = _time.monotonic()

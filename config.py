@@ -175,10 +175,10 @@ def load_config(force_reload=False):
         config.tool_timeout = 120.0
 
     try:
-        config.stall_timeout = float(os.getenv("STALL_TIMEOUT", "30"))
+        config.stall_timeout = float(os.getenv("STALL_TIMEOUT", "0"))
     except ValueError:
-        logger.warning("Invalid STALL_TIMEOUT in .env, defaulting to 30.")
-        config.stall_timeout = 30
+        logger.warning("Invalid STALL_TIMEOUT in .env, defaulting to 0.")
+        config.stall_timeout = 0
 
     config.ai_harness = SimpleNamespace()
     ai_harness_mode = str(

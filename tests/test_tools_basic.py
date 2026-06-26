@@ -598,3 +598,32 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"name": "Main"', result)
         self.assertIn('"name": "general"', result)
         self.assertNotIn('"name": "voice"', result)
+
+    async def test_run_command_stall_timeout_defaults_and_install_bypass(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+        import sys
+        import time as _time
+
+        # Test 1: By default, STALL_TIMEOUT should be 0 (None)
+
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]), stall_timeout=0)
+        bus = MessageBus()
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
+
+        python_exec = sys.executable
+        res = await toolbox.run_command(f'"{python_exec}" -c "print(\'hello_from_test\')"')
+        self.assertIn("hello_from_test", res)
+        self.assertNotIn("[STALL] Command killed", res)
+
+        # Test 2: With STALL_TIMEOUT set to a positive value, normal commands stall if silent
+        config_with_stall = SimpleNamespace(skills=SimpleNamespace(enabled=[]), stall_timeout=0.2)
+        toolbox_with_stall = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config_with_stall)
+
+        res_stall = await toolbox_with_stall.run_command(f'"{python_exec}" -c "__import__(\'time\').sleep(1.0)"')
+        self.assertIn("[STALL] Command killed", res_stall)
+
+        # Test 3: If the command contains 'install', the stall timeout should be bypassed
+        res_install_bypass = await toolbox_with_stall.run_command(f'"{python_exec}" -c "__import__(\'time\').sleep(0.5) or print(\'install_bypass_ok\')"')
+        self.assertIn("install_bypass_ok", res_install_bypass)
+        self.assertNotIn("[STALL] Command killed", res_install_bypass)

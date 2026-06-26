@@ -1508,7 +1508,7 @@ class WebChannel(BaseChannel):
                 ).lower(),
                 "MAX_ITERATIONS": str(getattr(cfg, "max_iterations", 30)),
                 "COMMAND_TIMEOUT": str(getattr(cfg, "command_timeout", 300.0)),
-                "STALL_TIMEOUT": str(getattr(cfg, "stall_timeout", 30)),
+                "STALL_TIMEOUT": str(getattr(cfg, "stall_timeout", 0)),
                 "PERSONALITY_WHITELIST": ",".join(
                     getattr(cfg, "personality_whitelist", [])
                 ),
