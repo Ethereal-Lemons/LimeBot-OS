@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import sys
 import tempfile
 import types
@@ -27,6 +28,22 @@ from core.llm_client import ChatRequest, ProviderConfig
 
 
 class TestWebConfig(unittest.TestCase):
+    def _setup_page_config_keys(self):
+        setup_page = Path("web/src/components/setup/SetupPage.tsx")
+        source = setup_page.read_text(encoding="utf-8")
+        match = re.search(r"type\s+SetupConfig\s*=\s*\{(?P<body>.*?)\};", source, re.S)
+        self.assertIsNotNone(match, "SetupPage.tsx must declare type SetupConfig")
+        keys = set()
+        for line in match.group("body").splitlines():
+            line = line.strip()
+            if not line or line.startswith("//"):
+                continue
+            key = line.split(":", 1)[0].strip()
+            if key:
+                keys.add(key)
+        self.assertTrue(keys, "SetupConfig must expose at least one setup field")
+        return keys
+
     def tearDown(self):
         import config as config_module
 
@@ -312,9 +329,68 @@ class TestWebConfig(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["status"], "restarting")
         self.assertEqual(payload["latency_ms"], 17)
+        self.assertEqual(payload["boot_id"], channel._boot_id)
+        self.assertTrue(payload["restart_token"])
         self.assertNotIn("bootstrap-secret", response.text)
         schedule_restart.assert_called_once_with()
         channel._probe_setup_llm.assert_awaited_once()
+
+    def test_setup_complete_accepts_first_run_wizard_payload(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel(
+            model="gemini/gemini-2.0-flash", base_url=None
+        )
+        channel._persist_config_values = AsyncMock(return_value=channel.config)
+        channel._probe_setup_llm = AsyncMock(return_value=23)
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "channels.web._SETUP_STATE_PATH", Path(tmpdir) / "setup-state.json"
+        ), patch("channels.web._schedule_restart"):
+            client = TestClient(channel.app)
+            response = client.post(
+                "/api/setup/complete",
+                json={
+                    "env": {
+                        "LLM_MODEL": "gemini/gemini-2.0-flash",
+                        "GEMINI_API_KEY": "gemini-secret",
+                        "OPENROUTER_API_KEY": "",
+                        "OPENAI_API_KEY": "",
+                        "ANTHROPIC_API_KEY": "",
+                        "XAI_API_KEY": "",
+                        "DEEPSEEK_API_KEY": "",
+                        "DASHSCOPE_API_KEY": "",
+                        "NVIDIA_API_KEY": "",
+                        "DISCORD_TOKEN": "",
+                        "ENABLE_WHATSAPP": "false",
+                        "WHATSAPP_BRIDGE_URL": "ws://localhost:3000",
+                        "ALLOWED_PATHS": ["./persona", "./logs"],
+                        "ENABLE_DYNAMIC_PERSONALITY": "false",
+                        "APP_API_KEY": "bootstrap-secret",
+                    }
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "restarting")
+        self.assertEqual(response.json()["boot_id"], channel._boot_id)
+        self.assertTrue(response.json()["restart_token"])
+        channel._persist_config_values.assert_awaited_once()
+
+    def test_setup_complete_allowlist_accepts_every_setup_wizard_field(self):
+        from channels.web import _ALLOWED_SETUP_ENV_KEYS
+
+        wizard_keys = self._setup_page_config_keys()
+        unsupported_keys = wizard_keys - _ALLOWED_SETUP_ENV_KEYS
+
+        self.assertFalse(
+            unsupported_keys,
+            "SetupPage posts fields that /api/setup/complete rejects: "
+            f"{sorted(unsupported_keys)}",
+        )
 
     def test_setup_complete_does_not_restart_when_llm_validation_fails(self):
         try:
@@ -357,6 +433,45 @@ class TestWebConfig(unittest.TestCase):
             },
             activate_config=False,
         )
+
+    def test_setup_complete_times_out_llm_validation_without_restarting(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel(
+            model="openai-codex/gpt-5.4", base_url=None
+        )
+        channel._persist_config_values = AsyncMock(return_value=channel.config)
+
+        async def slow_probe():
+            await asyncio.sleep(1)
+
+        channel._probe_setup_llm = slow_probe
+
+        with patch("channels.web._SETUP_LLM_PROBE_TIMEOUT_SECONDS", 0.01), patch(
+            "channels.web._schedule_restart"
+        ) as schedule_restart:
+            client = TestClient(channel.app)
+            response = client.post(
+                "/api/setup/complete",
+                json={
+                    "env": {
+                        "LLM_MODEL": "openai-codex/gpt-5.4",
+                        "APP_API_KEY": "do-not-echo",
+                    }
+                },
+            )
+
+        self.assertEqual(response.status_code, 422)
+        payload = response.json()
+        self.assertEqual(payload["stage"], "llm_check")
+        self.assertEqual(payload["code"], "provider_timeout")
+        self.assertTrue(payload["config_saved"])
+        self.assertTrue(payload["retryable"])
+        self.assertNotIn("do-not-echo", response.text)
+        schedule_restart.assert_not_called()
 
     def test_setup_complete_rejects_unknown_fields_before_persisting(self):
         try:

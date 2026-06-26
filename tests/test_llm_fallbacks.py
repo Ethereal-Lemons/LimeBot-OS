@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -31,6 +32,17 @@ except Exception:
 
 
 class TestLlmFallbacks(unittest.IsolatedAsyncioTestCase):
+    async def test_codex_error_payload_is_failover_worthy(self):
+        from core.loop import AgentLoop
+
+        self.assertTrue(
+            AgentLoop._should_failover_model(
+                RuntimeError(
+                    "Codex provider returned an error for gpt-5.4-mini with no visible response."
+                )
+            )
+        )
+
     async def test_llm_call_switches_to_fallback_model_after_auth_failure(self):
         from core.loop import AgentLoop
 
@@ -94,3 +106,51 @@ class TestLlmFallbacks(unittest.IsolatedAsyncioTestCase):
         second_provider = mocked.await_args_list[1].args[0]
         self.assertEqual(first_provider.model, "grok-4-fast-reasoning")
         self.assertEqual(second_provider.model, "gemini-2.0-flash")
+
+    async def test_llm_call_times_out_instead_of_hanging_turn(self):
+        from core.loop import AgentLoop
+
+        loop = AgentLoop.__new__(AgentLoop)
+        loop.model = "openai-codex/gpt-5.4-mini"
+        loop.fallback_models = []
+        loop.config = SimpleNamespace(
+            command_timeout=0.01,
+            llm=SimpleNamespace(base_url=None),
+        )
+        loop._sanitize_messages_for_llm = lambda messages, session_key: messages
+        loop._get_tool_definitions_for_turn = lambda text: []
+        loop._tool_definition_names = lambda tools: []
+        loop._log_tool_debug = lambda *args, **kwargs: None
+        loop._should_retry_without_images = lambda e, messages: False
+        loop._downgrade_image_messages_for_text_model = lambda messages, session_key: False
+        loop._disable_image_inputs_for_session = lambda session_key: None
+
+        async def never_finishes(*args, **kwargs):
+            await asyncio.sleep(1)
+
+        loop.llm_client = SimpleNamespace(complete=AsyncMock(side_effect=never_finishes))
+
+        with patch.object(
+            loop,
+            "_resolve_provider_chain",
+            return_value=[
+                (
+                    "openai-codex/gpt-5.4-mini",
+                    "gpt-5.4-mini",
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        ):
+            with self.assertRaisesRegex(TimeoutError, "AI provider timed out"):
+                await loop._llm_call_with_retry(
+                    messages=[{"role": "user", "content": "hi"}],
+                    session_key="web_demo",
+                    msg=None,
+                    max_retries=1,
+                    stream=False,
+                    include_tools=False,
+                )
+
+        loop.llm_client.complete.assert_awaited_once()

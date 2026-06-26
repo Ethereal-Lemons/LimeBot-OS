@@ -333,7 +333,7 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
 
 
 # Codex models available on the free ChatGPT plan.
-CODEX_FREE_MODELS = ["openai-codex/gpt-5.3", "openai-codex/gpt-5.2"]
+CODEX_FREE_MODELS = ["openai-codex/gpt-5.3-codex", "openai-codex/gpt-5.2-codex"]
 
 # Codex models that require a ChatGPT Pro subscription.
 CODEX_PRO_MODELS = {"openai-codex/gpt-5.4", "openai-codex/gpt-5.4-mini", "openai-codex/gpt-5.5"}

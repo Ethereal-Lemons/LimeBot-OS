@@ -1,5 +1,7 @@
 import json
+import subprocess
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.codex_bridge import (
@@ -7,6 +9,7 @@ from core.codex_bridge import (
     complete_codex_response,
     is_codex_model_name,
     stream_codex_response,
+    _run_codex_bridge,
 )
 
 
@@ -88,6 +91,57 @@ class TestCodexBridge(unittest.TestCase):
         )
         self.assertEqual(response.usage["total_tokens"], 20)
 
+    def test_run_codex_bridge_accepts_valid_stdout_even_with_nonzero_exit(self):
+        payload = {
+            "text": "Before I complete, let's set us up.",
+            "thinking": "",
+            "toolCalls": [],
+            "usage": {"input": 12, "output": 8, "totalTokens": 20},
+        }
+        completed = SimpleNamespace(
+            returncode=1,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+        with patch("core.codex_bridge.Path.exists", return_value=True), patch(
+            "core.codex_bridge.subprocess.run", return_value=completed
+        ):
+            result = _run_codex_bridge({"model": "gpt-5.4-mini"})
+
+        self.assertEqual(result["text"], "Before I complete, let's set us up.")
+
+    def test_run_codex_bridge_accepts_valid_stderr_even_with_nonzero_exit(self):
+        payload = {
+            "text": "Before I complete, let's set us up.",
+            "thinking": "",
+            "toolCalls": [],
+            "usage": {"input": 12, "output": 8, "totalTokens": 20},
+        }
+        completed = SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=json.dumps(payload),
+        )
+
+        with patch("core.codex_bridge.Path.exists", return_value=True), patch(
+            "core.codex_bridge.subprocess.run", return_value=completed
+        ):
+            result = _run_codex_bridge({"model": "gpt-5.4-mini"})
+
+        self.assertEqual(result["text"], "Before I complete, let's set us up.")
+
+    def test_run_codex_bridge_uses_bounded_timeout(self):
+        def raise_timeout(*args, **kwargs):
+            self.assertEqual(kwargs["timeout"], 20.0)
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+        with patch("core.codex_bridge.Path.exists", return_value=True), patch(
+            "core.codex_bridge.subprocess.run", side_effect=raise_timeout
+        ):
+            with self.assertRaisesRegex(RuntimeError, "timed out after 20s"):
+                _run_codex_bridge({"model": "gpt-5.4-mini"})
+
     def test_build_codex_context_preserves_inline_image_blocks(self):
         context = build_codex_context(
             [
@@ -136,6 +190,24 @@ class TestCodexBridge(unittest.TestCase):
             response.choices[0].message.content,
             "hi ✨ Jisoo here 🥪\n\nWhat’s up?",
         )
+
+    def test_complete_codex_response_rejects_error_stop_reason(self):
+        payload = {
+            "text": "",
+            "thinking": "",
+            "toolCalls": [],
+            "usage": {"input": 0, "output": 0, "totalTokens": 0},
+            "stopReason": "error",
+            "model": "gpt-5.3-codex",
+        }
+        with patch("core.codex_bridge._run_codex_bridge", return_value=payload):
+            with self.assertRaisesRegex(RuntimeError, "Codex provider returned an error"):
+                complete_codex_response(
+                    "openai-codex/gpt-5.3-codex",
+                    [{"role": "user", "content": "Hi"}],
+                    [],
+                    "session-error",
+                )
 
     def test_stream_codex_response_yields_synthetic_chunk(self):
         payload = {

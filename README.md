@@ -80,8 +80,6 @@ For complex multi-step tasks, LimeBot can delegate work to an isolated backgroun
 
 LimeBot also exposes an authenticated local companion API at `/api/app/*` for inspecting durable workspaces, steering a workspace with messages, resolving approvals, and streaming normalized workspace events. It remains local-first and does not expose direct shell execution, credentials, artifact paths, or file-reading endpoints.
 
-An optional VS Code companion spike lives in `vscode-extension/`. It can securely configure the local app-server, send explicitly selected code into a durable workspace, and inspect task state without reading whole files or applying edits. See `vscode-extension/README.md`.
-
 For CI review, `limebot review-diff --diff-file change.patch --output review.json` creates a capped, secret-redacted artifact. `.github/workflows/limebot-review.yml` is artifact-only with `contents: read`; model invocation is opt-in and it never posts PR comments, edits files, or pushes commits.
 
 ### 🔌 Model Context Protocol (MCP) Support

@@ -16,6 +16,7 @@ import {
 } from './dependency-state.js';
 import { waitForBackendReadiness } from './readiness-client.js';
 import { describeSupportedNode, isSupportedNodeVersion } from './runtime-support.js';
+import { cleanupStoppedTaskState } from './task-state.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1512,6 +1513,19 @@ async function cmdStop() {
         info('No running LimeBot processes found.');
     } else {
         success('Deep clean complete: All LimeBot instances terminated.');
+    }
+
+    try {
+        const result = cleanupStoppedTaskState({
+            tasksPath: path.join(rootDir, 'data', 'tasks.json'),
+        });
+        if (result.cleanedTasks || result.cleanedWorkspaces) {
+            success(
+                `Cleared ${result.cleanedTasks} active task(s) and ${result.cleanedWorkspaces} active workspace(s).`
+            );
+        }
+    } catch (e) {
+        error(`Failed to clear task state: ${e.message}`);
     }
 
     // Give OS time to release ports

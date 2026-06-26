@@ -270,8 +270,24 @@ def _clean_identity_value(value: str | None) -> str:
     if not value:
         return ""
     cleaned = value.strip()
+    
+    # Strip markdown emphasis if present (e.g., *LimeBot* or _LimeBot_)
+    if len(cleaned) >= 2:
+        if (cleaned.startswith("*") and cleaned.endswith("*")) or (cleaned.startswith("_") and cleaned.endswith("_")):
+            cleaned = cleaned[1:-1].strip()
+            
     if cleaned.lower() in ("none", "n/a", "null", "undefined"):
         return ""
+        
+    # Detect bracketed or parenthesized placeholder patterns
+    lower_val = cleaned.lower()
+    if (lower_val.startswith("[") and lower_val.endswith("]")) or (lower_val.startswith("(") and lower_val.endswith(")")):
+        placeholder_keywords = {"optional", "infer", "chosen", "url if", "tbd", "placeholder", "here", "insert"}
+        if any(kw in lower_val for kw in placeholder_keywords):
+            return ""
+            
+    # Remove control characters and unicode replacement character
+    cleaned = cleaned.replace("\ufffd", "").replace("\x00", "")
     return cleaned
 
 
@@ -294,9 +310,45 @@ def _extract_identity_fields(
 
 def _normalize_identity_content(content: str) -> str:
     parsed = _extract_identity_fields(content, include_defaults=False)
+    
+    # Read existing IDENTITY.md if it exists, to merge fields
+    existing_parsed = {}
+    if IDENTITY_FILE.exists():
+        try:
+            existing_content = IDENTITY_FILE.read_text(encoding="utf-8")
+            existing_parsed = _extract_identity_fields(existing_content, include_defaults=False)
+        except Exception as e:
+            logger.warning(f"Failed to read existing IDENTITY.md for merging: {e}")
+
     lines = ["# IDENTITY.md - Who I Am", ""]
     for key, _label_pattern, output_label, _default in _IDENTITY_FIELDS:
-        lines.append(f"*   **{output_label}:** {parsed.get(key, '')}")
+        new_val = parsed.get(key, "")
+        existing_val = existing_parsed.get(key, "")
+        
+        # Robust safety checks on new updates:
+        
+        # 1. URL validation for avatar/pfp_url
+        if key == "avatar" and new_val:
+            if not (new_val.startswith("http://") or new_val.startswith("https://") or new_val.startswith("file://") or new_val.startswith("/")):
+                new_val = ""
+                
+        # 2. Encoding corruption safety for name (e.g. Ros? of blackpink)
+        if key == "name" and new_val:
+            if "?" in new_val and existing_val and "?" not in existing_val:
+                new_val = ""
+                
+        # 3. Size and format constraint on name
+        if key == "name" and new_val:
+            if len(new_val.strip()) < 2:
+                new_val = ""
+                
+        # 4. Size constraint on emoji
+        if key == "emoji" and new_val:
+            if len(new_val) > 10:
+                new_val = ""
+                
+        val = new_val if new_val else existing_val
+        lines.append(f"*   **{output_label}:** {val}")
     return "\n".join(lines).strip()
 
 
@@ -835,10 +887,11 @@ def validate_and_save_identity(content: str) -> bool:
     if _check_forbidden(content, "IDENTITY.md"):
         return False
 
-    parsed = _extract_identity_fields(content, include_defaults=False)
+    normalized = _normalize_identity_content(content)
+    parsed = _extract_identity_fields(normalized, include_defaults=False)
     has_name = bool(parsed.get("name"))
     has_style = bool(parsed.get("style"))
-    has_minimum_length = len(content) > 50
+    has_minimum_length = len(normalized) > 50
 
     if not (has_name and has_style and has_minimum_length):
         logger.warning(
@@ -847,7 +900,6 @@ def validate_and_save_identity(content: str) -> bool:
         )
         return False
 
-    normalized = _normalize_identity_content(content)
     return _atomic_write_with_backup(IDENTITY_FILE, normalized, "IDENTITY.md")
 
 

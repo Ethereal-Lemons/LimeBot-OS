@@ -231,7 +231,10 @@ export function SetupPage() {
             const response = await axios.post(
                 `${API_BASE_URL}/api/setup/complete`,
                 { env: config },
-                previousApiKey ? { headers: { 'X-API-Key': previousApiKey } } : undefined,
+                {
+                    timeout: 30_000,
+                    ...(previousApiKey ? { headers: { 'X-API-Key': previousApiKey } } : {}),
+                },
             );
             const data = response.data;
             if (data.status !== 'restarting' || !data.restart_token || !data.boot_id) {
@@ -254,7 +257,11 @@ export function SetupPage() {
         } catch (err: unknown) {
             setSetupPhase('failed');
             const payload = axios.isAxiosError(err)
-                ? (err.response?.data?.detail ?? err.response?.data)
+                ? (err.response?.data?.detail
+                    ?? err.response?.data
+                    ?? (err.code === 'ECONNABORTED'
+                        ? { code: 'provider_timeout' }
+                        : { message: err.message }))
                 : { message: err instanceof Error ? err.message : undefined };
             if (
                 payload &&

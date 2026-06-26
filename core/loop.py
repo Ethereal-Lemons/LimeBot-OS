@@ -610,6 +610,8 @@ class AgentLoop:
                 "model not found",
                 "does not exist",
                 "not available",
+                "provider returned an error",
+                "no visible response",
                 "overloaded",
                 "capacity",
             )
@@ -2225,7 +2227,8 @@ class AgentLoop:
                     api_key,
                     custom_llm_provider,
                 )
-                return await self.llm_client.complete(
+                llm_timeout = float(getattr(self.config, "command_timeout", 300.0) or 0)
+                llm_call = self.llm_client.complete(
                     provider,
                     ChatRequest(
                         messages=messages,
@@ -2234,6 +2237,9 @@ class AgentLoop:
                         session_id=session_key,
                     ),
                 )
+                if llm_timeout > 0:
+                    return await asyncio.wait_for(llm_call, timeout=llm_timeout)
+                return await llm_call
                 kwargs: Dict[str, Any] = dict(
                     model=model,
                     messages=messages,
@@ -2362,9 +2368,29 @@ class AgentLoop:
                         f"LLM provider '{provider_chain[selected_index - 1][0]}' failed; switching to fallback '{active_source_model}'."
                     )
                     if msg and not model_failover_announced:
+                        err_str = str(e).lower()
+                        if (
+                            "rate limit" in err_str
+                            or "rate_limit" in err_str
+                            or "usage_limit" in err_str
+                            or "usage limit" in err_str
+                            or "limit has been reached" in err_str
+                            or "limit_reached" in err_str
+                            or "codex provider returned an error" in err_str
+                            or "no visible response" in err_str
+                            or isinstance(e, RateLimitError)
+                            or "RateLimit" in type(e).__name__
+                        ):
+                            reason = "rate limit or usage limit"
+                        elif is_conn:
+                            reason = "connection error"
+                        elif is_500:
+                            reason = "server error"
+                        else:
+                            reason = "temporary error"
                         await self.bus.publish_outbound(
                             OutboundMessage(
-                                content=f"Primary AI is unavailable, switching to fallback model `{active_source_model}`...",
+                                content=f"Primary AI model hit a {reason}, switching to fallback model `{active_source_model}`...",
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,
                                 metadata=self._with_trace_metadata(
@@ -2429,6 +2455,18 @@ class AgentLoop:
                             )
                         )
                 raise
+            except asyncio.TimeoutError as e:
+                self._log_tool_debug(
+                    "llm_call_error",
+                    session_key=session_key,
+                    attempt=attempt + 1,
+                    source_model=active_source_model,
+                    error_type=type(e).__name__,
+                    error=f"Timed out after {llm_timeout:g}s",
+                )
+                raise TimeoutError(
+                    f"AI provider timed out after {llm_timeout:g}s. Try again or switch models."
+                ) from e
             except Exception as e:
                 self._log_tool_debug(
                     "llm_call_error",
@@ -2460,9 +2498,26 @@ class AgentLoop:
                         f"LLM call failed for '{provider_chain[selected_index - 1][0]}'; switching to fallback '{active_source_model}'."
                     )
                     if msg and not model_failover_announced:
+                        err_msg = str(e).lower()
+                        if (
+                            "rate limit" in err_msg
+                            or "rate_limit" in err_msg
+                            or "usage_limit" in err_msg
+                            or "usage limit" in err_msg
+                            or "limit has been reached" in err_msg
+                            or "limit_reached" in err_msg
+                            or "codex provider returned an error" in err_msg
+                            or "no visible response" in err_msg
+                            or "429" in err_msg
+                        ):
+                            reason_phrase = "rate limit or usage limit being reached"
+                        elif "auth" in err_msg or "api key" in err_msg or "authentication" in err_msg:
+                            reason_phrase = "authentication failure"
+                        else:
+                            reason_phrase = "an error"
                         await self.bus.publish_outbound(
                             OutboundMessage(
-                                content=f"Retrying with fallback model `{active_source_model}`...",
+                                content=f"Primary AI model failed due to {reason_phrase}, switching to fallback model `{active_source_model}`...",
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,
                                 metadata=self._with_trace_metadata(
@@ -4187,8 +4242,23 @@ class AgentLoop:
                             tc["function"]["arguments"] += tc_chunk.function.arguments
 
         except (RateLimitError, Exception) as e:
-            if "429" in str(e) or "RateLimitError" in type(e).__name__:
+            err_msg_lower = str(e).lower()
+            if (
+                "429" in err_msg_lower
+                or "RateLimitError" in type(e).__name__
+                or "rate limit" in err_msg_lower
+                or "rate_limit" in err_msg_lower
+                or "usage_limit" in err_msg_lower
+                or "usage limit" in err_msg_lower
+                or "limit has been reached" in err_msg_lower
+                or "limit_reached" in err_msg_lower
+                or "codex provider returned an error" in err_msg_lower
+                or "no visible response" in err_msg_lower
+            ):
                 logger.warning(f"⚠ Rate limit during streaming: {e}")
+                rate_limit_notice = "\n\n[⚠ Generation stopped due to rate limit/usage limit reached]"
+                display_buffer += rate_limit_notice
+                full_content += rate_limit_notice
                 await self.bus.publish_outbound(
                     OutboundMessage(
                         channel=msg.channel,
@@ -5540,11 +5610,32 @@ class AgentLoop:
                             "error": str(e)[:500],
                         },
                     )
+                    error_text = str(e)
+                    lower_error = error_text.lower()
+                    if (
+                        "rate limit" in lower_error
+                        or "rate_limit" in lower_error
+                        or "usage_limit" in lower_error
+                        or "usage limit" in lower_error
+                        or "limit has been reached" in lower_error
+                        or "limit_reached" in lower_error
+                        or "codex provider returned an error" in lower_error
+                        or "no visible response" in lower_error
+                        or "429" in lower_error
+                    ):
+                        visible_error = (
+                            "⚠ Rate limit or usage limit reached for the active AI model.\n"
+                            f"`{error_text}`\n\n"
+                            "Your ChatGPT Plus/Pro plan or API quota limit has been hit. Please wait for the limit to reset, "
+                            "check your provider's account limits, or configure a fallback API model."
+                        )
+                    else:
+                        visible_error = f"🚫 **Internal error.**\n`{e}`"
                     await self.bus.publish_outbound(
                         OutboundMessage(
                             channel=msg.channel,
                             chat_id=msg.chat_id,
-                            content=f"🚫 **Internal error.**\n`{e}`",
+                            content=visible_error,
                             metadata=self._with_trace_metadata(
                                 {"is_error": True, "reply_to": msg.sender_id},
                                 turn_id=turn_id,

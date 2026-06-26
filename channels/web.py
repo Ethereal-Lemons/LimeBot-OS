@@ -68,13 +68,50 @@ _PIAI_MODELS_JS_PATH = (
     Path.cwd() / "node_modules" / "@mariozechner" / "pi-ai" / "dist" / "models.generated.js"
 )
 _PIAI_PROVIDER_MODEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
+_CODEX_FALLBACK_MODELS = [
+    {"id": "openai-codex/gpt-5.4", "name": "GPT-5.4", "provider": "openai-codex"},
+    {
+        "id": "openai-codex/gpt-5.4-mini",
+        "name": "GPT-5.4 Mini",
+        "provider": "openai-codex",
+    },
+    {
+        "id": "openai-codex/gpt-5.3-codex",
+        "name": "GPT-5.3 Codex",
+        "provider": "openai-codex",
+    },
+    {
+        "id": "openai-codex/gpt-5.2-codex",
+        "name": "GPT-5.2 Codex",
+        "provider": "openai-codex",
+    },
+    {"id": "openai-codex/gpt-5.1", "name": "GPT-5.1", "provider": "openai-codex"},
+    {
+        "id": "openai-codex/gpt-5.1-codex-mini",
+        "name": "GPT-5.1 Codex Mini",
+        "provider": "openai-codex",
+    },
+]
 
 _SETUP_STATE_PATH = Path("data/setup-state.json")
+_SETUP_LLM_PROBE_TIMEOUT_SECONDS = 20.0
 _ALLOWED_SETUP_ENV_KEYS = {
     "LLM_MODEL",
     "APP_API_KEY",
     "ALLOWED_PATHS",
     "LLM_BASE_URL",
+    "GEMINI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "XAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "NVIDIA_API_KEY",
+    "DISCORD_TOKEN",
+    "ENABLE_WHATSAPP",
+    "WHATSAPP_BRIDGE_URL",
+    "ENABLE_DYNAMIC_PERSONALITY",
 }
 
 
@@ -1258,7 +1295,8 @@ class WebChannel(BaseChannel):
             ]
 
             if codex_status.get("configured"):
-                models.extend(_load_piai_provider_models("openai-codex"))
+                codex_models = _load_piai_provider_models("openai-codex")
+                models.extend(codex_models or [dict(model) for model in _CODEX_FALLBACK_MODELS])
 
             from core.llm_utils import (
                 OPENROUTER_CURATED_MODEL_IDS,
@@ -1347,6 +1385,24 @@ class WebChannel(BaseChannel):
                     or os.getenv("DASHSCOPE_BASE_URL")
                     or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
                     "qwen",
+                    True,
+                )
+            if api_keys["openai"]:
+                await update_provider_cache(
+                    "openai",
+                    fetch_openai_compatible_models,
+                    api_keys["openai"],
+                    "https://api.openai.com/v1",
+                    "openai",
+                    True,
+                )
+            if api_keys["deepseek"]:
+                await update_provider_cache(
+                    "deepseek",
+                    fetch_openai_compatible_models,
+                    api_keys["deepseek"],
+                    "https://api.deepseek.com",
+                    "deepseek",
                     True,
                 )
 
@@ -2809,7 +2865,10 @@ class WebChannel(BaseChannel):
                 from config import reload_config
                 reload_config()
                 try:
-                    latency = await self._probe_setup_llm()
+                    latency = await asyncio.wait_for(
+                        self._probe_setup_llm(),
+                        timeout=_SETUP_LLM_PROBE_TIMEOUT_SECONDS,
+                    )
                 finally:
                     for k in env:
                         if k in old_env:
@@ -2830,7 +2889,20 @@ class WebChannel(BaseChannel):
                 return {
                     "status": "restarting",
                     "latency_ms": latency,
+                    "restart_token": restart_token,
+                    "boot_id": self._boot_id,
                 }
+            except asyncio.TimeoutError:
+                logger.warning("Setup LLM validation timed out.")
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "stage": "llm_check",
+                        "code": "provider_timeout",
+                        "config_saved": True,
+                        "retryable": True,
+                    }
+                )
             except Exception as e:
                 return JSONResponse(
                     status_code=422,

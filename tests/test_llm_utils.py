@@ -157,3 +157,20 @@ class TestLlmUtils(unittest.TestCase):
             [item[0] for item in chain],
             ["openai/gpt-4o-mini", "gemini/gemini-2.0-flash"],
         )
+
+    def test_codex_pro_models_append_registry_valid_free_fallbacks(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
+        with patch("config.load_config", return_value=cfg), patch(
+            "core.llm_utils.resolve_codex_oauth_api_key",
+            return_value="codex-secret",
+        ):
+            chain = build_provider_chain("openai-codex/gpt-5.4-mini", [])
+
+        self.assertEqual(
+            [item[0] for item in chain],
+            [
+                "openai-codex/gpt-5.4-mini",
+                "openai-codex/gpt-5.3-codex",
+                "openai-codex/gpt-5.2-codex",
+            ],
+        )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -19,6 +20,13 @@ def normalize_codex_model_id(model: str) -> str:
 
 def _node_executable() -> str:
     return shutil.which("node") or "node"
+
+
+def _bridge_timeout_seconds() -> float:
+    try:
+        return max(1.0, float(os.getenv("CODEX_BRIDGE_TIMEOUT", "20")))
+    except Exception:
+        return 20.0
 
 
 def _tool_arguments_to_object(arguments: Any) -> Dict[str, Any]:
@@ -229,26 +237,46 @@ def _run_codex_bridge(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not script_path.exists():
         raise RuntimeError(f"Codex chat helper not found at {script_path}")
 
-    proc = subprocess.run(
-        [_node_executable(), str(script_path), "complete", "--json"],
-        cwd=Path.cwd(),
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    timeout_s = _bridge_timeout_seconds()
+    try:
+        proc = subprocess.run(
+            [_node_executable(), str(script_path), "complete", "--json"],
+            cwd=Path.cwd(),
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Codex bridge timed out after {timeout_s:g}s.") from exc
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
-    if proc.returncode != 0:
-        detail = stderr or stdout or "unknown Codex bridge failure"
-        raise RuntimeError(detail)
 
-    try:
-        parsed = json.loads(stdout)
-    except Exception as exc:
-        raise RuntimeError("Codex chat helper returned invalid JSON.") from exc
+    parsed = None
+    parse_error: Optional[Exception] = None
+    for raw in (stdout, stderr):
+        if not raw:
+            continue
+        try:
+            candidate = json.loads(raw)
+        except Exception as exc:
+            parse_error = exc
+            continue
+        if isinstance(candidate, dict):
+            parsed = candidate
+            if not candidate.get("error"):
+                break
+
+    if proc.returncode != 0 and not (
+        isinstance(parsed, dict) and not parsed.get("error")
+    ):
+        detail = stderr or stdout or "unknown Codex bridge failure"
+        if parse_error:
+            raise RuntimeError(detail) from parse_error
+        raise RuntimeError(detail)
 
     if isinstance(parsed, dict) and parsed.get("error"):
         raise RuntimeError(str(parsed["error"]))
@@ -374,6 +402,11 @@ def complete_codex_response(
         "sessionId": session_id,
     }
     result = _run_codex_bridge(payload)
+    if str(result.get("stopReason") or "").lower() == "error":
+        model_id = str(result.get("model") or normalize_codex_model_id(model))
+        raise RuntimeError(
+            f"Codex provider returned an error for {model_id} with no visible response."
+        )
 
     tool_calls: List[CodexToolCall] = []
     for tool_call in result.get("toolCalls") or []:
