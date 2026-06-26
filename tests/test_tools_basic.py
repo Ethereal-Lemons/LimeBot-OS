@@ -605,9 +605,8 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
         import sys
         import time as _time
 
-        # Test 1: By default, STALL_TIMEOUT should be 0 (None)
-
-        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]), stall_timeout=0)
+        # Test 1: By default, STALL_TIMEOUT and COMMAND_TIMEOUT should be 0 (None)
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]), stall_timeout=0, command_timeout=0)
         bus = MessageBus()
         toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
 
@@ -615,6 +614,7 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
         res = await toolbox.run_command(f'"{python_exec}" -c "print(\'hello_from_test\')"')
         self.assertIn("hello_from_test", res)
         self.assertNotIn("[STALL] Command killed", res)
+        self.assertNotIn("[TIMEOUT] Command was terminated", res)
 
         # Test 2: With STALL_TIMEOUT set to a positive value, normal commands stall if silent
         config_with_stall = SimpleNamespace(skills=SimpleNamespace(enabled=[]), stall_timeout=0.2)
@@ -623,7 +623,18 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
         res_stall = await toolbox_with_stall.run_command(f'"{python_exec}" -c "__import__(\'time\').sleep(1.0)"')
         self.assertIn("[STALL] Command killed", res_stall)
 
-        # Test 3: If the command contains 'install', the stall timeout should be bypassed
-        res_install_bypass = await toolbox_with_stall.run_command(f'"{python_exec}" -c "__import__(\'time\').sleep(0.5) or print(\'install_bypass_ok\')"')
+        # Test 3: If the command contains 'install', the stall timeout and command timeout should be bypassed
+        config_with_both = SimpleNamespace(skills=SimpleNamespace(enabled=[]), stall_timeout=0.2, command_timeout=0.2)
+        toolbox_with_both = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config_with_both)
+
+        res_install_bypass = await toolbox_with_both.run_command(f'"{python_exec}" -c "__import__(\'time\').sleep(0.5) or print(\'install_bypass_ok\')"')
         self.assertIn("install_bypass_ok", res_install_bypass)
         self.assertNotIn("[STALL] Command killed", res_install_bypass)
+        self.assertNotIn("[TIMEOUT] Command was terminated", res_install_bypass)
+
+        # Test 4: With COMMAND_TIMEOUT set to a positive value, normal commands get killed if they exceed it
+        config_with_timeout = SimpleNamespace(skills=SimpleNamespace(enabled=[]), command_timeout=0.2)
+        toolbox_with_timeout = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config_with_timeout)
+
+        res_timeout = await toolbox_with_timeout.run_command(f'"{python_exec}" -c "__import__(\'time\').sleep(1.0)"')
+        self.assertIn("[TIMEOUT] Command was terminated", res_timeout)

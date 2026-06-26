@@ -161,10 +161,10 @@ def load_config(force_reload=False):
         config.max_iterations = 30
 
     try:
-        config.command_timeout = float(os.getenv("COMMAND_TIMEOUT", "300.0"))
+        config.command_timeout = float(os.getenv("COMMAND_TIMEOUT", "0"))
     except ValueError:
-        logger.warning("Invalid COMMAND_TIMEOUT in .env, defaulting to 300.0.")
-        config.command_timeout = 300.0
+        logger.warning("Invalid COMMAND_TIMEOUT in .env, defaulting to 0.")
+        config.command_timeout = 0
  
     try:
         config.tool_timeout = float(

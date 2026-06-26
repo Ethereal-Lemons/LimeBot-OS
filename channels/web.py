@@ -1507,7 +1507,7 @@ class WebChannel(BaseChannel):
                     getattr(cfg.llm, "enable_dynamic_personality", False)
                 ).lower(),
                 "MAX_ITERATIONS": str(getattr(cfg, "max_iterations", 30)),
-                "COMMAND_TIMEOUT": str(getattr(cfg, "command_timeout", 300.0)),
+                "COMMAND_TIMEOUT": str(getattr(cfg, "command_timeout", 0)),
                 "STALL_TIMEOUT": str(getattr(cfg, "stall_timeout", 0)),
                 "PERSONALITY_WHITELIST": ",".join(
                     getattr(cfg, "personality_whitelist", [])

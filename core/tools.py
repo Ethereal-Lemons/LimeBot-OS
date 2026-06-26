@@ -1200,7 +1200,7 @@ class Toolbox:
                         await _force_kill(process)
                         return
 
-            timeout_val = 300.0
+            timeout_val = 0
             if self.config:
                 if hasattr(self.config, "command_timeout"):
                     try:
@@ -1209,10 +1209,15 @@ class Toolbox:
                         pass
                 elif isinstance(self.config, dict) and "command_timeout" in self.config:
                     try:
-                        timeout_val = float(self.config.get("command_timeout", 300.0))
+                        timeout_val = float(self.config.get("command_timeout", 0))
                     except (ValueError, TypeError):
                         pass
-            if timeout_val <= 0:
+
+            # Bypass overall command timeout for installation/download/update commands
+            if is_install_cmd:
+                timeout_val = None
+
+            if timeout_val is not None and timeout_val <= 0:
                 timeout_val = None
 
             try:
