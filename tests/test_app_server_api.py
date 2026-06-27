@@ -202,10 +202,10 @@ class TestAppServerApi(unittest.TestCase):
                     "/api/app/workspaces",
                     headers=self._headers(),
                     json={
-                        "title": "VS Code selection",
-                        "origin": "vscode",
+                        "title": "companion selection",
+                        "origin": "companion",
                         "metadata": {
-                            "client": "vscode",
+                            "client": "companion",
                             "workspace_name": "limebot",
                             "api_key": "secret-value",
                         },
@@ -215,8 +215,8 @@ class TestAppServerApi(unittest.TestCase):
                 stored = asyncio.run(tracker.get_workspace(workspace_id))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(stored.origin, "vscode")
-        self.assertEqual(stored.metadata["client"], "vscode")
+        self.assertEqual(stored.origin, "companion")
+        self.assertEqual(stored.metadata["client"], "companion")
         self.assertNotIn("api_key", stored.metadata)
         self.assertNotIn("secret-value", response.text)
 

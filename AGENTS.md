@@ -259,15 +259,6 @@ FastAPI application serving:
 - Chrome and Edge open the companion with `chrome.sidePanel`
 - Opera GX falls back to opening the same companion surface in a regular extension tab when native side panel support is unavailable
 - The old web mascot pop-out flow is not part of the current product surface
-
-### VS Code Companion (`vscode-extension/`)
-
-- Thin TypeScript client over `/api/app/*`; it does not contain an agent loop.
-- `LimeBot: Configure Connection` stores `APP_API_KEY` in VS Code `SecretStorage`; only the non-secret base URL is kept in global state.
-- `LimeBot: Send Selection` sends only the explicit editor selection, relative file label, language ID, workspace name, and user instruction. It never reads the rest of the file or workspace.
-- `LimeBot: Open Task State` renders the redacted app-server state in an output channel.
-- The spike intentionally cannot apply patches, write files, or run shell commands from VS Code.
-
 ### Local App-Server API
 
 Authenticated companion clients share a local-first contract under `/api/app/*`:

@@ -22,15 +22,12 @@
     "backend:dev": "python main.py",
     "extension:dev": "npm run dev --workspace extension",
     "extension:build": "npm run build --workspace extension",
-    "vscode:build": "npm run build --workspace vscode-extension",
-    "vscode:test": "npm run test --workspace vscode-extension",
     "test:cli": "node --test tests-js/*.test.js"
   },
   "workspaces": [
     "web",
     "bridge",
-    "extension",
-    "vscode-extension"
+    "extension"
   ],
   "type": "module",
   "engines": {
