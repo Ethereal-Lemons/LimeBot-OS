@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.11 - 2026-06-27
+### Added
+- Browser companion extension (manifest V3) for page help, text selection sharing, live task status, and tool approvals.
+- Durable task workspaces and embedding fallbacks for automatic provider resolution.
+- Slash skill invocation support (`/skill <name>` and `/<name>`) to execute registered commands directly from chat.
+- Redesigned and restored app-server API endpoints under `/api/app/*` (read-only state, events, message sending, and approval delegation).
+- CLI utility (`review-diff`) and entrypoint script for automated pull request code review.
+- Dynamic model capability checks and readiness gates before starting the session.
+
+### Changed
+- Default command execution and watchdog timeouts to `0` (disabled) to avoid installation timeouts.
+- VS Code companion is no longer built or tested in CI workflows (references removed).
+- Updated extension payload protocol, client connection flow, and Discord integration.
+
+### Fixed
+- Deduplication of repeated sections in final assistant replies.
+- Browser tab inspection logic and error reporting.
+- Removed local-only hint pollution from the skills registry.
+
 ## 1.0.10 - 2026-06-13
 ### Added
 - ElevenLabs voice and text-to-speech integration, plus image generation support.

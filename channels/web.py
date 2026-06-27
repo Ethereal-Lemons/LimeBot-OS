@@ -2842,7 +2842,7 @@ class WebChannel(BaseChannel):
         async def get_liveness():
             return {
                 "status": "live",
-                "version": "1.0.10",
+                "version": "1.0.11",
                 "boot_id": self._boot_id,
             }
 
