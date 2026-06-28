@@ -11,7 +11,7 @@
 
 ### Changed
 - Default command execution and watchdog timeouts to `0` (disabled) to avoid installation timeouts.
-- VS Code companion is no longer built or tested in CI workflows (references removed).
+- Completely removed the VS Code companion extension codebase, including all associated workspace configurations, build scripts, tests, and documentation.
 - Updated extension payload protocol, client connection flow, and Discord integration.
 
 ### Fixed
