@@ -26,12 +26,9 @@ const FALLBACK_MODELS: LlmModelOption[] = [
     { id: 'gemini/gemini-1.5-flash', name: 'Gemini 1.5 Flash', provider: 'gemini' },
     { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'openai' },
     { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai' },
+    { id: 'openai-codex/gpt-5.5', name: 'GPT-5.5', provider: 'openai-codex' },
     { id: 'openai-codex/gpt-5.4', name: 'GPT-5.4', provider: 'openai-codex' },
     { id: 'openai-codex/gpt-5.4-mini', name: 'GPT-5.4 Mini', provider: 'openai-codex' },
-    { id: 'openai-codex/gpt-5.3-codex', name: 'GPT-5.3 Codex', provider: 'openai-codex' },
-    { id: 'openai-codex/gpt-5.2-codex', name: 'GPT-5.2 Codex', provider: 'openai-codex' },
-    { id: 'openai-codex/gpt-5.1', name: 'GPT-5.1', provider: 'openai-codex' },
-    { id: 'openai-codex/gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', provider: 'openai-codex' },
     { id: 'openrouter/anthropic/claude-sonnet-4.6', name: 'Anthropic Claude Sonnet 4.6', provider: 'openrouter' },
     { id: 'openrouter/openai/gpt-5.4-pro', name: 'OpenAI GPT-5.4 Pro', provider: 'openrouter' },
     { id: 'openrouter/google/gemini-3.1-pro-preview', name: 'Google Gemini 3.1 Pro Preview', provider: 'openrouter' },
@@ -39,6 +36,9 @@ const FALLBACK_MODELS: LlmModelOption[] = [
     { id: 'anthropic/claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', provider: 'anthropic' },
     { id: 'deepseek/deepseek-chat', name: 'DeepSeek V3', provider: 'deepseek' },
     { id: 'xai/grok-2-1212', name: 'Grok 2', provider: 'xai' },
+    { id: 'moonshot/kimi-k2-thinking', name: 'Kimi K2 Thinking', provider: 'moonshot' },
+    { id: 'moonshot/kimi-k2-instruct', name: 'Kimi K2 Instruct', provider: 'moonshot' },
+    { id: 'moonshot/kimi-k2.5', name: 'Kimi K2.5', provider: 'moonshot' },
     { id: 'qwen/qwen-plus', name: 'Qwen Plus', provider: 'qwen' },
     { id: 'qwen/qwen-max', name: 'Qwen Max', provider: 'qwen' },
     { id: 'qwen/qwen-flash', name: 'Qwen Flash', provider: 'qwen' },
@@ -57,6 +57,7 @@ type SetupConfig = {
     ANTHROPIC_API_KEY: string;
     XAI_API_KEY: string;
     DEEPSEEK_API_KEY: string;
+    MOONSHOT_API_KEY: string;
     DASHSCOPE_API_KEY: string;
     NVIDIA_API_KEY: string;
     DISCORD_TOKEN: string;
@@ -77,6 +78,7 @@ export function SetupPage() {
         ANTHROPIC_API_KEY: '',
         XAI_API_KEY: '',
         DEEPSEEK_API_KEY: '',
+        MOONSHOT_API_KEY: '',
         DASHSCOPE_API_KEY: '',
         NVIDIA_API_KEY: '',
         DISCORD_TOKEN: '',
@@ -161,6 +163,7 @@ export function SetupPage() {
         if (config.LLM_MODEL.startsWith('anthropic') && !config.ANTHROPIC_API_KEY) return 'Anthropic API Key is required.';
         if (config.LLM_MODEL.startsWith('xai') && !config.XAI_API_KEY) return 'xAI API Key is required.';
         if (config.LLM_MODEL.startsWith('deepseek') && !config.DEEPSEEK_API_KEY) return 'DeepSeek API Key is required.';
+        if (config.LLM_MODEL.startsWith('moonshot') && !config.MOONSHOT_API_KEY) return 'Moonshot API Key is required.';
         if (config.LLM_MODEL.startsWith('qwen') && !config.DASHSCOPE_API_KEY) return 'Qwen API Key is required.';
         if (config.LLM_MODEL.startsWith('nvidia') && !config.NVIDIA_API_KEY) return 'NVIDIA API Key is required.';
         return null;
@@ -340,6 +343,7 @@ export function SetupPage() {
                                         <SelectItem value="anthropic">{PROVIDER_LABELS.anthropic}</SelectItem>
                                         <SelectItem value="xai">{PROVIDER_LABELS.xai}</SelectItem>
                                         <SelectItem value="deepseek">{PROVIDER_LABELS.deepseek}</SelectItem>
+                                        <SelectItem value="moonshot">{PROVIDER_LABELS.moonshot}</SelectItem>
                                         <SelectItem value="qwen">{PROVIDER_LABELS.qwen}</SelectItem>
                                         <SelectItem value="nvidia">{PROVIDER_LABELS.nvidia}</SelectItem>
                                     </SelectContent>
@@ -535,6 +539,19 @@ export function SetupPage() {
                                             placeholder="sk-..."
                                             value={config.DEEPSEEK_API_KEY}
                                             onChange={(e) => handleChange('DEEPSEEK_API_KEY', e.target.value)}
+                                            className="bg-background/50"
+                                        />
+                                    </div>
+                                )}
+                                {config.LLM_MODEL.startsWith('moonshot') && (
+                                    <div className="space-y-2">
+                                        <Label htmlFor="moonshot_key">Moonshot / Kimi API Key</Label>
+                                        <Input
+                                            id="moonshot_key"
+                                            type="password"
+                                            placeholder="sk-..."
+                                            value={config.MOONSHOT_API_KEY}
+                                            onChange={(e) => handleChange('MOONSHOT_API_KEY', e.target.value)}
                                             className="bg-background/50"
                                         />
                                     </div>

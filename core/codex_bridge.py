@@ -297,6 +297,29 @@ def _build_usage(payload: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def _codex_error_detail(payload: Dict[str, Any]) -> str:
+    raw = payload.get("errorMessage")
+    if isinstance(raw, dict):
+        raw = raw.get("message") or raw.get("detail") or raw.get("error")
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return text
+    if isinstance(parsed, dict):
+        detail = parsed.get("detail") or parsed.get("message")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+        nested_error = parsed.get("error")
+        if isinstance(nested_error, dict):
+            nested_message = nested_error.get("message") or nested_error.get("detail")
+            if isinstance(nested_message, str) and nested_message.strip():
+                return nested_message.strip()
+    return text
+
+
 @dataclass
 class CodexFunctionCall:
     name: str
@@ -404,9 +427,10 @@ def complete_codex_response(
     result = _run_codex_bridge(payload)
     if str(result.get("stopReason") or "").lower() == "error":
         model_id = str(result.get("model") or normalize_codex_model_id(model))
-        raise RuntimeError(
-            f"Codex provider returned an error for {model_id} with no visible response."
-        )
+        detail = _codex_error_detail(result)
+        if detail:
+            raise RuntimeError(f"Codex provider returned an error for {model_id}: {detail}")
+        raise RuntimeError(f"Codex provider returned an error for {model_id}.")
 
     tool_calls: List[CodexToolCall] = []
     for tool_call in result.get("toolCalls") or []:

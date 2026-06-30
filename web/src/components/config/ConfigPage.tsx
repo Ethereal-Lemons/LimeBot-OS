@@ -48,6 +48,7 @@ const SECRET_KEYS = [
     "ANTHROPIC_API_KEY",
     "XAI_API_KEY",
     "DEEPSEEK_API_KEY",
+    "MOONSHOT_API_KEY",
     "NVIDIA_API_KEY",
     "DASHSCOPE_API_KEY",
 ] as const;
@@ -94,6 +95,7 @@ export function ConfigPage() {
             if (model.provider === 'anthropic') return !!secretDrafts.ANTHROPIC_API_KEY || getSecretInfo(secretMeta, 'ANTHROPIC_API_KEY').configured;
             if (model.provider === 'xai') return !!secretDrafts.XAI_API_KEY || getSecretInfo(secretMeta, 'XAI_API_KEY').configured;
             if (model.provider === 'deepseek') return !!secretDrafts.DEEPSEEK_API_KEY || getSecretInfo(secretMeta, 'DEEPSEEK_API_KEY').configured;
+            if (model.provider === 'moonshot') return !!secretDrafts.MOONSHOT_API_KEY || getSecretInfo(secretMeta, 'MOONSHOT_API_KEY').configured;
             if (model.provider === 'nvidia') return !!secretDrafts.NVIDIA_API_KEY || getSecretInfo(secretMeta, 'NVIDIA_API_KEY').configured;
             if (model.provider === 'qwen') return !!secretDrafts.DASHSCOPE_API_KEY || getSecretInfo(secretMeta, 'DASHSCOPE_API_KEY').configured;
             return true;
@@ -581,6 +583,7 @@ export function ConfigPage() {
                                     {renderSecretInput("ANTHROPIC_API_KEY", "Anthropic API Key", "sk-ant-...")}
                                     {renderSecretInput("XAI_API_KEY", "xAI (Grok) API Key", "xai-...")}
                                     {renderSecretInput("DEEPSEEK_API_KEY", "DeepSeek API Key", "sk-...")}
+                                    {renderSecretInput("MOONSHOT_API_KEY", "Moonshot / Kimi API Key", "sk-...")}
                                     {renderSecretInput("NVIDIA_API_KEY", "NVIDIA API Key", "nvapi-...")}
                                     {renderSecretInput("DASHSCOPE_API_KEY", "Qwen (DashScope) API Key", "ds-...")}
                                 </div>

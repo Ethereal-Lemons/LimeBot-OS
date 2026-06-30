@@ -199,9 +199,10 @@ class TestCodexBridge(unittest.TestCase):
             "usage": {"input": 0, "output": 0, "totalTokens": 0},
             "stopReason": "error",
             "model": "gpt-5.3-codex",
+            "errorMessage": '{"detail":"The model is not supported."}',
         }
         with patch("core.codex_bridge._run_codex_bridge", return_value=payload):
-            with self.assertRaisesRegex(RuntimeError, "Codex provider returned an error"):
+            with self.assertRaisesRegex(RuntimeError, "The model is not supported."):
                 complete_codex_response(
                     "openai-codex/gpt-5.3-codex",
                     [{"role": "user", "content": "Hi"}],

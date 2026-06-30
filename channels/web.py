@@ -58,6 +58,7 @@ _SECRET_CONFIG_KEYS = frozenset(
         "ANTHROPIC_API_KEY",
         "XAI_API_KEY",
         "DEEPSEEK_API_KEY",
+        "MOONSHOT_API_KEY",
         "NVIDIA_API_KEY",
         "DASHSCOPE_API_KEY",
         "DISCORD_TOKEN",
@@ -65,36 +66,28 @@ _SECRET_CONFIG_KEYS = frozenset(
     }
 )
 _PIAI_MODELS_JS_PATH = (
-    Path.cwd() / "node_modules" / "@mariozechner" / "pi-ai" / "dist" / "models.generated.js"
+    Path.cwd()
+    / "node_modules"
+    / "@earendil-works"
+    / "pi-ai"
+    / "dist"
+    / "models.generated.js"
 )
 _PIAI_PROVIDER_MODEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
 _CODEX_FALLBACK_MODELS = [
+    {"id": "openai-codex/gpt-5.5", "name": "GPT-5.5", "provider": "openai-codex"},
     {"id": "openai-codex/gpt-5.4", "name": "GPT-5.4", "provider": "openai-codex"},
     {
         "id": "openai-codex/gpt-5.4-mini",
         "name": "GPT-5.4 Mini",
         "provider": "openai-codex",
     },
-    {
-        "id": "openai-codex/gpt-5.3-codex",
-        "name": "GPT-5.3 Codex",
-        "provider": "openai-codex",
-    },
-    {
-        "id": "openai-codex/gpt-5.2-codex",
-        "name": "GPT-5.2 Codex",
-        "provider": "openai-codex",
-    },
-    {"id": "openai-codex/gpt-5.1", "name": "GPT-5.1", "provider": "openai-codex"},
-    {
-        "id": "openai-codex/gpt-5.1-codex-mini",
-        "name": "GPT-5.1 Codex Mini",
-        "provider": "openai-codex",
-    },
 ]
+_SUPPORTED_CODEX_MODEL_IDS = frozenset(model["id"] for model in _CODEX_FALLBACK_MODELS)
 
 _SETUP_STATE_PATH = Path("data/setup-state.json")
 _SETUP_LLM_PROBE_TIMEOUT_SECONDS = 20.0
+_MOONSHOT_ENV_ALIASES = ("MOONSHOTAI_API_KEY", "KIMI_API_KEY")
 _ALLOWED_SETUP_ENV_KEYS = {
     "LLM_MODEL",
     "APP_API_KEY",
@@ -106,6 +99,7 @@ _ALLOWED_SETUP_ENV_KEYS = {
     "ANTHROPIC_API_KEY",
     "XAI_API_KEY",
     "DEEPSEEK_API_KEY",
+    "MOONSHOT_API_KEY",
     "DASHSCOPE_API_KEY",
     "NVIDIA_API_KEY",
     "DISCORD_TOKEN",
@@ -339,6 +333,11 @@ def _load_piai_provider_models(provider: str) -> list[dict[str, str]]:
         [dict(model) for model in models],
     )
     return models
+
+
+def _filter_supported_codex_models(models: list[dict[str, str]]) -> list[dict[str, str]]:
+    filtered = [model for model in models if model.get("id") in _SUPPORTED_CODEX_MODEL_IDS]
+    return filtered or [dict(model) for model in _CODEX_FALLBACK_MODELS]
 
 
 def _build_identity_markdown(data: dict[str, Any]) -> str:
@@ -1201,6 +1200,22 @@ class WebChannel(BaseChannel):
                     "name": "DeepSeek R1",
                     "provider": "deepseek",
                 },
+                # ── Moonshot AI / Kimi ──────────────────────────────────────
+                {
+                    "id": "moonshot/kimi-k2-thinking",
+                    "name": "Kimi K2 Thinking",
+                    "provider": "moonshot",
+                },
+                {
+                    "id": "moonshot/kimi-k2-instruct",
+                    "name": "Kimi K2 Instruct",
+                    "provider": "moonshot",
+                },
+                {
+                    "id": "moonshot/kimi-k2.5",
+                    "name": "Kimi K2.5",
+                    "provider": "moonshot",
+                },
                 {
                     "id": "qwen/qwen-plus",
                     "name": "Qwen Plus",
@@ -1295,7 +1310,9 @@ class WebChannel(BaseChannel):
             ]
 
             if codex_status.get("configured"):
-                codex_models = _load_piai_provider_models("openai-codex")
+                codex_models = _filter_supported_codex_models(
+                    _load_piai_provider_models("openai-codex")
+                )
                 models.extend(codex_models or [dict(model) for model in _CODEX_FALLBACK_MODELS])
 
             from core.llm_utils import (
@@ -1312,6 +1329,7 @@ class WebChannel(BaseChannel):
                     "z-ai": "Z.ai",
                     "qwen": "Qwen",
                     "openai": "OpenAI",
+                    "moonshotai": "Moonshot AI",
                     "google": "Google",
                     "meta-llama": "Meta Llama",
                     "anthropic": "Anthropic",
@@ -1333,6 +1351,9 @@ class WebChannel(BaseChannel):
                 "anthropic": os.getenv("ANTHROPIC_API_KEY"),
                 "deepseek": os.getenv("DEEPSEEK_API_KEY"),
                 "openai": os.getenv("OPENAI_API_KEY"),
+                "moonshot": os.getenv("MOONSHOT_API_KEY")
+                or os.getenv("MOONSHOTAI_API_KEY")
+                or os.getenv("KIMI_API_KEY"),
                 "qwen": os.getenv("DASHSCOPE_API_KEY"),
             }
 
@@ -1394,6 +1415,17 @@ class WebChannel(BaseChannel):
                     api_keys["openai"],
                     "https://api.openai.com/v1",
                     "openai",
+                    True,
+                )
+            if api_keys["moonshot"]:
+                await update_provider_cache(
+                    "moonshot",
+                    fetch_openai_compatible_models,
+                    api_keys["moonshot"],
+                    os.getenv("MOONSHOT_BASE_URL")
+                    or os.getenv("MOONSHOTAI_BASE_URL")
+                    or "https://api.moonshot.ai/v1",
+                    "moonshot",
                     True,
                 )
             if api_keys["deepseek"]:
@@ -1541,6 +1573,11 @@ class WebChannel(BaseChannel):
                 "ANTHROPIC_API_KEY": _serialize_secret(os.getenv("ANTHROPIC_API_KEY", "")),
                 "XAI_API_KEY": _serialize_secret(os.getenv("XAI_API_KEY", "")),
                 "DEEPSEEK_API_KEY": _serialize_secret(os.getenv("DEEPSEEK_API_KEY", "")),
+                "MOONSHOT_API_KEY": _serialize_secret(
+                    os.getenv("MOONSHOT_API_KEY", "")
+                    or os.getenv("MOONSHOTAI_API_KEY", "")
+                    or os.getenv("KIMI_API_KEY", "")
+                ),
                 "NVIDIA_API_KEY": _serialize_secret(os.getenv("NVIDIA_API_KEY", "")),
                 "DASHSCOPE_API_KEY": _serialize_secret(os.getenv("DASHSCOPE_API_KEY", "")),
                 "DISCORD_TOKEN": _serialize_secret(cfg.discord.token or ""),
@@ -1668,6 +1705,11 @@ class WebChannel(BaseChannel):
                     if env_file.exists()
                     else []
                 )
+                moonshot_aliases_to_clear = (
+                    set(_MOONSHOT_ENV_ALIASES)
+                    if "MOONSHOT_API_KEY" in new_env or "MOONSHOT_API_KEY" in clear_secrets
+                    else set()
+                )
                 final_lines = []
                 processed_keys: set[str] = set()
 
@@ -1679,6 +1721,9 @@ class WebChannel(BaseChannel):
                             continue
                         if key in new_env:
                             final_lines.append(f"{key}={new_env[key]}")
+                            processed_keys.add(key)
+                        elif key in moonshot_aliases_to_clear:
+                            final_lines.append(f"{key}=")
                             processed_keys.add(key)
                         elif key in clear_secrets and key in _SECRET_CONFIG_KEYS:
                             final_lines.append(f"{key}=")
@@ -1704,6 +1749,8 @@ class WebChannel(BaseChannel):
                 # in the inherited environment).
                 for key, val in new_env.items():
                     os.environ[key] = str(val)
+                for key in moonshot_aliases_to_clear:
+                    os.environ[key] = ""
                 for key in clear_secrets:
                     if key in _SECRET_CONFIG_KEYS:
                         os.environ[key] = ""

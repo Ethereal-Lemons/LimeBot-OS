@@ -91,6 +91,23 @@ class TestLlmUtils(unittest.TestCase):
         self.assertEqual(resolved["api_key"], "openrouter-secret")
         self.assertEqual(resolved["custom_llm_provider"], "openai")
 
+    def test_resolve_provider_config_uses_moonshot_base_url_and_alias_key(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
+        with patch("config.load_config", return_value=cfg), patch.dict(
+            "os.environ",
+            {
+                "KIMI_API_KEY": "kimi-secret",
+                "MOONSHOTAI_BASE_URL": "https://moonshot.example/v1",
+            },
+            clear=False,
+        ):
+            resolved = resolve_provider_config("moonshotai/kimi-k2.5")
+
+        self.assertEqual(resolved["model"], "kimi-k2.5")
+        self.assertEqual(resolved["base_url"], "https://moonshot.example/v1")
+        self.assertEqual(resolved["api_key"], "kimi-secret")
+        self.assertEqual(resolved["custom_llm_provider"], "openai")
+
     def test_openrouter_gateway_ignores_stale_llm_base_url(self):
         cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
         with patch("config.load_config", return_value=cfg), patch.dict(
@@ -158,7 +175,7 @@ class TestLlmUtils(unittest.TestCase):
             ["openai/gpt-4o-mini", "gemini/gemini-2.0-flash"],
         )
 
-    def test_codex_pro_models_append_registry_valid_free_fallbacks(self):
+    def test_codex_models_only_append_chatgpt_compatible_fallbacks(self):
         cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
         with patch("config.load_config", return_value=cfg), patch(
             "core.llm_utils.resolve_codex_oauth_api_key",
@@ -170,7 +187,6 @@ class TestLlmUtils(unittest.TestCase):
             [item[0] for item in chain],
             [
                 "openai-codex/gpt-5.4-mini",
-                "openai-codex/gpt-5.3-codex",
-                "openai-codex/gpt-5.2-codex",
+                "openai-codex/gpt-5.4",
             ],
         )

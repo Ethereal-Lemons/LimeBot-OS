@@ -38,6 +38,7 @@ function serializeAssistantMessage(message) {
         toolCalls,
         usage: message?.usage || null,
         stopReason: message?.stopReason || null,
+        errorMessage: message?.errorMessage || null,
         provider: message?.provider || null,
         model: message?.model || null,
         api: message?.api || null,
@@ -58,9 +59,12 @@ async function completeCodex(payload) {
     }
 
     const { apiKey } = await resolveCodexApiKey();
+    // The local bridge is more reliable over SSE than auto WebSocket fallback.
+    const transport = process.env.CODEX_BRIDGE_TRANSPORT || 'sse';
     const result = await complete(model, payload?.context || { messages: [] }, {
         apiKey,
         sessionId: payload?.sessionId || undefined,
+        transport,
     });
     return serializeAssistantMessage(result);
 }

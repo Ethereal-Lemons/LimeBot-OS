@@ -362,6 +362,7 @@ class TestWebConfig(unittest.TestCase):
                         "ANTHROPIC_API_KEY": "",
                         "XAI_API_KEY": "",
                         "DEEPSEEK_API_KEY": "",
+                        "MOONSHOT_API_KEY": "",
                         "DASHSCOPE_API_KEY": "",
                         "NVIDIA_API_KEY": "",
                         "DISCORD_TOKEN": "",
@@ -561,6 +562,26 @@ class TestWebConfig(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["env"]["APPROVAL_POLICY_PROFILE"], "review")
         self.assertEqual(response.json()["env"]["AUTONOMOUS_MODE"], "false")
+
+    def test_config_api_serializes_moonshot_secret_from_alias_key(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel()
+        loaded = self._load_config_with_env({"KIMI_API_KEY": "moonshot-secret"})
+        with patch.dict(
+            os.environ,
+            {"KIMI_API_KEY": "moonshot-secret"},
+            clear=False,
+        ), patch("config.load_config", return_value=loaded):
+            response = TestClient(channel.app).get("/api/config")
+
+        self.assertEqual(response.status_code, 200)
+        secrets = response.json()["secrets"]
+        self.assertTrue(secrets["MOONSHOT_API_KEY"]["configured"])
+        self.assertEqual(secrets["MOONSHOT_API_KEY"]["last4"], "cret")
 
     def test_merge_env_lines_preserves_comments_and_clears_secret(self):
         from channels.web import _merge_env_lines

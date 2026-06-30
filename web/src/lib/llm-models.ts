@@ -11,6 +11,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   anthropic: "anthropic/claude-3-7-sonnet-20250219",
   xai: "xai/grok-2-1212",
   deepseek: "deepseek/deepseek-v3.2",
+  moonshot: "moonshot/kimi-k2-thinking",
   qwen: "qwen/qwen-plus",
   nvidia: "nvidia/moonshotai/kimi-k2-instruct",
   openrouter: "openrouter/anthropic/claude-sonnet-4.5",
@@ -64,6 +65,7 @@ export const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic Claude",
   xai: "xAI (Grok)",
   deepseek: "DeepSeek",
+  moonshot: "Moonshot AI (Kimi)",
   qwen: "Qwen (DashScope)",
   nvidia: "NVIDIA",
   openrouter: "OpenRouter",
@@ -78,12 +80,9 @@ const FEATURED_MODEL_IDS_BY_PROVIDER: Record<string, string[]> = {
   ],
   openai: ["openai/gpt-4o", "openai/gpt-4o-mini"],
   "openai-codex": [
+    "openai-codex/gpt-5.5",
     "openai-codex/gpt-5.4",
     "openai-codex/gpt-5.4-mini",
-    "openai-codex/gpt-5.3-codex",
-    "openai-codex/gpt-5.2-codex",
-    "openai-codex/gpt-5.1",
-    "openai-codex/gpt-5.1-codex-mini",
   ],
   anthropic: [
     "anthropic/claude-3-7-sonnet-20250219",
@@ -91,6 +90,11 @@ const FEATURED_MODEL_IDS_BY_PROVIDER: Record<string, string[]> = {
   ],
   xai: ["xai/grok-2-1212"],
   deepseek: ["deepseek/deepseek-v3.2", "deepseek/deepseek-chat"],
+  moonshot: [
+    "moonshot/kimi-k2-thinking",
+    "moonshot/kimi-k2-instruct",
+    "moonshot/kimi-k2.5",
+  ],
   qwen: ["qwen/qwen-plus", "qwen/qwen-max", "qwen/qwen-flash"],
   nvidia: [
     "nvidia/moonshotai/kimi-k2-instruct",

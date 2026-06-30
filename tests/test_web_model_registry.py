@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 class TestWebModelRegistry(unittest.TestCase):
@@ -15,6 +15,11 @@ class TestWebModelRegistry(unittest.TestCase):
         registry = """
 export const MODELS = {
   "openai-codex": {
+    "gpt-5.3-codex": {
+      id: "gpt-5.3-codex",
+      name: "GPT-5.3 Codex",
+      provider: "openai-codex",
+    },
     "gpt-5.4": {
       id: "gpt-5.4",
       name: "GPT-5.4",
@@ -39,7 +44,9 @@ export const MODELS = {
             try:
                 web_module._PIAI_MODELS_JS_PATH = registry_path
                 web_module._PIAI_PROVIDER_MODEL_CACHE.clear()
-                models = web_module._load_piai_provider_models("openai-codex")
+                models = web_module._filter_supported_codex_models(
+                    web_module._load_piai_provider_models("openai-codex")
+                )
             finally:
                 web_module._PIAI_MODELS_JS_PATH = original_path
                 web_module._PIAI_PROVIDER_MODEL_CACHE.clear()
@@ -105,6 +112,60 @@ export const MODELS = {
         self.assertIn(
             "openai-codex/gpt-5.4",
             {model["id"] for model in codex_models},
+        )
+        self.assertNotIn(
+            "openai-codex/gpt-5.3-codex",
+            {model["id"] for model in codex_models},
+        )
+
+    def test_llm_models_fetches_moonshot_provider_models_when_key_is_available(self):
+        try:
+            from fastapi.testclient import TestClient
+            from channels.web import WebChannel
+            from core.bus import MessageBus
+        except Exception:
+            raise unittest.SkipTest("Missing web channel dependencies.")
+
+        config = SimpleNamespace(
+            whitelist=SimpleNamespace(api_key=None, allowed_paths=[]),
+            web=SimpleNamespace(port=8000, allowed_origins=[]),
+            llm=SimpleNamespace(model="moonshot/kimi-k2-thinking", base_url=None),
+        )
+        channel = WebChannel(config=config, bus=MessageBus())
+
+        with patch.dict(
+            "os.environ",
+            {"MOONSHOT_API_KEY": "moonshot-secret"},
+            clear=False,
+        ), patch(
+            "core.llm_utils.fetch_openai_compatible_models",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "id": "moonshot/kimi-latest",
+                        "name": "Kimi Latest",
+                        "provider": "moonshot",
+                    }
+                ]
+            ),
+        ), patch(
+            "channels.web.get_codex_oauth_status",
+            return_value={"configured": False, "provider": "openai-codex"},
+        ):
+            response = TestClient(channel.app).get("/api/llm/models")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        moonshot_models = [
+            model for model in payload["models"] if model.get("provider") == "moonshot"
+        ]
+        self.assertIn(
+            "moonshot/kimi-k2-thinking",
+            {model["id"] for model in moonshot_models},
+        )
+        self.assertIn(
+            "moonshot/kimi-latest",
+            {model["id"] for model in moonshot_models},
         )
 
 
