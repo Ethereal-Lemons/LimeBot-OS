@@ -20,6 +20,30 @@ LimeBot is not a wrapper around an API. It's a full agentic system  event-driven
 
 ---
 
+## 🏛️ How It Works (Architecture Overview)
+
+LimeBot operates on an **event-driven agentic loop**. When you send a message, it flows through the system as follows:
+
+```mermaid
+graph TD
+    User([User Inbound Message]) --> Channel[Channel: Web / Discord / WhatsApp / Telegram]
+    Channel --> Queue[MessageBus Queue]
+    Queue --> Loop[Agent Loop]
+    Loop --> RAG[Auto-RAG: LanceDB Vector Search + Grep]
+    RAG --> SystemPrompt[Compile Stable + Volatile Prompts]
+    SystemPrompt --> LLM[LLM Inference]
+    LLM --> XML[XML Tag Interceptor: save_soul / save_identity / log_memory]
+    XML --> Tools{Tool Execution Loop}
+    Tools -- Requires Confirmation --> Auth[Security Gate: Web Dashboard Approval]
+    Auth -- Approved --> Exec[Execute: write_file / run_command / delete_file]
+    Tools -- Sensitive/No Auth --> Exec
+    Exec --> Loop
+    Tools -- No More Tools --> Reply[Compile Outbound Message]
+    Reply --> Channel
+```
+
+---
+
 ## ✨ What It Can Actually Do
 
 ### 🧠 It Remembers Everything
@@ -226,6 +250,22 @@ npm run extension:build
 
 Load the unpacked extension from `extension/dist`. Full setup steps are in [extension/README.md](extension/README.md).
 
+### 🛠️ CLI Command Reference
+
+You can use the following commands in the root directory to manage your LimeBot instance:
+
+| Command | Description |
+|---------|-------------|
+| **`npm start`** | Launches both backend and frontend servers (runs full dependencies check on first boot). |
+| **`npm run stop`** | Safely stops all active LimeBot background processes. |
+| **`npm run status`** | Checks active ports (Backend on `8000`, Frontend on `5173`). |
+| **`npm run doctor`** | Validates your local setup, environment variables, Node.js and Python runtimes. |
+| **`npm run logs`** | Tails the live logger (`logs/limebot.log`). |
+| **`npm run test:cli`** | Runs the Node.js CLI & dependency validation tests. |
+| **`npm run install-browser`** | Manually downloads the browser binaries required for Playwright automation. |
+| **`npm run lime-bot skill list`** | Lists all installed and available skills. |
+| **`npm run lime-bot skill install <url>`** | Installs a new skill from a GitHub URL or repository path. |
+
 ### Manual Start (Developers)
 ```bash
 # Terminal 1  Backend
@@ -286,7 +326,8 @@ ENABLE_DYNAMIC_PERSONALITY=false   # per-user affinity, mood tracking, proactive
 LLM_PROXY_URL=http://localhost:8080/v1 # Optional: Route all traffic through a gateway
 ```
 
-Everything can also be changed live from the **Config** tab in the web dashboard  changes write `.env` and trigger a clean restart.
+> [!TIP]
+> **No manual editing required!** You can modify all environment settings live from the **Config** tab in the web dashboard. Your changes will automatically overwrite the `.env` file and trigger a clean backend restart.
 
 ---
 
@@ -294,7 +335,9 @@ Everything can also be changed live from the **Config** tab in the web dashboard
 
 - **Local-first**  all conversations, memories, and personal data stay on your machine.
 - **Sandboxed Filesystem**  LimeBot can only read/write files in directories you explicitly whitelist.
-- **Human-in-the-loop**  sensitive actions (running code, deleting files) require your confirmation.
+- **Human-in-the-loop**  sensitive actions (running shell commands, modifying/deleting files) require your explicit approval.
+  > [!IMPORTANT]
+  > By default, dangerous actions will pause and wait for you to click "Approve" on the Web Dashboard. You can optionally bypass this security gate by enabling **Autonomous Mode** (via `AUTONOMOUS_MODE=true` in settings).
 - **Open Source**  audit the code yourself. No hidden telemetry.
 
 ---
