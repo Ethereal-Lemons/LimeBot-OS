@@ -145,11 +145,12 @@ LimeBot uses [LiteLLM](https://github.com/BerriAI/litellm)  any model it support
 |----------|---------------------|
 | **Gemini** (default) | `gemini/gemini-2.0-flash` |
 | **OpenAI** | `openai/gpt-4o` |
-| **Anthropic** | `anthropic/claude-3-5-sonnet-20241022` |
-| **xAI** | `xai/grok-2` |
-| **DeepSeek** | `deepseek/deepseek-chat` |
-| **Qwen (DashScope)** | `qwen/qwen-max` |
-| **NVIDIA Reference** | `nvidia/meta/llama-3.1-405b-instruct` |
+| **Anthropic** | `anthropic/claude-3-7-sonnet-20250219` |
+| **xAI** | `xai/grok-2-1212` |
+| **DeepSeek** | `deepseek/deepseek-v3.2` |
+| **Moonshot AI (Kimi)** | `moonshot/kimi-k2-thinking` |
+| **Qwen (DashScope)** | `qwen/qwen-plus` |
+| **NVIDIA** | `nvidia/moonshotai/kimi-k2-instruct` |
 Switch models live from the web dashboard without restarting.
 
 ### 🛡️ AI Gateway & Proxy Support
