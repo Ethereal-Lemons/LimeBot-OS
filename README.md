@@ -188,13 +188,33 @@ Skills can also be managed from the **Skills** tab in the web dashboard.
 - **Connectivity**: Stable internet for LLM API and web browsing
 
 ### Quick Start
-```bash
-git clone https://github.com/LemonMantis5571/LimeBot.git
-cd LimeBot
-npm run lime-bot start
-```
 
-The CLI handles everything on first run: creates a Python venv, installs backend + frontend dependencies, and opens the web UI. Later starts fingerprint the dependency manifests and runtimes, so unchanged installations skip npm and pip entirely. Startup waits until required skills and tools are ready rather than treating an open port as success. On first chat, LimeBot will interview you to build its persona.
+1. **Clone the Repository & Start**:
+   ```bash
+   git clone https://github.com/Ethereal-Lemons/LimeBot-OS.git
+   cd LimeBot-OS
+   npm start
+   ```
+
+   *Note: On first run, the CLI handles all configuration automatically—creating a Python virtual environment, installing backend & frontend dependencies, and downloading Chromium via Playwright.*
+
+2. **Access the Web Dashboard**:
+   Once the server starts, open your browser to:
+   ```text
+   http://localhost:5173
+   ```
+   *(The setup tool should attempt to open this URL automatically).*
+
+3. **Complete the Setup Wizard**:
+   - Provide your **Google Gemini API Key** (recommended) or another supported LLM provider credential.
+   - The setup page will perform a quick connectivity check and save your `.env` configuration.
+
+4. **Your First Conversation & Soul Interview**:
+   On your first chat message, LimeBot will start in **Setup Mode**. It will ask you a few short questions about what you want its name, style, and core values to be. Once the interview is complete, it will save its `SOUL.md` and `IDENTITY.md` and transition into its fully persistent mode!
+
+5. **Interact and Explore**:
+   - Type `/skills` to see what tools are loaded.
+   - Type `/help` or explore the dashboard tabs (**Skills**, **Cron**, **Subagents**) to configure and monitor your assistant.
 
 ### Browser Companion Setup
 
