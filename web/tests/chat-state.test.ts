@@ -2,8 +2,10 @@ import test from "node:test";
 import { strict as assert } from "node:assert";
 
 import {
+  applyUserMessageEdit,
   applyFinalAssistantMessage,
   applyStopTyping,
+  getUserTurnIndex,
   upsertToolExecution,
   upsertStreamDelta,
   type ChatMessage,
@@ -174,4 +176,37 @@ test("final replies trim repeated sections before rendering", () => {
       "\n\n"
     )
   );
+});
+
+test("user edit keeps the edited bubble and drops later turns", () => {
+  const initial: ChatMessage[] = [
+    { sender: "user", content: "first", messageId: "usr-1" },
+    { sender: "bot", content: "reply one", turnId: "turn-1" },
+    { sender: "user", content: "second", messageId: "usr-2" },
+    { sender: "bot", content: "reply two", turnId: "turn-2" },
+  ];
+
+  const updated = applyUserMessageEdit(
+    initial,
+    "usr-2",
+    "second, but better",
+    "usr-9"
+  );
+
+  assert.equal(updated.length, 3);
+  assert.equal(updated[2].sender, "user");
+  assert.equal(updated[2].content, "second, but better");
+  assert.equal(updated[2].messageId, "usr-9");
+});
+
+test("user turn index counts only user messages", () => {
+  const initial: ChatMessage[] = [
+    { sender: "user", content: "first", messageId: "usr-1" },
+    { sender: "bot", content: "reply one", turnId: "turn-1" },
+    { sender: "user", content: "second", messageId: "usr-2" },
+  ];
+
+  assert.equal(getUserTurnIndex(initial, "usr-1"), 0);
+  assert.equal(getUserTurnIndex(initial, "usr-2"), 1);
+  assert.equal(getUserTurnIndex(initial, "missing"), -1);
 });

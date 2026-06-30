@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
-import { Send, Bot, Brain, Power, Paperclip, X, User, Plus, ArrowDown, ShieldAlert, Wifi, WifiOff, Play, Pause, Volume2, VolumeX, Download, Square } from "lucide-react";
+import { Send, Bot, Brain, Power, Paperclip, X, User, Plus, ArrowDown, ShieldAlert, Wifi, WifiOff, Play, Pause, Volume2, VolumeX, Download, Square, Pencil } from "lucide-react";
 import {
     AlertDialog,
     AlertDialogCancel,
@@ -73,6 +73,11 @@ interface ChatInterfaceProps {
         attachment?: ChatAttachment | null,
         options?: ChatSendOptions,
     ) => void;
+    onEditMessage: (
+        targetMessageId: string,
+        content: string,
+        options?: ChatSendOptions,
+    ) => Promise<unknown>;
     onReconnect: () => void;
     onNewChat?: () => void;
     activeChatId: string;
@@ -140,6 +145,11 @@ const BASE_SLASH_COMMANDS: SlashSuggestion[] = [
         kind: 'command',
     },
 ];
+
+type EditDraftState = {
+    messageId: string;
+    originalContent: string;
+};
 
 function getSlashSuggestions(inputValue: string, skills: SkillOption[]): SlashSuggestion[] {
     if (!inputValue.startsWith('/') || inputValue.includes('\n')) {
@@ -450,6 +460,8 @@ const MemoizedMessageItem = memo(({
     botIdentity,
     handleToolConfirmSideChannel,
     onSendMessage,
+    onStartEdit,
+    canEdit,
     showAvatar,
     showHeader
 }: {
@@ -457,6 +469,8 @@ const MemoizedMessageItem = memo(({
     botIdentity: ChatInterfaceProps['botIdentity'];
     handleToolConfirmSideChannel: (confId: string, approved: boolean, sessionWhitelist: boolean) => Promise<void>;
     onSendMessage: ChatInterfaceProps['onSendMessage'];
+    onStartEdit: (message: Message) => void;
+    canEdit: boolean;
     showAvatar: boolean;
     showHeader: boolean;
 }) => {
@@ -582,6 +596,17 @@ const MemoizedMessageItem = memo(({
                                         <VoiceAudioPlayer url={msg.voiceUrl} />
                                     )}
                                 </div>
+                                {isUser && canEdit && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onStartEdit(msg)}
+                                        className="absolute -left-10 top-2 hidden rounded-full border border-border/70 bg-background/95 p-1.5 text-muted-foreground shadow-sm transition-colors hover:text-foreground group-hover:inline-flex"
+                                        aria-label="Edit message"
+                                        title="Edit and rerun from here"
+                                    >
+                                        <Pencil className="h-3.5 w-3.5" />
+                                    </button>
+                                )}
                             </div>
                         )}
                     </>
@@ -600,6 +625,7 @@ export function ChatInterface({
     botIdentity,
     onInputChange,
     onSendMessage,
+    onEditMessage,
     onNewChat,
     activeChatId,
     activityText,
@@ -619,6 +645,8 @@ export function ChatInterface({
     const [dismissedSlashValue, setDismissedSlashValue] = useState<string | null>(null);
     const [highlightedSlashIndex, setHighlightedSlashIndex] = useState(0);
     const [selectedSkill, setSelectedSkill] = useState<SelectedSkillState | null>(null);
+    const [editDraft, setEditDraft] = useState<EditDraftState | null>(null);
+    const [editSubmitting, setEditSubmitting] = useState(false);
     const [ponytailMode, setPonytailMode] = useState<PonytailMode>(() =>
         localStorage.getItem(PONYTAIL_MODE_STORAGE_KEY) === 'full' ? 'full' : 'off'
     );
@@ -641,6 +669,7 @@ export function ChatInterface({
         slashSuggestions.length > 0 &&
         dismissedSlashValue !== inputValue &&
         !selectedAttachment;
+    const isEditing = !!editDraft;
 
     const getScrollViewport = () =>
         scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLDivElement | null;
@@ -766,6 +795,8 @@ export function ChatInterface({
         isAtBottomRef.current = true;
         clearUnread();
         prevMessageCountRef.current = messages.length;
+        setEditDraft(null);
+        setEditSubmitting(false);
     }, [activeChatId]);
 
     const runningTool = [...messages].reverse().find(
@@ -922,6 +953,28 @@ export function ChatInterface({
 
     const handleSend = () => {
         if (!isConnected || !agentReadiness.ready) return;
+        if (isEditing) {
+            if (!editDraft || !inputValue.trim() || editSubmitting) return;
+            setEditSubmitting(true);
+            void onEditMessage(editDraft.messageId, inputValue, ponytailSendOptions)
+                .then(() => {
+                    clearSelectedAttachment();
+                    setSelectedSkill(null);
+                    setEditDraft(null);
+                    if (textareaRef.current) {
+                        textareaRef.current.style.height = 'auto';
+                    }
+                })
+                .catch((error) => {
+                    const description =
+                        error instanceof Error ? error.message : "Failed to edit the selected message.";
+                    toast.error("Edit failed", { description });
+                })
+                .finally(() => {
+                    setEditSubmitting(false);
+                });
+            return;
+        }
         if (inputValue.trim() || selectedAttachment) {
             onSendMessage(null, selectedAttachment, ponytailSendOptions);
             clearSelectedAttachment();
@@ -930,6 +983,22 @@ export function ChatInterface({
                 textareaRef.current.style.height = 'auto';
             }
         }
+    };
+
+    const startEditingMessage = (message: Message) => {
+        if (!message.messageId || message.sender !== 'user') return;
+        setEditDraft({
+            messageId: message.messageId,
+            originalContent: message.content,
+        });
+        clearSelectedAttachment();
+        onInputChange(message.content);
+        setDismissedSlashValue(null);
+        requestAnimationFrame(() => {
+            textareaRef.current?.focus();
+            const length = message.content.length;
+            textareaRef.current?.setSelectionRange(length, length);
+        });
     };
 
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1236,6 +1305,13 @@ export function ChatInterface({
                                                     botIdentity={botIdentity}
                                                     handleToolConfirmSideChannel={handleToolConfirmSideChannel}
                                                     onSendMessage={onSendMessage}
+                                                    onStartEdit={startEditingMessage}
+                                                    canEdit={
+                                                        item.msg.sender === 'user' &&
+                                                        !!item.msg.messageId &&
+                                                        !item.msg.attachments?.length &&
+                                                        !item.msg.image
+                                                    }
                                                     showAvatar={item.showAvatar}
                                                     showHeader={item.showHeader}
                                                 />
@@ -1326,9 +1402,14 @@ export function ChatInterface({
                             variant="ghost"
                             size="icon"
                             className="h-10 w-10 mb-1 ml-1 text-muted-foreground hover:text-foreground"
-                            onClick={() => fileInputRef.current?.click()}
+                            onClick={() => {
+                                if (!isEditing) {
+                                    fileInputRef.current?.click();
+                                }
+                            }}
                             aria-label="Attach file"
                             title="Attach file"
+                            disabled={isEditing}
                         >
                             <Paperclip className="h-5 w-5" />
                         </Button>
@@ -1427,6 +1508,30 @@ export function ChatInterface({
                                     </button>
                                 </div>
                             )}
+                            {editDraft && (
+                                <div className="mb-1 mt-2 flex items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                                    <div className="min-w-0">
+                                        <div className="font-semibold uppercase tracking-[0.18em] text-amber-300">
+                                            Editing Message
+                                        </div>
+                                        <div className="mt-0.5 truncate text-amber-50/90">
+                                            Later replies will be replaced when you resend this prompt.
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setEditDraft(null);
+                                            setEditSubmitting(false);
+                                            onInputChange('');
+                                            requestAnimationFrame(() => textareaRef.current?.focus());
+                                        }}
+                                        className="shrink-0 rounded-md border border-amber-400/30 px-2 py-1 font-semibold text-amber-100 hover:bg-amber-400/10"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            )}
                             <Textarea
                                 ref={textareaRef}
                                 placeholder={
@@ -1436,6 +1541,8 @@ export function ChatInterface({
                                             ? readinessLabel(agentReadiness)
                                         : waitingToolCount > 0
                                             ? "Approve or deny the waiting action below, or send a clarification..."
+                                            : editDraft
+                                                ? "Update the selected message and resend it from this point..."
                                             : selectedSkill
                                                 ? `Message with ${selectedSkill.name} skill context...`
                                                 : "Ask LimeBot to inspect, plan, code, or explain..."
@@ -1460,9 +1567,17 @@ export function ChatInterface({
                         <div className="pb-2 pr-2">
                             <Button
                                 onClick={handleSend}
-                                disabled={!isConnected || !agentReadiness.ready || isTyping || (!inputValue.trim() && !selectedAttachment)}
+                                disabled={
+                                    !isConnected ||
+                                    !agentReadiness.ready ||
+                                    editSubmitting ||
+                                    (!isEditing && isTyping) ||
+                                    (isEditing
+                                        ? !inputValue.trim()
+                                        : (!inputValue.trim() && !selectedAttachment))
+                                }
                                 size="icon"
-                                aria-label="Send message"
+                                aria-label={isEditing ? "Apply edit and rerun" : "Send message"}
                                 className={cn(
                                     "h-9 w-9 rounded-lg transition-all duration-200",
                                     (inputValue.trim() || selectedAttachment)

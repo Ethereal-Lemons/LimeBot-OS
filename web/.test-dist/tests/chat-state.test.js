@@ -1,6 +1,6 @@
 import test from "node:test";
 import { strict as assert } from "node:assert";
-import { applyFinalAssistantMessage, applyStopTyping, upsertToolExecution, upsertStreamDelta, } from "../src/lib/chat-state.js";
+import { applyUserMessageEdit, applyFinalAssistantMessage, applyStopTyping, getUserTurnIndex, upsertToolExecution, upsertStreamDelta, } from "../src/lib/chat-state.js";
 test("stream deltas and final message target the same bot bubble by message_id", () => {
     const initial = [
         { sender: "user", content: "ok do it" },
@@ -141,4 +141,27 @@ test("final replies trim repeated sections before rendering", () => {
     });
     assert.equal(finalized.length, 1);
     assert.equal(finalized[0].content, ["Saved, baby.", "I'll remember that 244069957187534848 is you on Discord."].join("\n\n"));
+});
+test("user edit keeps the edited bubble and drops later turns", () => {
+    const initial = [
+        { sender: "user", content: "first", messageId: "usr-1" },
+        { sender: "bot", content: "reply one", turnId: "turn-1" },
+        { sender: "user", content: "second", messageId: "usr-2" },
+        { sender: "bot", content: "reply two", turnId: "turn-2" },
+    ];
+    const updated = applyUserMessageEdit(initial, "usr-2", "second, but better", "usr-9");
+    assert.equal(updated.length, 3);
+    assert.equal(updated[2].sender, "user");
+    assert.equal(updated[2].content, "second, but better");
+    assert.equal(updated[2].messageId, "usr-9");
+});
+test("user turn index counts only user messages", () => {
+    const initial = [
+        { sender: "user", content: "first", messageId: "usr-1" },
+        { sender: "bot", content: "reply one", turnId: "turn-1" },
+        { sender: "user", content: "second", messageId: "usr-2" },
+    ];
+    assert.equal(getUserTurnIndex(initial, "usr-1"), 0);
+    assert.equal(getUserTurnIndex(initial, "usr-2"), 1);
+    assert.equal(getUserTurnIndex(initial, "missing"), -1);
 });

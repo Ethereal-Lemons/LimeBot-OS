@@ -252,6 +252,41 @@ class SessionManager:
 
         await asyncio.to_thread(_sync_append)
 
+    async def load_chat_log(self, session_key: str) -> list[Dict[str, Any]]:
+        """Load a session's JSONL chat log."""
+        log_file = LOGS_DIR / f"{session_key}.jsonl"
+        if not log_file.exists():
+            return []
+
+        def _sync_read() -> list[Dict[str, Any]]:
+            rows: list[Dict[str, Any]] = []
+            with open(log_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        continue
+            return rows
+
+        return await asyncio.to_thread(_sync_read)
+
+    async def save_chat_log(self, session_key: str, rows: list[Dict[str, Any]]) -> None:
+        """Rewrite a session's JSONL chat log atomically."""
+        log_file = LOGS_DIR / f"{session_key}.jsonl"
+
+        def _sync_write() -> None:
+            temp_file = log_file.with_suffix(".jsonl.tmp")
+            payload = ""
+            if rows:
+                payload = "\n".join(json.dumps(row, default=str) for row in rows) + "\n"
+            temp_file.write_text(payload, encoding="utf-8")
+            shutil.move(str(temp_file), str(log_file))
+
+        await asyncio.to_thread(_sync_write)
+
     async def append_event_log(self, session_key: str, event: Dict[str, Any]):
         """Append a structured event to the session audit log."""
 
@@ -298,6 +333,89 @@ class SessionManager:
             except Exception as e:
                 logger.debug(f"Could not load history for {session_key}: {e}")
         return []
+
+    async def truncate_history_from_user_turn(
+        self,
+        session_key: str,
+        user_turn_index: int,
+        history: Optional[list] = None,
+    ) -> tuple[list, bool]:
+        """Remove the targeted user turn and everything after it from history."""
+        if user_turn_index < 0:
+            return history or [], False
+
+        source_history = list(history) if history is not None else await self.load_history(session_key)
+        target_index: Optional[int] = None
+        seen_user_turns = 0
+
+        for idx, row in enumerate(source_history):
+            if not isinstance(row, dict):
+                continue
+            if row.get("role") != "user":
+                continue
+            if seen_user_turns == user_turn_index:
+                target_index = idx
+                break
+            seen_user_turns += 1
+
+        if target_index is None:
+            return source_history, False
+
+        truncated = source_history[:target_index]
+        await self.save_history(session_key, truncated)
+        return truncated, True
+
+    async def truncate_chat_log_from_user_message(
+        self,
+        session_key: str,
+        user_message_id: str,
+        user_turn_index: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Remove the targeted user log row and everything after it."""
+        rows = await self.load_chat_log(session_key)
+        target_index: Optional[int] = None
+        fallback_index: Optional[int] = None
+        seen_user_turns = 0
+
+        for idx, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            if row.get("role") != "user":
+                continue
+
+            row_message_id = str(row.get("message_id") or "").strip()
+            if user_message_id and row_message_id == user_message_id:
+                target_index = idx
+                break
+
+            if user_turn_index is not None and seen_user_turns == user_turn_index:
+                fallback_index = idx
+
+            seen_user_turns += 1
+
+        if target_index is None:
+            target_index = fallback_index
+
+        if target_index is None:
+            return {
+                "found": False,
+                "matched_by_id": False,
+                "kept": len(rows),
+                "removed": 0,
+            }
+
+        truncated_rows = rows[:target_index]
+        await self.save_chat_log(session_key, truncated_rows)
+        return {
+            "found": True,
+            "matched_by_id": bool(
+                user_message_id
+                and target_index < len(rows)
+                and str(rows[target_index].get("message_id") or "").strip() == user_message_id
+            ),
+            "kept": len(truncated_rows),
+            "removed": len(rows) - len(truncated_rows),
+        }
 
     def cleanup_history_artifacts(self) -> dict[str, int]:
         """Sanitize persisted histories and chat logs to remove malformed assistant residue."""

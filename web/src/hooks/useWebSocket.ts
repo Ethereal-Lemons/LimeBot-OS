@@ -9,12 +9,15 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
-import { WS_BASE_URL } from '@/lib/api';
+import axios from 'axios';
+import { API_BASE_URL, WS_BASE_URL } from '@/lib/api';
 import {
+    applyUserMessageEdit,
     applyFinalAssistantMessage,
     applyStopTyping,
     type ChatAttachment,
     type ChatMessage,
+    getUserTurnIndex,
     upsertToolExecution,
     upsertStreamDelta,
 } from '@/lib/chat-state';
@@ -387,6 +390,7 @@ export function useWebSocket({
         const finalContent = contentOverride || inputValue.trim();
         if ((!finalContent && !attachment) || !ws.current || ws.current.readyState !== WebSocket.OPEN || isTyping) return;
         const { echoUserMessage = true, metadata } = options;
+        const clientMessageId = `usr_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
 
         setIsTyping(true);
         const attachments = attachment
@@ -405,6 +409,7 @@ export function useWebSocket({
             image,
             attachments,
             chat_id: sessionId,
+            client_message_id: clientMessageId,
         };
         if (metadata && Object.keys(metadata).length > 0) {
             payload.metadata = metadata;
@@ -419,10 +424,57 @@ export function useWebSocket({
                     content: finalContent,
                     image,
                     attachments: attachment ? [attachment] : undefined,
+                    messageId: clientMessageId,
                 },
             ]);
         }
         setInputValue('');
+    };
+
+    const editMessage = async (
+        targetMessageId: string,
+        nextContent: string,
+        options: SendMessageOptions = {}
+    ) => {
+        const trimmedContent = nextContent.trim();
+        if (!targetMessageId || !trimmedContent) {
+            throw new Error('A target message and new content are required.');
+        }
+
+        const userTurnIndex = getUserTurnIndex(messages, targetMessageId);
+        if (userTurnIndex < 0) {
+            throw new Error('The selected message is no longer editable.');
+        }
+
+        const apiKey = localStorage.getItem('limebot_api_key');
+        const response = await axios.post(
+            `${API_BASE_URL}/api/chat/${encodeURIComponent(sessionIdRef.current)}/messages/${encodeURIComponent(targetMessageId)}/edit`,
+            {
+                content: trimmedContent,
+                user_turn_index: userTurnIndex,
+                metadata: options.metadata || {},
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(apiKey ? { 'X-API-Key': apiKey } : {}),
+                },
+            }
+        );
+
+        const replayMessageId =
+            typeof response.data?.message_id === 'string' && response.data.message_id
+                ? response.data.message_id
+                : targetMessageId;
+
+        clearStreamFlushTimer();
+        streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
+        setMessages(prev =>
+            applyUserMessageEdit(prev, targetMessageId, trimmedContent, replayMessageId)
+        );
+        setInputValue('');
+        setIsTyping(true);
+        return response.data;
     };
 
     const handleNewChat = () => {
@@ -462,6 +514,7 @@ export function useWebSocket({
         sessionId,
         connectWebSocket,
         handleSendMessage,
+        editMessage,
         handleNewChat,
         ws,
     };

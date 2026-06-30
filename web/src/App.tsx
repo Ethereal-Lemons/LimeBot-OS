@@ -165,6 +165,7 @@ function App() {
     sessionId,
     connectWebSocket,
     handleSendMessage,
+    editMessage,
     handleNewChat,
   } = useWebSocket({
     onIdentityUpdated: refreshIdentity,
@@ -463,6 +464,7 @@ function App() {
               agentReadiness={agentReadiness}
               onInputChange={setInputValue}
               onSendMessage={handleSendMessage}
+              onEditMessage={editMessage}
               onReconnect={connectWebSocket}
               onNewChat={handleNewChat}
               onRetryReadiness={() => {

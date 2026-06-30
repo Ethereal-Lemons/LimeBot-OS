@@ -5034,6 +5034,9 @@ class AgentLoop:
                             {
                                 "role": "user",
                                 "content": msg.content or "",
+                                "message_id": str(msg.metadata.get("message_id") or "").strip() or None,
+                                "client_message_id": str(msg.metadata.get("client_message_id") or "").strip() or None,
+                                "edited_from_message_id": str(msg.metadata.get("edited_from_message_id") or "").strip() or None,
                                 "image": bool(image_urls),
                                 "images": len(image_urls),
                                 "attachments": [

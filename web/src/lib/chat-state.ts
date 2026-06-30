@@ -87,6 +87,9 @@ type ToolUpdate = MessageTarget & {
 const isBotTextMessage = (message: ChatMessage) =>
   message.sender === 'bot' && message.type !== 'tool' && !message.confirmation;
 
+const isUserTextMessage = (message: ChatMessage) =>
+  message.sender === 'user' && message.type !== 'tool' && !message.confirmation;
+
 function dedupeRepeatedSections(content: string): string {
   if (!content) return content;
 
@@ -273,6 +276,42 @@ export function applyStopTyping(
     isStreaming: false,
     messageId: target.messageId || updated[index].messageId,
     turnId: target.turnId || updated[index].turnId,
+  };
+  return updated;
+}
+
+export function getUserTurnIndex(
+  messages: ChatMessage[],
+  targetMessageId: string
+): number {
+  let userTurnIndex = 0;
+  for (const message of messages) {
+    if (!isUserTextMessage(message)) continue;
+    if (message.messageId === targetMessageId) {
+      return userTurnIndex;
+    }
+    userTurnIndex += 1;
+  }
+  return -1;
+}
+
+export function applyUserMessageEdit(
+  messages: ChatMessage[],
+  targetMessageId: string,
+  nextContent: string,
+  nextMessageId: string
+): ChatMessage[] {
+  const targetIndex = messages.findIndex(
+    (message) => isUserTextMessage(message) && message.messageId === targetMessageId
+  );
+  if (targetIndex === -1) return messages;
+
+  const updated = messages.slice(0, targetIndex + 1);
+  const existing = updated[targetIndex];
+  updated[targetIndex] = {
+    ...existing,
+    content: nextContent,
+    messageId: nextMessageId,
   };
   return updated;
 }

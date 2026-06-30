@@ -236,6 +236,13 @@ def _serialize_readiness_for_app(readiness) -> dict:
     return clean_readiness
 
 
+def _sanitize_web_session_key(chat_id: str) -> str:
+    session_key = f"web_{chat_id}"
+    for char in ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]:
+        session_key = session_key.replace(char, "_")
+    return session_key
+
+
 def _extract_client_prompt_metadata(msg: Any) -> dict[str, str]:
     if not isinstance(msg, dict):
         return {}
@@ -2441,14 +2448,100 @@ class WebChannel(BaseChannel):
             if not hasattr(self, "agent") or not self.agent:
                 raise HTTPException(status_code=503, detail="Agent not initialized")
 
-            session_key = f"web_{chat_id}"
-            for char in ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]:
-                session_key = session_key.replace(char, "_")
+            session_key = _sanitize_web_session_key(chat_id)
 
             success = await self.agent.cancel_session(session_key)
             if success:
                 return {"status": "success", "message": "Stopped generation"}
             return {"status": "ignored", "message": "No active task found to stop"}
+
+        @self.app.post(
+            "/api/chat/{chat_id}/messages/{message_id}/edit",
+            dependencies=[Depends(self.verify_auth)],
+        )
+        async def edit_chat_message(chat_id: str, message_id: str, data: dict):
+            if not hasattr(self, "agent") or not self.agent:
+                raise HTTPException(status_code=503, detail="Agent not initialized")
+
+            clean_message_id = str(message_id or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", clean_message_id):
+                raise HTTPException(status_code=400, detail="message_id is invalid")
+
+            new_content = str(data.get("content") or "").strip()
+            if not new_content:
+                raise HTTPException(status_code=400, detail="content is required")
+
+            user_turn_index = data.get("user_turn_index")
+            if not isinstance(user_turn_index, int) or user_turn_index < 0:
+                raise HTTPException(
+                    status_code=400, detail="user_turn_index must be a non-negative integer"
+                )
+
+            session_key = _sanitize_web_session_key(chat_id)
+            active_task = getattr(self.agent, "active_tasks", {}).get(session_key)
+            await self.agent.cancel_session(session_key)
+            if active_task and not active_task.done():
+                await asyncio.gather(active_task, return_exceptions=True)
+
+            live_history = getattr(self.agent, "history", {}).get(session_key)
+            truncated_history, history_found = await self.session_manager.truncate_history_from_user_turn(
+                session_key,
+                user_turn_index,
+                history=live_history,
+            )
+            if not history_found:
+                raise HTTPException(status_code=404, detail="Editable message not found")
+
+            log_result = await self.session_manager.truncate_chat_log_from_user_message(
+                session_key,
+                clean_message_id,
+                user_turn_index=user_turn_index,
+            )
+
+            if hasattr(self.agent, "history"):
+                self.agent.history[session_key] = truncated_history
+            if hasattr(self.agent, "_mark_dirty"):
+                self.agent._mark_dirty(session_key)
+            if hasattr(self.agent, "_flush_history"):
+                await self.agent._flush_history(session_key, force=True)
+
+            replay_message_id = f"usr_{uuid.uuid4().hex[:12]}"
+            metadata = {
+                "source": "web",
+                "message_id": replay_message_id,
+                "client_message_id": replay_message_id,
+                "edited_from_message_id": clean_message_id,
+            }
+            client_metadata = data.get("metadata")
+            if isinstance(client_metadata, dict):
+                metadata.update(_extract_client_prompt_metadata({"metadata": client_metadata}))
+
+            await self.session_manager.append_event_log(
+                session_key,
+                {
+                    "type": "message_edited",
+                    "chat_id": chat_id,
+                    "replaced_message_id": clean_message_id,
+                    "replacement_message_id": replay_message_id,
+                    "user_turn_index": user_turn_index,
+                    "matched_log_by_id": log_result.get("matched_by_id", False),
+                    "removed_log_rows": log_result.get("removed", 0),
+                    "content_preview": new_content[:500],
+                },
+            )
+
+            await self._handle_message(
+                sender_id="web-user",
+                chat_id=chat_id,
+                content=new_content,
+                metadata=metadata,
+            )
+
+            return {
+                "status": "queued",
+                "chat_id": chat_id,
+                "message_id": replay_message_id,
+            }
 
         @self.app.post(
             "/api/whatsapp/send_file", dependencies=[Depends(self.verify_auth)]
@@ -3243,6 +3336,23 @@ class WebChannel(BaseChannel):
 
                 metadata = {"source": "web"}
                 metadata.update(_extract_client_prompt_metadata(msg))
+                client_message_id = str(msg.get("client_message_id") or "").strip()
+                if client_message_id:
+                    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", client_message_id):
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "type": "message",
+                                    "content": "Message id is invalid.",
+                                    "sender": "bot",
+                                    "chat_id": chat_id,
+                                    "metadata": {"is_error": True},
+                                }
+                            )
+                        )
+                        continue
+                    metadata["message_id"] = client_message_id
+                    metadata["client_message_id"] = client_message_id
                 if sender_name:
                     metadata["sender_name"] = sender_name
                 attachment_paths: list[str] = []
