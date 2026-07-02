@@ -245,11 +245,11 @@ BASE_TOOLS = [
     },
     {
         "name": "send_media",
-        "description": "Send a local file or image back into the current Discord or WhatsApp conversation. Use this when the user wants you to share an existing local asset in the same chat. Only works for Discord and WhatsApp sessions, not the web dashboard.",
+        "description": "Share media into the current chat (web, Discord, or WhatsApp). Accepts a local file path OR a remote http(s) URL (it is downloaded first). This is how you send the user a picture found via image_search or web_search: pass the Image URL as 'path'.",
         "params": {
             "path": {
                 "type": "string",
-                "description": "Relative or absolute path to the local file to send.",
+                "description": "Local file path OR a remote http(s) URL to fetch and send.",
             },
             "caption": {
                 "type": "string",
@@ -257,6 +257,21 @@ BASE_TOOLS = [
             },
         },
         "required": ["path"],
+    },
+    {
+        "name": "send_voice",
+        "description": "Speak text aloud and send it as a voice message in the current chat. Delivers an audio file on Discord/WhatsApp (no text needed) or an inline playable clip on web. Use this when the user asks for a voice message/voice note. Requires an ElevenLabs API key. Example: send_voice(text='Hey! Here is your reminder.').",
+        "params": {
+            "text": {
+                "type": "string",
+                "description": "The text to speak aloud.",
+            },
+            "channel": {
+                "type": "string",
+                "description": "Optional target channel (web, discord, whatsapp). Defaults to the current chat's channel.",
+            },
+        },
+        "required": ["text"],
     },
     {
         "name": "generate_image",
@@ -507,8 +522,56 @@ BROWSER_TOOLS = [
     },
     {
         "name": "google_search",
-        "description": "Use web search when you need to discover pages, not when you already have a URL. A common first step before browser_navigate. Example: google_search(query='LimeBot Discord bot docs').",
+        "description": "Alias for web_search. Discover pages when you don't already have a URL. Prefer web_search, which returns more results and supports news. Example: google_search(query='LimeBot Discord bot docs').",
         "params": {"query": {"type": "string", "description": "Search query string."}},
+        "required": ["query"],
+    },
+]
+
+
+# Search tools are available when a search API key is configured OR the browser
+# skill is enabled (a keyless DuckDuckGo fallback needs no browser). They route
+# through core/web_search.py, not the Playwright browser stack.
+SEARCH_TOOLS = [
+    {
+        "name": "web_search",
+        "description": "Search the live web for pages, facts, or current information. Returns ranked results with titles, URLs, and snippets (plus a direct answer when the provider supplies one). Use kind='news' for recent news. A common first step before browser_navigate or deep_research. Example: web_search(query='best pizza in Rome', count=8).",
+        "params": {
+            "query": {"type": "string", "description": "Search query string."},
+            "count": {
+                "type": "integer",
+                "description": "Number of results to return (default 8, max 20).",
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["web", "news"],
+                "description": "'web' (default) or 'news' for recent news results.",
+            },
+        },
+        "required": ["query"],
+    },
+    {
+        "name": "image_search",
+        "description": "Search the web for images. Returns image URLs, source pages, and dimensions. To actually send/show an image to the user, pass one of the Image URLs to send_media(path='<Image URL>'). Example: image_search(query='golden retriever puppy').",
+        "params": {
+            "query": {"type": "string", "description": "Image search query."},
+            "count": {
+                "type": "integer",
+                "description": "Number of images to return (default 8, max 20).",
+            },
+        },
+        "required": ["query"],
+    },
+    {
+        "name": "deep_research",
+        "description": "Run multi-source research on a question: searches the web, reads the top sources, and returns a synthesized answer with inline [n] citations and a numbered sources list. Use for questions that need evidence from several pages. Slower than web_search. Example: deep_research(query='pros and cons of RAG vs fine-tuning in 2026').",
+        "params": {
+            "query": {"type": "string", "description": "The research question."},
+            "depth": {
+                "type": "integer",
+                "description": "Research depth hint (0-2, default 1).",
+            },
+        },
         "required": ["query"],
     },
 ]
@@ -532,6 +595,11 @@ _TOOL_FAMILIES = {
     "cron_list": "scheduler",
     "cron_remove": "scheduler",
     "google_search": "browser",
+    "web_search": "browser",
+    "image_search": "browser",
+    "deep_research": "browser",
+    "send_media": "media",
+    "send_voice": "media",
     "browser_navigate": "browser",
     "browser_click": "browser",
     "browser_type": "browser",
@@ -599,6 +667,10 @@ _FAMILY_HINTS = {
         "article",
         "open",
         "navigate",
+        "news",
+        "research",
+        "internet",
+        "lookup",
     },
     "scheduler": {
         "remind",
@@ -637,12 +709,16 @@ _FAMILY_HINTS = {
         "picture",
         "pictures",
         "photo",
+        "pic",
+        "pics",
         "draw",
         "render",
         "generate",
         "create",
         "art",
         "illustration",
+        "send",
+        "share",
     },
     "discord": {
         "discord",
@@ -661,6 +737,7 @@ _MANDATORY_FAMILY_TOOLS = {
     "filesystem": {"search_files", "read_file", "list_dir"},
     "command": {"run_command"},
     "browser": {
+        "web_search",
         "google_search",
         "browser_navigate",
         "browser_snapshot",
@@ -694,6 +771,11 @@ _TOOL_HINTS = {
     "cron_remove": {"cancel", "remove", "delete", "scheduled", "reminder"},
     "create_skill": {"skill", "scaffold", "template"},
     "google_search": {"google", "search", "web", "website", "results"},
+    "web_search": {"search", "web", "google", "find", "lookup", "news", "results", "internet"},
+    "image_search": {"image", "images", "picture", "photo", "pic", "pics", "photos", "find"},
+    "deep_research": {"research", "investigate", "deep", "compare", "analysis", "report", "sources", "cite"},
+    "send_media": {"send", "share", "picture", "photo", "pic", "image", "file", "attach"},
+    "send_voice": {"voice", "audio", "speak", "say", "voicenote", "tts", "read", "aloud", "message"},
     "browser_navigate": {"url", "open", "visit", "navigate", "website", "web"},
     "browser_snapshot": {"snapshot", "page", "elements", "buttons", "form"},
     "browser_click": {"click", "press", "tap", "select"},
@@ -858,12 +940,17 @@ def _build_spawn_agent_definition(
 def build_tool_definitions(
     enabled_skills: List[str],
     available_agents: Dict[str, str] | None = None,
+    search_available: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Build the full list of tool definitions for the LLM.
 
     Args:
         enabled_skills: List of enabled skill names from config.
+        available_agents: Named subagent profiles for spawn_agent.
+        search_available: True when a search API key is configured. Search tools
+            are also enabled whenever the ``browser`` skill is on (the keyless
+            DuckDuckGo fallback needs no browser).
 
     Returns:
         List of OpenAI-compatible tool definition dicts.
@@ -879,7 +966,12 @@ def build_tool_definitions(
         else:
             tools.append(_inflate_tool(tool_def))
 
-    if "browser" in enabled_skills:
+    browser_enabled = "browser" in enabled_skills
+
+    if search_available or browser_enabled:
+        tools.extend(_inflate_tool(t) for t in SEARCH_TOOLS)
+
+    if browser_enabled:
         tools.extend(_inflate_tool(t) for t in BROWSER_TOOLS)
 
     return tools

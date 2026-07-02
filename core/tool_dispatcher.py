@@ -25,6 +25,9 @@ TOOL_RESULT_LIMITS: Dict[str, int] = {
     "browser_get_page_text": 5_000,
     "browser_snapshot": 3_000,
     "google_search": 2_000,
+    "web_search": 6_000,
+    "image_search": 2_500,
+    "deep_research": 8_000,
     "run_command": 2_000,
     "browser_list_media": 1_000,
     "list_dir": 500,
@@ -49,7 +52,9 @@ TOOL_INTENT_RE = re.compile(
     r"\b("
     # Exact tool names
     r"read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|"
-    r"cron_add|cron_list|cron_remove|spawn_agent|generate_image|"
+    r"cron_add|cron_list|cron_remove|spawn_agent|generate_image|send_media|send_voice|"
+    # Search tool names
+    r"web_search|image_search|deep_research|"
     # Browser tool names
     r"browser_navigate|browser_click|browser_type|browser_snapshot|browser_scroll|"
     r"browser_wait|browser_press_key|browser_go_back|browser_tabs|browser_switch_tab|"
@@ -87,6 +92,11 @@ TOOL_NAME_ALIASES: Dict[str, str] = {
     "bash": "run_command",
     "powershell": "run_command",
     "cmd": "run_command",
+    "websearch": "web_search",
+    "search_web": "web_search",
+    "imagesearch": "image_search",
+    "search_images": "image_search",
+    "research": "deep_research",
 }
 
 FILESYSTEM_ALIAS_ACTIONS: Dict[str, str] = {

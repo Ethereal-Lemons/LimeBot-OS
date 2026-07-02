@@ -55,14 +55,26 @@ function MarkdownMessageRenderer({
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                    a: (props) => (
-                        <a
-                            {...withoutMarkdownNode(props)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="font-bold underline text-primary decoration-primary/60 underline-offset-2 hover:decoration-primary hover:brightness-125 transition-all"
-                        />
-                    ),
+                    a: (props) => {
+                        const domProps = withoutMarkdownNode(props);
+                        const href = typeof domProps.href === "string" ? domProps.href : "";
+                        // Belt-and-suspenders: react-markdown already blocks
+                        // javascript: via defaultUrlTransform, but guard against
+                        // future urlTransform overrides by refusing to render an
+                        // executable anchor for anything but safe schemes.
+                        const isSafeHref = /^(https?:|mailto:|tel:|\/|#|\.)/i.test(href);
+                        if (!isSafeHref) {
+                            return <span>{domProps.children}</span>;
+                        }
+                        return (
+                            <a
+                                {...domProps}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-bold underline text-primary decoration-primary/60 underline-offset-2 hover:decoration-primary hover:brightness-125 transition-all"
+                            />
+                        );
+                    },
                     p: (props) => <p {...withoutMarkdownNode(props)} className="mb-1.5 last:mb-0 leading-[1.5]" />,
                     ul: (props) => <ul {...withoutMarkdownNode(props)} className="list-disc pl-5 my-1.5 space-y-0.5" />,
                     ol: (props) => <ol {...withoutMarkdownNode(props)} className="list-decimal pl-5 my-1.5 space-y-0.5" />,

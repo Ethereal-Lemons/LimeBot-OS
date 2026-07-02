@@ -33,6 +33,8 @@ class ElevenLabsTTS:
             "speed": 1.0,
             "model_id": "eleven_multilingual_v2",
             "output_format": "mp3_44100_128",
+            "channels": ["web"],
+            "send_text_with_audio": False,
         }
 
         if LIMEBOT_CONFIG_PATH.exists():
@@ -187,6 +189,31 @@ class ElevenLabsTTS:
             return f"/temp/{filename}"
         except Exception as e:
             logger.error(f"[TTS] Failed to synthesize and save: {e}")
+            return ""
+
+    @classmethod
+    async def synthesize_to_file(cls, text: str, filename_prefix: str = "voice") -> str:
+        """Synthesize `text` to an mp3 under temp/ and return the LOCAL FILE PATH.
+
+        Unlike synthesize_and_save (which returns a /temp/ URL for the web UI),
+        this returns an absolute filesystem path suitable for Discord/WhatsApp
+        file sends. Returns "" on failure or empty text.
+        """
+        import uuid
+
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        clean_text = cls.clean_text_for_speech(text)
+        if not clean_text:
+            return ""
+        try:
+            audio_bytes = await cls.synthesize_text(clean_text)
+            filepath = TEMP_DIR / f"{filename_prefix}_{uuid.uuid4().hex[:8]}.mp3"
+            with open(filepath, "wb") as f:
+                f.write(audio_bytes)
+            logger.info(f"[TTS] Voice file saved to {filepath}")
+            return str(filepath.resolve())
+        except Exception as e:
+            logger.error(f"[TTS] synthesize_to_file failed: {e}")
             return ""
 
     @staticmethod

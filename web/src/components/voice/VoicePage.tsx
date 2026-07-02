@@ -20,6 +20,8 @@ interface VoiceSettings {
     speed: number;
     model_id: string;
     output_format: string;
+    channels: string[];
+    send_text_with_audio: boolean;
 }
 
 interface ElevenLabsVoice {
@@ -41,7 +43,9 @@ export function VoicePage() {
         use_speaker_boost: true,
         speed: 1.0,
         model_id: 'eleven_multilingual_v2',
-        output_format: 'mp3_44100_128'
+        output_format: 'mp3_44100_128',
+        channels: ['web'],
+        send_text_with_audio: false
     });
     const [originalSettings, setOriginalSettings] = useState<VoiceSettings | null>(null);
     const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
@@ -75,7 +79,9 @@ export function VoicePage() {
                 use_speaker_boost: loaded.use_speaker_boost ?? true,
                 speed: loaded.speed ?? 1.0,
                 model_id: loaded.model_id ?? 'eleven_multilingual_v2',
-                output_format: loaded.output_format ?? 'mp3_44100_128'
+                output_format: loaded.output_format ?? 'mp3_44100_128',
+                channels: loaded.channels ?? ['web'],
+                send_text_with_audio: loaded.send_text_with_audio ?? false
             };
             
             setSettings(finalSettings);
@@ -155,6 +161,15 @@ export function VoicePage() {
         }
     };
 
+    const toggleChannel = (name: string, on: boolean) => {
+        setSettings(prev => ({
+            ...prev,
+            channels: on
+                ? Array.from(new Set([...(prev.channels ?? []), name]))
+                : (prev.channels ?? []).filter(c => c !== name),
+        }));
+    };
+
     const handleResetValues = () => {
         setSettings(prev => ({
             ...prev,
@@ -191,7 +206,7 @@ export function VoicePage() {
                             <div>
                                 <CardTitle className="text-amber-500 text-base font-bold">ElevenLabs Key Missing</CardTitle>
                                 <CardDescription className="text-xs">
-                                    Please add your <code>ELEVENLABS_API_KEY</code> to the <code>.env</code> file in your project root to enable text-to-speech.
+                                    Add your ElevenLabs API key under <strong>Settings → Credentials</strong> to enable text-to-speech, then reload this page.
                                 </CardDescription>
                             </div>
                         </CardHeader>
@@ -225,6 +240,39 @@ export function VoicePage() {
                                     onCheckedChange={(val) => setSettings(prev => ({ ...prev, enabled: val }))}
                                     disabled={!hasKey}
                                 />
+                            </div>
+
+                            {/* Channel delivery */}
+                            <div className="space-y-3 rounded-xl border border-border bg-background/50 p-4">
+                                <div className="space-y-0.5">
+                                    <Label className="font-semibold text-sm">Voice on channels</Label>
+                                    <p className="text-xs text-muted-foreground">
+                                        Where LimeBot auto-sends voice. Web plays inline; Discord & WhatsApp receive the audio file itself.
+                                    </p>
+                                </div>
+                                {(['web', 'discord', 'whatsapp'] as const).map((ch) => (
+                                    <div key={ch} className="flex items-center justify-between">
+                                        <Label className="text-xs capitalize">{ch}</Label>
+                                        <Switch
+                                            checked={(settings.channels ?? []).includes(ch)}
+                                            onCheckedChange={(val) => toggleChannel(ch, val)}
+                                            disabled={!hasKey}
+                                        />
+                                    </div>
+                                ))}
+                                <div className="flex items-center justify-between border-t border-border pt-3">
+                                    <div className="space-y-0.5">
+                                        <Label className="text-xs">Also send the text</Label>
+                                        <p className="text-[11px] text-muted-foreground">
+                                            On Discord/WhatsApp, send the written reply alongside the audio.
+                                        </p>
+                                    </div>
+                                    <Switch
+                                        checked={settings.send_text_with_audio}
+                                        onCheckedChange={(val) => setSettings(prev => ({ ...prev, send_text_with_audio: val }))}
+                                        disabled={!hasKey}
+                                    />
+                                </div>
                             </div>
 
                             {/* Voice dropdown */}

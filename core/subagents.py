@@ -28,7 +28,7 @@ CLAUDE_TOOL_ALIASES: Dict[str, str] = {
     "grep": "search_files",
     "bash": "run_command",
     "task": "spawn_agent",
-    "websearch": "google_search",
+    "websearch": "web_search",
     "webfetch": "browser_get_page_text",
 }
 
@@ -122,6 +122,36 @@ BUILTIN_SUBAGENTS: List[Dict[str, Any]] = [
         "model": "inherit",
         "disallowed_tools": [],
         "max_turns": 8,
+        "background": False,
+    },
+    {
+        "name": "researcher",
+        "description": (
+            "Research a question or topic on the live internet: search the web, "
+            "read multiple sources, and report a synthesized, cited answer."
+        ),
+        "prompt": (
+            "You are LimeBot's internet research specialist.\n\n"
+            "Investigate the question using web_search and deep_research, then read "
+            "the most promising sources with browser_navigate / browser_get_page_text "
+            "when you need full page content. Cross-check claims across sources and "
+            "prefer primary/authoritative ones. Return a concise answer with inline "
+            "[n] citations and a numbered sources list (title + URL). If evidence is "
+            "thin or conflicting, say so instead of guessing."
+        ),
+        "tools": [
+            "web_search",
+            "image_search",
+            "deep_research",
+            "browser_navigate",
+            "browser_extract",
+            "browser_get_page_text",
+            "read_file",
+            "search_files",
+        ],
+        "model": "inherit",
+        "disallowed_tools": [],
+        "max_turns": 10,
         "background": False,
     },
 ]
@@ -463,6 +493,20 @@ class SubagentRegistry:
                     "entry point",
                 ),
                 "the request sounds like codebase investigation before editing",
+            ),
+            (
+                "researcher",
+                (
+                    "research",
+                    "look up online",
+                    "search the web",
+                    "find sources",
+                    "what's the latest",
+                    "latest news",
+                    "compare online",
+                    "cite sources",
+                ),
+                "the request needs live internet research across multiple sources",
             ),
         ]
         for name, keywords, reason in builtin_keyword_matches:

@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import re
+import shlex
 import time
 import uuid
 from datetime import datetime
@@ -190,6 +191,12 @@ _APPROVE_WORDS = APPROVE_WORDS
 _DENY_WORDS = DENY_WORDS
 _AGENT_READINESS_TIMEOUT_S = 20.0
 
+# Search tools route through core/web_search.py (provider layer) rather than the
+# Playwright browser stack. google_search is kept as a back-compat alias.
+_SEARCH_TOOLS = frozenset(
+    {"web_search", "image_search", "deep_research", "google_search"}
+)
+
 from core.paths import PERSONA_DIR, USERS_DIR, MEMORY_DIR, SOUL_FILE, IDENTITY_FILE
 
 
@@ -253,6 +260,7 @@ class AgentLoop:
             "run_command": self.toolbox.run_command,
             "memory_search": self.toolbox.memory_search,
             "send_media": self.toolbox.send_media,
+            "send_voice": self.toolbox.send_voice,
             "generate_image": self.toolbox.generate_image,
             "send_discord_message": self.toolbox.send_discord_message,
             "send_discord_embed": self.toolbox.send_discord_embed,
@@ -997,6 +1005,42 @@ class AgentLoop:
         )
 
     @staticmethod
+    def _resolve_voice_delivery(
+        channel: str, voice_cfg: Dict[str, Any], voice_on: bool, has_reply: bool
+    ) -> str:
+        """Decide how a reply is delivered given the voice config.
+
+        Returns one of: "audio_only", "audio_and_text" (Discord/WhatsApp),
+        "web_url" (attach a playable URL to the web text), or "text".
+        """
+        if not (voice_on and has_reply):
+            return "text"
+        channels = voice_cfg.get("channels", ["web"])
+        if channel in ("discord", "whatsapp") and channel in channels:
+            return (
+                "audio_and_text"
+                if voice_cfg.get("send_text_with_audio", False)
+                else "audio_only"
+            )
+        if channel == "web" and "web" in channels:
+            return "web_url"
+        return "text"
+
+    async def _synthesize_voice_file(self, text: str) -> Optional[str]:
+        """Return a temp mp3 path for `text` if voice is enabled and keyed, else None."""
+        try:
+            from core.tts import ElevenLabsTTS
+
+            cfg = ElevenLabsTTS.get_voice_config()
+            if not cfg.get("enabled", False) or not ElevenLabsTTS.get_api_key():
+                return None
+            path = await ElevenLabsTTS.synthesize_to_file(text)
+            return path or None
+        except Exception as e:
+            logger.error(f"[TTS] Voice synthesis failed: {e}")
+            return None
+
+    @staticmethod
     def _messages_have_image_inputs(messages: List[Dict[str, Any]]) -> bool:
         for message in messages:
             content = message.get("content") if isinstance(message, dict) else None
@@ -1549,12 +1593,39 @@ class AgentLoop:
     ) -> Dict[str, Any]:
         return self.confirm.build_preview(function_name, function_args, session_key)
 
+    @staticmethod
+    def _session_whitelist_key(
+        function_name: str, function_args: Optional[dict] = None
+    ) -> str:
+        """Session-whitelist key for a tool call.
+
+        For ``run_command`` the key is scoped to the invoked binary
+        (``run_command::<binary>``) so that "always allow this session" only
+        unblocks the same program instead of every future shell command.
+        Falls back to the full command string when parsing fails, and to the
+        bare tool name for every other tool.
+        """
+        if function_name == "run_command" and isinstance(function_args, dict):
+            command = str(function_args.get("command") or "").strip()
+            if not command:
+                return function_name
+            binary = command
+            try:
+                parts = shlex.split(command)
+                if parts:
+                    binary = parts[0]
+            except Exception:
+                binary = command
+            return f"run_command::{binary}"
+        return function_name
+
     def _get_tool_approval_decision(
         self,
         session_key: str,
         function_name: str,
         is_internal: bool = False,
         is_whatsapp: bool = False,
+        function_args: Optional[dict] = None,
     ) -> Dict[str, Any]:
         profile = str(
             getattr(self.config, "approval_policy_profile", "manual") or "manual"
@@ -1563,7 +1634,15 @@ class AgentLoop:
             profile = "manual"
 
         if is_whatsapp:
-            allowed = function_name != "delete_file"
+            # Legacy WhatsApp turns still route sensitive approvals to the web
+            # dashboard (conf_meta is mirrored to the web channel), so every
+            # state-changing tool must go through confirmation rather than being
+            # silently auto-approved.
+            allowed = function_name not in {
+                "delete_file",
+                "run_command",
+                "write_file",
+            }
             return {
                 "allowed": allowed,
                 "requires_confirmation": not allowed,
@@ -1584,10 +1663,9 @@ class AgentLoop:
                 "reason": "policy_autonomous",
                 "policy_profile": profile,
             }
-        if (
-            profile != "review"
-            and function_name in self.session_whitelists.get(session_key, set())
-        ):
+        if profile != "review" and self._session_whitelist_key(
+            function_name, function_args
+        ) in self.session_whitelists.get(session_key, set()):
             return {
                 "allowed": True,
                 "requires_confirmation": False,
@@ -1869,8 +1947,9 @@ class AgentLoop:
             conf["approved"] = approved
             if effective_whitelist:
                 sk = conf["session_key"]
-                self.session_whitelists.setdefault(sk, set()).add(conf["tool"])
-                logger.info(f"🔓 Added {conf['tool']} to whitelist for {sk}")
+                whitelist_key = conf.get("whitelist_key") or conf["tool"]
+                self.session_whitelists.setdefault(sk, set()).add(whitelist_key)
+                logger.info(f"🔓 Added {whitelist_key} to whitelist for {sk}")
             conf["event"].set()
             logger.info(f"✅ Tool {conf_id} {'approved' if approved else 'denied'}")
             return True
@@ -2753,6 +2832,209 @@ class AgentLoop:
             )
             return f"Error executing browser tool: {e}"
 
+    def _browser_skill_enabled(self) -> bool:
+        try:
+            skills = getattr(getattr(self.config, "skills", None), "enabled", []) or []
+            return "browser" in skills
+        except Exception:
+            return False
+
+    async def _gather_search(
+        self,
+        query: str,
+        count: int,
+        kind: str,
+        session_key: str,
+        on_progress=None,
+    ):
+        """Run the provider chain (+ browser scrape fallback for web/news).
+
+        Returns a ``SearchResponse`` on success, or ``None`` with the last error
+        string via the second tuple element.
+        """
+        from core.web_search import build_provider_chain
+
+        last_err = ""
+        for provider in build_provider_chain(self.config):
+            try:
+                if on_progress:
+                    await on_progress(
+                        f"🔍 Searching ({provider.name}) for: {query}"
+                    )
+                resp = await provider.search(query, count=count, kind=kind)
+                if resp.ok:
+                    return resp, ""
+                last_err = resp.error or "no results"
+            except Exception as e:  # provider crash → try the next one
+                last_err = str(e)
+                logger.warning(f"Search provider {provider.name} failed: {e}")
+
+        # Final fallback: scrape Google via the live browser (web/news only).
+        if kind in ("web", "news") and self._browser_skill_enabled():
+            try:
+                if on_progress:
+                    await on_progress("🔍 Falling back to browser Google search...")
+                browser = await get_browser_manager(
+                    session_key=session_key, config=self.config
+                )
+                raw = await browser.google_search(query, on_progress=on_progress)
+                if raw.get("success") and raw.get("results_summary"):
+                    from core.web_search import SearchResponse, SearchResult
+
+                    scraped = SearchResponse(
+                        kind=kind, query=query, provider="google-scrape"
+                    )
+                    # Keep the human-readable summary as a single pseudo-result.
+                    scraped.answer = raw["results_summary"]
+                    return scraped, ""
+            except Exception as e:
+                last_err = str(e)
+                logger.warning(f"Browser google_search fallback failed: {e}")
+
+        return None, last_err
+
+    async def _execute_search_tool(
+        self, function_name: str, args: Dict[str, Any], session_key: str
+    ) -> str:
+        from core.web_search import (
+            DEFAULT_COUNT,
+            MAX_COUNT,
+            format_search_response,
+        )
+
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return "Error: a search query is required."
+
+        if function_name == "deep_research":
+            return await self._run_deep_research(query, args, session_key)
+
+        if function_name == "image_search":
+            kind = "images"
+        else:
+            raw_kind = str(args.get("kind") or "web").strip().lower()
+            kind = "news" if raw_kind == "news" else "web"
+
+        try:
+            count = max(1, min(int(args.get("count") or DEFAULT_COUNT), MAX_COUNT))
+        except (TypeError, ValueError):
+            count = DEFAULT_COUNT
+
+        on_progress = self.toolbox.send_progress
+        response, last_err = await self._gather_search(
+            query, count, kind, session_key, on_progress=on_progress
+        )
+        if response is None:
+            return (
+                f"Error: web search failed ({last_err or 'no provider available'}). "
+                "Configure a search API key (TAVILY_API_KEY / BRAVE_SEARCH_API_KEY / "
+                "SERPAPI_API_KEY) or enable the browser skill."
+            )
+        # The browser-scrape fallback returns a pre-formatted summary in `answer`.
+        if response.provider == "google-scrape" and not response.results:
+            return f"**Search:** {query} (via google-scrape)\n{response.answer}"
+        return format_search_response(response)
+
+    async def _run_deep_research(
+        self, query: str, args: Dict[str, Any], session_key: str
+    ) -> str:
+        on_progress = self.toolbox.send_progress
+        await on_progress(f"🧪 Deep research: {query}")
+
+        response, last_err = await self._gather_search(
+            query, count=6, kind="web", session_key=session_key, on_progress=on_progress
+        )
+        if response is None or not response.results:
+            # Nothing structured to read; surface any provider answer we did get.
+            if response is not None and response.answer:
+                return response.answer
+            return (
+                f"Error: deep_research could not gather sources for '{query}' "
+                f"({last_err or 'no results'})."
+            )
+
+        MAX_SOURCES = 5
+        MAX_CHARS_PER_SOURCE = 4000
+        sources: List[Dict[str, str]] = []
+        seen: Set[str] = set()
+        for r in response.results:
+            if len(sources) >= MAX_SOURCES:
+                break
+            if not r.url or r.url in seen:
+                continue
+            seen.add(r.url)
+            content = r.content or ""
+            if len(content) < 400:
+                await on_progress(f"📖 Reading: {r.url}")
+                fetched = await self.toolbox.fetch_readable_text(
+                    r.url, max_chars=MAX_CHARS_PER_SOURCE
+                )
+                if fetched and not fetched.startswith("Error:"):
+                    content = fetched
+            sources.append(
+                {
+                    "title": r.title or r.url,
+                    "url": r.url,
+                    "content": (content or r.snippet or "")[:MAX_CHARS_PER_SOURCE],
+                }
+            )
+
+        if not sources:
+            return response.answer or (
+                f"Error: deep_research found results but could not read any source "
+                f"for '{query}'."
+            )
+
+        numbered = "\n\n".join(
+            f"[{i}] {s['title']} — {s['url']}\n{s['content']}"
+            for i, s in enumerate(sources, 1)
+        )
+        synthesis = await self._synthesize_research(
+            query, numbered, response.answer, session_key
+        )
+        sources_md = "\n".join(
+            f"[{i}] {s['title']} — {s['url']}" for i, s in enumerate(sources, 1)
+        )
+        return f"{synthesis}\n\n**Sources:**\n{sources_md}"
+
+    async def _synthesize_research(
+        self, query: str, numbered_sources: str, provider_answer: str, session_key: str
+    ) -> str:
+        system = (
+            "You are a meticulous research assistant. Using ONLY the numbered "
+            "sources provided, write a concise, well-structured answer to the "
+            "user's question. Cite sources inline with bracketed numbers like [1], "
+            "[2] that correspond to the source list. If the sources conflict or are "
+            "insufficient, say so explicitly. Never invent facts, URLs, or citations."
+        )
+        user = f"Question: {query}\n\n"
+        if provider_answer:
+            user += f"Provider summary (for context, still cite sources): {provider_answer}\n\n"
+        user += f"Sources:\n{numbered_sources}"
+
+        try:
+            provider = self.llm_client.resolve_provider(
+                self.model,
+                default_base_url=self.config.llm.base_url,
+            )
+            resp = await self.llm_client.complete(
+                provider,
+                ChatRequest(
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    max_tokens=1000,
+                    session_id=f"{session_key}::deep-research",
+                ),
+            )
+            text = (resp.choices[0].message.content or "").strip()
+            if text:
+                return text
+        except Exception as e:
+            logger.warning(f"deep_research synthesis failed: {e}")
+        return provider_answer or "Research synthesis unavailable; see sources below."
+
     async def _execute_tag_compat_tool(
         self, function_name: str, function_args: Dict[str, Any], session_key: str = "default"
     ) -> str:
@@ -2865,9 +3147,11 @@ class AgentLoop:
                 result = await self.toolbox.spawn_agent(
                     session_key=session_key, **function_args
                 )
-            elif (
-                function_name.startswith("browser_") or function_name == "google_search"
-            ):
+            elif function_name in _SEARCH_TOOLS:
+                result = await self._execute_search_tool(
+                    function_name, function_args, session_key
+                )
+            elif function_name.startswith("browser_"):
                 result = await self._execute_browser_tool(
                     function_name, function_args, session_key
                 )
@@ -2898,6 +3182,8 @@ class AgentLoop:
                 "list_dir",
                 "search_files",
                 "memory_search",
+                "web_search",
+                "image_search",
             }
             if result and not str(result).startswith("Error:") and is_read_only:
                 self.tool_cache.set(function_name, function_args, result)
@@ -3169,6 +3455,7 @@ class AgentLoop:
                         function_name,
                         is_internal=is_internal,
                         is_whatsapp=is_whatsapp,
+                        function_args=function_args,
                     )
                     client_source = str(
                         getattr(msg, "channel", "") or "system"
@@ -3199,6 +3486,9 @@ class AgentLoop:
                             "approved": False,
                             "session_key": session_key,
                             "tool": function_name,
+                            "whitelist_key": self._session_whitelist_key(
+                                function_name, function_args
+                            ),
                             "preview": confirmation_preview,
                             "policy_profile": approval["policy_profile"],
                             "decision_reason": approval["reason"],
@@ -3525,6 +3815,7 @@ class AgentLoop:
             "browser_navigate": "url",
             "spawn_agent": "task",
             "send_media": "path",
+            "send_voice": "text",
             "send_discord_message": "message",
             "send_discord_embed": "description",
             "cron_remove": "job_id",
@@ -3773,7 +4064,7 @@ class AgentLoop:
             bare_call_pattern = re.compile(
                 r"\b(?:list_dir|read_file|write_file|delete_file|search_files|"
                 r"run_command|memory_search|google_search|browser_navigate|"
-                r"spawn_agent|send_media|generate_image|send_discord_message|send_discord_embed|list_discord_channels|cron_remove|save_memory|log_memory|ls|dir|cat|"
+                r"spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|cron_remove|save_memory|log_memory|ls|dir|cat|"
                 r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|"
                 r"powershell|cmd)\s*\([^)]*\)"
             )
@@ -3834,7 +4125,7 @@ class AgentLoop:
         marker_positions = []
         legacy_tag_pattern = (
             r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|"
-            r"memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_message|send_discord_embed|list_discord_channels|"
+            r"memory_search|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|"
             r"save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|"
             r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>"
         )
@@ -3902,7 +4193,7 @@ class AgentLoop:
             cleaned,
         )
         cleaned = re.sub(
-            legacy_tag_pattern + r".*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+            legacy_tag_pattern + r".*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
             "",
             cleaned,
             flags=re.DOTALL | re.IGNORECASE,
@@ -4335,7 +4626,7 @@ class AgentLoop:
                     clean_content,
                 ).strip()
                 clean_content = re.sub(
-                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
                     "",
                     clean_content,
                     flags=re.DOTALL | re.IGNORECASE,
@@ -5543,36 +5834,91 @@ class AgentLoop:
                                 ),
                             )
                         else:
-                            # Auto-TTS synthesis for Web Channel if voice is enabled and has key
-                            if msg.channel == "web" and reply_to_user:
-                                try:
-                                    from core.tts import ElevenLabsTTS
-                                    voice_cfg = ElevenLabsTTS.get_voice_config()
-                                    if voice_cfg.get("enabled", False) and ElevenLabsTTS.get_api_key():
-                                        audio_url = await ElevenLabsTTS.synthesize_and_save(reply_to_user)
+                            from core.tts import ElevenLabsTTS
+
+                            voice_cfg = ElevenLabsTTS.get_voice_config()
+                            voice_on = bool(
+                                voice_cfg.get("enabled", False)
+                                and ElevenLabsTTS.get_api_key()
+                            )
+                            delivery_mode = self._resolve_voice_delivery(
+                                msg.channel, voice_cfg, voice_on, bool(reply_to_user)
+                            )
+                            outbound = None
+
+                            if delivery_mode in ("audio_only", "audio_and_text"):
+                                # Chat channels: send the audio file itself (voice note).
+                                audio_path = await self._synthesize_voice_file(
+                                    reply_to_user
+                                )
+                                if audio_path:
+                                    file_meta = self._with_trace_metadata(
+                                        {
+                                            "type": "file",
+                                            "file_path": audio_path,
+                                            "caption": "",
+                                            "cleanup_file": True,
+                                        },
+                                        turn_id=turn_id,
+                                        message_id=assistant_message_id,
+                                    )
+                                    await self.bus.publish_outbound(
+                                        OutboundMessage(
+                                            channel=msg.channel,
+                                            chat_id=msg.chat_id,
+                                            content="",
+                                            metadata=file_meta,
+                                        )
+                                    )
+                                    # Optionally also send the text as a separate message.
+                                    if delivery_mode == "audio_and_text":
+                                        outbound = OutboundMessage(
+                                            channel=msg.channel,
+                                            chat_id=msg.chat_id,
+                                            content=reply_to_user,
+                                            metadata=meta,
+                                        )
+                                    # else: audio only — nothing more to send.
+                                else:
+                                    # Synthesis failed → fall back to text so the user still gets a reply.
+                                    outbound = OutboundMessage(
+                                        channel=msg.channel,
+                                        chat_id=msg.chat_id,
+                                        content=reply_to_user,
+                                        metadata=meta,
+                                    )
+                            else:
+                                # Web auto-TTS attaches a playable URL alongside the text.
+                                if delivery_mode == "web_url":
+                                    try:
+                                        audio_url = await ElevenLabsTTS.synthesize_and_save(
+                                            reply_to_user
+                                        )
                                         if audio_url:
                                             meta["voice_url"] = audio_url
-                                except Exception as tts_err:
-                                    logger.error(f"[TTS] Auto synthesis failed: {tts_err}")
-
-                            outbound = OutboundMessage(
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                content=reply_to_user,
-                                metadata=meta,
+                                    except Exception as tts_err:
+                                        logger.error(
+                                            f"[TTS] Auto synthesis failed: {tts_err}"
+                                        )
+                                outbound = OutboundMessage(
+                                    channel=msg.channel,
+                                    chat_id=msg.chat_id,
+                                    content=reply_to_user,
+                                    metadata=meta,
+                                )
+                        if outbound is not None:
+                            await self.bus.publish_outbound(outbound)
+                            self._log_session_event(
+                                session_key,
+                                {
+                                    "type": "outbound_message",
+                                    "turn_id": turn_id,
+                                    "channel": outbound.channel,
+                                    "chat_id": outbound.chat_id,
+                                    "content_preview": (outbound.content or "")[:500],
+                                    "metadata_type": outbound.metadata.get("type"),
+                                },
                             )
-                        await self.bus.publish_outbound(outbound)
-                        self._log_session_event(
-                            session_key,
-                            {
-                                "type": "outbound_message",
-                                "turn_id": turn_id,
-                                "channel": outbound.channel,
-                                "chat_id": outbound.chat_id,
-                                "content_preview": (outbound.content or "")[:500],
-                                "metadata_type": outbound.metadata.get("type"),
-                            },
-                        )
 
                 except asyncio.CancelledError:
                     logger.warning(f"⚠ Task cancelled for {session_key}")

@@ -138,6 +138,11 @@ Sandboxed OS interface. All methods check `_is_path_allowed()` before touching t
 | `list_dir(path)` | No | List directory contents |
 | `run_command(command)` | **Yes** | Execute shell command in project root |
 | `memory_search(query)` | No | Semantic search across vector memory |
+| `web_search(query, count, kind)` | No | Hybrid live web/news search via the provider chain (see below) |
+| `image_search(query, count)` | No | Image search returning image URLs + source pages |
+| `deep_research(query, depth)` | No | Multi-source research: searches, reads top pages, returns a cited synthesis |
+| `send_media(path, caption)` | No | Share a local file **or remote http(s) URL** into the current web/Discord/WhatsApp chat |
+| `send_voice(text, channel)` | No | Synthesize `text` with ElevenLabs and send it as a voice message — an mp3 file on Discord/WhatsApp, an inline playable clip on web. Requires `ELEVENLABS_API_KEY`. |
 | `send_discord_message(message, channel_id, user_id)` | No | Send a Discord message to a server channel or user DM |
 | `send_discord_embed(...)` | No | Send a native Discord embed to a server channel or user DM |
 | `list_discord_channels()` | No | List guild text channels available to the bot |
@@ -157,11 +162,22 @@ Sandboxed OS interface. All methods check `_is_path_allowed()` before touching t
 | `browser_get_page_text` | 5,000 chars |
 | `memory_search` | 3,000 chars |
 | `browser_snapshot` | 3,000 chars |
+| `deep_research` | 8,000 chars |
+| `web_search` | 6,000 chars |
+| `image_search` | 2,500 chars |
 | `google_search` | 2,000 chars |
 | `run_command` | 2,000 chars |
 | `browser_list_media` | 1,000 chars |
 | `list_dir` | 500 chars |
 | Everything else | 2,000 chars |
+
+**Web search provider chain (`core/web_search.py`)** — hybrid: `web_search`/`image_search`/`deep_research` pick the first configured API provider by priority (`Tavily` > `Brave` > `SerpAPI`), then fall back to keyless `DuckDuckGo` (HTML for web/news via httpx + BeautifulSoup; `i.js` for images), and finally to a Playwright Google scrape when the `browser` skill is enabled. Override with `SEARCH_PROVIDER` (`auto`/`tavily`/`brave`/`serpapi`/`duckduckgo`/`scrape`). Search tools are registered when a search API key is set **or** the `browser` skill is enabled. `deep_research` reads the top sources (Tavily content or `fetch_readable_text`) and synthesizes a cited answer via the configured chat model.
+
+**Remote media delivery** — `send_media` accepts a remote http(s) URL, downloads it to `temp/downloads/` through an SSRF-guarded fetch (`fetch_url_to_temp`: only public IPs, http(s) only, per-hop redirect validation, 15MB cap), then delivers it. On the web channel it emits the standard `metadata.image` + `attachments` envelope; on Discord/WhatsApp it sends the file. This is the intended path for "send me a pic": `image_search` → `send_media(path='<Image URL>')`.
+
+**Voice delivery** — there are two independent paths:
+- **On demand** via the `send_voice(text, channel)` tool. The model calls it when the user asks for a voice message; it synthesizes with `ElevenLabsTTS.synthesize_to_file()` and publishes an mp3 as a `type:"file"` message (Discord/WhatsApp, `cleanup_file:True`) or a `voice_url` message (web). This works regardless of the auto-TTS channel toggles.
+- **Automatic** via `core/loop.py`'s delivery block, gated by the Voice tab config (`enabled`, `channels`, `send_text_with_audio`). `_resolve_voice_delivery()` decides `audio_only` / `audio_and_text` (Discord/WhatsApp) / `web_url` (web) / `text`. Default `channels` is `["web"]`, so chat channels stay text-only until opted in.
 
 ---
 

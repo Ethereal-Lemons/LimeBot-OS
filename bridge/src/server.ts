@@ -42,8 +42,9 @@ export class BridgeServer {
 
   async start(): Promise<void> {
     // Create WebSocket server
-    this.wss = new WebSocketServer({ port: this.port, host: '0.0.0.0' });
-    console.log(`🌉 Bridge server listening on ws://localhost:${this.port}`);
+    const host = process.env.BRIDGE_HOST || '127.0.0.1';
+    this.wss = new WebSocketServer({ port: this.port, host });
+    console.log(`🌉 Bridge server listening on ws://${host}:${this.port}`);
 
     // Initialize WhatsApp client
     this.wa = new WhatsAppClient({

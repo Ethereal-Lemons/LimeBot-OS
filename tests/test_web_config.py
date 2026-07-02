@@ -583,6 +583,55 @@ class TestWebConfig(unittest.TestCase):
         self.assertTrue(secrets["MOONSHOT_API_KEY"]["configured"])
         self.assertEqual(secrets["MOONSHOT_API_KEY"]["last4"], "cret")
 
+    def test_config_api_serializes_search_provider_secrets(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel()
+        env = {
+            "TAVILY_API_KEY": "tvly-abcd",
+            "BRAVE_API_KEY": "brave-wxyz",
+            "SERPAPI_KEY": "serp-1234",
+            "SEARCH_PROVIDER": "brave",
+        }
+        loaded = self._load_config_with_env(env)
+        with patch.dict(os.environ, env, clear=False), patch(
+            "config.load_config", return_value=loaded
+        ):
+            response = TestClient(channel.app).get("/api/config")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        secrets = payload["secrets"]
+        self.assertTrue(secrets["TAVILY_API_KEY"]["configured"])
+        self.assertEqual(secrets["TAVILY_API_KEY"]["last4"], "abcd")
+        # Legacy alias env vars still surface under the canonical key names.
+        self.assertTrue(secrets["BRAVE_SEARCH_API_KEY"]["configured"])
+        self.assertEqual(secrets["BRAVE_SEARCH_API_KEY"]["last4"], "wxyz")
+        self.assertTrue(secrets["SERPAPI_API_KEY"]["configured"])
+        self.assertEqual(secrets["SERPAPI_API_KEY"]["last4"], "1234")
+        self.assertEqual(payload["env"]["SEARCH_PROVIDER"], "brave")
+
+    def test_config_api_serializes_elevenlabs_secret(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel()
+        loaded = self._load_config_with_env({"ELEVENLABS_API_KEY": "eleven-secret"})
+        with patch.dict(
+            os.environ, {"ELEVENLABS_API_KEY": "eleven-secret"}, clear=False
+        ), patch("config.load_config", return_value=loaded):
+            response = TestClient(channel.app).get("/api/config")
+
+        self.assertEqual(response.status_code, 200)
+        secrets = response.json()["secrets"]
+        self.assertTrue(secrets["ELEVENLABS_API_KEY"]["configured"])
+        self.assertEqual(secrets["ELEVENLABS_API_KEY"]["last4"], "cret")
+
     def test_merge_env_lines_preserves_comments_and_clears_secret(self):
         from channels.web import _merge_env_lines
 

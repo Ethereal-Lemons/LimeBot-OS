@@ -31,6 +31,41 @@ class TestApprovalPolicyDecisions(unittest.TestCase):
         self.assertTrue(decision["allowed"])
         self.assertEqual(decision["reason"], "session_whitelist")
 
+    def test_run_command_whitelist_is_scoped_to_the_binary(self):
+        loop = make_loop("session")
+        # User approved "always allow" for a `git status` invocation.
+        loop.session_whitelists["web_one"] = {"run_command::git"}
+
+        git_decision = loop._get_tool_approval_decision(
+            "web_one",
+            "run_command",
+            function_args={"command": "git log --oneline"},
+        )
+        self.assertTrue(git_decision["allowed"])
+        self.assertEqual(git_decision["reason"], "session_whitelist")
+
+        # A different binary (rm) must NOT be unlocked by the git approval.
+        rm_decision = loop._get_tool_approval_decision(
+            "web_one",
+            "run_command",
+            function_args={"command": "rm -rf important"},
+        )
+        self.assertFalse(rm_decision["allowed"])
+        self.assertTrue(rm_decision["requires_confirmation"])
+        self.assertEqual(rm_decision["reason"], "manual_required")
+
+    def test_session_whitelist_key_scopes_run_command_by_binary(self):
+        self.assertEqual(
+            AgentLoop._session_whitelist_key(
+                "run_command", {"command": "git status --short"}
+            ),
+            "run_command::git",
+        )
+        self.assertEqual(
+            AgentLoop._session_whitelist_key("write_file", {"path": "a.txt"}),
+            "write_file",
+        )
+
     def test_review_ignores_session_whitelist(self):
         loop = make_loop("review")
         loop.session_whitelists["web_one"] = {"write_file"}
@@ -54,16 +89,22 @@ class TestApprovalPolicyDecisions(unittest.TestCase):
         self.assertTrue(internal["allowed"])
 
     def test_whatsapp_legacy_behavior_is_explicit(self):
-        allowed = make_loop()._get_tool_approval_decision(
-            "whatsapp_one", "run_command", is_whatsapp=True
-        )
-        delete = make_loop("autonomous")._get_tool_approval_decision(
-            "whatsapp_one", "delete_file", is_whatsapp=True
-        )
+        # State-changing tools over the legacy WhatsApp path must now go through
+        # confirmation (mirrored to the web dashboard) instead of auto-approving.
+        for tool in ("run_command", "write_file", "delete_file"):
+            decision = make_loop()._get_tool_approval_decision(
+                "whatsapp_one", tool, is_whatsapp=True
+            )
+            self.assertFalse(decision["allowed"], tool)
+            self.assertTrue(decision["requires_confirmation"], tool)
+            self.assertEqual(decision["reason"], "manual_required", tool)
 
-        self.assertEqual(allowed["reason"], "channel_whatsapp_legacy")
-        self.assertTrue(allowed["allowed"])
-        self.assertTrue(delete["requires_confirmation"])
+        # Read-only tools remain allowed on the legacy path.
+        read_only = make_loop()._get_tool_approval_decision(
+            "whatsapp_one", "read_file", is_whatsapp=True
+        )
+        self.assertTrue(read_only["allowed"])
+        self.assertEqual(read_only["reason"], "channel_whatsapp_legacy")
 
     def test_audit_preview_never_contains_commands_or_file_content(self):
         safe = AgentLoop._approval_audit_preview(

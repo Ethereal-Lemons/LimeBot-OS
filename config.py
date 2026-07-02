@@ -78,6 +78,10 @@ def load_config(force_reload=False):
     except ValueError:
         logger.warning("Invalid WEB_PORT/PORT in .env, defaulting to 8000.")
         config.web.port = 8000
+    # Bind to loopback by default. Exposing the server on the LAN (0.0.0.0)
+    # must be an explicit opt-in and, per the startup guard in channels/web.py,
+    # requires APP_API_KEY so an unauthenticated agent is never reachable off-box.
+    config.web.host = (os.getenv("WEB_HOST", "127.0.0.1") or "127.0.0.1").strip()
     frontend_port = (
         os.getenv("VITE_DEV_SERVER_PORT")
         or os.getenv("FRONTEND_PORT")
@@ -132,6 +136,21 @@ def load_config(force_reload=False):
     config.browser.user_data_dir = os.getenv("BROWSER_USER_DATA_DIR", "").strip()
     config.browser.profile_directory = os.getenv(
         "BROWSER_PROFILE_DIRECTORY", ""
+    ).strip()
+
+    # Hybrid web search: use a keyed provider when configured, otherwise fall
+    # back to the keyless DuckDuckGo/browser chain. Keys are used in-process
+    # only; _sanitized_env() strips them from spawned subprocesses.
+    config.search = SimpleNamespace()
+    config.search.provider = (
+        os.getenv("SEARCH_PROVIDER", "auto").strip().lower() or "auto"
+    )
+    config.search.tavily_api_key = os.getenv("TAVILY_API_KEY", "").strip()
+    config.search.brave_api_key = (
+        os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY") or ""
+    ).strip()
+    config.search.serpapi_api_key = (
+        os.getenv("SERPAPI_API_KEY") or os.getenv("SERPAPI_KEY") or ""
     ).strip()
 
     legacy_autonomous_mode = _load_bool_env("AUTONOMOUS_MODE", default=False)

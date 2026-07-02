@@ -222,7 +222,9 @@ export function useWebSocket({
             }
 
             const apiKey = localStorage.getItem('limebot_api_key');
-            const wsUrl = `${WS_BASE_URL}/ws?api_key=${encodeURIComponent(apiKey || '')}`;
+            // Authenticate over the first WS frame instead of the query string so
+            // the API key never lands in server logs, proxies, or browser history.
+            const wsUrl = `${WS_BASE_URL}/ws`;
 
             const socket = new WebSocket(wsUrl);
             ws.current = socket;
@@ -233,6 +235,16 @@ export function useWebSocket({
                     return;
                 }
                 console.log('Connected to LimeBot');
+                // Send the auth frame first (WS preserves message order, so this
+                // always reaches the server before any chat payload). Re-sent on
+                // every reconnect because onopen runs again for each new socket.
+                if (apiKey) {
+                    try {
+                        socket.send(JSON.stringify({ type: 'auth', api_key: apiKey }));
+                    } catch (error) {
+                        console.error('Failed to send WS auth frame:', error);
+                    }
+                }
                 setIsConnected(true);
             };
 

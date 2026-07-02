@@ -736,7 +736,7 @@ async function checkPortAvailability(port) {
             message: err?.message || String(err),
         }));
         server.once('listening', () => done({ available: true }));
-        server.listen({ port, host: '0.0.0.0', exclusive: true });
+        server.listen({ port, host: '127.0.0.1', exclusive: true });
     });
 }
 

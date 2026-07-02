@@ -35,6 +35,7 @@ interface ConfigState {
     BROWSER_CDP_URL?: string;
     BROWSER_USER_DATA_DIR?: string;
     BROWSER_PROFILE_DIRECTORY?: string;
+    SEARCH_PROVIDER?: string;
     [key: string]: ConfigValue;
 }
 
@@ -51,6 +52,10 @@ const SECRET_KEYS = [
     "MOONSHOT_API_KEY",
     "NVIDIA_API_KEY",
     "DASHSCOPE_API_KEY",
+    "TAVILY_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "SERPAPI_API_KEY",
+    "ELEVENLABS_API_KEY",
 ] as const;
 
 const DEFAULT_CUSTOM_MODEL = "ollama/llama3";
@@ -593,6 +598,65 @@ export function ConfigPage() {
                                     <p className="mt-1 text-[11px] text-muted-foreground">
                                         Telegram, Discord, and WhatsApp connection settings are managed in their channel tabs so tokens and enable switches stay together.
                                     </p>
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2">
+                                    <Globe className="h-5 w-5" />
+                                    Web Search
+                                </CardTitle>
+                                <CardDescription>
+                                    Optional keys for higher-quality web, news, image, and deep-research results. With none set, LimeBot falls back to keyless DuckDuckGo and the browser skill.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-6">
+                                <div className="grid gap-2">
+                                    <Label htmlFor="search_provider">Search Provider</Label>
+                                    <Select
+                                        value={config.SEARCH_PROVIDER || "auto"}
+                                        onValueChange={(value) => setConfig({ ...config, SEARCH_PROVIDER: value })}
+                                    >
+                                        <SelectTrigger id="search_provider">
+                                            <SelectValue placeholder="auto" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="auto">Auto (best available, recommended)</SelectItem>
+                                            <SelectItem value="tavily">Tavily</SelectItem>
+                                            <SelectItem value="brave">Brave Search</SelectItem>
+                                            <SelectItem value="serpapi">SerpAPI</SelectItem>
+                                            <SelectItem value="duckduckgo">DuckDuckGo (keyless)</SelectItem>
+                                            <SelectItem value="scrape">Browser scrape only</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <p className="text-[10px] text-muted-foreground">
+                                        "Auto" uses any configured key by priority (Tavily → Brave → SerpAPI), then falls back to DuckDuckGo.
+                                    </p>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {renderSecretInput("TAVILY_API_KEY", "Tavily API Key", "tvly-...")}
+                                    {renderSecretInput("BRAVE_SEARCH_API_KEY", "Brave Search API Key", "BSA...")}
+                                    {renderSecretInput("SERPAPI_API_KEY", "SerpAPI Key", "...")}
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2">
+                                    <Key className="h-5 w-5" />
+                                    Voice (ElevenLabs)
+                                </CardTitle>
+                                <CardDescription>
+                                    Text-to-speech key. Manage voices and playback in the Voice tab.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-6">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {renderSecretInput("ELEVENLABS_API_KEY", "ElevenLabs API Key", "sk_...")}
                                 </div>
                             </CardContent>
                         </Card>

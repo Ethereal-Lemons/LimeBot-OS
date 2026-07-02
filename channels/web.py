@@ -61,6 +61,10 @@ _SECRET_CONFIG_KEYS = frozenset(
         "MOONSHOT_API_KEY",
         "NVIDIA_API_KEY",
         "DASHSCOPE_API_KEY",
+        "TAVILY_API_KEY",
+        "BRAVE_SEARCH_API_KEY",
+        "SERPAPI_API_KEY",
+        "ELEVENLABS_API_KEY",
         "DISCORD_TOKEN",
         "TELEGRAM_BOT_TOKEN",
     }
@@ -1571,6 +1575,9 @@ class WebChannel(BaseChannel):
                 "BROWSER_PROFILE_DIRECTORY": getattr(
                     cfg.browser, "profile_directory", ""
                 ),
+                "SEARCH_PROVIDER": getattr(
+                    getattr(cfg, "search", None), "provider", "auto"
+                ),
             }
             secret_dict = {
                 "APP_API_KEY": _serialize_secret(cfg.whitelist.api_key or ""),
@@ -1587,6 +1594,16 @@ class WebChannel(BaseChannel):
                 ),
                 "NVIDIA_API_KEY": _serialize_secret(os.getenv("NVIDIA_API_KEY", "")),
                 "DASHSCOPE_API_KEY": _serialize_secret(os.getenv("DASHSCOPE_API_KEY", "")),
+                "TAVILY_API_KEY": _serialize_secret(os.getenv("TAVILY_API_KEY", "")),
+                "BRAVE_SEARCH_API_KEY": _serialize_secret(
+                    os.getenv("BRAVE_SEARCH_API_KEY", "") or os.getenv("BRAVE_API_KEY", "")
+                ),
+                "SERPAPI_API_KEY": _serialize_secret(
+                    os.getenv("SERPAPI_API_KEY", "") or os.getenv("SERPAPI_KEY", "")
+                ),
+                "ELEVENLABS_API_KEY": _serialize_secret(
+                    os.getenv("ELEVENLABS_API_KEY", "")
+                ),
                 "DISCORD_TOKEN": _serialize_secret(cfg.discord.token or ""),
                 "TELEGRAM_BOT_TOKEN": _serialize_secret(cfg.telegram.token or ""),
             }
@@ -3559,6 +3576,28 @@ class WebChannel(BaseChannel):
         # Safely get port from config, defaulting to 8000
         web_config = getattr(self.config, "web", None)
         base_port = getattr(web_config, "port", 8000) if web_config else 8000
+
+        # Resolve the bind host. Default to loopback; only allow a non-loopback
+        # bind when API authentication is configured. "No API key" implies
+        # "localhost only" so we never expose an unauthenticated agent to the LAN.
+        host = str(
+            getattr(web_config, "host", None)
+            or os.getenv("WEB_HOST", "127.0.0.1")
+            or "127.0.0.1"
+        ).strip()
+        loopback_hosts = {"127.0.0.1", "::1", "localhost"}
+        has_api_key = bool(
+            getattr(getattr(self.config, "whitelist", None), "api_key", None)
+            or os.getenv("APP_API_KEY")
+        )
+        if host not in loopback_hosts and not has_api_key:
+            logger.critical(
+                f"WEB_HOST is set to '{host}' but APP_API_KEY is not configured. "
+                "Refusing to expose an unauthenticated agent off-box; forcing "
+                "bind to 127.0.0.1. Set APP_API_KEY to enable LAN access."
+            )
+            host = "127.0.0.1"
+        self.bind_host = host
         prefer_base_port_only = os.environ.pop("LIMEBOT_SOFT_RESTART", "") == "1"
         base_port_wait_seconds = 12.0 if prefer_base_port_only else 5.0
         base_port_retry_interval = 0.5
@@ -3580,7 +3619,7 @@ class WebChannel(BaseChannel):
                 try:
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                        s.bind(("0.0.0.0", port))
+                        s.bind((host, port))
                     return True
                 except OSError as e:
                     last_base_port_error = e
@@ -3616,11 +3655,11 @@ class WebChannel(BaseChannel):
                 # First try to see if we can bind a socket to this port
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    s.bind(("0.0.0.0", current_port))
+                    s.bind((host, current_port))
 
                 # If we got here, the port is likely available
                 config = uvicorn.Config(
-                    self.app, host="0.0.0.0", port=current_port, log_level="info"
+                    self.app, host=host, port=current_port, log_level="info"
                 )
                 self.server = uvicorn.Server(config)
                 self.actual_port = current_port
@@ -3633,7 +3672,7 @@ class WebChannel(BaseChannel):
                     port_file.write_text(str(current_port), encoding="utf-8")
                 except Exception:
                     pass
-                logger.info(f"Web channel starting on port {current_port}")
+                logger.info(f"Web channel starting on {host}:{current_port}")
 
                 try:
                     await self.server.serve()
