@@ -11,9 +11,18 @@ from pathlib import Path
 LIMEBOT_CONFIG_PATH = Path("limebot.json")
 TEMP_DIR = Path("temp")
 
+# Filename prefix used by every synthesis call site (synthesize_and_save /
+# synthesize_to_file both default to this) — also doubles as the glob pattern
+# the stale-file reaper uses to only ever touch files it created.
+_VOICE_FILE_PREFIX = "voice"
+
 
 class ElevenLabsTTS:
     """Handles communications with ElevenLabs API for Voice List and Text-to-Speech synthesis."""
+
+    # ElevenLabs rejects very long requests (HTTP 400) and long replies cost
+    # disproportionately more; cap and truncate at a clean boundary instead.
+    MAX_TTS_CHARS = 2500
 
     @staticmethod
     def get_api_key() -> str:
@@ -49,7 +58,11 @@ class ElevenLabsTTS:
 
     @classmethod
     def save_voice_config(cls, voice_config: Dict[str, Any]) -> None:
-        """Write voice settings back to limebot.json, preserving other fields."""
+        """Write voice settings back to limebot.json, preserving other fields.
+
+        Uses a write-to-temp-then-replace pattern so a crash or concurrent
+        write mid-save can't leave limebot.json truncated/corrupted.
+        """
         data = {}
         if LIMEBOT_CONFIG_PATH.exists():
             try:
@@ -60,12 +73,20 @@ class ElevenLabsTTS:
 
         data["voice"] = voice_config
 
+        tmp_path = LIMEBOT_CONFIG_PATH.with_suffix(".json.tmp")
         try:
-            with open(LIMEBOT_CONFIG_PATH, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            tmp_path.replace(LIMEBOT_CONFIG_PATH)
             logger.info("[TTS] Saved voice configuration successfully.")
         except Exception as e:
             logger.error(f"[TTS] Failed to save voice config: {e}")
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     @classmethod
     async def list_voices(cls) -> List[Dict[str, Any]]:
@@ -102,6 +123,13 @@ class ElevenLabsTTS:
         api_key = cls.get_api_key()
         if not api_key:
             raise ValueError("ElevenLabs API Key is not configured in .env.")
+
+        if len(text) > cls.MAX_TTS_CHARS:
+            logger.warning(
+                f"[TTS] Text is {len(text)} chars, over the {cls.MAX_TTS_CHARS}-char cap; "
+                "truncating to avoid an ElevenLabs request failure."
+            )
+            text = cls._truncate_for_speech(text, cls.MAX_TTS_CHARS)
 
         cfg = cls.get_voice_config()
         active_voice_id = voice_id or cfg.get("voice_id")
@@ -215,6 +243,53 @@ class ElevenLabsTTS:
         except Exception as e:
             logger.error(f"[TTS] synthesize_to_file failed: {e}")
             return ""
+
+    @staticmethod
+    def _truncate_for_speech(text: str, limit: int) -> str:
+        """Truncate `text` to `limit` chars at a clean sentence/word boundary."""
+        if len(text) <= limit:
+            return text
+        truncated = text[:limit]
+        for boundary in (". ", "! ", "? "):
+            idx = truncated.rfind(boundary)
+            if idx > limit * 0.5:
+                return truncated[: idx + 1].strip()
+        idx = truncated.rfind(" ")
+        if idx > limit * 0.5:
+            return truncated[:idx].strip()
+        return truncated.strip()
+
+    @classmethod
+    def purge_stale_audio(cls, max_age_hours: float = 2.0) -> int:
+        """Delete stray synthesized mp3s under temp/ older than `max_age_hours`.
+
+        Discord/WhatsApp voice sends clean up after themselves immediately
+        (`cleanup_file=True`), but the web channel's synthesize_and_save()
+        leaves a /temp/ URL for the browser to stream, with no signal for
+        when playback is done. This is the safety net for those (and for any
+        cleanup_file send that failed to delete itself).
+        """
+        import time as _time
+
+        if not TEMP_DIR.exists():
+            return 0
+
+        cutoff = _time.time() - (max_age_hours * 3600)
+        deleted = 0
+        try:
+            for path in TEMP_DIR.glob(f"{_VOICE_FILE_PREFIX}_*.mp3"):
+                try:
+                    if path.is_file() and path.stat().st_mtime < cutoff:
+                        path.unlink()
+                        deleted += 1
+                except OSError as e:
+                    logger.debug(f"[TTS] Could not purge stale audio {path}: {e}")
+        except Exception as e:
+            logger.error(f"[TTS] Stale audio purge failed: {e}")
+
+        if deleted:
+            logger.info(f"[TTS] Purged {deleted} stale temp voice file(s).")
+        return deleted
 
     @staticmethod
     def clean_text_for_speech(text: str) -> str:

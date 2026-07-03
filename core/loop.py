@@ -372,6 +372,7 @@ class AgentLoop:
         self._set_readiness_phase("subagents")
         await asyncio.to_thread(self.subagent_registry.discover_and_load)
         asyncio.create_task(self._cleanup_persisted_histories())
+        asyncio.create_task(self._reap_temp_voice_files_loop())
 
         # Initialize MCP servers if available
         self._set_readiness_phase("mcp")
@@ -1025,6 +1026,22 @@ class AgentLoop:
         if channel == "web" and "web" in channels:
             return "web_url"
         return "text"
+
+    async def _reap_temp_voice_files_loop(self) -> None:
+        """Periodically delete stale synthesized voice mp3s under temp/.
+
+        Discord/WhatsApp voice sends clean up immediately after sending, but
+        the web channel's voice_url leaves a streamed file with no signal for
+        when the browser is done playing it. This is that TTL-based cleanup.
+        """
+        from core.tts import ElevenLabsTTS
+
+        while True:
+            try:
+                await asyncio.to_thread(ElevenLabsTTS.purge_stale_audio)
+            except Exception as e:
+                logger.debug(f"[TTS] Temp voice file reaper skipped a pass: {e}")
+            await asyncio.sleep(1800)  # every 30 minutes
 
     async def _synthesize_voice_file(self, text: str) -> Optional[str]:
         """Return a temp mp3 path for `text` if voice is enabled and keyed, else None."""

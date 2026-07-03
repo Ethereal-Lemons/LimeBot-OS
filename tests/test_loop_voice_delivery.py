@@ -1,4 +1,6 @@
+import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -219,6 +221,167 @@ class TestSendVoiceTool(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0].channel, "web")
         self.assertEqual(sent[0].metadata["voice_url"], "/temp/voice_cafe.mp3")
+
+
+class TestSynthesizeLengthCap(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        try:
+            import loguru  # noqa: F401
+        except Exception:
+            raise unittest.SkipTest("Missing dependencies (loguru).")
+
+    async def test_long_text_is_truncated_before_request(self):
+        from core.tts import ElevenLabsTTS
+
+        long_text = ("word " * 1000).strip()  # well over MAX_TTS_CHARS
+        self.assertGreater(len(long_text), ElevenLabsTTS.MAX_TTS_CHARS)
+
+        captured = {}
+
+        class _FakeResponse:
+            status_code = 200
+            content = b"fake-audio-bytes"
+            text = ""
+
+        class _FakeAsyncClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, json=None, headers=None):
+                captured["payload"] = json
+                return _FakeResponse()
+
+        with patch.object(
+            ElevenLabsTTS, "get_api_key", return_value="k"
+        ), patch("core.tts.httpx.AsyncClient", _FakeAsyncClient):
+            result = await ElevenLabsTTS.synthesize_text(long_text)
+
+        self.assertEqual(result, b"fake-audio-bytes")
+        sent_text = captured["payload"]["text"]
+        self.assertLessEqual(len(sent_text), ElevenLabsTTS.MAX_TTS_CHARS)
+
+    def test_truncate_prefers_sentence_boundary(self):
+        from core.tts import ElevenLabsTTS
+
+        text = "First sentence. Second sentence. " + ("filler " * 50)
+        out = ElevenLabsTTS._truncate_for_speech(text, 40)
+        self.assertTrue(out.endswith("."))
+        self.assertLessEqual(len(out), 40)
+
+    def test_truncate_noop_under_limit(self):
+        from core.tts import ElevenLabsTTS
+
+        self.assertEqual(ElevenLabsTTS._truncate_for_speech("short", 2500), "short")
+
+
+class TestSaveVoiceConfigAtomic(unittest.TestCase):
+    def test_save_writes_no_leftover_tmp_and_preserves_other_keys(self):
+        from core.tts import ElevenLabsTTS
+        import core.tts as tts_module
+
+        original_path = tts_module.LIMEBOT_CONFIG_PATH
+        tmp_dir = Path("temp") / "test_limebot_cfg"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        fake_config = tmp_dir / "limebot.json"
+        fake_config.write_text(
+            json.dumps({"skills": {"enabled": ["filesystem"]}}), encoding="utf-8"
+        )
+
+        tts_module.LIMEBOT_CONFIG_PATH = fake_config
+        try:
+            ElevenLabsTTS.save_voice_config({"enabled": True, "voice_id": "abc"})
+
+            self.assertTrue(fake_config.exists())
+            self.assertFalse(fake_config.with_suffix(".json.tmp").exists())
+
+            data = json.loads(fake_config.read_text(encoding="utf-8"))
+            self.assertEqual(data["skills"]["enabled"], ["filesystem"])
+            self.assertEqual(data["voice"]["voice_id"], "abc")
+        finally:
+            tts_module.LIMEBOT_CONFIG_PATH = original_path
+            fake_config.unlink(missing_ok=True)
+            fake_config.with_suffix(".json.tmp").unlink(missing_ok=True)
+            tmp_dir.rmdir()
+
+
+class TestPurgeStaleAudio(unittest.TestCase):
+    def test_purges_only_old_voice_files(self):
+        from core.tts import ElevenLabsTTS
+        import os
+        import time
+
+        tmp_dir = Path("temp")
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        old_file = tmp_dir / "voice_oldold01.mp3"
+        new_file = tmp_dir / "voice_freshfr1.mp3"
+        unrelated_file = tmp_dir / "not_voice_related.mp3"
+        old_file.write_bytes(b"old")
+        new_file.write_bytes(b"new")
+        unrelated_file.write_bytes(b"unrelated")
+
+        old_time = time.time() - (3 * 3600)  # 3 hours old
+        os.utime(old_file, (old_time, old_time))
+
+        try:
+            deleted = ElevenLabsTTS.purge_stale_audio(max_age_hours=2.0)
+            self.assertGreaterEqual(deleted, 1)
+            self.assertFalse(old_file.exists())
+            self.assertTrue(new_file.exists())
+            self.assertTrue(unrelated_file.exists())
+        finally:
+            new_file.unlink(missing_ok=True)
+            unrelated_file.unlink(missing_ok=True)
+            old_file.unlink(missing_ok=True)
+
+    def test_no_temp_dir_returns_zero(self):
+        from core.tts import ElevenLabsTTS
+        import core.tts as tts_module
+
+        original = tts_module.TEMP_DIR
+        tts_module.TEMP_DIR = Path("temp") / "does_not_exist_xyz"
+        try:
+            self.assertEqual(ElevenLabsTTS.purge_stale_audio(), 0)
+        finally:
+            tts_module.TEMP_DIR = original
+
+
+class TestReaperLoopWiring(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        try:
+            import loguru  # noqa: F401
+        except Exception:
+            raise unittest.SkipTest("Missing dependencies (loguru).")
+
+    async def test_reaper_loop_calls_purge_then_sleeps(self):
+        import asyncio
+
+        from core.loop import AgentLoop
+        from core.tts import ElevenLabsTTS
+
+        loop = AgentLoop.__new__(AgentLoop)
+        calls = {"purge": 0, "slept": []}
+
+        def fake_purge():
+            calls["purge"] += 1
+
+        async def fake_sleep(seconds):
+            calls["slept"].append(seconds)
+            raise asyncio.CancelledError()
+
+        with patch.object(
+            ElevenLabsTTS, "purge_stale_audio", side_effect=fake_purge
+        ), patch("core.loop.asyncio.sleep", side_effect=fake_sleep):
+            with self.assertRaises(asyncio.CancelledError):
+                await loop._reap_temp_voice_files_loop()
+
+        self.assertEqual(calls["purge"], 1)
+        self.assertEqual(calls["slept"], [1800])
 
 
 if __name__ == "__main__":
