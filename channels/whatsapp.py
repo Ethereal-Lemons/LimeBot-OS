@@ -41,7 +41,6 @@ class WhatsAppChannel(BaseChannel):
         self._self_id: str | None = None
         self._recent_msg_ids: dict[str, float] = {}
         self._recent_fingerprints: dict[str, float] = {}
-        self._stop_hints_shown: set[str] = set()
 
     async def start(self) -> None:
         """Start the WhatsApp channel by connecting to the bridge."""
@@ -110,19 +109,7 @@ class WhatsAppChannel(BaseChannel):
             metadata = msg.metadata or {}
             msg_type = metadata.get("type")
 
-            if msg_type == "typing":
-                if msg.chat_id not in self._stop_hints_shown:
-                    self._stop_hints_shown.add(msg.chat_id)
-                    payload = {
-                        "type": "send",
-                        "to": msg.chat_id,
-                        "text": "Working on it. Reply STOP to cancel.",
-                    }
-                    await self._ws.send(json.dumps(payload))
-                return
-
-            if msg_type == "stop_typing":
-                self._stop_hints_shown.discard(msg.chat_id)
+            if msg_type in ("typing", "stop_typing"):
                 return
 
             if msg_type == "file":
