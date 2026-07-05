@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,6 +19,45 @@ CONFIG_PATH = Path("mcp/mcp_config.json")
 _BACKOFF_BASE_S = 5.0
 _BACKOFF_MAX_S = 300.0
 _ONLINE_TTL_S = 120.0
+_ENV_REF = re.compile(r"\$\{([^}]+)\}")
+
+
+def _expand_env_refs(value: str, env: Dict[str, str]) -> str:
+    def repl(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return env.get(key, os.environ.get(key, ""))
+
+    return _ENV_REF.sub(repl, value)
+
+
+def build_server_env(cfg_env: Optional[Dict[str, str]], base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Merge MCP config env onto the process environment.
+
+    Empty strings in mcp_config.json do not override values loaded from .env.
+    ${VAR} placeholders are expanded after merge.
+    """
+    merged = dict(base_env or os.environ)
+    for key, value in (cfg_env or {}).items():
+        if not isinstance(value, str):
+            continue
+        if value.strip() == "":
+            continue
+        merged[key] = value
+
+    for key, value in list(merged.items()):
+        if isinstance(value, str) and "${" in value:
+            merged[key] = _expand_env_refs(value, merged)
+    return merged
+
+
+def expand_server_args(args: List[str], env: Dict[str, str]) -> List[str]:
+    expanded: List[str] = []
+    for arg in args:
+        if isinstance(arg, str) and "${" in arg:
+            expanded.append(_expand_env_refs(arg, env))
+        else:
+            expanded.append(arg)
+    return expanded
 
 
 def validate_mcp_config(data: Dict[str, Any]) -> Tuple[bool, str]:
@@ -106,8 +146,8 @@ class MCPManager:
     async def _connect_server(self, name: str, cfg: Dict[str, Any]):
         command = cfg.get("command")
         args = cfg.get("args", [])
-        env = os.environ.copy()
-        env.update(cfg.get("env", {}))
+        env = build_server_env(cfg.get("env", {}))
+        args = expand_server_args(args, env)
 
         if not command:
             logger.warning(f"No command specified for MCP server '{name}'")

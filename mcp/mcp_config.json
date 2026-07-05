@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "genko": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://genko-platform-production.up.railway.app/mcp",
+        "--header",
+        "Authorization:${GENKO_MCP_AUTH_HEADER}"
+      ],
+      "env": {
+        "UCP_PLATFORM_URL": "https://genko-platform-production.up.railway.app"
+      }
+    }
+  }
+}
