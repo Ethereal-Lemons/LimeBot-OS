@@ -117,6 +117,29 @@ class TestTaskWorkspace(unittest.IsolatedAsyncioTestCase):
             workspaces = await tracker.list_workspaces()
             self.assertEqual(workspaces, [])
 
+    async def test_workspace_changeset_artifact_refreshes_without_replacing_identity(self):
+        from core.task_tracker import TaskTracker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = TaskTracker(data_dir=tmpdir)
+            workspace = await tracker.create_workspace("Review patch", "app")
+            artifact = await tracker.add_workspace_artifact(
+                workspace.workspace_id,
+                kind="change_set",
+                title="Patch review",
+                metadata={"status": "awaiting_approval", "summary": "One file"},
+            )
+            refreshed = await tracker.update_workspace_artifact(
+                workspace.workspace_id,
+                artifact.artifact_id,
+                metadata_update={"status": "verified", "verification": [{"status": "passed"}]},
+            )
+            stored = await tracker.get_workspace(workspace.workspace_id)
+
+        self.assertEqual(refreshed.artifact_id, artifact.artifact_id)
+        self.assertEqual(stored.artifacts[0].metadata["status"], "verified")
+        self.assertEqual(stored.artifacts[0].metadata["verification"][0]["status"], "passed")
+
 
 class TestWorkspaceWebRoutes(unittest.TestCase):
     def _make_channel(self):

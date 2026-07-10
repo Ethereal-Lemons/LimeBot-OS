@@ -31,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from channels.base import BaseChannel
-from core.bus import MessageBus
+from core.bus import EPHEMERAL_OUTBOUND_TYPES, MessageBus
 from core.events import OutboundMessage
 from core.llm_client import ChatRequest, LimeLLMClient
 from core.prompt_modes import normalize_ponytail_mode
@@ -88,6 +88,21 @@ _CODEX_FALLBACK_MODELS = [
     },
 ]
 _SUPPORTED_CODEX_MODEL_IDS = frozenset(model["id"] for model in _CODEX_FALLBACK_MODELS)
+
+_LOOPBACK_WEB_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def resolve_web_bind_host(
+    requested_host: str,
+    *,
+    has_api_key: bool,
+    trusted_proxy_only: bool = False,
+) -> str:
+    """Keep unauthenticated off-box binding limited to a private proxy network."""
+    host = str(requested_host or "127.0.0.1").strip() or "127.0.0.1"
+    if host in _LOOPBACK_WEB_HOSTS or has_api_key or trusted_proxy_only:
+        return host
+    return "127.0.0.1"
 
 _SETUP_STATE_PATH = Path("data/setup-state.json")
 _SETUP_LLM_PROBE_TIMEOUT_SECONDS = 20.0
@@ -189,7 +204,6 @@ def _serialize_workspace_for_app(workspace) -> dict:
 def _serialize_attempt_for_app(attempt) -> dict:
     return {
         "attempt_id": attempt.attempt_id,
-        "workspace_id": attempt.workspace_id,
         "status": attempt.status,
         "model": attempt.model,
         "summary": attempt.summary,
@@ -203,14 +217,27 @@ def _serialize_attempt_for_app(attempt) -> dict:
 
 
 def _serialize_artifact_for_app(artifact) -> dict:
-    return {
+    serialized = {
         "artifact_id": artifact.artifact_id,
         "kind": artifact.kind,
         "title": artifact.title,
         "created_at": artifact.created_at,
         "available_locally": bool(artifact.path),
-        "metadata": _redact_sensitive_data(artifact.metadata),
     }
+    if artifact.kind == "change_set":
+        from core.review_entrypoint import changeset_for_app
+
+        serialized["changeset"] = changeset_for_app(artifact.metadata)
+    elif artifact.kind == "coding_plan":
+        serialized["plan"] = {
+            "status": str(artifact.metadata.get("status") or "planned"),
+            "summary": _redact_sensitive_data(
+                str(artifact.metadata.get("summary") or "")[:2000]
+            ),
+        }
+    else:
+        serialized["metadata"] = _redact_sensitive_data(artifact.metadata)
+    return serialized
 
 
 def _serialize_pending_approval_for_app(conf_id, conf) -> dict:
@@ -245,6 +272,34 @@ def _sanitize_web_session_key(chat_id: str) -> str:
     for char in ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]:
         session_key = session_key.replace(char, "_")
     return session_key
+
+
+def _canonicalize_app_workspace_session_key(value: Any) -> str:
+    """Return a bounded, filesystem-safe session key for an app workspace."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("web_"):
+        raw = raw[4:]
+    if not raw:
+        return ""
+    return _sanitize_web_session_key(raw)[:180]
+
+
+def _app_attempt_terminal_outcome(metadata: dict, msg_type: str) -> tuple[str, str] | None:
+    """Return a terminal app-attempt state for final outbound turn messages only."""
+    if msg_type == "cancellation" or metadata.get("is_cancellation"):
+        return ("cancelled", "Cancelled by user.")
+    is_final_reply = bool(metadata.get("reply_to")) or msg_type in {
+        "terminal_error",
+        "turn_error",
+    }
+    if metadata.get("is_error") and is_final_reply:
+        error_code = str(metadata.get("error_code") or "agent_error").strip()
+        return ("failed", error_code[:200])
+    if msg_type == "message" and metadata.get("reply_to"):
+        return ("completed", "")
+    return None
 
 
 def _extract_client_prompt_metadata(msg: Any) -> dict[str, str]:
@@ -2641,6 +2696,22 @@ class WebChannel(BaseChannel):
             await self._save_contacts_async(contacts)
             return {"status": "success", "contacts": contacts}
 
+        @self.app.get("/api/whatsapp/status", dependencies=[Depends(self.verify_auth)])
+        async def get_whatsapp_status():
+            from channels.whatsapp import WhatsAppChannel
+
+            wa_channel = next(
+                (c for c in self.channels if isinstance(c, WhatsAppChannel)), None
+            )
+            if not wa_channel:
+                return {
+                    "status": "disabled",
+                    "connected": False,
+                    "bridge_connected": False,
+                    "qr": None,
+                }
+            return {**wa_channel.get_status(), "qr": self._whatsapp_qr}
+
         @self.app.post("/api/whatsapp/reset", dependencies=[Depends(self.verify_auth)])
         async def reset_whatsapp_session():
             from channels.whatsapp import WhatsAppChannel
@@ -2799,14 +2870,30 @@ class WebChannel(BaseChannel):
                 metadata = _redact_sensitive_data(metadata)
             else:
                 metadata = None
+            requested_session_key = _canonicalize_app_workspace_session_key(
+                data.get("session_key")
+            )
+            requested_chat_id = str(data.get("chat_id") or "").strip()
             workspace = await tracker.create_workspace(
                 title=title,
                 origin=origin,
-                session_key=str(data.get("session_key") or "").strip(),
-                chat_id=str(data.get("chat_id") or "").strip(),
+                session_key=requested_session_key,
+                chat_id=requested_chat_id,
                 parent_workspace_id=str(data.get("parent_workspace_id") or "").strip(),
                 metadata=metadata,
             )
+            if not workspace.session_key:
+                generated_session_key = _canonicalize_app_workspace_session_key(
+                    f"app_{workspace.workspace_id}"
+                )
+                workspace = await tracker.update_workspace(
+                    workspace.workspace_id,
+                    session_key=generated_session_key,
+                    chat_id=workspace.chat_id or generated_session_key[4:],
+                    metadata_update={"app_session_key": generated_session_key},
+                )
+                if workspace is None:
+                    raise HTTPException(status_code=404, detail="Workspace not found")
             return {"workspace": _serialize_workspace_for_app(workspace)}
 
         @self.app.get("/api/app/workspaces/{workspace_id}/events", dependencies=[Depends(self.verify_app_auth)])
@@ -2817,7 +2904,11 @@ class WebChannel(BaseChannel):
             workspace = await tracker.get_workspace(workspace_id)
             if not workspace:
                 raise HTTPException(status_code=404, detail="Workspace not found")
-            session_key = workspace.session_key
+            session_key = _canonicalize_app_workspace_session_key(
+                workspace.session_key
+            ) or _canonicalize_app_workspace_session_key(
+                workspace.metadata.get("app_session_key")
+            )
             if not session_key:
                 return {"events": []}
             events_file = Path(EVENTS_DIR) / f"{session_key}.jsonl"
@@ -2840,6 +2931,10 @@ class WebChannel(BaseChannel):
                                 if k == "preview" and isinstance(v, dict):
                                     clean_preview = {pk: pv for pk, pv in v.items() if pk != "command"}
                                     clean_evt[k] = _redact_sensitive_data(clean_preview)
+                                elif k == "changeset" and isinstance(v, dict):
+                                    from core.review_entrypoint import changeset_for_app
+
+                                    clean_evt[k] = changeset_for_app(v)
                                 else:
                                     clean_evt[k] = _redact_sensitive_data(v)
                         events.append({
@@ -2856,6 +2951,65 @@ class WebChannel(BaseChannel):
                 logger.error(f"Error reading workspace events: {e}")
             return {"events": events}
 
+        @self.app.get(
+            "/api/app/workspaces/{workspace_id}/changesets/{artifact_id}",
+            dependencies=[Depends(self.verify_app_auth)],
+        )
+        async def get_app_changeset(workspace_id: str, artifact_id: str):
+            from core.task_tracker import get_task_tracker
+
+            workspace = await get_task_tracker().get_workspace(workspace_id)
+            if workspace is None:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+            artifact = next(
+                (
+                    item
+                    for item in workspace.artifacts
+                    if item.artifact_id == artifact_id and item.kind == "change_set"
+                ),
+                None,
+            )
+            if artifact is None:
+                raise HTTPException(status_code=404, detail="Change set not found")
+            return {"artifact": _serialize_artifact_for_app(artifact)}
+
+        @self.app.post(
+            "/api/app/workspaces/{workspace_id}/changesets",
+            dependencies=[Depends(self.verify_app_auth)],
+        )
+        async def stage_app_changeset(workspace_id: str, data: dict):
+            """Stage a redacted review artifact; this endpoint never applies files."""
+            from core.review_entrypoint import build_changeset_artifact
+            from core.task_tracker import get_task_tracker
+
+            tracker = get_task_tracker()
+            workspace = await tracker.get_workspace(workspace_id)
+            if workspace is None:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+            diff_text = data.get("diff")
+            if not isinstance(diff_text, str) or not diff_text.strip():
+                raise HTTPException(status_code=400, detail="diff is required")
+            try:
+                changeset = build_changeset_artifact(
+                    diff_text,
+                    status="awaiting_approval",
+                    summary=str(data.get("summary") or "Patch review"),
+                    verification=data.get("verification"),
+                    preconditions=data.get("preconditions"),
+                )
+                changeset["id"] = f"changeset-{uuid.uuid4().hex[:12]}"
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            artifact = await tracker.add_workspace_artifact(
+                workspace_id,
+                kind="change_set",
+                title="Patch review",
+                metadata=changeset,
+            )
+            if artifact is None:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+            return {"artifact": _serialize_artifact_for_app(artifact)}
+
         @self.app.post("/api/app/workspaces/{workspace_id}/message", dependencies=[Depends(self.verify_app_auth)])
         async def post_workspace_message(workspace_id: str, data: dict):
             from core.task_tracker import get_task_tracker, TaskStatus
@@ -2866,14 +3020,13 @@ class WebChannel(BaseChannel):
             workspace = await tracker.get_workspace(workspace_id)
             if workspace is None:
                 raise HTTPException(status_code=404, detail="Workspace not found")
-            if workspace.session_key and workspace.session_key.startswith("web_"):
-                session_id = workspace.session_key[4:]
-                chat_id = workspace.chat_id or session_id
-                app_session_key = workspace.session_key
-            else:
-                session_id = f"app_{workspace_id}"
-                chat_id = f"app_{workspace_id}"
-                app_session_key = f"web_{session_id}"
+            app_session_key = _canonicalize_app_workspace_session_key(
+                workspace.session_key
+            ) or _canonicalize_app_workspace_session_key(
+                workspace.metadata.get("app_session_key")
+            ) or _canonicalize_app_workspace_session_key(f"app_{workspace_id}")
+            session_id = app_session_key[4:]
+            chat_id = workspace.chat_id or session_id
             client_message_id = str(data.get("client_message_id") or "").strip()
             if client_message_id and not re.fullmatch(
                 r"[A-Za-z0-9_.:-]{1,120}", client_message_id
@@ -2889,6 +3042,8 @@ class WebChannel(BaseChannel):
             await tracker.update_workspace(
                 workspace_id,
                 status=TaskStatus.RUNNING.value,
+                session_key=app_session_key,
+                chat_id=chat_id,
                 metadata_update={"app_session_key": app_session_key},
             )
             attempt = await tracker.add_workspace_attempt(
@@ -2999,7 +3154,7 @@ class WebChannel(BaseChannel):
         async def get_liveness():
             return {
                 "status": "live",
-                "version": "1.0.11",
+                "version": "1.0.12",
                 "boot_id": self._boot_id,
             }
 
@@ -3509,6 +3664,10 @@ class WebChannel(BaseChannel):
                 if k == "preview" and isinstance(v, dict):
                     clean_preview = {pk: pv for pk, pv in v.items() if pk != "command"}
                     clean_metadata[k] = _redact_sensitive_data(clean_preview)
+                elif k == "changeset" and isinstance(v, dict):
+                    from core.review_entrypoint import changeset_for_app
+
+                    clean_metadata[k] = changeset_for_app(v)
                 else:
                     clean_metadata[k] = _redact_sensitive_data(v)
         payload = {
@@ -3585,18 +3744,31 @@ class WebChannel(BaseChannel):
             or os.getenv("WEB_HOST", "127.0.0.1")
             or "127.0.0.1"
         ).strip()
-        loopback_hosts = {"127.0.0.1", "::1", "localhost"}
         has_api_key = bool(
             getattr(getattr(self.config, "whitelist", None), "api_key", None)
             or os.getenv("APP_API_KEY")
         )
-        if host not in loopback_hosts and not has_api_key:
+        trusted_proxy_only = str(
+            os.getenv("LIMEBOT_TRUSTED_PROXY_ONLY", "false")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        resolved_host = resolve_web_bind_host(
+            host,
+            has_api_key=has_api_key,
+            trusted_proxy_only=trusted_proxy_only,
+        )
+        if resolved_host != host:
             logger.critical(
                 f"WEB_HOST is set to '{host}' but APP_API_KEY is not configured. "
                 "Refusing to expose an unauthenticated agent off-box; forcing "
                 "bind to 127.0.0.1. Set APP_API_KEY to enable LAN access."
             )
-            host = "127.0.0.1"
+        elif host not in _LOOPBACK_WEB_HOSTS and trusted_proxy_only and not has_api_key:
+            logger.warning(
+                "Allowing unauthenticated container-network binding because "
+                "LIMEBOT_TRUSTED_PROXY_ONLY=true. The backend port must not be "
+                "published directly."
+            )
+        host = resolved_host
         self.bind_host = host
         prefer_base_port_only = os.environ.pop("LIMEBOT_SOFT_RESTART", "") == "1"
         base_port_wait_seconds = 12.0 if prefer_base_port_only else 5.0
@@ -3712,6 +3884,26 @@ class WebChannel(BaseChannel):
         if self.server:
             self.server.should_exit = True
 
+    @staticmethod
+    def _delivery_timeout(msg_type: str) -> float:
+        """Ephemeral updates expire quickly; durable outcomes get a wider window."""
+        return 0.25 if msg_type in EPHEMERAL_OUTBOUND_TYPES else 2.0
+
+    async def _broadcast_chat_payload(self, payload: str, msg_type: str) -> None:
+        dead: set[WebSocket] = set()
+        timeout = self._delivery_timeout(msg_type)
+
+        async def _safe_send(conn: WebSocket) -> None:
+            try:
+                await asyncio.wait_for(conn.send_text(payload), timeout=timeout)
+            except Exception:
+                dead.add(conn)
+
+        if self.active_connections:
+            await asyncio.gather(*(_safe_send(conn) for conn in list(self.active_connections)))
+        # A connection that times out once is stale; do not make later chunks wait again.
+        self.active_connections.difference_update(dead)
+
     async def send(self, msg: OutboundMessage) -> None:
         if (
             not self.active_connections
@@ -3721,11 +3913,25 @@ class WebChannel(BaseChannel):
             return
 
         metadata = msg.metadata or {}
-        msg_type = metadata.get("type", "message")
+        msg_type = str(metadata.get("type", "message"))
+        payload = json.dumps(
+            {
+                "type": msg_type,
+                "content": msg.content,
+                "sender": "bot",
+                "chat_id": msg.chat_id,
+                "turn_id": metadata.get("turn_id"),
+                "message_id": metadata.get("message_id"),
+                "metadata": metadata,
+            }
+        )
+        # Browser delivery is the latency-critical path. App state bookkeeping follows it.
+        await self._broadcast_chat_payload(payload, msg_type)
         await self._emit_app_outbound(msg, metadata, str(msg_type))
 
         chat_id_str = str(msg.chat_id)
-        if chat_id_str in self._app_chat_workspaces:
+        terminal_outcome = _app_attempt_terminal_outcome(metadata, str(msg_type))
+        if chat_id_str in self._app_chat_workspaces and terminal_outcome:
             workspace_id = self._app_chat_workspaces[chat_id_str]
             from core.task_tracker import get_task_tracker, TaskStatus
             tracker = get_task_tracker()
@@ -3737,10 +3943,12 @@ class WebChannel(BaseChannel):
                 ]
                 if active_attempts:
                     oldest_attempt = active_attempts[0]
+                    terminal_status, terminal_error = terminal_outcome
                     await tracker.complete_workspace_attempt(
                         workspace_id,
                         oldest_attempt.attempt_id,
-                        status=TaskStatus.COMPLETED.value
+                        status=terminal_status,
+                        error=terminal_error,
                     )
                     if len(active_attempts) > 1:
                         next_attempt = active_attempts[1]
@@ -3762,7 +3970,8 @@ class WebChannel(BaseChannel):
                     else:
                         await tracker.update_workspace(
                             workspace_id,
-                            status=TaskStatus.COMPLETED.value
+                            status=terminal_status,
+                            error=terminal_error,
                         )
 
         if msg_type == "whatsapp_qr":
@@ -3770,40 +3979,11 @@ class WebChannel(BaseChannel):
             logger.info(
                 f"Cached WhatsApp QR (len={len(self._whatsapp_qr) if self._whatsapp_qr else 0})"
             )
-        elif msg_type == "whatsapp_status" and metadata.get("status") == "connected":
-            if self._whatsapp_qr is not None:
+        elif msg_type == "whatsapp_status":
+            status = metadata.get("status")
+            if status in {"connected", "disconnected"} and self._whatsapp_qr is not None:
                 self._whatsapp_qr = None
-                logger.info("Cleared WhatsApp QR cache (connected)")
-
-        payload = json.dumps(
-            {
-                "type": msg_type,
-                "content": msg.content,
-                "sender": "bot",
-                "chat_id": msg.chat_id,
-                "turn_id": metadata.get("turn_id"),
-                "message_id": metadata.get("message_id"),
-                "metadata": metadata,
-            }
-        )
-
-        dead: set[WebSocket] = set()
-
-        async def _safe_send(conn: WebSocket):
-            try:
-                # Use a timeout to ensure a hung connection doesn't block the dispatch loop
-                await asyncio.wait_for(conn.send_text(payload), timeout=2.0)
-            except Exception:
-                dead.add(conn)
-
-        if self.active_connections:
-            await asyncio.gather(
-                *(_safe_send(c) for c in list(self.active_connections))
-            )
-
-        for conn in dead:
-            self.active_connections.discard(conn)
-
+                logger.info(f"Cleared WhatsApp QR cache ({status})")
 
 def _spawn_restart() -> None:
     """Restart the current process after the response is sent."""

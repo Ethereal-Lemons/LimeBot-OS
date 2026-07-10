@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.0.12 - 2026-07-09
+### Added
+- Core-only first installation with retryable optional profiles for browser,
+  semantic memory, documents, MCP, WhatsApp, and the browser companion.
+- `limebot feature install all` for every optional profile plus
+  launch-verified Chromium.
+- Durable coding attempts, change-set review artifacts, deterministic recovery
+  steps, and improved task/workspace event reporting.
+- Speech-to-text support and safer WhatsApp delivery acknowledgement handling.
+- Provider-first-delta and first-useful-output latency metrics.
+- Bounded per-channel delivery workers, atomic delivery snapshots, and a
+  bounded background metrics writer.
+- Secure Docker build contexts, health checks, optional WhatsApp profile, and
+  first-run preparation scripts for PowerShell and POSIX shells.
+
+### Changed
+- Normal startup now opens the dashboard at backend liveness while capability
+  readiness continues in the UI.
+- Remote update discovery runs after launch, and npm/Python dependency lanes
+  install concurrently when both need refreshing.
+- Fast AI harness mode is now the default, using request-specific tool schemas,
+  an 80ms Auto-RAG budget, and no tools for clearly casual turns.
+- Daily and long-term memory prompt context is cached by file signature and
+  privacy scope.
+- Streaming assistant output stays lightweight plain text until completion,
+  then switches once to rich Markdown.
+- Docker now exposes only the loopback-bound Nginx gateway by default and uses
+  same-origin API, media, and WebSocket proxying.
+
+### Fixed
+- Windows `npm.cmd` startup failures caused by `spawn EINVAL`.
+- Interrupted virtual environments are preserved, repaired, and never fall
+  back to installing packages into system Python.
+- Cross-channel head-of-line blocking from slow sockets and synchronous
+  persistence.
+- Stale web sockets are removed after a bounded send timeout.
+- WhatsApp interim typing, reconnect, queued-send, and delivery state handling.
+- Docker images no longer receive local credentials, runtime state,
+  dependency trees, or generated session data in their build contexts.
+
 ## 1.0.11 - 2026-06-27
 ### Added
 - Browser companion extension (manifest V3) for page help, text selection sharing, live task status, and tool approvals.

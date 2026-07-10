@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
-import { Monitor, RefreshCw } from "lucide-react";
+import { Loader2, Monitor, RefreshCw } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
-import { API_BASE_URL } from "@/lib/api";
+import { API_BASE_URL, api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -17,7 +17,7 @@ import {
 import { WhatsAppIcon } from "./ChannelIcons";
 
 export function WhatsAppConnectionSection() {
-    const [status, setStatus] = useState<"disconnected" | "connecting" | "connected" | "scanning">("disconnected");
+    const [status, setStatus] = useState<"disabled" | "disconnected" | "connecting" | "connected" | "scanning">("disconnected");
     const [resetting, setResetting] = useState(false);
     const [qrCode, setQrCode] = useState<string | null>(null);
     const [alertDialog, setAlertDialog] = useState({
@@ -31,6 +31,32 @@ export function WhatsAppConnectionSection() {
     };
 
     useEffect(() => {
+        const applyStatus = (data: any) => {
+            const nextStatus = data?.status;
+            if (["disabled", "disconnected", "connecting", "connected", "scanning"].includes(nextStatus)) {
+                setStatus(nextStatus);
+            }
+            if (data?.qr) {
+                setQrCode(data.qr);
+                setStatus("scanning");
+            } else if (nextStatus === "connected" || nextStatus === "disconnected") {
+                setQrCode(null);
+            }
+        };
+
+        const loadStatus = async () => {
+            try {
+                const response = await api.get("/api/whatsapp/status");
+                applyStatus(response.data);
+            } catch (error: any) {
+                if (error?.response?.status !== 401) {
+                    console.error("Failed to load WhatsApp status", error);
+                }
+            }
+        };
+
+        void loadStatus();
+        const poll = window.setInterval(() => void loadStatus(), 3000);
         const wsUrl = API_BASE_URL.replace("http", "ws");
         const apiKey = localStorage.getItem("limebot_api_key");
         const socketUrl = new URL(`${wsUrl}/ws`);
@@ -65,11 +91,10 @@ export function WhatsAppConnectionSection() {
                     }
                 } else if (data.type === "whatsapp_status" || data.metadata?.type === "whatsapp_status") {
                     const newStatus = data.metadata?.status || data.status;
-                    if (newStatus === "connected") {
-                        setStatus("connected");
-                        setQrCode(null);
-                    } else if (newStatus === "disconnected") {
-                        setStatus("disconnected");
+                    if (["disabled", "disconnected", "connecting", "connected", "scanning"].includes(newStatus)) {
+                        setStatus(newStatus);
+                    }
+                    if (newStatus === "connected" || newStatus === "disconnected") {
                         setQrCode(null);
                     }
                 }
@@ -79,6 +104,7 @@ export function WhatsAppConnectionSection() {
         };
 
         return () => {
+            window.clearInterval(poll);
             ws.close();
         };
     }, []);
@@ -128,8 +154,16 @@ export function WhatsAppConnectionSection() {
                     </div>
                 ) : (
                     <div className="text-center text-muted-foreground">
-                        <p className="mb-2">Click <strong>Enable</strong> above to start.</p>
-                        <p className="text-xs opacity-70">After enabling, the page will refresh and you will see the QR code shortly.</p>
+                        {(status === "connecting" || status === "scanning") && (
+                            <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin text-[#25D366]" />
+                        )}
+                        <p className="mb-2">
+                            {status === "connecting" && "Connecting to WhatsApp..."}
+                            {status === "scanning" && "Waiting for the QR code..."}
+                            {status === "disabled" && "WhatsApp is disabled."}
+                            {status === "disconnected" && <>Click <strong>Enable</strong> above to start.</>}
+                        </p>
+                        <p className="text-xs opacity-70">This status updates automatically.</p>
                     </div>
                 )}
             </CardContent>

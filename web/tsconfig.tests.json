@@ -21,9 +21,11 @@
     "src/lib/agent-readiness.ts",
     "src/lib/markdown-code.ts",
     "src/lib/setup-state.ts",
+    "src/lib/stream-rendering.ts",
     "tests/agent-readiness.test.ts",
     "tests/chat-state.test.ts",
     "tests/markdown-code.test.ts",
-    "tests/setup-state.test.ts"
+    "tests/setup-state.test.ts",
+    "tests/stream-rendering.test.ts"
   ]
 }

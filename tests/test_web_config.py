@@ -118,6 +118,34 @@ class TestWebConfig(unittest.TestCase):
             ["http://localhost:5179", "http://127.0.0.1:5179"],
         )
 
+    def test_non_loopback_bind_requires_auth_or_private_proxy_contract(self):
+        from channels.web import resolve_web_bind_host
+
+        self.assertEqual(
+            resolve_web_bind_host(
+                "0.0.0.0", has_api_key=False, trusted_proxy_only=False
+            ),
+            "127.0.0.1",
+        )
+        self.assertEqual(
+            resolve_web_bind_host(
+                "0.0.0.0", has_api_key=True, trusted_proxy_only=False
+            ),
+            "0.0.0.0",
+        )
+        self.assertEqual(
+            resolve_web_bind_host(
+                "0.0.0.0", has_api_key=False, trusted_proxy_only=True
+            ),
+            "0.0.0.0",
+        )
+        self.assertEqual(
+            resolve_web_bind_host(
+                "127.0.0.1", has_api_key=False, trusted_proxy_only=False
+            ),
+            "127.0.0.1",
+        )
+
     def test_persona_preview_uses_llm_client(self):
         try:
             from fastapi.testclient import TestClient

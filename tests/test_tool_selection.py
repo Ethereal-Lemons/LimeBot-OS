@@ -1,9 +1,7 @@
 import sys
 import types
-import inspect
-import os
+import json
 import unittest
-from unittest import mock
 from types import SimpleNamespace
 
 if "dotenv" not in sys.modules:
@@ -27,12 +25,7 @@ class TestToolSelection(unittest.TestCase):
         from core.loop import AgentLoop
 
         has_turn_method = hasattr(AgentLoop, "_should_include_tools_for_turn")
-        try:
-            shortlist_source = inspect.getsource(AgentLoop._get_tool_definitions_for_turn)
-        except (OSError, TypeError):
-            shortlist_source = ""
-
-        if not has_turn_method or "ai_harness" not in shortlist_source:
+        if not has_turn_method:
             self.skipTest(
                 "Requires core/loop.py integration for fast AI harness tool routing."
             )
@@ -143,7 +136,7 @@ class TestToolSelection(unittest.TestCase):
         self.assertEqual(args["start_line"], 1)
         self.assertEqual(args["end_line"], 40)
 
-    def test_agent_uses_full_tool_schema_by_default(self):
+    def test_agent_uses_full_tool_schema_in_explicit_balanced_mode(self):
         from core.loop import AgentLoop
 
         agent = object.__new__(AgentLoop)
@@ -153,6 +146,11 @@ class TestToolSelection(unittest.TestCase):
             {"function": {"name": "list_dir"}},
         ]
         agent._get_tool_definitions = lambda: all_tools
+        agent.config = SimpleNamespace(
+            tool_shortlist_enabled=False,
+            ai_harness=SimpleNamespace(mode="balanced"),
+        )
+        agent._log_tool_debug = lambda *args, **kwargs: None
 
         selected = agent._get_tool_definitions_for_turn(
             "open https://example.com and inspect the page"
@@ -160,7 +158,7 @@ class TestToolSelection(unittest.TestCase):
 
         self.assertEqual(selected, all_tools)
 
-    def test_agent_can_opt_in_to_tool_shortlisting_via_env(self):
+    def test_agent_uses_normalized_shortlist_config(self):
         from core.loop import AgentLoop
         from core.tool_defs import shortlist_tool_definitions
 
@@ -173,11 +171,12 @@ class TestToolSelection(unittest.TestCase):
             {"function": {"name": "list_dir"}},
         ]
         agent._get_tool_definitions = lambda: all_tools
+        agent.config = SimpleNamespace(tool_shortlist_enabled=True)
+        agent._log_tool_debug = lambda *args, **kwargs: None
 
-        with mock.patch.dict(os.environ, {"LIMEBOT_ENABLE_TOOL_SHORTLIST": "1"}):
-            selected = agent._get_tool_definitions_for_turn(
-                "open https://example.com and inspect the page"
-            )
+        selected = agent._get_tool_definitions_for_turn(
+            "open https://example.com and inspect the page"
+        )
 
         self.assertEqual(
             selected,
@@ -191,6 +190,7 @@ class TestToolSelection(unittest.TestCase):
 
         agent = object.__new__(AgentLoop)
         agent.config = SimpleNamespace(
+            tool_shortlist_enabled=True,
             ai_harness=SimpleNamespace(
                 mode="fast", fast_disable_tools_for_casual=True
             )
@@ -204,6 +204,7 @@ class TestToolSelection(unittest.TestCase):
 
         agent = object.__new__(AgentLoop)
         agent.config = SimpleNamespace(
+            tool_shortlist_enabled=True,
             ai_harness=SimpleNamespace(
                 mode="fast", fast_disable_tools_for_casual=True
             )
@@ -223,6 +224,7 @@ class TestToolSelection(unittest.TestCase):
 
         agent = object.__new__(AgentLoop)
         agent.config = SimpleNamespace(
+            tool_shortlist_enabled=True,
             ai_harness=SimpleNamespace(
                 mode="fast", fast_disable_tools_for_casual=True
             )
@@ -236,10 +238,9 @@ class TestToolSelection(unittest.TestCase):
         ]
         agent._log_tool_debug = lambda *args, **kwargs: None
 
-        with mock.patch.dict(os.environ, {"LIMEBOT_ENABLE_TOOL_SHORTLIST": ""}):
-            selected = agent._get_tool_definitions_for_turn(
-                "open https://example.com and inspect the page"
-            )
+        selected = agent._get_tool_definitions_for_turn(
+            "open https://example.com and inspect the page"
+        )
 
         self.assertEqual(
             selected,
@@ -248,3 +249,37 @@ class TestToolSelection(unittest.TestCase):
                 "open https://example.com and inspect the page",
             ),
         )
+
+    def test_actual_registry_routing_matrix_is_bounded_and_capable(self):
+        from core.tool_defs import build_tool_definitions, shortlist_tool_definitions
+
+        tools = build_tool_definitions(enabled_skills=["browser"])
+        cases = {
+            "find and read config.py in the repository": {"search_files", "read_file"},
+            "write changes to core/loop.py": {"write_file"},
+            "delete temp/output.json": {"delete_file"},
+            "run pytest for the tests": {"run_command"},
+            "open https://example.com then click and type into the form": {
+                "browser_navigate", "browser_click", "browser_type"
+            },
+            "search the web for current Python news": {"web_search"},
+            "find an image of a lime": {"image_search"},
+            "deep research this topic with sources": {"deep_research"},
+            "recall what I told you yesterday": {"memory_search"},
+            "remind me tomorrow at noon": {"cron_add"},
+            "send a Discord DM": {"send_discord_message"},
+            "send this photo as an attachment": {"send_media"},
+            "send a voice note": {"send_voice"},
+            "generate an image of a lime": {"generate_image"},
+            "delegate this to a subagent": {"spawn_agent"},
+        }
+        for prompt, required in cases.items():
+            with self.subTest(prompt=prompt):
+                selected = shortlist_tool_definitions(tools, prompt)
+                names = {tool["function"]["name"] for tool in selected}
+                self.assertTrue(required <= names, (required, names))
+                self.assertLessEqual(len(selected), 12)
+                self.assertLess(len(json.dumps(selected)), len(json.dumps(tools)))
+
+        ambiguous = "help me with this"
+        self.assertEqual(shortlist_tool_definitions(tools, ambiguous), tools)

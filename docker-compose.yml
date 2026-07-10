@@ -1,43 +1,75 @@
+name: limebot
+
 services:
   backend:
-    build: .
-    container_name: limebot-backend
-    ports:
-      - "8000:8000"
+    build:
+      context: .
+      args:
+        LIMEBOT_FEATURES: ${LIMEBOT_DOCKER_FEATURES:-}
+        INSTALL_BROWSER: ${LIMEBOT_DOCKER_INSTALL_BROWSER:-0}
+    env_file:
+      - .env
+    environment:
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: 8000
+      LIMEBOT_TRUSTED_PROXY_ONLY: "true"
+      WHATSAPP_BRIDGE_URL: ws://bridge:3000
+    expose:
+      - "8000"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./temp:/app/temp
       - ./persona:/app/persona
       - ./skills:/app/skills
       - ./.env:/app/.env
       - ./limebot.json:/app/limebot.json
       - ./allowed_paths.txt:/app/allowed_paths.txt
-    env_file:
-      - .env
-    environment:
-      - WHATSAPP_BRIDGE_URL=ws://bridge:3000
-    depends_on:
-      bridge:
-        condition: service_started
+    init: true
     restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/live', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 6
 
   frontend:
-    build: ./web
-    container_name: limebot-frontend
+    build:
+      context: ./web
     ports:
-      - "3000:80"
+      - "${LIMEBOT_DOCKER_BIND_HOST:-127.0.0.1}:${LIMEBOT_FRONTEND_PORT:-3000}:80"
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
+    init: true
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 6
 
   bridge:
-    build: ./bridge
-    container_name: limebot-bridge
-    ports:
-      - "3001:3000"
+    profiles: ["whatsapp"]
+    build:
+      context: ./bridge
+    environment:
+      BRIDGE_HOST: 0.0.0.0
+      BRIDGE_PORT: 3000
+      AUTH_DIR: /app/session
+    expose:
+      - "3000"
     volumes:
       - ./bridge/session:/app/session
-    environment:
-      - PORT=3000
+    init: true
     restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "node", "-e", "const s=require('net').connect(3000,'127.0.0.1');s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 6

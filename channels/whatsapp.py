@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 from loguru import logger
@@ -24,6 +25,7 @@ _FORBIDDEN_FILENAMES = frozenset(
 )
 
 CONTACTS_PATH = Path.cwd() / "data" / "contacts.json"
+INBOUND_AUDIO_DIR = (Path.cwd() / "temp" / "whatsapp-inbound").resolve()
 _EMPTY_CONTACTS: dict = {"allowed": [], "pending": [], "blocked": [], "identities": {}}
 
 
@@ -38,7 +40,11 @@ class WhatsAppChannel(BaseChannel):
         super().__init__(config, bus)
         self._ws = None
         self._connected = False
+        self._bridge_connected = False
+        self._whatsapp_status = "disconnected"
+        self._status_updated_at = 0.0
         self._self_id: str | None = None
+        self._pending_commands: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._recent_msg_ids: dict[str, float] = {}
         self._recent_fingerprints: dict[str, float] = {}
 
@@ -58,6 +64,7 @@ class WhatsAppChannel(BaseChannel):
             try:
                 async with websockets.connect(bridge_url) as ws:
                     self._ws = ws
+                    self._bridge_connected = True
                     self._connected = True
                     retries = 0
                     backoff = 5
@@ -73,6 +80,8 @@ class WhatsAppChannel(BaseChannel):
                 break
             except Exception as e:
                 self._connected = False
+                self._bridge_connected = False
+                self._whatsapp_status = "disconnected"
                 self._ws = None
                 retries += 1
 
@@ -94,6 +103,8 @@ class WhatsAppChannel(BaseChannel):
         """Stop the WhatsApp channel."""
         self._running = False
         self._connected = False
+        self._bridge_connected = False
+        self._whatsapp_status = "disconnected"
 
         if self._ws:
             await self._ws.close()
@@ -125,6 +136,15 @@ class WhatsAppChannel(BaseChannel):
                         logger.warning(
                             f"[WhatsApp] Failed to clean up staged file '{metadata.get('file_path')}': {e}"
                         )
+                elif not sent and metadata.get("fallback_text"):
+                    await self.send(
+                        OutboundMessage(
+                            channel=self.name,
+                            chat_id=msg.chat_id,
+                            content=str(metadata.get("fallback_text")),
+                            metadata={"type": "voice_fallback"},
+                        )
+                    )
                 return
 
             if "embed" in metadata:
@@ -205,18 +225,36 @@ class WhatsAppChannel(BaseChannel):
             return False
 
         try:
+            request_id = uuid.uuid4().hex
+            loop = asyncio.get_running_loop()
+            result_future: asyncio.Future[dict[str, Any]] = loop.create_future()
+            self._pending_commands[request_id] = result_future
             payload = {
                 "type": "sendFile",
                 "to": to,
                 "filePath": str(p),
                 "caption": caption,
+                "requestId": request_id,
             }
             await self._ws.send(json.dumps(payload))
-            logger.info(f"[WhatsApp] File sent: {p} to {to}")
-            return True
+            try:
+                result = await asyncio.wait_for(result_future, timeout=20.0)
+            except asyncio.TimeoutError:
+                logger.error(f"[WhatsApp] Timed out waiting for bridge delivery acknowledgement: {p}")
+                return False
+            if result.get("type") == "fileSent":
+                logger.info(f"[WhatsApp] File delivered: {p} to {to}")
+                return True
+            logger.warning(
+                f"[WhatsApp] Bridge did not deliver file (status={result.get('type')}): {p}"
+            )
+            return False
         except Exception as e:
             logger.error(f"Error sending WhatsApp file: {e}")
             return False
+        finally:
+            if "request_id" in locals():
+                self._pending_commands.pop(request_id, None)
 
     async def reset_session(self) -> bool:
         """Reset WhatsApp session via bridge."""
@@ -241,6 +279,13 @@ class WhatsAppChannel(BaseChannel):
             return
 
         msg_type = data.get("type")
+
+        request_id = data.get("requestId") or data.get("request_id")
+        if request_id:
+            pending = self._pending_commands.get(str(request_id))
+            if pending and not pending.done():
+                pending.set_result(data)
+                return
 
         if msg_type == "message":
             await self._handle_incoming_message(data)
@@ -292,6 +337,55 @@ class WhatsAppChannel(BaseChannel):
             f"[WhatsApp] Processing message from {phone_number} ({push_name or 'No Name'})"
         )
 
+        audio = data.get("audio")
+        audio_path: Path | None = None
+        if isinstance(audio, dict):
+            raw_path = audio.get("path")
+            if isinstance(raw_path, str):
+                try:
+                    candidate = Path(raw_path).resolve()
+                    candidate.relative_to(INBOUND_AUDIO_DIR)
+                    audio_path = candidate
+                except (OSError, ValueError):
+                    logger.warning("[WhatsApp] Rejected inbound audio path outside the temp directory.")
+
+        if audio_path is not None or content == "[Voice Message]":
+            try:
+                if audio_path is None:
+                    await self._send_voice_error(
+                        sender_alt if sender_alt and sender.endswith("@lid") else sender,
+                        "I received your voice message, but I couldn't access the audio file.",
+                    )
+                    return
+
+                from core.stt import ElevenLabsSTT
+
+                if not ElevenLabsSTT.is_enabled():
+                    await self._send_voice_error(
+                        sender_alt if sender_alt and sender.endswith("@lid") else sender,
+                        "I received your voice message, but voice transcription is unavailable. Configure ELEVENLABS_API_KEY to enable it.",
+                    )
+                    return
+
+                transcript = await ElevenLabsSTT.transcribe_file(
+                    audio_path,
+                    str(audio.get("mimetype") or "audio/ogg"),
+                )
+                content = f"[Voice message transcript]\n{transcript}"
+            except Exception as exc:
+                logger.warning(f"[WhatsApp] Voice transcription failed: {exc}")
+                await self._send_voice_error(
+                    sender_alt if sender_alt and sender.endswith("@lid") else sender,
+                    "I received your voice message, but I couldn't transcribe it. Please try again or send text.",
+                )
+                return
+            finally:
+                if audio_path is not None:
+                    try:
+                        audio_path.unlink(missing_ok=True)
+                    except OSError as exc:
+                        logger.warning(f"[WhatsApp] Failed to remove temporary audio: {exc}")
+
         await self._handle_message(
             sender_id=phone_number,
             chat_id=sender_alt if sender_alt and sender.endswith("@lid") else sender,
@@ -302,7 +396,21 @@ class WhatsAppChannel(BaseChannel):
                 "is_group": data.get("isGroup", False),
                 "push_name": push_name,
                 "verified_name": verified_name,
+                "voice_transcription": audio_path is not None,
+                "voice_mimetype": audio.get("mimetype") if isinstance(audio, dict) else None,
+                "voice_duration_seconds": audio.get("durationSeconds") if isinstance(audio, dict) else None,
             },
+        )
+
+    async def _send_voice_error(self, chat_id: str, content: str) -> None:
+        """Send a concise voice-processing status without exposing provider errors."""
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                content=content,
+                channel=self.name,
+                chat_id=chat_id,
+                metadata={"type": "voice_transcription_error"},
+            )
         )
 
     def _is_duplicate_message(self, data: dict) -> bool:
@@ -342,6 +450,8 @@ class WhatsAppChannel(BaseChannel):
     async def _handle_status(self, data: dict) -> None:
         status = data.get("status")
         logger.info(f"WhatsApp status: {status}")
+        self._whatsapp_status = str(status or "disconnected")
+        self._status_updated_at = asyncio.get_running_loop().time()
 
         if status == "connected":
             self._connected = True
@@ -360,6 +470,19 @@ class WhatsAppChannel(BaseChannel):
                 metadata={"type": "whatsapp_status", "status": status},
             )
         )
+
+    def get_status(self) -> dict[str, Any]:
+        """Return a fast, UI-safe snapshot of bridge and WhatsApp state."""
+        status = self._whatsapp_status
+        if self._bridge_connected and status == "disconnected":
+            status = "connecting"
+        return {
+            "status": status,
+            "connected": status == "connected",
+            "bridge_connected": self._bridge_connected,
+            "self_id": self._self_id,
+            "updated_at": self._status_updated_at,
+        }
 
     async def _handle_qr(self, data: dict) -> None:
         # Baileys fires QR events mid-reconnect even when a valid saved session

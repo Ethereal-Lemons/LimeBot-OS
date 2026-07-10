@@ -15,8 +15,14 @@ from typing import Any, Optional
 
 DEFAULT_MAX_DIFF_BYTES = 80 * 1024
 DEFAULT_MAX_INPUT_BYTES = 2 * 1024 * 1024
+DEFAULT_MAX_CHANGESET_BYTES = 24 * 1024
+DEFAULT_MAX_CHANGESET_SUMMARY_CHARS = 2_000
+DEFAULT_MAX_VERIFICATION_RESULTS = 20
 MAX_FILES = 500
 MAX_HUNKS_PER_FILE = 200
+CHANGESET_STATUSES = frozenset(
+    {"planned", "awaiting_approval", "applied", "verified", "failed", "blocked"}
+)
 
 
 @dataclass
@@ -87,6 +93,168 @@ def redact_secrets(value: str) -> str:
     for pattern in token_patterns:
         text = re.sub(pattern, "[REDACTED]", text)
     return text
+
+
+def _bounded_text(value: Any, limit: int) -> str:
+    """Redact before limiting text that may leave the trusted tool boundary."""
+    return redact_secrets(str(value or ""))[:max(0, limit)]
+
+
+def _safe_verification_rows(rows: Any) -> list[dict[str, Any]]:
+    """Keep outcome evidence, never the command or a local path."""
+    safe_rows: list[dict[str, Any]] = []
+    if not isinstance(rows, list):
+        return safe_rows
+    for index, row in enumerate(rows[:DEFAULT_MAX_VERIFICATION_RESULTS]):
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "pending").lower()
+        if status not in {"pending", "running", "passed", "failed", "blocked"}:
+            status = "pending"
+        exit_code = row.get("exit_code")
+        safe_rows.append(
+            {
+                "id": str(row.get("id") or f"verification-{index + 1}")[:80],
+                "label": _bounded_text(row.get("label") or "Verification", 160),
+                "status": status,
+                "exit_code": exit_code if isinstance(exit_code, int) else None,
+                "diagnostic": _bounded_text(
+                    row.get("diagnostic") or row.get("result") or "", 800
+                ),
+            }
+        )
+    return safe_rows
+
+
+def build_changeset_artifact(
+    diff_text: str,
+    *,
+    status: str = "planned",
+    summary: str = "",
+    verification: Any = None,
+    preconditions: Any = None,
+    max_diff_bytes: int = DEFAULT_MAX_CHANGESET_BYTES,
+) -> dict[str, Any]:
+    """Build the persisted, bounded representation of a proposed change set.
+
+    The artifact intentionally contains a redacted diff only. Preconditions are
+    opaque file identifiers plus content hashes; callers must never persist an
+    absolute path or a file body in this structure.
+    """
+    normalized_status = str(status or "planned").lower()
+    if normalized_status not in CHANGESET_STATUSES:
+        raise ValueError("invalid change set status")
+    parsed = parse_unified_diff(diff_text or "", max_diff_bytes=max_diff_bytes)
+    safe_preconditions: list[dict[str, str]] = []
+    if isinstance(preconditions, list):
+        for index, item in enumerate(preconditions[:MAX_FILES]):
+            if not isinstance(item, dict):
+                continue
+            digest = str(item.get("sha256") or "").lower()
+            if not re.fullmatch(r"[a-f0-9]{64}", digest):
+                continue
+            safe_preconditions.append(
+                {
+                    "file_id": str(item.get("file_id") or f"file-{index + 1}")[:80],
+                    "sha256": digest,
+                }
+            )
+    changed_files = []
+    for index, item in enumerate(parsed.files):
+        changed_files.append(
+            {
+                "file_id": f"file-{index + 1}",
+                "path": item.new_path,
+                "added": item.added,
+                "removed": item.removed,
+                "hunks": [asdict(hunk) for hunk in item.hunks],
+            }
+        )
+    return {
+        "schema_version": 1,
+        "artifact_type": "change_set",
+        "status": normalized_status,
+        "summary": _bounded_text(summary, DEFAULT_MAX_CHANGESET_SUMMARY_CHARS),
+        "added": parsed.added,
+        "removed": parsed.removed,
+        "truncated": parsed.truncated,
+        "changed_files": changed_files,
+        "redacted_diff": parsed.text,
+        "verification": _safe_verification_rows(verification),
+        "preconditions": safe_preconditions,
+    }
+
+
+def build_coding_plan_artifact(plan_text: str) -> dict[str, Any]:
+    """Persist a read-only plan without retaining any tool arguments."""
+    return {
+        "schema_version": 1,
+        "artifact_type": "coding_plan",
+        "status": "planned",
+        "summary": _bounded_text(plan_text, DEFAULT_MAX_CHANGESET_SUMMARY_CHARS),
+    }
+
+
+def validate_changeset_preconditions(
+    preconditions: Any, current_hashes: dict[str, str]
+) -> tuple[bool, list[str]]:
+    """Fail closed when a staged file identity no longer matches its hash."""
+    conflicts: list[str] = []
+    for item in preconditions or []:
+        if not isinstance(item, dict):
+            continue
+        file_id = str(item.get("file_id") or "")
+        expected = str(item.get("sha256") or "").lower()
+        observed = str(current_hashes.get(file_id) or "").lower()
+        if not file_id or not expected or observed != expected:
+            conflicts.append(file_id or "unknown")
+    return not conflicts, conflicts
+
+
+def changeset_for_app(artifact: Any) -> dict[str, Any]:
+    """Return the review payload allowed through the companion API.
+
+    App clients see stable aliases and bounded, secret-redacted hunk text; raw
+    local paths, commands, preconditions, and arbitrary artifact metadata stay
+    server-side.
+    """
+    if not isinstance(artifact, dict):
+        return {}
+    files = artifact.get("changed_files") or []
+    aliases: dict[str, str] = {}
+    safe_files: list[dict[str, Any]] = []
+    for index, item in enumerate(files[:MAX_FILES]):
+        if not isinstance(item, dict):
+            continue
+        file_id = str(item.get("file_id") or f"file-{index + 1}")[:80]
+        raw_path = str(item.get("path") or "")
+        aliases[raw_path] = file_id
+        safe_files.append(
+            {
+                "file_id": file_id,
+                "added": int(item.get("added") or 0),
+                "removed": int(item.get("removed") or 0),
+                "hunks": item.get("hunks")[:MAX_HUNKS_PER_FILE]
+                if isinstance(item.get("hunks"), list)
+                else [],
+            }
+        )
+    diff = _bounded_text(artifact.get("redacted_diff"), DEFAULT_MAX_CHANGESET_BYTES)
+    for raw_path, file_id in aliases.items():
+        if raw_path:
+            diff = diff.replace(raw_path, file_id)
+    return {
+        "id": str(artifact.get("id") or "")[:80] or None,
+        "artifact_type": "change_set",
+        "status": str(artifact.get("status") or "planned"),
+        "summary": _bounded_text(artifact.get("summary"), DEFAULT_MAX_CHANGESET_SUMMARY_CHARS),
+        "added": int(artifact.get("added") or 0),
+        "removed": int(artifact.get("removed") or 0),
+        "truncated": bool(artifact.get("truncated")),
+        "changed_files": safe_files,
+        "redacted_diff": diff,
+        "verification": _safe_verification_rows(artifact.get("verification")),
+    }
 
 
 def _safe_path(value: str) -> str:

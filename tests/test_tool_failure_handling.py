@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 
@@ -28,6 +29,128 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             agent._is_tool_result_error("run_command", "done\n\nExit Code: 0")
         )
+
+    async def test_structured_outcome_preserves_failure_tail_and_classification(self):
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+        agent = _TestAgentLoop(bus=MessageBus())
+        long_failure = "setup line\n" + ("noise\n" * 800) + "assertion failed\nExit Code: 17"
+        failure = agent._build_tool_outcome("run_command", long_failure)
+        self.assertFalse(failure.success)
+        self.assertEqual(failure.exit_code, 17)
+        self.assertIn("setup line", failure.diagnostic_head)
+        self.assertIn("Exit Code: 17", failure.diagnostic_tail)
+        self.assertTrue(failure.failure_fingerprint)
+
+        timeout = agent._build_tool_outcome("run_command", "Error: [TIMEOUT] [STALL]")
+        self.assertTrue(timeout.timed_out)
+        self.assertTrue(timeout.stalled)
+
+    async def test_batch_serializes_write_before_verification_command(self):
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+            def _get_tool_approval_decision(self, *args, **kwargs):
+                return {
+                    "allowed": True,
+                    "requires_confirmation": False,
+                    "reason": "test",
+                    "policy_profile": "autonomous",
+                }
+
+            async def _execute_tool(self, name, args, session_key):
+                if name == "write_file":
+                    self.order.append("write:start")
+                    await asyncio.sleep(0)
+                    self.written = True
+                    self.order.append("write:done")
+                    return "written"
+                if name == "run_command":
+                    self.order.append("verify")
+                    return "verified\n\nExit Code: 0" if self.written else "raced\n\nExit Code: 1"
+                return "ok"
+
+        agent = _TestAgentLoop(bus=MessageBus())
+        agent.order = []
+        agent.written = False
+        agent.history["web_test"] = []
+        await agent._execute_tool_batch(
+            [
+                {"id": "write", "function": {"name": "write_file", "arguments": '{"path":"a.py","content":"x"}'}},
+                {"id": "verify", "function": {"name": "run_command", "arguments": '{"command":"pytest -q"}'}},
+            ],
+            "web_test",
+            None,
+            coding_turn=True,
+        )
+        self.assertEqual(agent.order, ["write:start", "write:done", "verify"])
+        self.assertTrue(agent._last_tool_outcomes[-1].success)
+
+    async def test_repeated_verifier_failure_becomes_actionable_blocker(self):
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+        agent = _TestAgentLoop(bus=MessageBus())
+        agent.history["web_test"] = []
+        failure = agent._build_tool_outcome("run_command", "failed assertion\nExit Code: 1")
+        agent._last_tool_outcomes = [failure]
+        attempts, blocked = await agent._queue_coding_recovery(
+            "web_test", None, set(), 0
+        )
+        self.assertEqual(attempts, 1)
+        self.assertIsNone(blocked)
+        agent._last_tool_outcomes = [failure]
+        _, blocked = await agent._queue_coding_recovery(
+            "web_test", None, {failure.failure_fingerprint}, attempts
+        )
+        self.assertIn("same failure", blocked)
+
+    async def test_repeated_failure_after_successful_edit_allows_repair(self):
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+        agent = _TestAgentLoop(bus=MessageBus())
+        agent.history["web_test"] = [
+            {
+                "role": "tool",
+                "name": "run_command",
+                "content": "failed assertion\nExit Code: 1",
+            },
+            {"role": "tool", "name": "write_file", "content": "written"},
+            {
+                "role": "tool",
+                "name": "run_command",
+                "content": "failed assertion\nExit Code: 1",
+            },
+        ]
+        failure = agent._build_tool_outcome("run_command", "failed assertion\nExit Code: 1")
+        agent._last_tool_outcomes = [failure]
+        attempts, blocked = await agent._queue_coding_recovery(
+            "web_test", None, {failure.failure_fingerprint}, 1
+        )
+        self.assertEqual(attempts, 2)
+        self.assertIsNone(blocked)
 
     async def test_tool_failure_with_empty_followup_emits_fallback_reply(self):
         from core.bus import MessageBus

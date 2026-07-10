@@ -6,6 +6,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import makeWASocket, {
   DisconnectReason,
+  downloadMediaMessage,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
@@ -14,6 +15,14 @@ import makeWASocket, {
 import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const BRIDGE_PROJECT_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+);
 
 const VERSION = '1.0.0';
 
@@ -26,11 +35,19 @@ export interface InboundMessage {
   isGroup: boolean;
   pushName?: string;
   verifiedName?: string;
+  audio?: InboundAudio;
+}
+
+export interface InboundAudio {
+  path: string;
+  mimetype: string;
+  fileName: string;
+  durationSeconds?: number;
 }
 
 export interface WhatsAppClientOptions {
   authDir: string;
-  onMessage: (msg: InboundMessage) => void;
+  onMessage: (msg: InboundMessage) => void | Promise<void>;
   onQR: (qr: string) => void;
   onStatus: (status: string, selfId?: string) => void;
 }
@@ -218,20 +235,25 @@ export class WhatsAppClient {
           }
         }
 
+        const message = msg.message;
+        const audio = message?.audioMessage
+          ? await this.downloadInboundAudio(msg)
+          : undefined;
         const content = this.extractMessageContent(msg);
-        if (!content) continue;
+        if (!content && !audio) continue;
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
 
-        this.options.onMessage({
+        await this.options.onMessage({
           id: msg.key.id || '',
           sender,
           senderAlt,
-          content,
+          content: content || '[Voice Message]',
           timestamp: msg.messageTimestamp as number,
           isGroup,
           pushName: msg.pushName || undefined,
           verifiedName: msg.verifiedName || undefined,
+          audio,
         });
       }
     });
@@ -315,6 +337,48 @@ export class WhatsAppClient {
     }
 
     return null;
+  }
+
+  private async downloadInboundAudio(msg: any): Promise<InboundAudio | undefined> {
+    const audioMessage = msg.message?.audioMessage;
+    if (!audioMessage) return undefined;
+
+    const fileLength = Number(audioMessage.fileLength || 0);
+    const maxBytes = 15 * 1024 * 1024;
+    if (fileLength > maxBytes) {
+      console.warn(`[WhatsApp] Ignoring oversized audio message (${fileLength} bytes).`);
+      return undefined;
+    }
+
+    try {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const crypto = await import('crypto');
+      const buffer = await downloadMediaMessage(msg, 'buffer', {});
+
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > maxBytes) {
+        console.warn('[WhatsApp] Ignoring empty or oversized downloaded audio message.');
+        return undefined;
+      }
+
+      const directory = path.resolve(BRIDGE_PROJECT_ROOT, 'temp', 'whatsapp-inbound');
+      await fs.mkdir(directory, { recursive: true });
+      const mimetype = String(audioMessage.mimetype || 'audio/ogg');
+      const extension = mimetype.includes('mpeg') || mimetype.includes('mp3') ? 'mp3' : 'ogg';
+      const fileName = `whatsapp_${crypto.randomUUID()}.${extension}`;
+      const filePath = path.join(directory, fileName);
+      await fs.writeFile(filePath, buffer, { mode: 0o600 });
+
+      return {
+        path: filePath,
+        mimetype,
+        fileName,
+        durationSeconds: Number(audioMessage.seconds || 0) || undefined,
+      };
+    } catch (error) {
+      console.error('[WhatsApp] Failed to download inbound audio:', error);
+      return undefined;
+    }
   }
 
   private formatJid(jid: string): string {

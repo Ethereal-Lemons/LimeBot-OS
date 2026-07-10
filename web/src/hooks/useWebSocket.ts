@@ -18,6 +18,7 @@ import {
     type ChatAttachment,
     type ChatMessage,
     getUserTurnIndex,
+    upsertChangeSet,
     upsertToolExecution,
     upsertStreamDelta,
 } from '@/lib/chat-state';
@@ -380,6 +381,32 @@ export function useWebSocket({
                                 },
                             })
                         );
+                    } else if (data.metadata?.type === 'changeset') {
+                        const changeSet = data.metadata?.changeset;
+                        if (changeSet && typeof changeSet === 'object') {
+                            setMessages(prev =>
+                                upsertChangeSet(prev, {
+                                    messageId: eventMessageId,
+                                    turnId: eventTurnId,
+                                    changeSet,
+                                })
+                            );
+                        }
+                    } else if (data.metadata?.type === 'coding_plan') {
+                        const plan = data.metadata?.plan;
+                        if (plan && typeof plan === 'object') {
+                            setMessages(prev =>
+                                upsertChangeSet(prev, {
+                                    messageId: eventMessageId,
+                                    turnId: eventTurnId,
+                                    changeSet: {
+                                        ...plan,
+                                        artifact_type: 'coding_plan',
+                                        status: 'planned',
+                                    },
+                                })
+                            );
+                        }
                     } else if (data.metadata?.type === 'activity') {
                         console.log('👻 Activity:', data.metadata.text);
                         onActivity(data.metadata.text);

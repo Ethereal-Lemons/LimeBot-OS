@@ -169,10 +169,6 @@ def load_config(force_reload=False):
     config.allow_unsafe_commands = (
         os.getenv("ALLOW_UNSAFE_COMMANDS", "false").lower() == "true"
     )
-    config.tool_shortlist_enabled = (
-        os.getenv("LIMEBOT_ENABLE_TOOL_SHORTLIST", "false").lower() == "true"
-    )
-
     try:
         config.max_iterations = int(os.getenv("MAX_ITERATIONS", "30"))
     except ValueError:
@@ -201,15 +197,15 @@ def load_config(force_reload=False):
 
     config.ai_harness = SimpleNamespace()
     ai_harness_mode = str(
-        os.getenv("LIMEBOT_AI_HARNESS_MODE", "balanced") or "balanced"
+        os.getenv("LIMEBOT_AI_HARNESS_MODE", "fast") or "fast"
     ).strip().lower()
     if not ai_harness_mode:
-        ai_harness_mode = "balanced"
+        ai_harness_mode = "fast"
     if ai_harness_mode not in {"balanced", "fast"}:
         logger.warning(
-            "Invalid LIMEBOT_AI_HARNESS_MODE in .env, defaulting to balanced."
+            "Invalid LIMEBOT_AI_HARNESS_MODE in .env, defaulting to fast."
         )
-        ai_harness_mode = "balanced"
+        ai_harness_mode = "fast"
     config.ai_harness.mode = ai_harness_mode
     config.ai_harness.fast_rag_timeout_s = _load_float_env(
         "LIMEBOT_FAST_RAG_TIMEOUT", 0.08
@@ -224,6 +220,12 @@ def load_config(force_reload=False):
     )
     config.ai_harness.fast_disable_tools_for_casual = _load_bool_env(
         "LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL", default=True
+    )
+    # One normalized authority controls schema selection. The legacy toggle can
+    # still opt balanced mode into shortlisting; fast mode needs no extra flag.
+    config.tool_shortlist_enabled = (
+        config.ai_harness.mode == "fast"
+        or _load_bool_env("LIMEBOT_ENABLE_TOOL_SHORTLIST", default=False)
     )
 
     from core.llm_utils import get_api_key_for_model

@@ -1,26 +1,20 @@
-"""
-Observability & Metrics — lightweight timing, counters, and structured event logging.
+"""Low-overhead metrics with bounded, ordered background JSONL persistence."""
 
-Collects per-session and global metrics without external dependencies.
-Data is exposed via `get_snapshot()` for the web dashboard and logged to
-`persona/sessions/metrics.jsonl` for post-hoc analysis.
-"""
-
-import time
 import json
+import queue
 import threading
-from pathlib import Path
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, Optional
+import time
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 METRICS_FILE = Path("persona/sessions/metrics.jsonl")
+_METRICS_QUEUE_SIZE = 2048
 
 
 @dataclass
 class SessionMetrics:
-    """Accumulated metrics for a single session."""
-
     session_key: str
     llm_calls: int = 0
     tool_calls: int = 0
@@ -33,25 +27,36 @@ class SessionMetrics:
     started_at: float = field(default_factory=time.time)
 
 
+@dataclass
+class _FlushMarker:
+    completed: threading.Event
+
+
 class MetricsCollector:
-    """
-    Singleton metrics store.
-    Thread-safe via a simple lock (asyncio tasks share one thread,
-    but SessionManager runs in threads for I/O).
-    """
+    """Thread-safe counters whose event logging never waits for filesystem I/O."""
 
     _instance = None
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._sessions: Dict[str, SessionMetrics] = {}
-            cls._instance._lock = threading.Lock()
-            cls._instance._global_llm_calls = 0
-            cls._instance._global_tool_calls = 0
-            cls._instance._global_errors = 0
-            cls._instance._global_anomalies: Dict[str, int] = {}
-            cls._instance._boot_time = time.time()
+            instance = super().__new__(cls)
+            instance._sessions = {}
+            instance._lock = threading.Lock()
+            instance._global_llm_calls = 0
+            instance._global_tool_calls = 0
+            instance._global_errors = 0
+            instance._global_anomalies = {}
+            instance._boot_time = time.time()
+            instance._dropped_events = 0
+            instance._closed = False
+            instance._events = queue.Queue(maxsize=_METRICS_QUEUE_SIZE)
+            instance._writer = threading.Thread(
+                target=instance._writer_loop,
+                name="limebot-metrics-writer",
+                daemon=True,
+            )
+            instance._writer.start()
+            cls._instance = instance
         return cls._instance
 
     def _get_session(self, session_key: str) -> SessionMetrics:
@@ -59,123 +64,57 @@ class MetricsCollector:
             self._sessions[session_key] = SessionMetrics(session_key=session_key)
         return self._sessions[session_key]
 
-    def record_llm_call(
-        self,
-        session_key: str,
-        duration_s: float,
-        tokens_in: int = 0,
-        tokens_out: int = 0,
-    ):
-        """Record an LLM call with its duration and token usage."""
+    def record_llm_call(self, session_key: str, duration_s: float, tokens_in: int = 0, tokens_out: int = 0):
         with self._lock:
-            sm = self._get_session(session_key)
-            sm.llm_calls += 1
-            sm.total_llm_time_s += duration_s
-            sm.tokens_in += tokens_in
-            sm.tokens_out += tokens_out
+            metrics = self._get_session(session_key)
+            metrics.llm_calls += 1
+            metrics.total_llm_time_s += duration_s
+            metrics.tokens_in += tokens_in
+            metrics.tokens_out += tokens_out
             self._global_llm_calls += 1
 
-    def record_tool_call(
-        self, session_key: str, tool_name: str, duration_s: float, error: bool = False
-    ):
-        """Record a tool execution with timing and error status."""
+    def record_tool_call(self, session_key: str, tool_name: str, duration_s: float, error: bool = False):
         with self._lock:
-            sm = self._get_session(session_key)
-            sm.tool_calls += 1
-            sm.total_tool_time_s += duration_s
+            metrics = self._get_session(session_key)
+            metrics.tool_calls += 1
+            metrics.total_tool_time_s += duration_s
             self._global_tool_calls += 1
             if error:
-                sm.errors += 1
+                metrics.errors += 1
                 self._global_errors += 1
-
-        self._log_event(
-            {
-                "type": "tool_call",
-                "session": session_key,
-                "tool": tool_name,
-                "duration_s": round(duration_s, 3),
-                "error": error,
-                "ts": time.time(),
-            }
-        )
+        self._log_event({"type": "tool_call", "session": session_key, "tool": tool_name, "duration_s": round(duration_s, 3), "error": error, "ts": time.time()})
 
     def record_error(self, session_key: str, error_type: str, detail: str = ""):
-        """Record a generic error event."""
         with self._lock:
-            sm = self._get_session(session_key)
-            sm.errors += 1
+            metrics = self._get_session(session_key)
+            metrics.errors += 1
             self._global_errors += 1
+        self._log_event({"type": "error", "session": session_key, "error_type": error_type, "detail": detail[:500], "ts": time.time()})
 
-        self._log_event(
-            {
-                "type": "error",
-                "session": session_key,
-                "error_type": error_type,
-                "detail": detail[:500],
-                "ts": time.time(),
-            }
-        )
-
-    def record_anomaly(
-        self, session_key: str, anomaly_type: str, detail: str = "", count: int = 1
-    ):
-        """Record a non-fatal anomaly for observability and later cleanup."""
+    def record_anomaly(self, session_key: str, anomaly_type: str, detail: str = "", count: int = 1):
         with self._lock:
-            sm = self._get_session(session_key)
-            sm.anomalies[anomaly_type] = sm.anomalies.get(anomaly_type, 0) + count
-            self._global_anomalies[anomaly_type] = (
-                self._global_anomalies.get(anomaly_type, 0) + count
-            )
+            metrics = self._get_session(session_key)
+            metrics.anomalies[anomaly_type] = metrics.anomalies.get(anomaly_type, 0) + count
+            self._global_anomalies[anomaly_type] = self._global_anomalies.get(anomaly_type, 0) + count
+        self._log_event({"type": "anomaly", "session": session_key, "anomaly_type": anomaly_type, "detail": detail[:500], "count": count, "ts": time.time()})
 
-        self._log_event(
-            {
-                "type": "anomaly",
-                "session": session_key,
-                "anomaly_type": anomaly_type,
-                "detail": detail[:500],
-                "count": count,
-                "ts": time.time(),
-            }
-        )
-
-    def record_stage_timing(
-        self,
-        session_key: str,
-        stage: str,
-        duration_s: float,
-        metadata: Optional[dict] = None,
-    ):
-        """Record a per-stage timing event for turn-level latency analysis."""
-        event = {
-            "type": "stage_timing",
-            "session": session_key,
-            "stage": str(stage or "").strip() or "unknown",
-            "duration_s": round(float(duration_s), 3),
-            "ts": time.time(),
-        }
+    def record_stage_timing(self, session_key: str, stage: str, duration_s: float, metadata: Optional[dict] = None):
+        event = {"type": "stage_timing", "session": session_key, "stage": str(stage or "").strip() or "unknown", "duration_s": round(float(duration_s), 3), "ts": time.time()}
         if metadata is not None:
             event["metadata"] = self._normalize_metadata_value(metadata)
         self._log_event(event)
 
     @contextmanager
     def time_llm(self, session_key: str):
-        """Context manager that times an LLM call. Caller sets tokens after."""
         start = time.time()
         result = {"tokens_in": 0, "tokens_out": 0}
         try:
             yield result
         finally:
-            duration = time.time() - start
-            self.record_llm_call(
-                session_key,
-                duration,
-                tokens_in=result.get("tokens_in", 0),
-                tokens_out=result.get("tokens_out", 0),
-            )
+            self.record_llm_call(session_key, time.time() - start, result.get("tokens_in", 0), result.get("tokens_out", 0))
 
     @contextmanager
     def time_tool(self, session_key: str, tool_name: str):
-        """Context manager that times a tool call."""
         start = time.time()
         error_flag = [False]
         try:
@@ -184,11 +123,9 @@ class MetricsCollector:
             error_flag[0] = True
             raise
         finally:
-            duration = time.time() - start
-            self.record_tool_call(session_key, tool_name, duration, error=error_flag[0])
+            self.record_tool_call(session_key, tool_name, time.time() - start, error=error_flag[0])
 
     def get_snapshot(self) -> dict:
-        """Return a JSON-serializable snapshot of all metrics."""
         with self._lock:
             return {
                 "uptime_s": round(time.time() - self._boot_time, 1),
@@ -197,15 +134,15 @@ class MetricsCollector:
                     "tool_calls": self._global_tool_calls,
                     "errors": self._global_errors,
                     "anomalies": dict(self._global_anomalies),
+                    "dropped_events": self._dropped_events,
                 },
-                "sessions": {k: asdict(v) for k, v in self._sessions.items()},
+                "sessions": {key: asdict(value) for key, value in self._sessions.items()},
             }
 
     def get_session_metrics(self, session_key: str) -> Optional[dict]:
-        """Return metrics for a specific session."""
         with self._lock:
-            sm = self._sessions.get(session_key)
-            return asdict(sm) if sm else None
+            metrics = self._sessions.get(session_key)
+            return asdict(metrics) if metrics else None
 
     def _normalize_metadata_value(self, value: Any, depth: int = 0) -> Any:
         if depth >= 4:
@@ -216,30 +153,82 @@ class MetricsCollector:
             return value[:500]
         if isinstance(value, dict):
             normalized = {}
-            for index, (key, nested_value) in enumerate(value.items()):
+            for index, (key, nested) in enumerate(value.items()):
                 if index >= 20:
                     normalized["__truncated__"] = max(len(value) - 20, 0)
                     break
-                normalized[str(key)[:100]] = self._normalize_metadata_value(
-                    nested_value, depth + 1
-                )
+                normalized[str(key)[:100]] = self._normalize_metadata_value(nested, depth + 1)
             return normalized
         if isinstance(value, (list, tuple, set)):
             items = list(value)
-            normalized = [
-                self._normalize_metadata_value(item, depth + 1)
-                for item in items[:20]
-            ]
+            normalized = [self._normalize_metadata_value(item, depth + 1) for item in items[:20]]
             if len(items) > 20:
                 normalized.append(f"<truncated:{len(items) - 20}>")
             return normalized
         return str(value)[:500]
 
-    def _log_event(self, event: dict):
-        """Append a structured event to the metrics JSONL file."""
+    def _log_event(self, event: dict) -> None:
+        if self._closed:
+            return
         try:
-            METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(METRICS_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(event) + "\n")
+            payload = json.dumps(self._normalize_metadata_value(event), separators=(",", ":"))
+            self._events.put_nowait(payload)
+        except queue.Full:
+            with self._lock:
+                self._dropped_events += 1
+        except Exception:
+            # Metrics must never recursively log or affect the product path.
+            pass
+
+    @staticmethod
+    def _append_batch(payloads: list[str]) -> None:
+        METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with METRICS_FILE.open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(payloads) + "\n")
+
+    def _writer_loop(self) -> None:
+        batch: list[str] = []
+        while True:
+            item = self._events.get()
+            if item is None:
+                if batch:
+                    self._write_safely(batch)
+                return
+            if isinstance(item, _FlushMarker):
+                if batch:
+                    self._write_safely(batch)
+                    batch = []
+                item.completed.set()
+                continue
+            batch.append(item)
+            if len(batch) >= 32 or self._events.empty():
+                self._write_safely(batch)
+                batch = []
+
+    def _write_safely(self, payloads: list[str]) -> None:
+        try:
+            self._append_batch(payloads)
         except Exception:
             pass
+
+    def flush(self, timeout: float = 2.0) -> bool:
+        if self._closed or not self._writer.is_alive():
+            return self._events.empty()
+        marker = _FlushMarker(threading.Event())
+        try:
+            self._events.put(marker, timeout=max(0.0, timeout))
+        except queue.Full:
+            return False
+        return marker.completed.wait(max(0.0, timeout))
+
+    def close(self, timeout: float = 2.0) -> bool:
+        if self._closed:
+            return not self._writer.is_alive()
+        self.flush(timeout)
+        self._closed = True
+        try:
+            self._events.put(None, timeout=max(0.0, timeout))
+        except queue.Full:
+            return False
+        self._writer.join(max(0.0, timeout))
+        return not self._writer.is_alive()

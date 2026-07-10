@@ -113,6 +113,10 @@ class TestAgentReadiness(unittest.IsolatedAsyncioTestCase):
                 self.llm_called = asyncio.Event()
                 self.seen_tools = []
                 super().__init__(*args, **kwargs)
+                # This test targets readiness ordering, not fast-mode's casual
+                # tool gate. Keep the former full-schema behavior explicit.
+                self.config.ai_harness.mode = "balanced"
+                self.config.tool_shortlist_enabled = False
 
             async def _init_skills_and_tools(self):
                 await self.release_initialization.wait()

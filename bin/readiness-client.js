@@ -101,3 +101,28 @@ export async function waitForBackendReadiness(
         failure_code: 'backend_readiness_timeout',
     };
 }
+
+export async function waitForBackendLiveness(
+    port,
+    {
+        maxAttempts = 60,
+        intervalMs = 250,
+        requestTimeoutMs = 250,
+    } = {},
+) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const live = await requestLocalJson(port, '/api/live', null, {
+            timeoutMs: requestTimeoutMs,
+        });
+        if (live?.statusCode === 200 && live.body?.status === 'live') {
+            return { live: true, status: 'live', phase: 'process', failure_code: null };
+        }
+        if (attempt + 1 < maxAttempts) await delay(intervalMs);
+    }
+    return {
+        live: false,
+        status: 'timeout',
+        phase: 'process',
+        failure_code: 'backend_liveness_timeout',
+    };
+}

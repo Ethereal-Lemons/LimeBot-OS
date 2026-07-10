@@ -110,7 +110,7 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(loaded.telegram.allow_chats, ["-1001", "-1002"])
         self.assertEqual(loaded.telegram.poll_timeout, 45)
 
-    def test_ai_harness_defaults_to_balanced_mode(self):
+    def test_ai_harness_defaults_to_fast_mode(self):
         loaded = self._load_config_with_env(
             {
                 "LIMEBOT_AI_HARNESS_MODE": "",
@@ -120,11 +120,12 @@ class TestConfigLoading(unittest.TestCase):
             }
         )
 
-        self.assertEqual(loaded.ai_harness.mode, "balanced")
+        self.assertEqual(loaded.ai_harness.mode, "fast")
         self.assertAlmostEqual(loaded.ai_harness.fast_rag_timeout_s, 0.08)
         self.assertAlmostEqual(loaded.ai_harness.balanced_rag_timeout_s, 0.2)
-        self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.2)
+        self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.08)
         self.assertTrue(loaded.ai_harness.fast_disable_tools_for_casual)
+        self.assertTrue(loaded.tool_shortlist_enabled)
 
     def test_ai_harness_fast_mode_uses_fast_timeout(self):
         loaded = self._load_config_with_env(
@@ -152,11 +153,23 @@ class TestConfigLoading(unittest.TestCase):
             }
         )
 
-        self.assertEqual(loaded.ai_harness.mode, "balanced")
+        self.assertEqual(loaded.ai_harness.mode, "fast")
         self.assertAlmostEqual(loaded.ai_harness.fast_rag_timeout_s, 0.08)
         self.assertAlmostEqual(loaded.ai_harness.balanced_rag_timeout_s, 0.2)
-        self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.2)
+        self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.08)
         self.assertTrue(loaded.ai_harness.fast_disable_tools_for_casual)
+
+    def test_ai_harness_explicit_balanced_mode_preserves_full_schema(self):
+        loaded = self._load_config_with_env(
+            {
+                "LIMEBOT_AI_HARNESS_MODE": "balanced",
+                "LIMEBOT_ENABLE_TOOL_SHORTLIST": "",
+            }
+        )
+
+        self.assertEqual(loaded.ai_harness.mode, "balanced")
+        self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.2)
+        self.assertFalse(loaded.tool_shortlist_enabled)
 
     def test_approval_policy_defaults_to_manual(self):
         loaded = self._load_config_with_env(

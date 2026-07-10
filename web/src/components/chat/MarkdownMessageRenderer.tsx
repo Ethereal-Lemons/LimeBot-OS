@@ -13,12 +13,6 @@ function withoutMarkdownNode<T extends { node?: unknown }>(props: T): Omit<T, "n
     return domProps;
 }
 
-const normalizeStreamingMarkdown = (content: string) => {
-    const value = content || "";
-    const fenceCount = (value.match(/```/g) || []).length;
-    return fenceCount % 2 === 1 ? `${value}\n\`\`\`` : value;
-};
-
 function CodeBlockFallback({ language, value }: { language: string; value: string }) {
     return (
         <div className="rounded-lg my-3 border border-border overflow-hidden text-sm shadow-sm group">
@@ -43,9 +37,8 @@ function MarkdownMessageRenderer({
 }) {
     if (!content) return null;
 
-    const renderedContent = isStreaming ? normalizeStreamingMarkdown(content) : content;
     // Replace 3 or more consecutive newlines with exactly 2 to prevent huge vertical gaps
-    const normalizedContent = renderedContent.replace(/\n{3,}/g, "\n\n");
+    const normalizedContent = content.replace(/\n{3,}/g, "\n\n");
 
     return (
         <div className={cn(

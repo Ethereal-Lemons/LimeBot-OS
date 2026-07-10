@@ -203,43 +203,130 @@ Skills can also be managed from the **Skills** tab in the web dashboard.
 
 ## 🚀 Getting Started
 
-### Prerequisites & Requirements
-- **OS**: Windows 10+, macOS 11+, or Linux (Ubuntu 20.04+)
-- **CPU**: Dual-core (Quad-core recommended for browser tools)
-- **RAM**: 4GB Minimum (8GB recommended for multitasking)
-- **Disk**: ~2GB for installation (venv, node_modules, Chromium)
-- **Software**: Node.js 20.19+, Python 3.11-3.14
-- **Windows asyncio**: LimeBot relies on asyncio's default Proactor loop on Windows instead of manually forcing a deprecated event loop policy, which keeps Python 3.11-3.14 on one runtime path.
-- **Connectivity**: Stable internet for LLM API and web browsing
+### Before you start
+
+You need:
+
+- Windows 10+, macOS 11+, or Linux (Ubuntu 20.04+)
+- Node.js 20.19 or newer
+- Python 3.11 through 3.14
+- About 1 GB free for core LimeBot; optional browser and channel features need more
+- An API key for at least one supported LLM provider
+
+Check the two required runtimes before cloning:
+
+```bash
+node --version
+python --version
+```
+
+On Windows, `py --version` is also accepted. You do **not** need to create a
+virtual environment or run `npm install` yourself.
 
 ### Quick Start
 
-1. **Clone the Repository & Start**:
+1. Clone LimeBot and enter the project:
+
    ```bash
    git clone https://github.com/Ethereal-Lemons/LimeBot-OS.git
    cd LimeBot-OS
+   ```
+
+2. Start LimeBot:
+
+   ```bash
    npm start
    ```
 
-   *Note: On first run, the CLI handles all configuration automatically—creating a Python virtual environment, installing backend & frontend dependencies, and downloading Chromium via Playwright.*
+   The first run automatically:
 
-2. **Access the Web Dashboard**:
-   Once the server starts, open your browser to:
-   ```text
-   http://localhost:5173
-   ```
-   *(The setup tool should attempt to open this URL automatically).*
+   - creates and validates LimeBot's `.venv`;
+   - installs only the core Python and root/web Node dependencies;
+   - starts the dashboard as soon as the backend is live; and
+   - continues loading agent capabilities in the background.
 
-3. **Complete the Setup Wizard**:
-   - Provide your **Google Gemini API Key** (recommended) or another supported LLM provider credential.
-   - The setup page will perform a quick connectivity check and save your `.env` configuration.
+   npm and Python installation run concurrently when both are needed. LimeBot
+   records successful installs, so later starts skip unchanged dependencies.
 
-4. **Your First Conversation & Soul Interview**:
-   On your first chat message, LimeBot will start in **Setup Mode**. It will ask you a few short questions about what you want its name, style, and core values to be. Once the interview is complete, it will save its `SOUL.md` and `IDENTITY.md` and transition into its fully persistent mode!
+3. Open [http://localhost:5173](http://localhost:5173) if the dashboard does
+   not open automatically.
 
-5. **Interact and Explore**:
-   - Type `/skills` to see what tools are loaded.
-   - Type `/help` or explore the dashboard tabs (**Skills**, **Cron**, **Subagents**) to configure and monitor your assistant.
+4. Complete the setup wizard. Choose a model/provider, enter its credential,
+   and let LimeBot perform the connection check. Provider credentials stay in
+   the local `.env` file and are not stored in browser session storage.
+
+5. Send your first message. LimeBot will guide you through the short persona
+   interview and create its local `SOUL.md` and `IDENTITY.md` files.
+
+After one successful normal start, use `npm run start:quick` for the shortest
+warm-start path. Quick mode intentionally skips dependency and update checks.
+
+### What gets installed
+
+The default installation is enough for web chat, the dashboard, Discord, core
+tools, scheduling, and supported LLM providers. Large or specialized features
+are opt-in, so a new user does not download them before reaching setup.
+
+### Optional features
+
+Install only what you use. Sizes are rough ranges and vary by platform and cache.
+
+After one successful normal start, install every optional profile plus a
+launch-verified Chromium browser with:
+
+```bash
+npm run lime-bot feature install all
+```
+
+The command is retryable: profiles already recorded with unchanged manifests
+are skipped. If one installation fails, fix the reported issue and run the
+same command again.
+
+| Feature | Command | Approximate extra disk |
+|---|---|---:|
+| Browser Python support | `npm run lime-bot feature install browser` | 20-50 MB before Chromium |
+| Browser + launch-verified Chromium | `npm run install-browser` | 300-700 MB |
+| Semantic memory (LanceDB) | `npm run lime-bot feature install memory` | 100-300 MB |
+| Word/PDF helpers | `npm run lime-bot feature install documents` | 10-30 MB |
+| MCP integration | `npm run lime-bot feature install mcp` | 10-30 MB |
+| WhatsApp bridge | `npm run lime-bot feature install whatsapp` | 200-500 MB |
+| Browser companion build tools | `npm run lime-bot feature install extension` | 100-300 MB |
+| All optional features + Chromium | `npm run lime-bot feature install all` | Platform-dependent |
+
+WhatsApp is installed and built automatically before its first launch.
+`npm run extension:build` installs the extension workspace before building it.
+If an optional package is absent, only that capability is unavailable; core
+chat still starts.
+
+### First-run troubleshooting
+
+Run the built-in diagnostic first:
+
+```bash
+npm run doctor
+```
+
+Common cases:
+
+- **Node is rejected before installation:** install Node.js 20.19 or newer,
+  open a new terminal, and run `node --version` again.
+- **Python is rejected:** install Python 3.11-3.14. On Windows, the `py`
+  launcher helps LimeBot find a supported installation.
+- **An interrupted `.venv` is detected:** LimeBot preserves the old directory
+  as `.venv.incomplete-<timestamp>`, creates a replacement, and restores the
+  preserved directory if repair fails. It never falls back to system pip.
+- **`spawn EINVAL` while starting npm on Windows:** update to the latest
+  LimeBot checkout. Current releases route Windows `.cmd` shims through
+  `cmd.exe` without enabling shell mode. Then rerun `npm start`.
+- **A dependency lane fails:** the other lane is allowed to finish, but LimeBot
+  will not start or record the failed lane as current. Fix the reported error
+  and rerun `npm start`; successful work is reused.
+- **The UI opens but input is temporarily disabled:** the process is live, but
+  required skills/tools are still loading. The readiness banner will update
+  automatically.
+
+For more detail, use `npm run logs`. Use `npm run start:quick` only after a
+normal start has completed successfully.
 
 ### Browser Companion Setup
 
@@ -257,21 +344,25 @@ You can use the following commands in the root directory to manage your LimeBot 
 
 | Command | Description |
 |---------|-------------|
-| **`npm start`** | Launches both backend and frontend servers (runs full dependencies check on first boot). |
+| **`npm start`** | Recommended start command; installs/refreshes only changed core dependencies, then launches backend and frontend. |
+| **`npm run start:quick`** | Launches with dependency and update checks skipped; use this only after a successful normal start. |
 | **`npm run stop`** | Safely stops all active LimeBot background processes. |
 | **`npm run status`** | Checks active ports (Backend on `8000`, Frontend on `5173`). |
 | **`npm run doctor`** | Validates your local setup, environment variables, Node.js and Python runtimes. |
 | **`npm run logs`** | Tails the live logger (`logs/limebot.log`). |
 | **`npm run test:cli`** | Runs the Node.js CLI & dependency validation tests. |
 | **`npm run install-browser`** | Manually downloads the browser binaries required for Playwright automation. |
+| **`npm run lime-bot feature install <name>`** | Installs one optional profile and skips it when unchanged; use `all` for every profile plus Chromium. |
 | **`npm run lime-bot skill list`** | Lists all installed and available skills. |
 | **`npm run lime-bot skill install <url>`** | Installs a new skill from a GitHub URL or repository path. |
+
+Normal combined startup opens the dashboard as soon as the backend reports process liveness at `/api/live`. Agent capabilities may continue loading after the UI appears; the authenticated `/api/ready` endpoint remains the source of full capability readiness. Remote update discovery also runs in the background after local processes launch. Backend-only startup continues to wait for full readiness so it can report a diagnostic result.
 
 ### Manual Start (Developers)
 ```bash
 # Terminal 1  Backend
 cp .env.example .env   # fill in your keys
-pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 python main.py
 
 # Terminal 2  Frontend
@@ -279,9 +370,52 @@ cd web && npm install && npm run dev
 ```
 
 ### Docker
+
+Prepare the ignored runtime files once, then build the core stack:
+
 ```bash
-docker-compose up --build
+# macOS / Linux / Git Bash
+sh docker/prepare.sh
+docker compose up --build -d
 ```
+
+```powershell
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File docker/prepare.ps1
+docker compose up --build -d
+```
+
+Open [http://localhost:3000](http://localhost:3000). Nginx is the only host
+entry point; it proxies API, generated media, and WebSocket traffic to the
+private backend. Compose binds Nginx to `127.0.0.1` by default.
+
+The image is core-only by default. To bake optional Python profiles or
+Chromium into the backend image, set these values in `.env` before building:
+
+```bash
+LIMEBOT_DOCKER_FEATURES="memory documents mcp"
+LIMEBOT_DOCKER_INSTALL_BROWSER=1
+```
+
+WhatsApp is an optional Compose profile. Set `ENABLE_WHATSAPP=true` in `.env`,
+then start it with:
+
+```bash
+docker compose --profile whatsapp up --build -d
+```
+
+Useful commands:
+
+```bash
+docker compose ps
+docker compose logs -f backend
+docker compose down
+```
+
+The backend port is intentionally not published. Do not publish it while
+`LIMEBOT_TRUSTED_PROXY_ONLY=true` unless `APP_API_KEY` is also configured.
+To expose the dashboard on a LAN, set `LIMEBOT_DOCKER_BIND_HOST=0.0.0.0` and a
+strong `APP_API_KEY` in `.env`, then rebuild/restart the stack.
 
 ### Codex OAuth (CLI-only)
 LimeBot can now store and manage ChatGPT Codex OAuth locally through the CLI without putting the login flow in the web dashboard.
@@ -326,6 +460,13 @@ APP_API_KEY=optional_dashboard_password
 ENABLE_DYNAMIC_PERSONALITY=false   # per-user affinity, mood tracking, proactive greetings
 LLM_PROXY_URL=http://localhost:8080/v1 # Optional: Route all traffic through a gateway
 ```
+
+LimeBot defaults to the `fast` AI harness: Auto-RAG gets an 80ms request
+budget, action requests receive a bounded request-specific tool schema, and
+clearly casual turns omit tools. Set `LIMEBOT_AI_HARNESS_MODE=balanced` for the
+compatibility profile, which uses a 200ms Auto-RAG budget and the full tool
+schema. These settings reduce LimeBot-side preparation and schema overhead;
+they do not change the model provider's generation speed.
 
 > [!TIP]
 > **No manual editing required!** You can modify all environment settings live from the **Config** tab in the web dashboard. Your changes will automatically overwrite the `.env` file and trigger a clean backend restart.

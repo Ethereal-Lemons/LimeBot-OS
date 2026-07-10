@@ -5,6 +5,7 @@ Extracted from loop.py to reduce its size and separate concerns.
 """
 
 import re
+from collections import OrderedDict
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any
@@ -61,6 +62,25 @@ _IDENTITY_FIELDS = [
 ]
 
 
+_MEMORY_CONTEXT_CACHE_MAX = 8
+_memory_context_cache: "OrderedDict[tuple, str]" = OrderedDict()
+
+
+def _memory_file_signature(path: Path) -> tuple:
+    """Return a cheap signature that changes for writes and missing files."""
+    resolved = str(path.resolve())
+    try:
+        stat = path.stat()
+    except (FileNotFoundError, OSError):
+        return (resolved, "missing")
+    return (resolved, stat.st_mtime_ns, stat.st_size)
+
+
+def clear_memory_context_cache() -> None:
+    """Clear rendered memory contexts after an explicit persona reset."""
+    _memory_context_cache.clear()
+
+
 def should_load_private_context(
     sender_id: str, channel: str, config: Optional[Any] = None
 ) -> bool:
@@ -89,6 +109,16 @@ def get_memory_context(include_private_memory: bool = True) -> str:
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     memory_file = MEMORY_DIR / f"{today_str}.md"
+    cache_key = (
+        today_str,
+        True,
+        _memory_file_signature(memory_file),
+        _memory_file_signature(LONG_TERM_MEMORY_FILE),
+    )
+    cached = _memory_context_cache.get(cache_key)
+    if cached is not None:
+        _memory_context_cache.move_to_end(cache_key)
+        return cached
 
     context = "--- EPISODIC MEMORY (Today's Journal) ---\n"
 
@@ -123,7 +153,12 @@ def get_memory_context(include_private_memory: bool = True) -> str:
             logger.warning(f"Failed to read long-term memory: {e}")
 
     context += "\n\n(Note: Use 'memory_search' to retrieve MORE specific details from past logs.)\n"
-    return context + "\n"
+    rendered = context + "\n"
+    _memory_context_cache[cache_key] = rendered
+    _memory_context_cache.move_to_end(cache_key)
+    while len(_memory_context_cache) > _MEMORY_CONTEXT_CACHE_MAX:
+        _memory_context_cache.popitem(last=False)
+    return rendered
 
 
 def _read_optional_context_file(path: Path, heading: str) -> str:

@@ -21,8 +21,8 @@ jobs:
           node-version: "22"
           cache: npm
 
-      - name: Install workspace dependencies
-        run: npm ci
+      - name: Install core workspace dependencies
+        run: npm ci --include-workspace-root --workspace web
 
       - name: Test CLI dependency decisions
         run: npm run test:cli

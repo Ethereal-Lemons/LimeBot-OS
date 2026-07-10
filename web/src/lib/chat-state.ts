@@ -45,15 +45,40 @@ export type ChatAttachment = {
   url: string;
 };
 
+export type ChatChangeSet = {
+  id?: string | null;
+  artifact_type?: 'change_set' | 'coding_plan';
+  status: 'planned' | 'awaiting_approval' | 'applied' | 'verified' | 'failed' | 'blocked';
+  summary: string;
+  added?: number;
+  removed?: number;
+  truncated?: boolean;
+  changed_files?: Array<{
+    file_id: string;
+    added: number;
+    removed: number;
+    hunks?: Array<{ old_start: number; old_count: number; new_start: number; new_count: number; heading?: string }>;
+  }>;
+  redacted_diff?: string;
+  verification?: Array<{
+    id: string;
+    label: string;
+    status: 'pending' | 'running' | 'passed' | 'failed' | 'blocked';
+    exit_code?: number | null;
+    diagnostic?: string;
+  }>;
+};
+
 export type ChatMessage = {
   sender: 'user' | 'bot';
-  type?: 'text' | 'tool' | 'confirmation';
+  type?: 'text' | 'tool' | 'confirmation' | 'changeset';
   content: string;
   thinking?: string;
   isStreaming?: boolean;
   image?: string | null;
   attachments?: ChatAttachment[];
   toolExecution?: ChatToolExecution;
+  changeSet?: ChatChangeSet;
   confirmation?: ChatConfirmation;
   variant?: 'default' | 'destructive' | 'warning';
   messageId?: string;
@@ -82,6 +107,10 @@ type FinalText = MessageTarget & {
 type ToolUpdate = MessageTarget & {
   content?: string;
   toolExecution: ChatToolExecution;
+};
+
+type ChangeSetUpdate = MessageTarget & {
+  changeSet: ChatChangeSet;
 };
 
 const isBotTextMessage = (message: ChatMessage) =>
@@ -404,5 +433,51 @@ export function upsertToolExecution(
 
   const updated = [...messages];
   updated.splice(finalIndex, 0, newMessage);
+  return updated;
+}
+
+const changeSetKey = (changeSet: ChatChangeSet, target: MessageTarget) =>
+  changeSet.id || target.turnId || `${changeSet.status}:${changeSet.summary}`;
+
+export function upsertChangeSet(
+  messages: ChatMessage[],
+  update: ChangeSetUpdate
+): ChatMessage[] {
+  const key = changeSetKey(update.changeSet, update);
+  const index = messages.findIndex(
+    (message) =>
+      message.type === 'changeset' &&
+      message.changeSet &&
+      changeSetKey(message.changeSet, message) === key
+  );
+  if (index === -1) {
+    return [
+      ...messages,
+      {
+        sender: 'bot',
+        type: 'changeset',
+        content: '',
+        messageId: update.messageId || undefined,
+        turnId: update.turnId || undefined,
+        changeSet: update.changeSet,
+      },
+    ];
+  }
+  const updated = [...messages];
+  const prior = updated[index].changeSet!;
+  const terminalStatuses = new Set<ChatChangeSet['status']>(['verified', 'failed', 'blocked']);
+  const preserveTerminal =
+    terminalStatuses.has(prior.status) && !terminalStatuses.has(update.changeSet.status);
+  updated[index] = {
+    ...updated[index],
+    messageId: update.messageId || updated[index].messageId,
+    turnId: update.turnId || updated[index].turnId,
+    changeSet: {
+      ...prior,
+      ...update.changeSet,
+      status: preserveTerminal ? prior.status : update.changeSet.status,
+      verification: update.changeSet.verification || updated[index].changeSet?.verification,
+    },
+  };
   return updated;
 }

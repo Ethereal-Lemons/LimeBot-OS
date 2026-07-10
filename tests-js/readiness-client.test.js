@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'http';
 
-import { waitForBackendReadiness } from '../bin/readiness-client.js';
+import { waitForBackendLiveness, waitForBackendReadiness } from '../bin/readiness-client.js';
 
 async function withServer(handler, run) {
     const server = http.createServer(handler);
@@ -102,4 +102,36 @@ test('unreachable process returns a bounded timeout', async () => {
     assert.equal(result.status, 'timeout');
     assert.equal(result.live, false);
     assert.equal(result.phase, 'process');
+});
+
+test('liveness probe never requests capability readiness', async () => {
+    const paths = [];
+    await withServer((request, response) => {
+        paths.push(request.url);
+        return json(response, 200, { status: 'live' });
+    }, async (port) => {
+        const result = await waitForBackendLiveness(port, {
+            intervalMs: 1,
+            requestTimeoutMs: 50,
+        });
+        assert.equal(result.live, true);
+        assert.deepEqual(paths, ['/api/live']);
+    });
+});
+
+test('liveness timeout is bounded and identifies the process phase', async () => {
+    const probe = http.createServer();
+    await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const port = probe.address().port;
+    await new Promise((resolve) => probe.close(resolve));
+
+    const started = Date.now();
+    const result = await waitForBackendLiveness(port, {
+        maxAttempts: 2,
+        intervalMs: 1,
+        requestTimeoutMs: 10,
+    });
+    assert.equal(result.failure_code, 'backend_liveness_timeout');
+    assert.equal(result.phase, 'process');
+    assert.ok(Date.now() - started < 500);
 });

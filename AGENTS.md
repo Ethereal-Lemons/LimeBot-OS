@@ -27,7 +27,7 @@ Channel (Discord / WhatsApp / Web)
      ├─ Stream consumption + tool call extraction
      ├─ Tool execution loop (up to 30 iterations)
      ├─ Tag processing (save_soul, log_memory, etc.)
-     └─ OutboundMessage → MessageBus → Channel.send()
+     └─ OutboundMessage → bounded per-channel worker → Channel.send()
 ```
 
 ---
@@ -69,7 +69,8 @@ Builds the system prompt from persona files. Two-part architecture:
 
 **`get_volatile_prompt_suffix()`** — rebuilt every message:
 - Auto-RAG recalled context
-- Today's episodic memory journal (last 5 entries + long-term essence preview)
+- Today's episodic memory journal (last 5 entries + long-term essence preview),
+  cached by date/privacy/path/mtime/size until either source file changes
 - Current timestamp
 
 **Persona validation functions** (all use atomic temp-file writes + timestamped backups + auto-rotation to 3 most recent):
@@ -251,10 +252,39 @@ Tracks session metadata (model, token usage, injected files, timestamps) and cha
 
 ### `core/bus.py` — MessageBus
 
-Decouples channels from the agent loop using `asyncio.Queue`.
+Decouples channels from the agent loop with bounded, ordered queues.
 
-- **Inbound queue** — one queue, consumed by `AgentLoop.run()`
-- **Outbound routing** — dict of `channel_name → send_callback`; `dispatch_outbound()` reads the queue and calls the right subscriber
+- **Inbound queue** — one queue, consumed by `AgentLoop.run()`.
+- **Per-channel workers** — each subscribed channel has one ordered worker, so
+  a blocked Discord or stale web connection cannot delay another channel.
+- **Bounded backpressure** — durable messages are never dropped; a channel
+  containing only durable queued messages applies channel-local backpressure.
+- **Ephemeral coalescing** — typing, chunk, thinking, activity, matching, and
+  progress events can be coalesced or evicted near capacity. Chunk/thinking
+  content is concatenated in publication order. Unknown event types default to
+  durable.
+- **Durability boundary** — ephemeral events bypass delivery history. Final
+  text, media, embeds, errors, approvals, and other outcomes remain tracked.
+- **Shutdown** — router cancellation closes and awaits all worker tasks; queue
+  and worker sets never grow without a bound.
+
+### `core/delivery_tracker.py` — Delivery Persistence
+
+- Keeps active deliveries plus a 500-entry terminal history.
+- Mutations update in-memory state immediately and never await filesystem I/O.
+- A debounced writer serializes an immutable snapshot outside the tracker lock,
+  writes a temporary sibling, and atomically replaces `data/deliveries.json`.
+- Dirty generations coalesce while a write is active. `flush()` waits until the
+  latest generation is durable and is called during `AgentLoop.stop()`.
+
+### `core/metrics.py` — Metrics Persistence
+
+- Metric recording normalizes and enqueues events without writing on the event
+  loop thread.
+- One bounded daemon writer preserves JSONL order and batches appends.
+- Queue overflow increments `dropped_events`; metrics never block product work
+  or recursively log writer failures.
+- `flush(timeout)` and `close(timeout)` provide bounded test/shutdown behavior.
 
 ---
 
@@ -267,6 +297,11 @@ FastAPI application serving:
 - WebSocket auth: `api_key` query param checked against `APP_API_KEY`
 - Caches the WhatsApp QR code and re-sends it to new WebSocket connections
 - Chat UI renders `SUB-AGENT REPORT` replies as structured cards and suppresses adjacent empty orchestration thoughts/tool groups when they only describe `spawn_agent` handoff noise
+- Web sends use a shorter timeout for ephemeral updates than durable outcomes;
+  a socket is removed after its first timeout.
+- Assistant output uses literal plain text while streaming, then performs one
+  rich Markdown render after completion. Final message identity and content are
+  unchanged.
 - `GET /api/live` reports process liveness without authentication-sensitive configuration. Authenticated `GET /api/ready` reports redacted capability phases and returns HTTP 503 until required skills/tools are loaded; `degraded` is HTTP 200.
 
 ### Browser Companion Extension (`extension/`)
@@ -407,6 +442,13 @@ Enabled by `ENABLE_DYNAMIC_PERSONALITY=true`.
 
 The JavaScript toolchain requires Node.js 20.19 or newer. Both `start` and `doctor` reject an older runtime before dependency installation begins.
 
+First start installs the `core` profile only: root + `web` npm workspaces and
+`requirements.txt`. Optional features use a closed allowlist in
+`bin/feature-install.js`. On Windows, `.cmd`/`.bat` dependency shims are invoked
+through `ComSpec /d /s /c` with an argument array; direct `spawn("npm.cmd")`
+can raise `EINVAL` on supported Windows/Node combinations and must not be
+reintroduced.
+
 ```bash
 npm run lime-bot <command> [options]
 ```
@@ -414,7 +456,7 @@ npm run lime-bot <command> [options]
 | Command | Description |
 |---------|-------------|
 | `start` | Start backend + frontend (auto-install on first run) |
-| `start -- --quick` | Fast boot, skip dependency checks |
+| `start -- --quick` | Fast boot, skip dependency and update checks |
 | `stop` | Kill all LimeBot processes |
 | `status` | Check active ports (8000 backend, 5173 frontend) |
 | `auth codex <login\|import\|status\|logout>` | Manage local ChatGPT Codex OAuth from the CLI |
@@ -426,6 +468,7 @@ npm run lime-bot <command> [options]
 | `skill enable <name>` | Enable a disabled skill |
 | `skill disable <name>` | Disable without uninstalling |
 | `install-browser` | Install Chromium for Playwright |
+| `feature install <browser\|memory\|documents\|mcp\|whatsapp\|extension\|all>` | Install one closed optional profile, or all profiles plus launch-verified Chromium |
 | `review-diff --diff-file <path> --output <path>` | Parse only the supplied unified diff and write a redacted review artifact; `--invoke-model` optionally calls the configured LLM without tools. |
 
 **Codex OAuth notes:**
@@ -439,18 +482,59 @@ npm link
 # Then use: limebot start, limebot logs, etc.
 ```
 
+## Docker Contract
+
+- `docker/prepare.sh` and `docker/prepare.ps1` create ignored runtime files and
+  directories before Compose evaluates file mounts. They never overwrite
+  existing configuration.
+- The frontend Nginx container is the only published service (host port 3000,
+  bound to `127.0.0.1` by default). `/api`, `/temp`, and `/ws` proxy to the
+  private backend service. LAN binding requires both
+  `LIMEBOT_DOCKER_BIND_HOST=0.0.0.0` and `APP_API_KEY`.
+- Compose sets `WEB_HOST=0.0.0.0` with
+  `LIMEBOT_TRUSTED_PROXY_ONLY=true`. This exception is safe only while the
+  backend has `expose` but no host `ports`. Publishing the backend requires an
+  `APP_API_KEY` and removal of that unauthenticated proxy-only assumption.
+- WhatsApp uses the optional `whatsapp` Compose profile and binds its bridge to
+  the container network. Core Docker startup must not build or start it.
+- `LIMEBOT_DOCKER_FEATURES` selects optional Python build profiles;
+  `LIMEBOT_DOCKER_INSTALL_BROWSER=1` adds and launch-installs Chromium.
+- Root, web, and bridge images use committed lockfiles with `npm ci`. The
+  backend installs only root runtime Node dependencies; web and bridge builds
+  stay in their own images.
+- Backend, frontend, and bridge define liveness health checks. Frontend startup
+  waits for backend health rather than mere process creation.
+- Root, web, and bridge build contexts each exclude credentials, local state,
+  dependency trees, generated output, and session data.
+
 ---
 
 ## ⚡ Performance Notes
 
+- **Fast response path (default)** — `LIMEBOT_AI_HARNESS_MODE=fast` uses an 80ms Auto-RAG budget, request-specific tool schemas capped at 12 tools, and no tools for clearly casual turns. `balanced` keeps the 200ms/full-schema compatibility behavior. This optimizes LimeBot overhead, not provider generation speed.
+- **First-output metrics** — every provider iteration records `provider_first_delta` and `turn_first_output_queued` with `initial`, `post_tool`, or `synthesis` iteration metadata; typing indicators are excluded.
+- **Rendered memory cache** — today's last five journal entries and the first 800 long-term-memory characters are cached by date, privacy scope, resolved path, nanosecond mtime, and size. Writes invalidate on the next prompt build; RAG results are never cached here.
 - **Stable prompt cache** — 30s TTL per `(sender_id, channel)` pair avoids rebuilding the full system prompt on every message
 - **Tool result cache** — read-only tools (`read_file`, `list_dir`, `memory_search`, browser extractors) cache their results to avoid redundant calls within a session
 - **Dirty-flag history** — history is only written to disk when it actually changed; a `_history_dirty` flag per session prevents unnecessary I/O
 - **Per-tool result limits** — each tool has its own character limit instead of one global cap, preserving context window budget proportionally
 - **Grep cache** — `search_grep` results are cached for 30 seconds to avoid scanning all memory files on every message
 - **History summarization** — when the session exceeds the token budget, the LLM summarizes older turns before they're evicted; the summary is inserted back into history as a system message
-- **Dependency fingerprints** — normal CLI startup hashes `package-lock.json` and `requirements.txt` together with the relevant Node/Python runtime and environment path. Unchanged installations skip both npm and pip; state is written atomically to ignored `data/dependency-state.json` only after a successful install.
-- **Readiness-aware startup** — the CLI waits for `/api/live` and then `/api/ready` instead of treating an open TCP port as a usable agent. The web composer and automatic persona kickoff use the same readiness contract.
+- **Dependency profiles** — normal startup installs only `requirements.txt` plus root/web npm. Browser, memory, documents, and MCP are explicit optional Python manifests; WhatsApp and extension are optional Node workspace profiles. `requirements-dev.txt` includes all Python profiles and test tooling.
+- **Dependency fingerprints** — state schema 2 records core profiles and successful optional features. Old broad-install state forces one core refresh. Independent core npm/Python lanes run concurrently, then write `data/dependency-state.json` once after both settle; failed lanes are never current.
+- **Optional capability contract** — every optional capability declares a profile, closed install command, missing/degraded readiness behavior, and fingerprint or sentinel. Optional imports cannot break core startup. Browser setup launch-verifies Chromium. The project-directory watcher observes first `.env` creation, and WhatsApp installs/builds before launch.
+- **Liveness-first combined startup** — normal backend + frontend startup waits only for `/api/live`, then starts Vite immediately while capabilities continue loading. Backend-only startup and diagnostics still wait for authenticated `/api/ready`; the web composer and automatic persona kickoff keep using capability readiness before accepting agent work.
+- **Background update discovery** — `start` reads only a recent local cache before launching and performs remote Git/npm discovery afterward in a handled background task. `start -- --quick` skips both cached presentation and remote discovery.
+- **Recoverable virtual environments** — if the venv directory exists without its expected Python executable, startup renames it to a timestamped sibling, creates and validates a replacement, and restores the preserved directory if repair fails. Dependency installation always invokes the validated venv Python, never system Python.
+- **Channel-isolated streaming** — bounded per-channel workers preserve local
+  order while preventing cross-channel head-of-line blocking. Replaceable
+  ephemeral updates coalesce; durable outcomes apply backpressure and retain
+  delivery tracking.
+- **Nonblocking persistence** — delivery snapshots and metric JSONL events are
+  written by bounded background writers. Explicit bounded flushes run during
+  shutdown.
+- **Lightweight stream rendering** — in-progress assistant text bypasses the
+  Markdown parser; completed content switches once to the lazy rich renderer.
 - **Lazy code highlighting** — ordinary Markdown loads without Prism. Fenced code dynamically loads a small `PrismLight` bundle with common languages; unknown languages render safely as plain text.
 
 ---

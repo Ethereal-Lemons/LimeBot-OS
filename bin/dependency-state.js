@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-export const DEPENDENCY_STATE_SCHEMA = 1;
+export const DEPENDENCY_STATE_SCHEMA = 2;
 
 function hashFile(filePath) {
     if (!fs.existsSync(filePath)) return null;
@@ -29,32 +29,40 @@ function normalizeRuntimePath(value) {
 }
 
 export function createDependencyState() {
-    return { schemaVersion: DEPENDENCY_STATE_SCHEMA, npm: null, python: null };
+    return { schemaVersion: DEPENDENCY_STATE_SCHEMA, npm: null, python: null, features: {} };
 }
 
-export function buildNpmFingerprint({ lockfilePath, nodeVersion = process.version }) {
+export function buildNpmFingerprint({ lockfilePath, nodeVersion = process.version, profile = 'core' }) {
     return {
         manifestHash: hashFile(lockfilePath),
         nodeMajor: runtimeMajor(nodeVersion),
+        profile,
     };
 }
 
-export function buildPythonFingerprint({ requirementsPath, venvPython, pythonVersion }) {
+export function buildPythonFingerprint({ requirementsPath, venvPython, pythonVersion, profile = 'core' }) {
     return {
         manifestHash: hashFile(requirementsPath),
         pythonMajorMinor: pythonMajorMinor(pythonVersion),
         venvPython: normalizeRuntimePath(venvPython),
+        profile,
     };
 }
 
 export function loadDependencyState(filePath) {
     try {
         const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        if (!parsed || parsed.schemaVersion !== DEPENDENCY_STATE_SCHEMA) return null;
+        if (!parsed || typeof parsed !== 'object') return null;
+        // Schema 1 installed every workspace and every Python extra. Force a
+        // one-time core refresh rather than treating that broad install as a
+        // valid profile, while preserving a valid JSON state file.
+        if (parsed.schemaVersion === 1) return createDependencyState();
+        if (parsed.schemaVersion !== DEPENDENCY_STATE_SCHEMA) return null;
         return {
             schemaVersion: DEPENDENCY_STATE_SCHEMA,
             npm: parsed.npm && typeof parsed.npm === 'object' ? parsed.npm : null,
             python: parsed.python && typeof parsed.python === 'object' ? parsed.python : null,
+            features: parsed.features && typeof parsed.features === 'object' ? parsed.features : {},
         };
     } catch {
         return null;
@@ -86,6 +94,9 @@ export function evaluateDependencyState(kind, stored, current, sentinels = []) {
     if (stored.manifestHash !== current.manifestHash) {
         return { installRequired: true, reason: `${kind} manifest changed` };
     }
+    if (stored.profile !== current.profile) {
+        return { installRequired: true, reason: `${kind} install profile changed` };
+    }
 
     if (kind === 'npm' && stored.nodeMajor !== current.nodeMajor) {
         return { installRequired: true, reason: 'Node.js major version changed' };
@@ -107,5 +118,33 @@ export function recordSuccessfulInstall(state, kind, fingerprint) {
         ? { ...state }
         : createDependencyState();
     next[kind] = fingerprint;
+    next.features = { ...(next.features || {}) };
     return next;
+}
+
+export function recordFeatureInstall(state, feature, fingerprint) {
+    const next = state?.schemaVersion === DEPENDENCY_STATE_SCHEMA
+        ? { ...state, features: { ...(state.features || {}) } }
+        : createDependencyState();
+    next.features[feature] = fingerprint;
+    return next;
+}
+
+export function clearFeatures(state, features) {
+    const next = state?.schemaVersion === DEPENDENCY_STATE_SCHEMA
+        ? { ...state, features: { ...(state.features || {}) } }
+        : createDependencyState();
+    for (const feature of features) delete next.features[feature];
+    return next;
+}
+
+export function isFeatureCurrent(state, feature, fingerprint, sentinels = []) {
+    if (sentinels.some((sentinel) => !fs.existsSync(sentinel))) return false;
+    const stored = state?.features?.[feature];
+    return Boolean(stored && stored.manifestHash === fingerprint.manifestHash
+        && stored.runtime === fingerprint.runtime);
+}
+
+export function buildFeatureFingerprint({ manifestPath, runtime }) {
+    return { manifestHash: hashFile(manifestPath), runtime: String(runtime || '') };
 }

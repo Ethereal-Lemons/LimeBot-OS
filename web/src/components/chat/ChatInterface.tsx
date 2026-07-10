@@ -22,11 +22,12 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle, Info } from "lucide-react";
 import { ThinkingBubble } from './ThinkingBubble';
 import { toast } from "sonner";
-import type { ChatAttachment } from "@/lib/chat-state";
+import type { ChatAttachment, ChatChangeSet } from "@/lib/chat-state";
 import { readinessLabel, type AgentReadiness } from "@/lib/agent-readiness";
 
 
 import { ToolTimeline } from './ToolTimeline';
+import { ChangeSetCard } from './ChangeSetCard';
 import { AttachmentPreview } from './AttachmentPreview';
 import { MarkdownMessage } from './MarkdownMessage';
 import { parseSubagentReport, SubagentReportCard } from './SubagentReportCard';
@@ -34,13 +35,14 @@ import { SystemUpdateCard } from './SystemUpdateCard';
 
 interface Message {
     sender: 'user' | 'bot';
-    type?: 'text' | 'tool' | 'confirmation';
+    type?: 'text' | 'tool' | 'confirmation' | 'changeset';
     content: string;
     thinking?: string;
     isStreaming?: boolean;
     image?: string | null;
     attachments?: ChatAttachment[];
     toolExecution?: ToolExecution;
+    changeSet?: ChatChangeSet;
     variant?: 'default' | 'destructive' | 'warning';
     messageId?: string;
     turnId?: string;
@@ -524,7 +526,11 @@ const MemoizedMessageItem = memo(({
                     </div>
                 )}
 
-                {msg.type === 'tool' && msg.toolExecution ? (
+                {msg.type === 'changeset' && msg.changeSet ? (
+                    <div className="w-full max-w-2xl">
+                        <ChangeSetCard changeSet={msg.changeSet} />
+                    </div>
+                ) : msg.type === 'tool' && msg.toolExecution ? (
                     <div className="w-full max-w-2xl">
                         <ToolCard
                             execution={msg.toolExecution}
@@ -1679,7 +1685,7 @@ export function ChatInterface({
                             ? "Pending approvals are handled directly in the tool timeline."
                             : "Secure channel with guarded tool execution."}
                     </span>
-                    <span>LimeBot v1.0.11</span>
+                    <span>LimeBot v1.0.12</span>
                 </div>
             </div>
         </div>

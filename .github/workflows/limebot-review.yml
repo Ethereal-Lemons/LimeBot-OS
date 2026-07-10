@@ -35,7 +35,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install LimeBot dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements-dev.txt
 
       - name: Generate review diff
         shell: bash

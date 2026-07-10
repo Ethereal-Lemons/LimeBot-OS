@@ -121,6 +121,29 @@ class TestVoiceConfigDefaults(unittest.TestCase):
         self.assertIn("send_text_with_audio", cfg)
         self.assertIsInstance(cfg["channels"], list)
 
+    def test_partial_legacy_config_inherits_new_delivery_defaults(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from core import tts as tts_module
+        from core.tts import ElevenLabsTTS
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "limebot.json"
+            config_path.write_text(
+                json.dumps({"voice": {"enabled": True, "voice_id": "legacy"}}),
+                encoding="utf-8",
+            )
+            with patch.object(tts_module, "LIMEBOT_CONFIG_PATH", config_path):
+                cfg = ElevenLabsTTS.get_voice_config()
+
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["voice_id"], "legacy")
+        self.assertEqual(cfg["channels"], ["web"])
+        self.assertFalse(cfg["send_text_with_audio"])
+
 
 class TestSendVoiceTool(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

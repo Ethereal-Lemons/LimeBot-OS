@@ -10,6 +10,8 @@ import {
     createDependencyState,
     evaluateDependencyState,
     loadDependencyState,
+    isFeatureCurrent,
+    recordFeatureInstall,
     recordSuccessfulInstall,
     writeDependencyStateAtomic,
 } from '../bin/dependency-state.js';
@@ -117,6 +119,8 @@ test('state loading rejects missing, malformed, and old schemas', (t) => {
     assert.equal(loadDependencyState(statePath), null);
     fs.writeFileSync(statePath, 'not-json');
     assert.equal(loadDependencyState(statePath), null);
+    fs.writeFileSync(statePath, '{"schemaVersion":1,"npm":{"manifestHash":"old"}}');
+    assert.deepEqual(loadDependencyState(statePath), createDependencyState());
     fs.writeFileSync(statePath, '{"schemaVersion":999}');
     assert.equal(loadDependencyState(statePath), null);
 });
@@ -143,4 +147,21 @@ test('successful state writes atomically and preserves the other ecosystem', (t)
     writeDependencyStateAtomic(statePath, replaced);
     assert.deepEqual(loadDependencyState(statePath), replaced);
     assert.equal(fs.readdirSync(dir).some((name) => name.endsWith('.tmp')), false);
+});
+
+test('profiles invalidate broad legacy fingerprints and features are idempotent', (t) => {
+    const dir = fixture();
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const sentinel = path.join(dir, 'ready');
+    fs.writeFileSync(sentinel, 'ok');
+    const current = { manifestHash: 'same', nodeMajor: 22, profile: 'core' };
+    assert.equal(
+        evaluateDependencyState('npm', { ...current, profile: 'all' }, current).reason,
+        'npm install profile changed',
+    );
+    const fingerprint = { manifestHash: 'feature', runtime: 'v22' };
+    const state = recordFeatureInstall(createDependencyState(), 'whatsapp', fingerprint);
+    assert.equal(isFeatureCurrent(state, 'whatsapp', fingerprint, [sentinel]), true);
+    fs.rmSync(sentinel);
+    assert.equal(isFeatureCurrent(state, 'whatsapp', fingerprint, [sentinel]), false);
 });

@@ -35,7 +35,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Run backend compatibility tests
         run: >
@@ -45,3 +45,18 @@ jobs:
           tests/test_config_loading.py
           tests/test_llm_utils.py
           tests/test_runtime_compat.py
+
+  core-install-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install only the core runtime
+        run: python -m pip install -r requirements.txt
+      - name: Import backend and check liveness contract
+        run: |
+          python -c "from types import SimpleNamespace as S; from channels.web import WebChannel; from core.bus import MessageBus; c=WebChannel(S(whitelist=S(api_key=None,allowed_paths=[]),web=S(port=8000,allowed_origins=[]),llm=S(model='test',base_url=None),discord=S(enabled=False),whatsapp=S(enabled=False),telegram=S(enabled=False)),MessageBus()); assert any(getattr(r,'path','') == '/api/live' for r in c.app.routes)"
+          python -c "import importlib.util as i; assert i.find_spec('playwright') is None; assert i.find_spec('lancedb') is None; assert i.find_spec('docx') is None; assert i.find_spec('mcp.client') is None"

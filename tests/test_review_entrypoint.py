@@ -5,11 +5,15 @@ from pathlib import Path
 
 from core.review_entrypoint import (
     artifact_to_markdown,
+    build_changeset_artifact,
+    build_coding_plan_artifact,
     build_review_artifact,
     build_review_prompt,
     parse_unified_diff,
     read_diff_input,
     redact_secrets,
+    changeset_for_app,
+    validate_changeset_preconditions,
 )
 
 
@@ -91,6 +95,50 @@ class TestReviewEntrypoint(unittest.TestCase):
         self.assertEqual(artifact["mode"], "prompt_only")
         self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz123456", json.dumps(artifact))
         self.assertIn("Redacted Review Prompt", markdown)
+
+    def test_changeset_is_bounded_redacted_and_uses_safe_app_file_aliases(self):
+        artifact = build_changeset_artifact(
+            SAMPLE_DIFF + ("+safe extra line\n" * 200),
+            status="awaiting_approval",
+            summary="Apply the auth update with token=sk-secret-value",
+            verification=[
+                {
+                    "label": "Unit tests",
+                    "command": "pytest tests/test_example.py",
+                    "status": "pending",
+                    "diagnostic": "Authorization: Bearer top-secret-token",
+                }
+            ],
+            preconditions=[
+                {"file_id": "file-1", "sha256": "a" * 64, "path": "core/example.py"}
+            ],
+            max_diff_bytes=1024,
+        )
+        artifact["id"] = "changeset-safe"
+        app_payload = changeset_for_app(artifact)
+
+        self.assertEqual(artifact["status"], "awaiting_approval")
+        self.assertTrue(artifact["truncated"])
+        self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz123456", json.dumps(artifact))
+        self.assertNotIn("top-secret-token", json.dumps(app_payload))
+        self.assertNotIn("pytest tests/test_example.py", json.dumps(app_payload))
+        self.assertNotIn("core/example.py", json.dumps(app_payload))
+        self.assertEqual(app_payload["changed_files"][0]["file_id"], "file-1")
+        self.assertEqual(app_payload["id"], "changeset-safe")
+
+    def test_changeset_preconditions_fail_closed_and_plan_artifact_stays_read_only(self):
+        preconditions = [{"file_id": "file-1", "sha256": "b" * 64}]
+        valid, conflicts = validate_changeset_preconditions(
+            preconditions, {"file-1": "c" * 64}
+        )
+        plan = build_coding_plan_artifact(
+            "Files: core/example.py\nVerification: pytest -q\nAPI_KEY=sk-secret-value"
+        )
+
+        self.assertFalse(valid)
+        self.assertEqual(conflicts, ["file-1"])
+        self.assertEqual(plan["artifact_type"], "coding_plan")
+        self.assertNotIn("sk-secret-value", plan["summary"])
 
 
 if __name__ == "__main__":

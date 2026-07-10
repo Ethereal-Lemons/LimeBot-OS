@@ -16,6 +16,7 @@ interface SendFileCommand {
   to: string;
   filePath: string;
   caption?: string;
+  requestId?: string;
 }
 
 interface ResetCommand {
@@ -29,11 +30,17 @@ interface BridgeMessage {
   [key: string]: unknown;
 }
 
+function withRequestId<T extends BridgeMessage>(response: T, requestId?: string): T & { requestId?: string } {
+  return requestId ? { ...response, requestId } : response;
+}
+
 export class BridgeServer {
   private wss: WebSocketServer | null = null;
   private wa: WhatsAppClient | null = null;
   private clients: Set<WebSocket> = new Set();
   private lastQR: string | null = null;
+  private lastStatus = 'connecting';
+  private lastSelfId: string | undefined;
   private pending: BridgeCommand[] = [];
   private flushing = false;
   private readonly maxQueue = 200;
@@ -52,9 +59,13 @@ export class BridgeServer {
       onMessage: (msg) => this.broadcast({ type: 'message', ...msg }),
       onQR: (qr) => {
         this.lastQR = qr;
+        this.lastStatus = 'scanning';
+        this.broadcast({ type: 'status', status: this.lastStatus });
         this.broadcast({ type: 'qr', qr });
       },
       onStatus: (status, selfId) => {
+        this.lastStatus = status;
+        this.lastSelfId = selfId;
         if (status === 'connected') this.lastQR = null;
         this.broadcast({ type: 'status', status, selfId });
         if (status === 'connected') {
@@ -66,7 +77,24 @@ export class BridgeServer {
     // Handle WebSocket connections
     this.wss.on('connection', (ws) => {
       console.log('🔗 Python client connected');
+      // There should be exactly one Python channel consumer. Stale consumers
+      // would process each inbound message more than once and duplicate replies.
+      for (const existing of this.clients) {
+        try {
+          existing.close(4001, 'Replaced by newer LimeBot client');
+        } catch {
+          // Ignore already-closed sockets.
+        }
+      }
+      this.clients.clear();
       this.clients.add(ws);
+
+      // Replay current state immediately for reconnecting clients.
+      ws.send(JSON.stringify({
+        type: 'status',
+        status: this.lastStatus,
+        selfId: this.lastSelfId,
+      }));
       
       // Send cached QR if available
       if (this.lastQR) {
@@ -100,8 +128,9 @@ export class BridgeServer {
   }
 
   private async handleCommand(cmd: BridgeCommand): Promise<BridgeMessage> {
+    const requestId = 'requestId' in cmd ? cmd.requestId : undefined;
     if (!this.wa) {
-      return { type: 'error', error: 'WhatsApp not connected' };
+      return withRequestId({ type: 'error', error: 'WhatsApp not connected' }, requestId);
     }
     
     if (cmd.type === 'send') {
@@ -121,18 +150,22 @@ export class BridgeServer {
     if (cmd.type === 'sendFile') {
       if (!this.wa.isConnected()) {
         this.enqueue(cmd);
-        return { type: 'queued', to: cmd.to, filePath: cmd.filePath };
+        return withRequestId({ type: 'queued', to: cmd.to, filePath: cmd.filePath }, cmd.requestId);
       }
       try {
         await this.wa.sendFile(cmd.to, cmd.filePath, cmd.caption);
-        return { type: 'fileSent', to: cmd.to, filePath: cmd.filePath };
+        return withRequestId({ type: 'fileSent', to: cmd.to, filePath: cmd.filePath }, cmd.requestId);
       } catch (error) {
         this.enqueue(cmd);
-        return { type: 'queued', to: cmd.to, filePath: cmd.filePath, error: String(error) };
+        return withRequestId({ type: 'queued', to: cmd.to, filePath: cmd.filePath, error: String(error) }, cmd.requestId);
       }
     }
 
     if (cmd.type === 'reset') {
+      this.lastStatus = 'connecting';
+      this.lastSelfId = undefined;
+      this.lastQR = null;
+      this.broadcast({ type: 'status', status: this.lastStatus });
       console.log('🔄 Resetting WhatsApp session...');
       if (this.wa) {
         await this.wa.disconnect();

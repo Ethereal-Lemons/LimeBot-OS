@@ -17,11 +17,12 @@ We're thrilled you want to help make LimeBot even better! Whether you're fixing 
    ```bash
    # Terminal 1 — Backend
    cp .env.example .env   # fill in your keys
-   pip install -r requirements.txt
+   python -m pip install -r requirements-dev.txt
    python main.py
 
    # Terminal 2 — Frontend
-   cd web && npm install && npm run dev
+   npm install --include-workspace-root --workspace web
+   npm --prefix web run dev
    ```
 
 ## 🚀 How to Contribute

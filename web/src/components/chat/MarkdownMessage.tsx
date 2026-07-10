@@ -1,5 +1,6 @@
 import { lazy, memo, Suspense } from "react";
 import { cn } from "@/lib/utils";
+import { shouldRenderRichMarkdown } from "@/lib/stream-rendering";
 
 const MarkdownMessageRenderer = lazy(() => import("./MarkdownMessageRenderer"));
 
@@ -32,8 +33,13 @@ export const MarkdownMessage = memo((props: {
     content: string;
     isUser: boolean;
     isStreaming?: boolean;
-}) => (
-    <Suspense fallback={<MarkdownFallback content={props.content} isStreaming={props.isStreaming} />}>
-        <MarkdownMessageRenderer {...props} />
-    </Suspense>
-));
+}) => {
+    if (!shouldRenderRichMarkdown(props.isStreaming)) {
+        return <MarkdownFallback content={props.content} isStreaming />;
+    }
+    return (
+        <Suspense fallback={<MarkdownFallback content={props.content} />}>
+            <MarkdownMessageRenderer {...props} isStreaming={false} />
+        </Suspense>
+    );
+});

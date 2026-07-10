@@ -35,6 +35,22 @@ TOOL_RESULT_LIMITS: Dict[str, int] = {
 }
 DEFAULT_TOOL_RESULT_LIMIT = 2_000
 
+
+def truncate_tool_result(text: Any, limit: int) -> str:
+    """Keep both the setup and terminal diagnostic of oversized tool output."""
+    value = str(text or "")
+    if limit <= 0 or len(value) <= limit:
+        return value
+
+    # Command runners place their exit code and the most useful assertion at
+    # the end.  A leading-only truncation made repair decisions needlessly
+    # blind, so reserve enough room for a meaningful head and tail.
+    marker = "\n... [truncated diagnostic] ...\n"
+    available = max(2, limit - len(marker))
+    head_size = max(1, (available * 3) // 5)
+    tail_size = max(1, available - head_size)
+    return value[:head_size] + marker + value[-tail_size:]
+
 # Browser tools operate on mutable, session-local state — caching is unsafe.
 BROWSER_CACHEABLE: frozenset = frozenset()
 

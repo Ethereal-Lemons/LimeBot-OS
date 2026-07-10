@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "LimeBot Companion",
   "description": "Ask LimeBot about pages, send selected text, and approve tools from a browser companion.",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "minimum_chrome_version": "116",
   "action": {
     "default_title": "Open LimeBot Companion",

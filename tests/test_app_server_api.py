@@ -98,6 +98,12 @@ class TestAppServerApi(unittest.TestCase):
                 path="C:/private/project/secret.patch",
                 metadata={"token": "secret-value"},
             )
+            await tracker.add_workspace_attempt(
+                workspace.workspace_id,
+                model="openai/gpt-4o-mini",
+                summary="Initial pass",
+                status="running",
+            )
             await tracker.create_task(
                 "inbound_message",
                 "Continue remote task",
@@ -120,6 +126,8 @@ class TestAppServerApi(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["workspaces"][0]["workspace_id"], workspace.workspace_id)
         self.assertTrue(payload["workspaces"][0]["artifacts"][0]["available_locally"])
+        self.assertEqual(payload["workspaces"][0]["attempts"][0]["status"], "running")
+        self.assertNotIn("workspace_id", payload["workspaces"][0]["attempts"][0])
         self.assertEqual(payload["pending_approvals"][0]["preview"]["kind"], "run_command")
         serialized = response.text
         self.assertNotIn("secret-value", serialized)
@@ -171,7 +179,11 @@ class TestAppServerApi(unittest.TestCase):
                             channel="web",
                             chat_id=inbound.chat_id,
                             content="Tests are fixed.",
-                            metadata={"turn_id": "turn-1", "message_id": "msg-1"},
+                            metadata={
+                                "turn_id": "turn-1",
+                                "message_id": "msg-1",
+                                "reply_to": "app-user",
+                            },
                         )
                     )
                 )
@@ -219,6 +231,34 @@ class TestAppServerApi(unittest.TestCase):
         self.assertEqual(stored.metadata["client"], "companion")
         self.assertNotIn("api_key", stored.metadata)
         self.assertNotIn("secret-value", response.text)
+
+    def test_app_workspace_creation_canonicalizes_session_key(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+        from core.task_tracker import TaskTracker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = TaskTracker(data_dir=tmpdir)
+            channel = self._make_channel()
+            with patch("core.task_tracker.get_task_tracker", return_value=tracker):
+                response = TestClient(channel.app).post(
+                    "/api/app/workspaces",
+                    headers=self._headers(),
+                    json={
+                        "title": "safe workspace",
+                        "origin": "app",
+                        "session_key": "..\\events/unsafe",
+                    },
+                )
+                workspace_id = response.json()["workspace"]["workspace_id"]
+                stored = asyncio.run(tracker.get_workspace(workspace_id))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(stored.session_key.startswith("web_"))
+        self.assertNotIn("/", stored.session_key)
+        self.assertNotIn("\\", stored.session_key)
 
     def test_approval_reuses_agent_path_and_legacy_endpoint_stays_compatible(self):
         try:
@@ -277,6 +317,7 @@ class TestAppServerApi(unittest.TestCase):
                             channel="web",
                             chat_id=first_inbound.chat_id,
                             content="First result",
+                            metadata={"reply_to": "app-user"},
                         )
                     )
                 )
@@ -287,6 +328,7 @@ class TestAppServerApi(unittest.TestCase):
                             channel="web",
                             chat_id=first_inbound.chat_id,
                             content="Second result",
+                            metadata={"reply_to": "app-user"},
                         )
                     )
                 )
@@ -304,6 +346,101 @@ class TestAppServerApi(unittest.TestCase):
                 for attempt in finished.attempts
             )
         )
+
+    def test_workspace_attempts_ignore_progress_and_track_terminal_failures(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+        from core.task_tracker import TaskStatus, TaskTracker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = TaskTracker(data_dir=tmpdir)
+            workspace = asyncio.run(tracker.create_workspace("Lifecycle", "app"))
+            channel = self._make_channel()
+            with patch("core.task_tracker.get_task_tracker", return_value=tracker):
+                client = TestClient(channel.app)
+                client.post(
+                    f"/api/app/workspaces/{workspace.workspace_id}/message",
+                    headers=self._headers(),
+                    json={"content": "First instruction"},
+                )
+                client.post(
+                    f"/api/app/workspaces/{workspace.workspace_id}/message",
+                    headers=self._headers(),
+                    json={"content": "Second instruction"},
+                )
+                inbound = channel.bus.inbound.get_nowait()
+                channel.bus.inbound.get_nowait()
+
+                asyncio.run(
+                    channel.send(
+                        OutboundMessage(
+                            channel="web",
+                            chat_id=inbound.chat_id,
+                            content="",
+                            metadata={
+                                "type": "tool_execution",
+                                "status": "planned",
+                                "tool": "read_file",
+                            },
+                        )
+                    )
+                )
+                after_progress = asyncio.run(tracker.get_workspace(workspace.workspace_id))
+
+                asyncio.run(
+                    channel.send(
+                        OutboundMessage(
+                            channel="web",
+                            chat_id=inbound.chat_id,
+                            content="Tool failed",
+                            metadata={
+                                "type": "tool_execution",
+                                "status": "error",
+                                "is_error": True,
+                                "tool": "read_file",
+                            },
+                        )
+                    )
+                )
+                after_tool_error = asyncio.run(tracker.get_workspace(workspace.workspace_id))
+
+                asyncio.run(
+                    channel.send(
+                        OutboundMessage(
+                            channel="web",
+                            chat_id=inbound.chat_id,
+                            content="Agent failed",
+                            metadata={"is_error": True, "reply_to": "app-user", "error_code": "test_failure"},
+                        )
+                    )
+                )
+                after_failure = asyncio.run(tracker.get_workspace(workspace.workspace_id))
+
+                asyncio.run(
+                    channel.send(
+                        OutboundMessage(
+                            channel="web",
+                            chat_id=inbound.chat_id,
+                            content="",
+                            metadata={"type": "cancellation", "is_cancellation": True},
+                        )
+                    )
+                )
+                after_cancellation = asyncio.run(tracker.get_workspace(workspace.workspace_id))
+
+        self.assertEqual(after_progress.status, TaskStatus.RUNNING.value)
+        self.assertEqual(after_progress.attempts[0].status, TaskStatus.RUNNING.value)
+        self.assertEqual(after_progress.attempts[1].status, TaskStatus.QUEUED.value)
+        self.assertEqual(after_tool_error.status, TaskStatus.RUNNING.value)
+        self.assertEqual(after_tool_error.attempts[0].status, TaskStatus.RUNNING.value)
+        self.assertEqual(after_failure.status, TaskStatus.RUNNING.value)
+        self.assertEqual(after_failure.attempts[0].status, TaskStatus.FAILED.value)
+        self.assertEqual(after_failure.attempts[0].error, "test_failure")
+        self.assertEqual(after_failure.attempts[1].status, TaskStatus.RUNNING.value)
+        self.assertEqual(after_cancellation.status, TaskStatus.CANCELLED.value)
+        self.assertEqual(after_cancellation.attempts[1].status, TaskStatus.CANCELLED.value)
 
     def test_events_are_normalized_and_do_not_return_stored_arguments(self):
         try:
@@ -358,6 +495,65 @@ class TestAppServerApi(unittest.TestCase):
         self.assertNotIn("args", event["payload"])
         self.assertNotIn("command", event["payload"]["preview"])
         self.assertNotIn("secret-value", response.text)
+
+    def test_workspace_events_replay_generated_and_legacy_session_keys(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+        from core.task_tracker import TaskTracker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker = TaskTracker(data_dir=tmpdir)
+            channel = self._make_channel()
+            events_dir = Path(tmpdir) / "events"
+            events_dir.mkdir()
+            with patch("core.task_tracker.get_task_tracker", return_value=tracker), patch(
+                "core.session_manager.EVENTS_DIR", events_dir
+            ):
+                client = TestClient(channel.app)
+                create_response = client.post(
+                    "/api/app/workspaces",
+                    headers=self._headers(),
+                    json={"title": "Generated session", "origin": "app"},
+                )
+                generated_workspace = create_response.json()["workspace"]
+                message_response = client.post(
+                    f"/api/app/workspaces/{generated_workspace['workspace_id']}/message",
+                    headers=self._headers(),
+                    json={"content": "Continue this task"},
+                )
+                inbound = channel.bus.inbound.get_nowait()
+                (events_dir / f"{generated_workspace['session_key']}.jsonl").write_text(
+                    json.dumps({"type": "turn_complete", "timestamp": 1}), encoding="utf-8"
+                )
+                generated_events = client.get(
+                    f"/api/app/workspaces/{generated_workspace['workspace_id']}/events",
+                    headers=self._headers(),
+                )
+
+                legacy = asyncio.run(
+                    tracker.create_workspace(
+                        "Legacy session",
+                        "app",
+                        metadata={"app_session_key": "web_legacy-session"},
+                    )
+                )
+                (events_dir / "web_legacy-session.jsonl").write_text(
+                    json.dumps({"type": "legacy_event", "timestamp": 2}), encoding="utf-8"
+                )
+                legacy_events = client.get(
+                    f"/api/app/workspaces/{legacy.workspace_id}/events",
+                    headers=self._headers(),
+                )
+
+        self.assertEqual(create_response.status_code, 200)
+        self.assertEqual(message_response.status_code, 200)
+        self.assertEqual(inbound.session_key, generated_workspace["session_key"])
+        self.assertEqual(generated_events.status_code, 200)
+        self.assertEqual(generated_events.json()["events"][0]["event"], "turn_complete")
+        self.assertEqual(legacy_events.status_code, 200)
+        self.assertEqual(legacy_events.json()["events"][0]["event"], "legacy_event")
 
     def test_app_websocket_authenticates_and_returns_initial_state(self):
         try:

@@ -417,6 +417,8 @@ class TaskTracker:
         *,
         status: Optional[str] = None,
         title: Optional[str] = None,
+        session_key: Optional[str] = None,
+        chat_id: Optional[str] = None,
         error: Optional[str] = None,
         metadata_update: Optional[Dict[str, Any]] = None,
     ) -> Optional[TaskWorkspace]:
@@ -428,6 +430,10 @@ class TaskTracker:
             now = time.time()
             if title is not None:
                 workspace.title = title
+            if session_key is not None:
+                workspace.session_key = session_key
+            if chat_id is not None:
+                workspace.chat_id = chat_id
             if status is not None:
                 workspace.status = status
                 if status == TaskStatus.RUNNING.value and workspace.started_at == 0.0:
@@ -562,6 +568,33 @@ class TaskTracker:
                 metadata=metadata or {},
             )
             workspace.artifacts.append(artifact)
+            workspace.updated_at = time.time()
+            await self._schedule_flush()
+            return WorkspaceArtifact(**asdict(artifact))
+
+    async def update_workspace_artifact(
+        self,
+        workspace_id: str,
+        artifact_id: str,
+        *,
+        title: Optional[str] = None,
+        metadata_update: Optional[Dict[str, Any]] = None,
+    ) -> Optional[WorkspaceArtifact]:
+        """Refresh a bounded workspace artifact without replacing its identity."""
+        async with self._lock:
+            workspace = self._workspaces.get(workspace_id)
+            if workspace is None:
+                return None
+            artifact = next(
+                (item for item in workspace.artifacts if item.artifact_id == artifact_id),
+                None,
+            )
+            if artifact is None:
+                return None
+            if title is not None:
+                artifact.title = title
+            if metadata_update:
+                artifact.metadata.update(metadata_update)
             workspace.updated_at = time.time()
             await self._schedule_flush()
             return WorkspaceArtifact(**asdict(artifact))

@@ -50,7 +50,12 @@ class ElevenLabsTTS:
             try:
                 with open(LIMEBOT_CONFIG_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return data.get("voice", default_config)
+                    stored = data.get("voice")
+                    if isinstance(stored, dict):
+                        # Older configs predate channel-aware delivery. Merge
+                        # rather than replacing so new safe defaults appear
+                        # without discarding the user's existing voice choices.
+                        return {**default_config, **stored}
             except Exception as e:
                 logger.error(f"[TTS] Error reading limebot.json: {e}")
 

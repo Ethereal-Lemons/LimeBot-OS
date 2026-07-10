@@ -1,6 +1,6 @@
 {
   "name": "lime-bot",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "LimeBot - The elegant and powerful agentic bot",
   "main": "bin/cli.js",
   "bin": {
@@ -20,8 +20,8 @@
     "install-browser": "node bin/cli.js install-browser",
     "web:dev": "cd web && npm run dev -- --host 0.0.0.0",
     "backend:dev": "python main.py",
-    "extension:dev": "npm run dev --workspace extension",
-    "extension:build": "npm run build --workspace extension",
+    "extension:dev": "node bin/cli.js feature install extension && npm run dev --workspace extension",
+    "extension:build": "node bin/cli.js feature install extension && npm run build --workspace extension",
     "test:cli": "node --test tests-js/*.test.js"
   },
   "workspaces": [
