@@ -23,6 +23,40 @@ from core.llm_utils import build_provider_chain, get_api_key_for_model, resolve_
 
 
 class TestLlmUtils(unittest.TestCase):
+    def test_openai_model_is_pinned_to_openai_when_openrouter_is_configured(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
+        with patch("config.load_config", return_value=cfg), patch.dict(
+            "os.environ",
+            {
+                "OPENAI_API_KEY": "openai-secret",
+                "OPENROUTER_API_KEY": "openrouter-secret",
+            },
+            clear=False,
+        ):
+            resolved = resolve_provider_config("openai/gpt-5.4-pro")
+
+        self.assertEqual(resolved["model"], "gpt-5.4-pro")
+        self.assertIsNone(resolved["base_url"])
+        self.assertEqual(resolved["api_key"], "openai-secret")
+        self.assertEqual(resolved["custom_llm_provider"], "openai")
+
+    def test_explicit_anthropic_model_is_not_reclassified_as_openrouter(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
+        with patch("config.load_config", return_value=cfg), patch.dict(
+            "os.environ",
+            {
+                "ANTHROPIC_API_KEY": "anthropic-secret",
+                "OPENROUTER_API_KEY": "openrouter-secret",
+            },
+            clear=False,
+        ):
+            resolved = resolve_provider_config("anthropic/claude-sonnet-4.6")
+
+        self.assertEqual(resolved["model"], "claude-sonnet-4.6")
+        self.assertIsNone(resolved["base_url"])
+        self.assertEqual(resolved["api_key"], "anthropic-secret")
+        self.assertIsNone(resolved["custom_llm_provider"])
+
     def test_codex_models_do_not_fall_back_to_unrelated_env_keys(self):
         with patch("core.llm_utils.resolve_codex_oauth_api_key", return_value="codex-secret"), patch.dict(
             "os.environ",

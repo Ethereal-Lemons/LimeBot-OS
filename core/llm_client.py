@@ -11,12 +11,60 @@ import asyncio
 import base64
 import copy
 from dataclasses import dataclass
+import hashlib
 import logging
 import mimetypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_OPENAI_TOOL_CALL_ID_MAX_LENGTH = 64
+
+
+def _bounded_tool_call_id(tool_call_id: Any) -> str:
+    """Return a deterministic OpenAI-safe ID without breaking tool-result links."""
+    normalized = str(tool_call_id or "")
+    if len(normalized) <= _OPENAI_TOOL_CALL_ID_MAX_LENGTH:
+        return normalized
+
+    # A fixed safe prefix plus a digest avoids collisions between provider IDs that
+    # share a long prefix. The complete result is exactly 64 characters.
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"call_{digest[:_OPENAI_TOOL_CALL_ID_MAX_LENGTH - 5]}"
+
+
+def _normalize_openai_tool_call_ids(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Bound tool-call IDs and keep matching tool messages synchronized."""
+    replacements: Dict[str, str] = {}
+
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict) or "id" not in tool_call:
+                continue
+            original_id = str(tool_call.get("id") or "")
+            bounded_id = _bounded_tool_call_id(original_id)
+            replacements[original_id] = bounded_id
+            tool_call["id"] = bounded_id
+
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        original_id = str(message.get("tool_call_id") or "")
+        if not original_id:
+            continue
+        message["tool_call_id"] = replacements.get(
+            original_id, _bounded_tool_call_id(original_id)
+        )
+
+    return messages
 
 
 def _resolve_local_image_urls(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -132,6 +180,8 @@ class LimeLLMClient:
                 request.tools,
                 request.session_id,
             )
+
+        messages = _normalize_openai_tool_call_ids(messages)
 
         if acompletion is None:
             raise RuntimeError("litellm is not installed")

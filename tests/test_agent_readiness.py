@@ -1,6 +1,7 @@
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.bus import MessageBus
 from core.events import InboundMessage
@@ -25,6 +26,42 @@ class _Chunk:
 
 
 class TestAgentReadiness(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_cancels_active_provider_tasks(self):
+        class StoppableAgent(AgentLoop):
+            async def _initialize_capabilities(self):
+                self._readiness_event.set()
+
+        agent = StoppableAgent(MessageBus())
+        provider_task = asyncio.create_task(asyncio.Event().wait())
+        agent.active_tasks["web_chat"] = provider_task
+
+        await agent.stop()
+
+        self.assertTrue(provider_task.cancelled())
+        self.assertEqual(agent.active_tasks, {})
+
+    async def test_llm_warmup_uses_openai_minimum_output_tokens(self):
+        class WarmupAgent(AgentLoop):
+            async def _initialize_capabilities(self):
+                self._readiness_event.set()
+
+        agent = WarmupAgent(MessageBus())
+        agent.vector_service = SimpleNamespace(
+            _ensure_init=AsyncMock(return_value=None),
+            _get_embedding=AsyncMock(return_value=None),
+        )
+        provider = SimpleNamespace(is_codex=False)
+        agent.llm_client = SimpleNamespace(
+            resolve_provider=MagicMock(return_value=provider),
+            complete=AsyncMock(return_value=object()),
+        )
+
+        await agent._warm_up_services()
+
+        request = agent.llm_client.complete.await_args.args[1]
+        self.assertEqual(request.max_tokens, 16)
+        await agent.stop()
+
     async def test_required_phases_reach_ready_in_order(self):
         manager = type("Manager", (), {"initialize": AsyncMock(return_value=None)})()
         with patch(

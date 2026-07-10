@@ -57,6 +57,25 @@ OPENROUTER_CURATED_MODEL_IDS = [
     "z-ai/glm-5",
 ]
 OPENROUTER_CURATED_MODEL_ID_SET = frozenset(OPENROUTER_CURATED_MODEL_IDS)
+_DIRECT_PROVIDER_PREFIXES = (
+    "openai/",
+    "openai-codex/",
+    "anthropic/",
+    "deepseek/",
+    "moonshot/",
+    "moonshotai/",
+    "gemini/",
+    "xai/",
+    "qwen/",
+    "nvidia/",
+)
+
+
+def _is_unprefixed_openrouter_model(model: str) -> bool:
+    """Recognize legacy OpenRouter IDs without overriding explicit providers."""
+    return model in OPENROUTER_CURATED_MODEL_ID_SET and not model.startswith(
+        _DIRECT_PROVIDER_PREFIXES
+    )
 
 # Compatibility aliases for provider model IDs that were renamed or removed.
 MODEL_ALIASES = {
@@ -207,7 +226,7 @@ def get_api_key_for_model(model: str) -> Optional[str]:
     """
     if not model:
         return None
-    if model in OPENROUTER_CURATED_MODEL_ID_SET:
+    if _is_unprefixed_openrouter_model(model):
         model = f"openrouter/{model}"
 
     if model.startswith("gemini/") or model.startswith("google/"):
@@ -270,7 +289,7 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
     if normalized_model.startswith("moonshotai/"):
         normalized_model = f"moonshot/{normalized_model.removeprefix('moonshotai/')}"
     normalized_model = MODEL_ALIASES.get(normalized_model, normalized_model)
-    if normalized_model in OPENROUTER_CURATED_MODEL_ID_SET:
+    if _is_unprefixed_openrouter_model(normalized_model):
         normalized_model = f"openrouter/{normalized_model}"
 
     api_key = get_api_key_for_model(normalized_model)
@@ -319,6 +338,11 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
         custom_llm_provider = "gemini"
     elif normalized_model.startswith("openai/"):
         target_model = normalized_model.removeprefix("openai/")
+        # Pin direct OpenAI models explicitly. LiteLLM's registry may know a new
+        # model through OpenRouter before its direct OpenAI mapping is updated;
+        # leaving provider inference implicit can then substitute the
+        # OPENROUTER_API_KEY and route the request to openrouter.ai.
+        custom_llm_provider = "openai"
     elif normalized_model.startswith("anthropic/"):
         target_model = normalized_model.removeprefix("anthropic/")
     elif normalized_model.startswith("deepseek/"):

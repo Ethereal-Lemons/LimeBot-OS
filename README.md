@@ -144,7 +144,7 @@ LimeBot uses [LiteLLM](https://github.com/BerriAI/litellm)  any model it support
 | Provider | Example model string |
 |----------|---------------------|
 | **Gemini** (default) | `gemini/gemini-2.0-flash` |
-| **OpenAI** | `openai/gpt-4o` |
+| **OpenAI** | `openai/gpt-5.5` |
 | **Anthropic** | `anthropic/claude-3-7-sonnet-20250219` |
 | **xAI** | `xai/grok-2-1212` |
 | **DeepSeek** | `deepseek/deepseek-v3.2` |

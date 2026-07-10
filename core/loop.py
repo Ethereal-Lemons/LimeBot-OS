@@ -225,6 +225,7 @@ _SENSITIVE_TOOLS = SENSITIVE_TOOLS
 _APPROVE_WORDS = APPROVE_WORDS
 _DENY_WORDS = DENY_WORDS
 _AGENT_READINESS_TIMEOUT_S = 20.0
+_LLM_WARMUP_MAX_TOKENS = 16
 
 # Search tools route through core/web_search.py (provider layer) rather than the
 # Playwright browser stack. google_search is kept as a back-compat alias.
@@ -454,7 +455,8 @@ class AgentLoop:
             else:
                 logger.debug(f"Embedding warmup skipped/failed during setup: {e}")
 
-        # 3. Warm the chat LLM HTTP connection with a minimal 1-token call
+        # 3. Warm the chat LLM HTTP connection. OpenAI Responses models reject
+        # max_output_tokens values below 16, so use that cross-provider floor.
         try:
             provider = self.llm_client.resolve_provider(
                 self.primary_model,
@@ -464,7 +466,7 @@ class AgentLoop:
                 provider,
                 ChatRequest(
                     messages=[{"role": "user", "content": "hi"}],
-                    max_tokens=1,
+                    max_tokens=_LLM_WARMUP_MAX_TOKENS,
                     session_id="__warmup__",
                 ),
             )
@@ -488,7 +490,7 @@ class AgentLoop:
             await acompletion(
                 model=model,
                 messages=[{"role": "user", "content": "hi"}],
-                max_tokens=1,
+                max_tokens=_LLM_WARMUP_MAX_TOKENS,
                 stream=False,
                 base_url=base_url,
                 api_key=api_key,
@@ -1904,6 +1906,23 @@ class AgentLoop:
         if self._initialization_task and not self._initialization_task.done():
             self._initialization_task.cancel()
             await asyncio.gather(self._initialization_task, return_exceptions=True)
+
+        # A config change restarts the backend. Cancel provider calls before the
+        # old process exits so no detached request keeps running after the web
+        # client reconnects to a fresh AgentLoop.
+        current_task = asyncio.current_task()
+        active_task_registry = getattr(self, "active_tasks", {})
+        active_tasks = [
+            task
+            for task in active_task_registry.values()
+            if task is not current_task and not task.done()
+        ]
+        for task in active_tasks:
+            task.cancel()
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
+        active_task_registry.clear()
+
         # Persist the latest durable delivery state before bus workers are cancelled.
         try:
             from core.delivery_tracker import get_delivery_tracker

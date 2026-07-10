@@ -263,6 +263,9 @@ export function useWebSocket({
                 ws.current = null;
                 console.log('Disconnected from LimeBot');
                 setIsConnected(false);
+                // Backend restarts invalidate its active-task registry. Do not
+                // leave the composer locked to a request the new process cannot stop.
+                setIsTyping(false);
                 clearStreamFlushTimer();
                 streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
                 if (!mountedRef.current) {

@@ -78,6 +78,33 @@ _PIAI_MODELS_JS_PATH = (
     / "models.generated.js"
 )
 _PIAI_PROVIDER_MODEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
+_OPENAI_CURATED_MODELS = [
+    {
+        "id": "openai/gpt-5.5",
+        "name": "GPT-5.5",
+        "provider": "openai",
+    },
+    {
+        "id": "openai/gpt-5.4",
+        "name": "GPT-5.4",
+        "provider": "openai",
+    },
+    {
+        "id": "openai/gpt-5.4-mini",
+        "name": "GPT-5.4 Mini",
+        "provider": "openai",
+    },
+    {
+        "id": "openai/gpt-5.4-nano",
+        "name": "GPT-5.4 Nano",
+        "provider": "openai",
+    },
+    {
+        "id": "openai/gpt-5.3-codex",
+        "name": "GPT-5.3-Codex",
+        "provider": "openai",
+    },
+]
 _CODEX_FALLBACK_MODELS = [
     {"id": "openai-codex/gpt-5.5", "name": "GPT-5.5", "provider": "openai-codex"},
     {"id": "openai-codex/gpt-5.4", "name": "GPT-5.4", "provider": "openai-codex"},
@@ -1183,26 +1210,7 @@ class WebChannel(BaseChannel):
                     "provider": "gemini",
                 },
                 # ── OpenAI ────────────────────────────────────────────────────
-                {
-                    "id": "openai/gpt-4o",
-                    "name": "GPT-4o",
-                    "provider": "openai",
-                },
-                {
-                    "id": "openai/gpt-4o-mini",
-                    "name": "GPT-4o Mini",
-                    "provider": "openai",
-                },
-                {
-                    "id": "openai/o3-mini",
-                    "name": "o3-mini",
-                    "provider": "openai",
-                },
-                {
-                    "id": "openai/o1",
-                    "name": "o1",
-                    "provider": "openai",
-                },
+                *_OPENAI_CURATED_MODELS,
                 # ── Anthropic ─────────────────────────────────────────────────
                 {
                     "id": "anthropic/claude-3-7-sonnet-20250219",
@@ -1539,7 +1547,7 @@ class WebChannel(BaseChannel):
                     provider,
                     ChatRequest(
                         messages=[{"role": "user", "content": "hi"}],
-                        max_tokens=5,
+                        max_tokens=16,
                         session_id="llm-health",
                     )
                 )

@@ -121,6 +121,94 @@ class TestLlmClient(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(kwargs["stream"])
         self.assertNotIn("stream_options", kwargs)
 
+    async def test_complete_bounds_long_tool_call_ids_and_preserves_links(self):
+        client = LimeLLMClient()
+        provider = ProviderConfig(
+            source_model="openai/gpt-4o",
+            model="gpt-4o",
+            base_url="https://api.openai.com/v1",
+            api_key="openai-secret",
+            custom_llm_provider=None,
+            is_codex=False,
+        )
+        long_id = "call_" + ("provider-generated-segment-" * 4)
+        request = ChatRequest(
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": long_id,
+                            "type": "function",
+                            "function": {"name": "list_dir", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": long_id,
+                    "name": "list_dir",
+                    "content": "README.md",
+                },
+            ]
+        )
+
+        with patch(
+            "core.llm_client.acompletion", new=AsyncMock(return_value=object())
+        ) as mock_completion:
+            await client.complete(provider, request)
+
+        sent_messages = mock_completion.await_args.kwargs["messages"]
+        sent_call_id = sent_messages[0]["tool_calls"][0]["id"]
+        self.assertEqual(len(sent_call_id), 64)
+        self.assertTrue(sent_call_id.startswith("call_"))
+        self.assertEqual(sent_messages[1]["tool_call_id"], sent_call_id)
+        self.assertEqual(request.messages[0]["tool_calls"][0]["id"], long_id)
+        self.assertEqual(request.messages[1]["tool_call_id"], long_id)
+
+    async def test_complete_keeps_distinct_long_tool_call_ids_unique(self):
+        client = LimeLLMClient()
+        provider = ProviderConfig(
+            source_model="openai/gpt-4o",
+            model="gpt-4o",
+            base_url="https://api.openai.com/v1",
+            api_key="openai-secret",
+            custom_llm_provider=None,
+            is_codex=False,
+        )
+        common_prefix = "call_" + ("same-prefix-" * 7)
+        request = ChatRequest(
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": common_prefix + "a",
+                            "type": "function",
+                            "function": {"name": "first", "arguments": "{}"},
+                        },
+                        {
+                            "id": common_prefix + "b",
+                            "type": "function",
+                            "function": {"name": "second", "arguments": "{}"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        with patch(
+            "core.llm_client.acompletion", new=AsyncMock(return_value=object())
+        ) as mock_completion:
+            await client.complete(provider, request)
+
+        tool_calls = mock_completion.await_args.kwargs["messages"][0]["tool_calls"]
+        normalized_ids = [tool_call["id"] for tool_call in tool_calls]
+        self.assertEqual(len(set(normalized_ids)), 2)
+        self.assertTrue(all(len(tool_call_id) == 64 for tool_call_id in normalized_ids))
+
     async def test_complete_omits_empty_optional_fields(self):
         client = LimeLLMClient()
         provider = ProviderConfig(

@@ -261,7 +261,7 @@ class TestWebConfig(unittest.TestCase):
         channel.llm_client.complete.assert_awaited_once()
         request = channel.llm_client.complete.await_args.args[1]
         self.assertIsInstance(request, ChatRequest)
-        self.assertEqual(request.max_tokens, 5)
+        self.assertEqual(request.max_tokens, 16)
         self.assertEqual(request.session_id, "llm-health")
         self.assertEqual(request.messages, [{"role": "user", "content": "hi"}])
 
