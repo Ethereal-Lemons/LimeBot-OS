@@ -232,7 +232,7 @@ class SkillRegistry:
         sections = ["\n## Active Skills\n"]
         sections.append(
             "These are the skills currently enabled for this session. "
-            "If one sounds relevant, use its manual or the matching `run_command` workflow.\n"
+            "If one sounds relevant, follow its manual; it may call native tools or use a `run_command` workflow.\n"
         )
         for name, skill in skills.items():
             description = str(skill.get("description") or "").strip()
@@ -250,8 +250,8 @@ class SkillRegistry:
 
         sections = ["\n## Available Skills\n"]
         sections.append(
-            "These are skill manuals, not callable tool names. "
-            "Use the `run_command` tool to execute the shown commands.\n"
+            "These are skill manuals, not callable tool names. Follow each manual: "
+            "it may direct a native tool call or a `run_command` workflow.\n"
         )
 
         for name, skill in skills.items():

@@ -23,6 +23,7 @@ import {
     upsertStreamDelta,
 } from '@/lib/chat-state';
 import type { ToolExecution } from '@/components/chat/ToolCard';
+import { classifyStreamDelta, type StreamRenderState } from '@/lib/stream-rendering';
 
 type Message = ChatMessage & {
     toolExecution?: ToolExecution;
@@ -79,7 +80,12 @@ type SendMessageOptions = {
     metadata?: Record<string, unknown>;
 };
 
-const STREAM_FLUSH_INTERVAL_MS = 40;
+const STREAM_FLUSH_INTERVAL_MS = 32;
+const EMPTY_STREAM_RENDER_STATE: StreamRenderState = {
+    key: null,
+    contentRendered: false,
+    thinkingRendered: false,
+};
 
 export function useWebSocket({
     onIdentityUpdated,
@@ -99,6 +105,7 @@ export function useWebSocket({
     const mountedRef = useRef(true);
     const sessionIdRef = useRef(sessionId);
     const streamFlushTimerRef = useRef<number | null>(null);
+    const streamRenderStateRef = useRef<StreamRenderState>(EMPTY_STREAM_RENDER_STATE);
     const streamBufferRef = useRef<{
         chatId: string | null;
         messageId: string | null;
@@ -112,13 +119,6 @@ export function useWebSocket({
         content: '',
         thinking: '',
     });
-
-    // Keep sessionIdRef in sync
-    useEffect(() => {
-        sessionIdRef.current = sessionId;
-        clearStreamFlushTimer();
-        streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
-    }, [sessionId]);
 
     // ── Stream buffer helpers ─────────────────────────────────────────────
 
@@ -191,6 +191,19 @@ export function useWebSocket({
         if (contentDelta) streamBufferRef.current.content += contentDelta;
         if (thinkingDelta) streamBufferRef.current.thinking += thinkingDelta;
 
+        const renderKey = `${chatId}:${messageId || turnId || 'assistant'}`;
+        const classification = classifyStreamDelta(
+            streamRenderStateRef.current,
+            renderKey,
+            contentDelta,
+            thinkingDelta,
+        );
+        streamRenderStateRef.current = classification.next;
+        if (classification.immediate) {
+            flushStreamBuffer();
+            return;
+        }
+
         if (streamFlushTimerRef.current === null) {
             streamFlushTimerRef.current = window.setTimeout(() => {
                 streamFlushTimerRef.current = null;
@@ -198,6 +211,17 @@ export function useWebSocket({
             }, STREAM_FLUSH_INTERVAL_MS);
         }
     };
+
+    // Keep session-scoped buffers aligned without delaying first output.
+    useEffect(() => {
+        sessionIdRef.current = sessionId;
+        if (streamFlushTimerRef.current !== null) {
+            window.clearTimeout(streamFlushTimerRef.current);
+            streamFlushTimerRef.current = null;
+        }
+        streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
+        streamRenderStateRef.current = EMPTY_STREAM_RENDER_STATE;
+    }, [sessionId]);
 
     // ── WebSocket connect ─────────────────────────────────────────────────
 
@@ -268,6 +292,7 @@ export function useWebSocket({
                 setIsTyping(false);
                 clearStreamFlushTimer();
                 streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
+                streamRenderStateRef.current = EMPTY_STREAM_RENDER_STATE;
                 if (!mountedRef.current) {
                     return;
                 }
@@ -511,6 +536,7 @@ export function useWebSocket({
 
         clearStreamFlushTimer();
         streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
+        streamRenderStateRef.current = EMPTY_STREAM_RENDER_STATE;
         setMessages(prev =>
             applyUserMessageEdit(prev, targetMessageId, trimmedContent, replayMessageId)
         );
@@ -523,6 +549,7 @@ export function useWebSocket({
         flushStreamBuffer();
         clearStreamFlushTimer();
         streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
+        streamRenderStateRef.current = EMPTY_STREAM_RENDER_STATE;
         const newId = crypto.randomUUID();
         setSessionId(newId);
         setMessages([]);
@@ -541,6 +568,7 @@ export function useWebSocket({
             clearConnectTimer();
             clearStreamFlushTimer();
             streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
+            streamRenderStateRef.current = EMPTY_STREAM_RENDER_STATE;
             ws.current?.close();
             ws.current = null;
         };

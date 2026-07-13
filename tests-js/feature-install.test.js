@@ -9,6 +9,8 @@ import {
     getDependencySpawnSpec,
     getFeatureInstallSpec,
     getRequestedFeatures,
+    getVideoBinaryInstallInstructions,
+    getVideoReadinessState,
     installRequestedFeatureSet,
     installFeatureThen,
     settleDependencyLanes,
@@ -18,7 +20,7 @@ import {
 test('feature mapping is closed and uses argv arrays', () => {
     const rootDir = path.resolve('fixture');
     assert.deepEqual(Object.keys(FEATURE_DEFINITIONS), [
-        'browser', 'memory', 'documents', 'mcp', 'whatsapp', 'extension',
+        'browser', 'memory', 'documents', 'mcp', 'video', 'whatsapp', 'extension',
     ]);
     const browser = getFeatureInstallSpec('browser', { rootDir, venvPython: 'python' });
     assert.equal(browser.command, 'python');
@@ -35,6 +37,22 @@ test('core npm clean and reconcile commands select only root and web', () => {
         ['ci', '--include-workspace-root', '--workspace', 'web']);
     assert.deepEqual(getCoreNpmInstallSpec({ clean: false }).args,
         ['install', '--include-workspace-root', '--workspace', 'web']);
+});
+
+test('video doctor states distinguish dependencies and binaries', () => {
+    assert.equal(getVideoReadinessState({ pythonDependenciesReady: false, binariesReady: false }), 'python-dependencies-missing');
+    assert.equal(getVideoReadinessState({ pythonDependenciesReady: true, binariesReady: false }), 'ffmpeg-missing');
+    assert.equal(getVideoReadinessState({ pythonDependenciesReady: true, binariesReady: true }), 'ready');
+});
+
+test('video feature declares its manifest and platform binary guidance', () => {
+    const rootDir = path.resolve('fixture');
+    const video = getFeatureInstallSpec('video', { rootDir, venvPython: 'python' });
+    assert.match(video.manifestPath, /requirements-video\.txt$/);
+    assert.deepEqual(FEATURE_DEFINITIONS.video.requiredBinaries, ['ffmpeg', 'ffprobe']);
+    assert.match(getVideoBinaryInstallInstructions('win32'), /winget/);
+    assert.match(getVideoBinaryInstallInstructions('darwin'), /brew install ffmpeg/);
+    assert.match(getVideoBinaryInstallInstructions('linux'), /apt install ffmpeg/);
 });
 
 test('all expands to every optional feature in a stable retry order', () => {

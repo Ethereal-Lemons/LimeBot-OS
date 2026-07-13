@@ -1,11 +1,22 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
-import { API_BASE_URL } from "@/lib/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Activity, Zap, Globe, Cpu, RefreshCw, Power, RotateCcw, Download, Upload, User, Trash2 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import {
+    Activity,
+    Cpu,
+    Download,
+    Globe,
+    KeyRound,
+    RefreshCw,
+    RotateCcw,
+    Trash2,
+    Upload,
+    User,
+} from "lucide-react";
 import { toast } from "sonner";
+
+import { API_BASE_URL } from "@/lib/api";
 import { type ConfigApiResponse } from "@/lib/config-secrets";
+import { cn } from "@/lib/utils";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -16,11 +27,14 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface Stats {
     uptime: number;
     gateway_url: string;
-    channels: Array<{ name: string, type: string, status: string }>;
+    channels: Array<{ name: string; type: string; status: string }>;
     sessions: number;
     sessions_count: number;
     instances_count?: number;
@@ -58,8 +72,53 @@ interface SetupStatus {
     persona_missing?: string[];
 }
 
+interface SummaryItemProps {
+    label: string;
+    value: string;
+    detail: string;
+    status?: "ready" | "warning" | "error" | "neutral";
+}
+
+function SummaryItem({ label, value, detail, status = "neutral" }: SummaryItemProps) {
+    return (
+        <div className="min-w-0 bg-card px-5 py-4 sm:px-6">
+            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <span
+                    className={cn(
+                        "h-2 w-2 rounded-full",
+                        status === "ready" && "bg-primary",
+                        status === "warning" && "bg-amber-500",
+                        status === "error" && "bg-destructive",
+                        status === "neutral" && "bg-muted-foreground/40",
+                    )}
+                />
+                {label}
+            </div>
+            <div className="mt-2 truncate text-lg font-semibold text-foreground">{value}</div>
+            <div className="mt-0.5 truncate text-xs text-muted-foreground" title={detail}>{detail}</div>
+        </div>
+    );
+}
+
+function SectionStatus({ children, tone = "ready" }: { children: React.ReactNode; tone?: "ready" | "warning" | "error" }) {
+    return (
+        <Badge
+            variant="outline"
+            className={cn(
+                "gap-1.5 font-medium",
+                tone === "ready" && "border-primary/25 bg-primary/8 text-primary",
+                tone === "warning" && "border-amber-500/25 bg-amber-500/8 text-amber-600 dark:text-amber-400",
+                tone === "error" && "border-destructive/25 bg-destructive/8 text-destructive",
+            )}
+        >
+            <span className={cn("h-1.5 w-1.5 rounded-full", tone === "ready" && "bg-primary", tone === "warning" && "bg-amber-500", tone === "error" && "bg-destructive")} />
+            {children}
+        </Badge>
+    );
+}
+
 export function OverviewPage() {
-    const [identity, setIdentity] = useState<{ name: string, avatar: string | null } | null>(null);
+    const [identity, setIdentity] = useState<{ name: string; avatar: string | null } | null>(null);
     const [personaStatus, setPersonaStatus] = useState<PersonaStatus | null>(null);
     const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
     const [stats, setStats] = useState<Stats | null>(null);
@@ -71,69 +130,62 @@ export function OverviewPage() {
     const [actionBusy, setActionBusy] = useState<null | "connect" | "token">(null);
     const [confirmAction, setConfirmAction] = useState<ConfirmActionState | null>(null);
 
-    const fetchIdentity = () => {
+    const fetchIdentity = useCallback(() => {
         axios.get(`${API_BASE_URL}/api/identity`)
-            .then(res => setIdentity(res.data))
-            .catch(err => {
-                if (err.response?.status !== 401) {
-                    console.error("Failed to fetch identity:", err);
-                }
+            .then((res) => setIdentity(res.data))
+            .catch((error: unknown) => {
+                if (!isUnauthorized(error)) console.error("Failed to fetch identity:", error);
             });
-    };
+    }, []);
 
-    const fetchStats = () => {
+    const fetchStats = useCallback(() => {
         axios.get(`${API_BASE_URL}/api/stats`)
-            .then(res => {
-                setStats(res.data);
-                setLoading(false);
+            .then((res) => setStats(res.data))
+            .catch((error: unknown) => {
+                if (!isUnauthorized(error)) console.error("Failed to fetch stats:", error);
             })
-            .catch(err => {
-                if (err.response?.status !== 401) {
-                    console.error("Failed to fetch stats:", err);
-                }
-                setLoading(false);
-            });
-    };
+            .finally(() => setLoading(false));
+    }, []);
 
-    const checkLLM = () => {
+    const checkLLM = useCallback(() => {
         setCheckingLLM(true);
         axios.get(`${API_BASE_URL}/api/llm/health`)
-            .then(res => {
-                setLlmHealth(res.data);
-                setCheckingLLM(false);
-            })
-            .catch(err => {
-                setLlmHealth({ status: "Error", latency_ms: 0, model: "Unknown", error: str(err) });
-                setCheckingLLM(false);
-            });
-    };
+            .then((res) => setLlmHealth(res.data))
+            .catch((error: unknown) => setLlmHealth({ status: "Error", latency_ms: 0, model: "Unknown", error: str(error) }))
+            .finally(() => setCheckingLLM(false));
+    }, []);
 
-    const fetchGatewayConfig = () => {
+    const fetchGatewayConfig = useCallback(() => {
         axios.get<ConfigApiResponse>(`${API_BASE_URL}/api/config`)
-            .then(res => {
-                const storedKey = localStorage.getItem("limebot_api_key") || "";
-                setGatewayTokenLabel(res?.data?.secrets?.APP_API_KEY?.masked || "");
-                setGatewayTokenValue(storedKey);
+            .then((res) => {
+                setGatewayTokenLabel(res.data?.secrets?.APP_API_KEY?.masked || "");
+                setGatewayTokenValue(localStorage.getItem("limebot_api_key") || "");
             })
             .catch(() => {
                 setGatewayTokenLabel("");
                 setGatewayTokenValue(localStorage.getItem("limebot_api_key") || "");
             });
-    };
+    }, []);
 
-    const fetchPersonaStatus = () => {
+    const fetchPersonaStatus = useCallback(() => {
         axios.get(`${API_BASE_URL}/api/persona`)
-            .then(res => setPersonaStatus(res.data))
-            .catch(err => {
-                if (err.response?.status !== 401) {
-                    console.error("Failed to fetch persona status:", err);
-                }
+            .then((res) => setPersonaStatus(res.data))
+            .catch((error: unknown) => {
+                if (!isUnauthorized(error)) console.error("Failed to fetch persona status:", error);
             });
 
         axios.get(`${API_BASE_URL}/api/setup/status`)
-            .then(res => setSetupStatus(res.data))
+            .then((res) => setSetupStatus(res.data))
             .catch(() => setSetupStatus(null));
-    };
+    }, []);
+
+    const refreshAll = useCallback(() => {
+        fetchStats();
+        fetchIdentity();
+        fetchGatewayConfig();
+        fetchPersonaStatus();
+        checkLLM();
+    }, [checkLLM, fetchGatewayConfig, fetchIdentity, fetchPersonaStatus, fetchStats]);
 
     const openConfirm = (action: ConfirmActionState) => setConfirmAction(action);
 
@@ -154,9 +206,30 @@ export function OverviewPage() {
                 try {
                     await axios.post(`${API_BASE_URL}/api/control/restart`);
                     toast.success("Backend restart requested");
-                } catch (err) {
-                    console.error(err);
-                    toast.error("Failed to restart backend", { description: str(err) });
+                } catch (error) {
+                    toast.error("Failed to restart backend", { description: str(error) });
+                }
+            },
+        });
+    };
+
+    const clearRuntimeData = (kind: "cache" | "logs") => {
+        const isCache = kind === "cache";
+        openConfirm({
+            title: isCache ? "Clear tool cache?" : "Clear system logs?",
+            description: isCache
+                ? "Cached tool results will be removed for all active sessions."
+                : "This removes the current log buffer from the dashboard.",
+            actionLabel: isCache ? "Clear cache" : "Clear logs",
+            tone: "destructive",
+            onConfirm: async () => {
+                try {
+                    const res = await axios.post(`${API_BASE_URL}/api/control/clear-${kind}`);
+                    toast.success(isCache ? "Cache cleared" : "Logs cleared", {
+                        description: res.data.message || (isCache ? "Cache cleared." : "Logs cleared."),
+                    });
+                } catch (error) {
+                    toast.error(isCache ? "Failed to clear cache" : "Failed to clear logs", { description: str(error) });
                 }
             },
         });
@@ -166,11 +239,10 @@ export function OverviewPage() {
         if (!stats?.gateway_url) return;
         setActionBusy("connect");
         const storedKey = gatewayTokenValue || localStorage.getItem("limebot_api_key") || "";
-        const requiresGatewayKey = Boolean(gatewayTokenLabel);
 
-        if (requiresGatewayKey && !storedKey) {
+        if (gatewayTokenLabel && !storedKey) {
             toast.error("Gateway token required", {
-                description: "This server requires APP_API_KEY, but this browser has no cached token. Generate or re-enter a token before copying the client URL.",
+                description: "This server requires APP_API_KEY, but this browser has no cached token. Rotate or re-enter a token before copying the client URL.",
             });
             setActionBusy(null);
             return;
@@ -187,6 +259,7 @@ export function OverviewPage() {
                 wsWithKey = `${stats.gateway_url}${separator}api_key=${encodeURIComponent(storedKey)}`;
             }
         }
+
         try {
             await navigator.clipboard.writeText(wsWithKey);
             toast.success("Client URL copied", { description: "WebSocket endpoint copied to clipboard." });
@@ -197,72 +270,69 @@ export function OverviewPage() {
         }
     };
 
-    const generateNewToken = async () => {
+    const generateNewToken = () => {
         openConfirm({
-            title: "Generate new gateway token?",
+            title: "Rotate gateway token?",
             description: "Existing clients will be disconnected after the backend restarts with the new APP_API_KEY.",
-            actionLabel: "Generate token",
+            actionLabel: "Rotate token",
             tone: "destructive",
             onConfirm: async () => {
                 setActionBusy("token");
                 const newToken = crypto.randomUUID();
-                axios.post(`${API_BASE_URL}/api/config`, { env: { APP_API_KEY: newToken } })
-                    .then(() => {
-                        localStorage.setItem("limebot_api_key", newToken);
-                        axios.defaults.headers.common["X-API-Key"] = newToken;
-                        setGatewayTokenValue(newToken);
-                        setGatewayTokenLabel(`••••${newToken.slice(-4)}`);
-                        toast.success("Token generated", { description: "APP_API_KEY updated. Backend is restarting." });
-                    })
-                    .catch(err => toast.error("Failed to generate token", { description: str(err) }))
-                    .finally(() => setActionBusy(null));
+                try {
+                    await axios.post(`${API_BASE_URL}/api/config`, { env: { APP_API_KEY: newToken } });
+                    localStorage.setItem("limebot_api_key", newToken);
+                    axios.defaults.headers.common["X-API-Key"] = newToken;
+                    setGatewayTokenValue(newToken);
+                    setGatewayTokenLabel(`••••${newToken.slice(-4)}`);
+                    toast.success("Token rotated", { description: "APP_API_KEY updated. Backend is restarting." });
+                } catch (error) {
+                    toast.error("Failed to rotate token", { description: str(error) });
+                } finally {
+                    setActionBusy(null);
+                }
             },
         });
     };
 
+    const exportPersona = async () => {
+        try {
+            const res = await axios.get(`${API_BASE_URL}/api/persona/export`);
+            const data = res.data;
+            if (data.error) throw new Error(data.error);
+            const blob = new Blob([data.content], { type: "text/markdown" });
+            const url = window.URL.createObjectURL(blob);
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = data.filename || "limebot_persona.md";
+            anchor.click();
+            window.URL.revokeObjectURL(url);
+            toast.success("Persona exported", { description: anchor.download });
+        } catch (error) {
+            toast.error("Export failed", { description: str(error) });
+        }
+    };
+
     const importPersonaFile = (file: File) => {
         const reader = new FileReader();
-        reader.onload = (event) => {
-            axios.post(`${API_BASE_URL}/api/persona/import`, {
-                content: event.target?.result
-            })
-                .then(res => {
-                    const data = res.data;
-                    if (data.error) throw new Error(data.error);
-                    toast.success("Persona imported", { description: data.message });
-                    window.location.reload();
-                })
-                .catch(err => toast.error("Import failed", { description: str(err) }));
+        reader.onload = async (event) => {
+            try {
+                const res = await axios.post(`${API_BASE_URL}/api/persona/import`, { content: event.target?.result });
+                if (res.data.error) throw new Error(res.data.error);
+                toast.success("Persona imported", { description: res.data.message });
+                window.location.reload();
+            } catch (error) {
+                toast.error("Import failed", { description: str(error) });
+            }
         };
         reader.readAsText(file);
     };
 
     useEffect(() => {
-        fetchStats();
-        fetchIdentity();
-        fetchGatewayConfig();
-        fetchPersonaStatus();
-        // Initial LLM check
-        checkLLM();
-
+        refreshAll();
         const interval = setInterval(fetchStats, 5000);
         return () => clearInterval(interval);
-    }, []);
-
-    const formatUptime = (seconds: number) => {
-        const days = Math.floor(seconds / (3600 * 24));
-        const hours = Math.floor((seconds % (3600 * 24)) / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        const secs = Math.floor(seconds % 60);
-
-        const parts = [];
-        if (days > 0) parts.push(`${days}d`);
-        if (hours > 0) parts.push(`${hours}h`);
-        if (minutes > 0) parts.push(`${minutes}m`);
-        parts.push(`${secs}s`);
-
-        return parts.join(' ');
-    };
+    }, [fetchStats, refreshAll]);
 
     const strongestRelationship = personaStatus?.relationships?.[0];
     const styleCoverage = [
@@ -271,392 +341,238 @@ export function OverviewPage() {
         personaStatus?.telegram_style,
         personaStatus?.whatsapp_style,
     ].filter(Boolean).length;
+    const llmTone = llmHealth?.status === "Healthy" ? "ready" : llmHealth?.status === "Error" || llmHealth?.status === "Quota Exceeded" ? "error" : "warning";
+    const sessionCount = stats?.sessions_count ?? stats?.sessions ?? 0;
 
     if (loading && !stats) {
         return (
-            <div className="flex items-center justify-center h-full min-h-[50vh]">
-                <RefreshCw className="w-8 h-8 animate-spin text-primary" />
+            <div className="flex h-full min-h-[50vh] items-center justify-center bg-background">
+                <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
         );
     }
 
     return (
-        <div className="h-full overflow-y-auto bg-black/20">
-            <div className="space-y-6 p-8">
-                <div className="sticky top-0 z-20 -mx-8 mb-6 border-b border-border/60 bg-background/82 px-8 py-4 backdrop-blur-md">
-                    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                        <div>
-                            <h2 className="text-3xl font-bold tracking-tight text-foreground">System Overview</h2>
-                            <p className="text-muted-foreground mt-1">Real-time telemetry and control dashboard.</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <button
-                                onClick={() => { fetchStats(); checkLLM(); fetchIdentity(); fetchGatewayConfig(); fetchPersonaStatus(); }}
-                                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground bg-card hover:bg-muted border border-border rounded-full transition-all"
-                            >
-                                <RefreshCw className={cn("w-3.5 h-3.5", (loading || checkingLLM) && "animate-spin")} />
-                                Refresh Data
-                            </button>
-                        </div>
+        <div className="h-full overflow-y-auto bg-background">
+            <div className="mx-auto max-w-7xl space-y-5 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+                <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Overview</h1>
+                        <p className="mt-1 text-sm text-muted-foreground">Runtime health, connected services, and maintenance.</p>
                     </div>
-                </div>
-
-                {/* Persona Banner */}
-                <div className="bg-card/40 border border-white/5 rounded-2xl p-6 flex items-center gap-6 backdrop-blur-sm overflow-hidden relative">
-                <div className="absolute top-0 right-0 p-8 opacity-5">
-                    <User className="w-32 h-32" />
-                </div>
-                <div className="relative shrink-0">
-                    <img
-                        src={identity?.avatar || "https://via.placeholder.com/150"}
-                        alt="Bot Avatar"
-                        className="w-20 h-20 rounded-full object-cover border-2 border-primary shadow-lg shadow-primary/20"
-                    />
-                    <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-green-500 border-4 border-card rounded-full"></div>
-                </div>
-                <div className="relative space-y-1">
                     <div className="flex items-center gap-3">
-                        <h1 className="text-2xl font-bold text-foreground">{identity?.name || "Loading..."}</h1>
-                        <span className="bg-primary/10 text-primary text-[10px] font-bold px-2 py-0.5 rounded-full border border-primary/20 tracking-wider">ACTIVE PERSONA</span>
+                        <span className="hidden text-xs text-muted-foreground sm:inline">Runtime updates every 5 seconds</span>
+                        <Button variant="outline" size="sm" onClick={refreshAll}>
+                            <RefreshCw className={cn((loading || checkingLLM) && "animate-spin")} />
+                            Refresh
+                        </Button>
                     </div>
-                    <p className="text-sm text-muted-foreground flex items-center gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-primary/40"></span>
-                        Verified Identity from <code className="text-primary/70">persona/IDENTITY.md</code>
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                        <span className="rounded-full border border-border bg-background/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                            {setupStatus?.persona_ready ? "Persona ready" : "Setup incomplete"}
-                        </span>
-                        <span className="rounded-full border border-border bg-background/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                            Dynamic {personaStatus?.enable_dynamic_personality ? "on" : "off"}
-                        </span>
-                        <span className="rounded-full border border-border bg-background/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                            {styleCoverage} channel styles
-                        </span>
-                        <span className="rounded-full border border-border bg-background/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                            Mood {personaStatus?.mood ? "tracked" : "empty"}
-                        </span>
-                    </div>
-                </div>
-            </div>
+                </header>
 
-                {/* Key Metrics Row */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {/* System Health */}
-                <div className="relative overflow-hidden rounded-xl border border-primary/20 bg-gradient-to-br from-primary/10 to-transparent p-6 shadow-2xl shadow-primary/5">
-                    <div className="absolute top-0 right-0 p-4 opacity-20">
-                        <Activity className="w-24 h-24 text-primary" />
-                    </div>
-                    <div className="relative z-10">
-                        <h3 className="text-sm font-medium text-primary uppercase tracking-wider">System Status</h3>
-                        <div className="mt-2 flex items-center gap-3">
-                            <div className="relative flex h-4 w-4">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-4 w-4 bg-green-500"></span>
-                            </div>
-                            <span className="text-3xl font-bold text-foreground">Online</span>
-                        </div>
-                        <p className="mt-2 text-sm text-muted-foreground font-mono">
-                            Uptime: <span className="text-foreground">{stats ? formatUptime(stats.uptime) : "0s"}</span>
-                        </p>
-                    </div>
-                </div>
+                <Card className="overflow-hidden shadow-none">
+                    <CardContent className="grid gap-px bg-border p-0 sm:grid-cols-2 xl:grid-cols-4">
+                        <SummaryItem label="Runtime" value="Online" detail={`${formatUptime(stats?.uptime || 0)} uptime`} status="ready" />
+                        <SummaryItem
+                            label="Model"
+                            value={llmHealth?.model || "Checking connection"}
+                            detail={llmHealth?.latency_ms ? `${llmHealth.latency_ms} ms response` : llmHealth?.status || "Waiting for health check"}
+                            status={llmTone}
+                        />
+                        <SummaryItem
+                            label="Activity"
+                            value={`${sessionCount} session${sessionCount === 1 ? "" : "s"}`}
+                            detail={`${stats?.instances_count || 0} instances · ${stats?.subagents_count || 0} sub-agents`}
+                            status="neutral"
+                        />
+                        <SummaryItem
+                            label="Automation"
+                            value={stats?.cron_status || "Unknown"}
+                            detail={`${stats?.channels?.filter((channel) => channel.status === "Connected").length || 0} connected channels`}
+                            status={stats?.cron_status?.toLowerCase() === "running" ? "ready" : "neutral"}
+                        />
+                    </CardContent>
+                </Card>
 
-                {/* LLM Status */}
-                <div className="rounded-xl border bg-card p-6 shadow-sm hover:border-primary/50 transition-colors group">
-                    <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-2">
-                            <Cpu className="w-4 h-4" /> LLM API
-                        </h3>
-                        <span className={cn(
-                            "text-xs font-bold px-2 py-0.5 rounded-full border",
-                            llmHealth?.status === "Healthy" ? "bg-blue-500/10 text-blue-400 border-blue-500/20" :
-                                llmHealth?.status === "Quota Exceeded" ? "bg-red-500/10 text-red-500 border-red-500/20" :
-                                    "bg-yellow-500/10 text-yellow-500 border-yellow-500/20"
-                        )}>
-                            {llmHealth?.status || "Checking..."}
-                        </span>
-                    </div>
-                    <div className="space-y-1">
-                        <div className="text-2xl font-bold font-mono">
-                            {llmHealth?.latency_ms ? `${llmHealth.latency_ms} ms` : "-"}
-                        </div>
-                        <div className="text-xs text-muted-foreground truncate" title={llmHealth?.model}>
-                            {llmHealth?.model || "Unknown Model"}
-                        </div>
-                    </div>
-                </div>
+                <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
+                    <div className="space-y-5">
+                        <Card className="shadow-none">
+                            <CardHeader className="flex-row items-start justify-between space-y-0 pb-3">
+                                <div>
+                                    <CardTitle className="text-base">Channels</CardTitle>
+                                    <CardDescription className="mt-1">Connections currently available to LimeBot.</CardDescription>
+                                </div>
+                                <Globe className="h-4 w-4 text-muted-foreground" />
+                            </CardHeader>
+                            <CardContent>
+                                {stats?.channels?.length ? (
+                                    <div className="divide-y rounded-md border">
+                                        {stats.channels.map((channel) => {
+                                            const connected = channel.status === "Connected";
+                                            return (
+                                                <div key={`${channel.name}-${channel.type}`} className="flex items-center justify-between gap-4 px-4 py-3">
+                                                    <div className="min-w-0">
+                                                        <div className="truncate text-sm font-medium capitalize text-foreground">{channel.name}</div>
+                                                        <div className="mt-0.5 truncate text-xs text-muted-foreground">{channel.type}</div>
+                                                    </div>
+                                                    <SectionStatus tone={connected ? "ready" : "warning"}>{channel.status}</SectionStatus>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : (
+                                    <div className="rounded-md border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+                                        No channels are configured yet.
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
 
-                {/* Sessions / Instances */}
-                <div className="grid grid-cols-1 gap-4">
-                    <div className="bg-card border rounded-xl p-4 shadow-sm flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <div className="p-2 rounded-lg bg-primary/10 text-primary">
-                                <Globe className="w-5 h-5" />
-                            </div>
-                            <div>
-                                <div className="text-2xl font-bold">{stats?.instances_count || 0}</div>
-                                <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-bold">Main Instances</div>
-                            </div>
-                        </div>
-                        <div className="h-8 w-px bg-border"></div>
-                        <div className="flex items-center gap-3">
-                            <div className="p-2 rounded-lg bg-amber-500/10 text-amber-500">
-                                <Zap className="w-5 h-5" />
-                            </div>
-                            <div>
-                                <div className="text-2xl font-bold">{stats?.subagents_count || 0}</div>
-                                <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-bold">Active Sub-Agents</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                    <Card className="border-border/70 bg-card/60">
-                        <CardContent className="p-4">
-                            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Mood</div>
-                            <div className="mt-2 text-sm font-semibold text-foreground">{personaStatus?.mood?.trim() || "Not set"}</div>
-                        </CardContent>
-                    </Card>
-                    <Card className="border-border/70 bg-card/60">
-                        <CardContent className="p-4">
-                            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Strongest Tie</div>
-                            <div className="mt-2 text-sm font-semibold text-foreground">{strongestRelationship?.name || "None yet"}</div>
-                            <div className="mt-1 text-xs text-muted-foreground">{strongestRelationship ? `${strongestRelationship.level} • ${strongestRelationship.affinity}` : "No relationship data yet"}</div>
-                        </CardContent>
-                    </Card>
-                    <Card className="border-border/70 bg-card/60">
-                        <CardContent className="p-4">
-                            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Missing Setup</div>
-                            <div className="mt-2 text-sm font-semibold text-foreground">
-                                {setupStatus?.persona_missing?.length ? setupStatus.persona_missing.join(", ") : "Nothing missing"}
-                            </div>
-                        </CardContent>
-                    </Card>
-                    <Card className="border-border/70 bg-card/60">
-                        <CardContent className="p-4">
-                            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Voice Coverage</div>
-                            <div className="mt-2 text-sm font-semibold text-foreground">{styleCoverage}/4 channel overrides</div>
-                            <div className="mt-1 text-xs text-muted-foreground">Web, Discord, Telegram, WhatsApp</div>
-                        </CardContent>
-                    </Card>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    <div className="lg:col-span-2 space-y-6">
-                    <Card className="border-muted bg-card/50">
-                        <CardHeader>
-                            <CardTitle className="flex items-center gap-2">
-                                <Zap className="w-5 h-5 text-primary" /> Gateway Connection
-                            </CardTitle>
-                            <CardDescription>Authentication and entry point details for remote clients.</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div className="space-y-2">
-                                    <label className="text-xs font-medium text-muted-foreground uppercase">WebSocket Endpoint</label>
-                                    <div className="flex items-center gap-2">
-                                        <code className="flex-1 p-2.5 bg-background rounded-md border border-input font-mono text-sm leading-none">
-                                            {stats?.gateway_url || "ws://..."}
+                        <Card className="shadow-none">
+                            <CardHeader>
+                                <div className="flex items-center gap-2">
+                                    <KeyRound className="h-4 w-4 text-muted-foreground" />
+                                    <CardTitle className="text-base">Gateway access</CardTitle>
+                                </div>
+                                <CardDescription>Connection details for companion apps and remote clients.</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <div className="space-y-1.5">
+                                        <div className="text-xs font-medium text-muted-foreground">WebSocket endpoint</div>
+                                        <code className="block truncate rounded-md border bg-muted/30 px-3 py-2.5 text-xs text-foreground" title={stats?.gateway_url}>
+                                            {stats?.gateway_url || "Not available"}
                                         </code>
                                     </div>
-                                </div>
-
-                                <div className="space-y-2">
-                                    <label className="text-xs font-medium text-muted-foreground uppercase">Gateway Token</label>
-                                    <div className="p-2.5 bg-background rounded-md border border-input font-mono text-sm leading-none text-muted-foreground overflow-hidden text-ellipsis">
-                                        {gatewayTokenLabel || "Configured locally in this browser only"}
-                                    </div>
-                                </div>
-
-                                <div className="space-y-2">
-                                    <label className="text-xs font-medium text-muted-foreground uppercase">Auth System</label>
-                                    <div className="flex items-center gap-2 text-sm text-foreground/80">
-                                        <span className={cn("w-2 h-2 rounded-full", gatewayTokenLabel ? "bg-green-500" : "bg-yellow-500")}></span>
-                                        {gatewayTokenLabel ? "API Key configured" : "No token cached in browser"}
-                                    </div>
-                                </div>
-
-                                <div className="space-y-2">
-                                    <label className="text-xs font-medium text-muted-foreground uppercase">Session Scope</label>
-                                    <div className="p-2 bg-muted/20 rounded border border-border/50 text-xs font-mono text-muted-foreground">
-                                        agent:main:default
-                                    </div>
-                                </div>
-                            </div>
-                            <div className="mt-6 flex gap-3">
-                                <button
-                                    onClick={connectClient}
-                                    disabled={actionBusy !== null}
-                                    className="px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                                >
-                                    Connect Client
-                                </button>
-                                <button
-                                    onClick={generateNewToken}
-                                    disabled={actionBusy !== null}
-                                    className="px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-md text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                                >
-                                    Generate New Token
-                                </button>
-                            </div>
-                        </CardContent>
-                    </Card>
-
-                    <Card>
-                        <CardHeader className="pb-3">
-                            <CardTitle className="text-base font-medium">Active Channels</CardTitle>
-                        </CardHeader>
-                        <CardContent className="grid gap-4">
-                            {stats?.channels.map((channel, i) => (
-                                <div key={i} className="flex items-center justify-between p-3 rounded-lg border border-border hover:bg-muted/30 transition-colors">
-                                    <div className="flex items-center gap-4">
-                                        <div className={cn(
-                                            "w-10 h-10 rounded-full flex items-center justify-center bg-muted",
-                                            channel.status === "Connected" ? "text-primary bg-primary/10" : "text-yellow-500 bg-yellow-500/10"
-                                        )}>
-                                            <Activity className="w-5 h-5" />
-                                        </div>
-                                        <div>
-                                            <div className="font-semibold capitalize">{channel.name}</div>
-                                            <div className="text-xs text-muted-foreground font-mono">{channel.type}</div>
+                                    <div className="space-y-1.5">
+                                        <div className="text-xs font-medium text-muted-foreground">Authentication</div>
+                                        <div className="flex h-[38px] items-center justify-between rounded-md border px-3 text-sm">
+                                            <span>{gatewayTokenLabel ? "API key configured" : "No key cached"}</span>
+                                            <SectionStatus tone={gatewayTokenLabel ? "ready" : "warning"}>{gatewayTokenLabel || "Setup needed"}</SectionStatus>
                                         </div>
                                     </div>
-                                    <div className={cn(
-                                        "px-2.5 py-0.5 rounded-full text-xs font-bold uppercase",
-                                        channel.status === "Connected" ? "bg-green-500/10 text-green-500" : "bg-yellow-500/10 text-yellow-500"
-                                    )}>
-                                        {channel.status}
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    <Button size="sm" onClick={connectClient} disabled={actionBusy !== null || !stats?.gateway_url}>
+                                        <Globe />
+                                        Copy client URL
+                                    </Button>
+                                    <Button variant="outline" size="sm" onClick={generateNewToken} disabled={actionBusy !== null}>
+                                        <RefreshCw className={cn(actionBusy === "token" && "animate-spin")} />
+                                        Rotate token
+                                    </Button>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    </div>
+
+                    <div className="space-y-5">
+                        <Card className="shadow-none">
+                            <CardHeader className="pb-4">
+                                <CardTitle className="text-base">Persona</CardTitle>
+                                <CardDescription>Identity and behavior currently loaded by the agent.</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-5">
+                                <div className="flex items-center gap-3">
+                                    {identity?.avatar ? (
+                                        <img src={identity.avatar} alt="" className="h-11 w-11 rounded-full border object-cover" />
+                                    ) : (
+                                        <div className="flex h-11 w-11 items-center justify-center rounded-full border bg-muted">
+                                            <User className="h-5 w-5 text-muted-foreground" />
+                                        </div>
+                                    )}
+                                    <div className="min-w-0 flex-1">
+                                        <div className="truncate font-medium text-foreground">{identity?.name || "LimeBot"}</div>
+                                        <div className="mt-1">
+                                            <SectionStatus tone={setupStatus?.persona_ready ? "ready" : "warning"}>
+                                                {setupStatus?.persona_ready ? "Ready" : "Setup incomplete"}
+                                            </SectionStatus>
+                                        </div>
                                     </div>
                                 </div>
-                            ))}
-                        </CardContent>
-                    </Card>
-                </div>
 
-                {/* Sidebar Actions */}
-                <div className="space-y-6">
-                    <div className="rounded-xl border bg-card p-5 space-y-4">
-                        <div className="flex items-center gap-2 text-foreground font-semibold">
-                            <Power className="w-4 h-4" /> Control Panel
+                                <dl className="divide-y rounded-md border text-sm">
+                                    <div className="flex items-start justify-between gap-4 px-3 py-2.5">
+                                        <dt className="text-muted-foreground">Dynamic personality</dt>
+                                        <dd className="font-medium">{personaStatus?.enable_dynamic_personality ? "Enabled" : "Disabled"}</dd>
+                                    </div>
+                                    <div className="flex items-start justify-between gap-4 px-3 py-2.5">
+                                        <dt className="text-muted-foreground">Mood</dt>
+                                        <dd className="max-w-[60%] truncate text-right font-medium" title={personaStatus?.mood}>{personaStatus?.mood?.trim() || "Not set"}</dd>
+                                    </div>
+                                    <div className="flex items-start justify-between gap-4 px-3 py-2.5">
+                                        <dt className="text-muted-foreground">Closest relationship</dt>
+                                        <dd className="text-right font-medium">{strongestRelationship?.name || "None yet"}</dd>
+                                    </div>
+                                    <div className="flex items-start justify-between gap-4 px-3 py-2.5">
+                                        <dt className="text-muted-foreground">Channel styles</dt>
+                                        <dd className="font-medium">{styleCoverage} of 4</dd>
+                                    </div>
+                                </dl>
+
+                                {setupStatus?.persona_missing?.length ? (
+                                    <p className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                                        Missing: {setupStatus.persona_missing.join(", ")}
+                                    </p>
+                                ) : null}
+
+                                <div className="flex gap-2 border-t pt-4">
+                                    <Button variant="outline" size="sm" className="flex-1" onClick={exportPersona}>
+                                        <Download /> Export
+                                    </Button>
+                                    <Button variant="outline" size="sm" className="relative flex-1" asChild>
+                                        <label>
+                                            <Upload /> Import
+                                            <input
+                                                type="file"
+                                                className="sr-only"
+                                                accept=".md,.markdown"
+                                                onChange={(event) => {
+                                                    const file = event.target.files?.[0];
+                                                    if (!file) return;
+                                                    openConfirm({
+                                                        title: "Import persona backup?",
+                                                        description: "This will overwrite the current Identity and Soul files. A backup will be created automatically.",
+                                                        actionLabel: "Import persona",
+                                                        tone: "destructive",
+                                                        onConfirm: async () => importPersonaFile(file),
+                                                    });
+                                                    event.target.value = "";
+                                                }}
+                                            />
+                                        </label>
+                                    </Button>
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        <Card className="shadow-none">
+                            <CardHeader>
+                                <div className="flex items-center gap-2">
+                                    <Activity className="h-4 w-4 text-muted-foreground" />
+                                    <CardTitle className="text-base">Maintenance</CardTitle>
+                                </div>
+                                <CardDescription>Occasional runtime and diagnostic actions.</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-2">
+                                <Button variant="outline" className="w-full justify-between" onClick={() => clearRuntimeData("cache")}>
+                                    Clear tool cache
+                                    <RefreshCw />
+                                </Button>
+                                <Button variant="outline" className="w-full justify-between" onClick={() => clearRuntimeData("logs")}>
+                                    Clear system logs
+                                    <Trash2 />
+                                </Button>
+                                <Button variant="destructive" className="w-full justify-between" onClick={restartBackend}>
+                                    Restart backend
+                                    <RotateCcw />
+                                </Button>
+                            </CardContent>
+                        </Card>
+
+                        <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+                            <Cpu className="h-3.5 w-3.5" />
+                            <span className="truncate">Model check: {checkingLLM ? "in progress" : llmHealth?.status || "unavailable"}</span>
                         </div>
-                        <button
-                            onClick={restartBackend}
-                            className="w-full flex items-center justify-between px-4 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg transition-colors text-sm font-medium border border-red-500/20 group"
-                        >
-                            <span>Restart Backend</span>
-                            <RotateCcw className="w-4 h-4 group-hover:-rotate-180 transition-transform duration-500" />
-                        </button>
-                        <button
-                            className="w-full flex items-center justify-between px-4 py-3 bg-muted/50 hover:bg-muted text-foreground rounded-lg transition-colors text-sm font-medium border border-border"
-                            onClick={() => {
-                                openConfirm({
-                                    title: "Clear tool cache?",
-                                    description: "Cached tool results will be removed for all active sessions.",
-                                    actionLabel: "Clear cache",
-                                    tone: "destructive",
-                                    onConfirm: async () => {
-                                        axios.post(`${API_BASE_URL}/api/control/clear-cache`)
-                                            .then(res => toast.success("Cache cleared", { description: res.data.message || "Cache cleared." }))
-                                            .catch(err => toast.error("Failed to clear cache", { description: str(err) }));
-                                    },
-                                });
-                            }}
-                        >
-                            <span>Clear Cache</span>
-                            <RefreshCw className="w-4 h-4" />
-                        </button>
-                        <button
-                            className="w-full flex items-center justify-between px-4 py-3 bg-muted/50 hover:bg-muted text-foreground rounded-lg transition-colors text-sm font-medium border border-border"
-                            onClick={() => {
-                                openConfirm({
-                                    title: "Clear system logs?",
-                                    description: "This removes the current log buffer from the dashboard.",
-                                    actionLabel: "Clear logs",
-                                    tone: "destructive",
-                                    onConfirm: async () => {
-                                        axios.post(`${API_BASE_URL}/api/control/clear-logs`)
-                                            .then(res => toast.success("Logs cleared", { description: res.data.message || "Logs cleared." }))
-                                            .catch(err => toast.error("Failed to clear logs", { description: str(err) }));
-                                    },
-                                });
-                            }}
-                        >
-                            <span>Clear Logs</span>
-                            <Trash2 className="w-4 h-4" />
-                        </button>
-
-                        <div className="pt-4 border-t border-border/50">
-                            <div className="flex items-center gap-2 text-foreground font-semibold mb-3">
-                                <User className="w-4 h-4" /> Persona
-                            </div>
-                            <div className="grid grid-cols-2 gap-3">
-                                <button
-                                    onClick={() => {
-                                        axios.get(`${API_BASE_URL}/api/persona/export`)
-                                            .then(res => {
-                                                const data = res.data;
-                                                if (data.error) throw new Error(data.error);
-                                                const blob = new Blob([data.content], { type: 'text/markdown' });
-                                                const url = window.URL.createObjectURL(blob);
-                                                const a = document.createElement('a');
-                                                a.href = url;
-                                                a.download = data.filename || "limebot_persona.md";
-                                                a.click();
-                                                toast.success("Persona exported", { description: data.filename || "limebot_persona.md" });
-                                            })
-                                            .catch(err => toast.error("Export failed", { description: str(err) }));
-                                    }}
-                                    className="flex flex-col items-center justify-center gap-2 p-3 bg-primary/10 hover:bg-primary/20 text-primary rounded-lg border border-primary/20 transition-colors"
-                                >
-                                    <Download className="w-5 h-5" />
-                                    <span className="text-xs font-bold">Export</span>
-                                </button>
-                                <label className="flex flex-col items-center justify-center gap-2 p-3 bg-muted/50 hover:bg-muted text-foreground rounded-lg border border-border cursor-pointer transition-colors">
-                                    <Upload className="w-5 h-5" />
-                                    <span className="text-xs font-bold">Import</span>
-                                    <input
-                                        type="file"
-                                        className="hidden"
-                                        accept=".md,.markdown"
-                                        onChange={(e) => {
-                                            const file = e.target.files?.[0];
-                                            if (!file) return;
-
-                                            openConfirm({
-                                                title: "Import persona backup?",
-                                                description: "This will overwrite the current Identity and Soul files. A backup will be created automatically.",
-                                                actionLabel: "Import persona",
-                                                tone: "destructive",
-                                                onConfirm: async () => importPersonaFile(file),
-                                            });
-                                            e.target.value = ''; // Reset
-                                        }}
-                                    />
-                                </label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="rounded-xl border bg-card p-5">
-                        <h4 className="text-sm font-bold mb-4">Quick Tips</h4>
-                        <ul className="space-y-3">
-                            <li className="text-xs text-muted-foreground flex gap-2">
-                                <span className="text-primary font-bold">•</span>
-                                <span>Use <code>tailscale serve</code> to expose the gateway securely.</span>
-                            </li>
-                            <li className="text-xs text-muted-foreground flex gap-2">
-                                <span className="text-primary font-bold">•</span>
-                                <span>Monitor <code>/logs</code> for real-time debug info.</span>
-                            </li>
-                            <li className="text-xs text-muted-foreground flex gap-2">
-                                <span className="text-primary font-bold">•</span>
-                                <span>Check LLM latency periodically to ensure API health.</span>
-                            </li>
-                        </ul>
-                    </div>
                     </div>
                 </div>
             </div>
@@ -671,7 +587,7 @@ export function OverviewPage() {
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction
                             onClick={runConfirmAction}
-                            className={cn(confirmAction?.tone === "destructive" && "bg-red-600 hover:bg-red-700 text-white")}
+                            className={cn(confirmAction?.tone === "destructive" && "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
                         >
                             {confirmAction?.actionLabel || "Confirm"}
                         </AlertDialogAction>
@@ -682,9 +598,24 @@ export function OverviewPage() {
     );
 }
 
-// Helper for error string conversion if missed
-function str(e: any): string {
-    if (typeof e === 'string') return e;
-    if (e instanceof Error) return e.message;
-    return String(e);
+function formatUptime(seconds: number) {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const parts = [];
+    if (days) parts.push(`${days}d`);
+    if (hours) parts.push(`${hours}h`);
+    if (minutes) parts.push(`${minutes}m`);
+    if (!parts.length) parts.push(`${Math.floor(seconds % 60)}s`);
+    return parts.join(" ");
+}
+
+function isUnauthorized(error: unknown) {
+    return axios.isAxiosError(error) && error.response?.status === 401;
+}
+
+function str(error: unknown): string {
+    if (typeof error === "string") return error;
+    if (error instanceof Error) return error.message;
+    return String(error);
 }

@@ -127,6 +127,12 @@ class TestConfigLoading(unittest.TestCase):
         self.assertTrue(loaded.ai_harness.fast_disable_tools_for_casual)
         self.assertTrue(loaded.tool_shortlist_enabled)
 
+    def test_video_whisper_is_explicitly_opt_in(self):
+        disabled = self._load_config_with_env({"VIDEO_WHISPER_ENABLED": "false"})
+        self.assertFalse(disabled.video.whisper_enabled)
+        enabled = self._load_config_with_env({"VIDEO_WHISPER_ENABLED": "true"})
+        self.assertTrue(enabled.video.whisper_enabled)
+
     def test_ai_harness_fast_mode_uses_fast_timeout(self):
         loaded = self._load_config_with_env(
             {

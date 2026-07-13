@@ -15,7 +15,7 @@ function MarkdownFallback({
 
     return (
         <div className={cn(
-            "max-w-none whitespace-pre-wrap break-words font-sans text-[15px] leading-[1.55] text-inherit",
+            "max-w-none whitespace-pre-wrap break-words font-sans text-[15px] leading-[1.5] text-inherit",
             isStreaming && "streaming-markdown"
         )}>
             {content}

@@ -1,13 +1,13 @@
 import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from "@/lib/api";
-import { MessageCircle, AlertCircle, RefreshCw, User, Activity, Monitor, ShieldCheck, Radio, Send, Wand2, Plus, Trash2 } from 'lucide-react';
+import { MessageCircle, AlertCircle, RefreshCw, User, Activity, Monitor, Send, Wand2, Plus, Trash2, CheckCircle2, Circle, SlidersHorizontal, Users } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { WhatsAppContacts } from "./WhatsAppContacts";
@@ -233,6 +233,9 @@ export function ChannelsPage() {
     const [discordStatus, setDiscordStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
     const [telegramStatus, setTelegramStatus] = useState<TelegramStatus | null>(null);
     const [activeTab, setActiveTab] = useState<'discord' | 'telegram' | 'whatsapp'>('discord');
+    const [showDiscordAdvanced, setShowDiscordAdvanced] = useState(false);
+    const [showTelegramAdvanced, setShowTelegramAdvanced] = useState(false);
+    const [showWhatsAppContacts, setShowWhatsAppContacts] = useState(false);
 
     useEffect(() => {
         fetchConfig();
@@ -562,17 +565,20 @@ export function ChannelsPage() {
     const channelOverrideCount = channelStyleRows.filter((row) => row.target.trim()).length;
     const nicknameOverrideCount = nicknameRows.filter((row) => row.target.trim() && row.value.trim()).length;
     const themeOverrideCount = themeRows.filter((row) => row.target.trim() && row.value.trim()).length;
-    const telegramTokenConfigured = !!secretDrafts.TELEGRAM_BOT_TOKEN || getSecretInfo(secretMeta, 'TELEGRAM_BOT_TOKEN').configured;
+    const telegramTokenConfigured = !clearedSecrets.includes('TELEGRAM_BOT_TOKEN') && (!!secretDrafts.TELEGRAM_BOT_TOKEN || getSecretInfo(secretMeta, 'TELEGRAM_BOT_TOKEN').configured);
+    const discordTokenConfigured = !clearedSecrets.includes('DISCORD_TOKEN') && (!!secretDrafts.DISCORD_TOKEN || getSecretInfo(secretMeta, 'DISCORD_TOKEN').configured);
 
     const renderSecretField = (key: "DISCORD_TOKEN" | "TELEGRAM_BOT_TOKEN", label: string, placeholder: string) => {
         const info = getSecretInfo(secretMeta, key);
         const isClearing = clearedSecrets.includes(key);
+        const configured = !isClearing && (!!secretDrafts[key]?.trim() || info.configured);
         return (
-            <div className="grid gap-2">
+            <div className="grid gap-3 rounded-xl border border-border/60 bg-background/40 p-4">
                 <div className="flex items-center justify-between gap-2">
-                    <Label htmlFor={key.toLowerCase()}>{label}</Label>
-                    <span className="text-[10px] text-muted-foreground">
-                        {isClearing ? 'Will be cleared' : info.configured ? `Stored ${info.masked}` : 'Not configured'}
+                    <Label htmlFor={key.toLowerCase()} className="font-semibold">{label}</Label>
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${configured ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                        {configured ? <CheckCircle2 className="h-3 w-3" /> : <Circle className="h-3 w-3" />}
+                        {isClearing ? 'Clear on save' : configured ? 'Connected' : 'Required to connect'}
                     </span>
                 </div>
                 <div className="flex gap-2">
@@ -589,10 +595,11 @@ export function ChannelsPage() {
                         placeholder={getSecretPlaceholder(secretMeta, key, placeholder)}
                         className="font-mono"
                     />
-                    <Button type="button" variant="outline" size="icon" onClick={() => clearSecret(key)} title={`Clear ${label}`}>
+                    <Button type="button" variant="outline" size="icon" onClick={() => clearSecret(key)} title={`Clear ${label}`} disabled={!configured}>
                         <Trash2 className="h-4 w-4" />
                     </Button>
                 </div>
+                {info.configured && !isClearing && <p className="text-[10px] text-muted-foreground">Stored securely as {info.masked}</p>}
             </div>
         );
     };
@@ -607,106 +614,83 @@ export function ChannelsPage() {
 
     return (
         <div className="h-full overflow-y-auto p-6 md:p-8">
-            <div className="max-w-4xl mx-auto space-y-8">
+            <div className="max-w-5xl mx-auto space-y-7">
                 <header>
                     <h1 className="text-2xl font-bold flex items-center gap-2">
                         <MessageCircle className="h-6 w-6 text-primary" />
-                        Channels & Presence
+                        Channels
                     </h1>
                     <p className="text-muted-foreground mt-1">
-                        Configure integration status and security for connected platforms.
+                        Connect messaging platforms, check readiness, and tune each channel only when needed.
                     </p>
                 </header>
 
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-                    <Card>
-                        <CardContent className="p-4">
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Discord</div>
-                                    <div className="mt-1 text-lg font-semibold text-foreground">{discordEnabled ? 'Enabled' : 'Disabled'}</div>
-                                </div>
-                                <ShieldCheck className={`h-5 w-5 ${discordEnabled ? 'text-[#5865F2]' : 'text-muted-foreground'}`} />
-                            </div>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardContent className="p-4">
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Telegram</div>
-                                    <div className="mt-1 text-lg font-semibold text-foreground">
-                                        {telegramStatus?.connected ? 'Connected' : telegramEnabled ? 'Enabled' : 'Disabled'}
-                                    </div>
-                                </div>
-                                <Send className={`h-5 w-5 ${telegramEnabled ? 'text-[#229ED9]' : 'text-muted-foreground'}`} />
-                            </div>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardContent className="p-4">
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">WhatsApp</div>
-                                    <div className="mt-1 text-lg font-semibold text-foreground">{whatsappEnabled ? 'Enabled' : 'Disabled'}</div>
-                                </div>
-                                <Radio className={`h-5 w-5 ${whatsappEnabled ? 'text-[#25D366]' : 'text-muted-foreground'}`} />
-                            </div>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardContent className="p-4">
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Discord overrides</div>
-                                    <div className="mt-1 text-lg font-semibold text-foreground">{guildOverrideCount + channelOverrideCount}</div>
-                                </div>
-                                <Wand2 className="h-5 w-5 text-primary" />
-                            </div>
-                            <div className="mt-2 text-xs text-muted-foreground">{guildOverrideCount} guild, {channelOverrideCount} channel</div>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardContent className="p-4">
-                            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Discord cosmetics</div>
-                            <div className="mt-1 text-lg font-semibold text-foreground">{nicknameOverrideCount + themeOverrideCount}</div>
-                            <div className="mt-2 text-xs text-muted-foreground">{nicknameOverrideCount} nickname, {themeOverrideCount} theme</div>
-                        </CardContent>
-                    </Card>
+                <div className="grid gap-3 md:grid-cols-3" role="tablist" aria-label="Messaging channels">
+                    <button type="button" role="tab" onClick={() => setActiveTab('discord')} aria-selected={activeTab === 'discord'} className={`rounded-2xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${activeTab === 'discord' ? 'border-[#5865F2]/50 bg-[#5865F2]/10' : 'border-border/60 bg-card/60 hover:border-[#5865F2]/30'}`}>
+                        <div className="flex items-center justify-between">
+                            <DiscordIcon className="h-5 w-5 text-[#5865F2]" />
+                            <span className={`inline-flex items-center gap-1 text-xs ${discordEnabled && discordTokenConfigured ? 'text-primary' : 'text-muted-foreground'}`}>
+                                {discordEnabled && discordTokenConfigured ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
+                                {discordEnabled ? discordTokenConfigured ? 'Ready' : 'Token needed' : 'Disabled'}
+                            </span>
+                        </div>
+                        <p className="mt-3 font-semibold">Discord</p>
+                        <p className="mt-1 text-xs text-muted-foreground">Mentions, DMs, presence, and server-specific style.</p>
+                    </button>
+                    <button type="button" role="tab" onClick={() => setActiveTab('telegram')} aria-selected={activeTab === 'telegram'} className={`rounded-2xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${activeTab === 'telegram' ? 'border-[#229ED9]/50 bg-[#229ED9]/10' : 'border-border/60 bg-card/60 hover:border-[#229ED9]/30'}`}>
+                        <div className="flex items-center justify-between">
+                            <Send className="h-5 w-5 text-[#229ED9]" />
+                            <span className={`inline-flex items-center gap-1 text-xs ${telegramStatus?.connected ? 'text-primary' : 'text-muted-foreground'}`}>
+                                {telegramStatus?.connected ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
+                                {telegramStatus?.connected ? 'Connected' : telegramEnabled ? telegramTokenConfigured ? 'Starting' : 'Token needed' : 'Disabled'}
+                            </span>
+                        </div>
+                        <p className="mt-3 font-semibold">Telegram</p>
+                        <p className="mt-1 text-xs text-muted-foreground">Bot API polling, private chats, groups, and voice.</p>
+                    </button>
+                    <button type="button" role="tab" onClick={() => setActiveTab('whatsapp')} aria-selected={activeTab === 'whatsapp'} className={`rounded-2xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${activeTab === 'whatsapp' ? 'border-[#25D366]/50 bg-[#25D366]/10' : 'border-border/60 bg-card/60 hover:border-[#25D366]/30'}`}>
+                        <div className="flex items-center justify-between">
+                            <WhatsAppIcon className="h-5 w-5 text-[#25D366]" />
+                            <span className={`inline-flex items-center gap-1 text-xs ${whatsappEnabled ? 'text-primary' : 'text-muted-foreground'}`}>
+                                {whatsappEnabled ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
+                                {whatsappEnabled ? 'Enabled' : 'Disabled'}
+                            </span>
+                        </div>
+                        <p className="mt-3 font-semibold">WhatsApp</p>
+                        <p className="mt-1 text-xs text-muted-foreground">Bridge pairing, contact approval, and direct messaging.</p>
+                    </button>
                 </div>
 
                 <div className="sticky top-0 z-20 -mx-6 border-b border-border bg-card px-6 py-3 md:-mx-8 md:px-8">
                     <div className="flex flex-wrap items-center gap-2">
-                        {/* Dirty indicators */}
-                        <span className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest ${
-                            configDirty ? 'border-amber-500/30 bg-amber-500/10 text-amber-500' : 'border-border text-muted-foreground'
-                        }`}>
-                            Config {configDirty ? 'unsaved' : 'saved'}
-                        </span>
-                        <span className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest ${
-                            discordDirty ? 'border-amber-500/30 bg-amber-500/10 text-amber-500' : 'border-border text-muted-foreground'
-                        }`}>
-                            Personalization {discordDirty ? 'unsaved' : 'saved'}
-                        </span>
+                        {!configDirty && !discordDirty && (
+                            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><CheckCircle2 className="h-3.5 w-3.5 text-primary" />All changes saved</span>
+                        )}
+                        {configDirty && <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-amber-500">Channel config unsaved</span>}
+                        {discordDirty && <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-amber-500">Style draft unsaved</span>}
 
                         <div className="ml-auto flex flex-wrap items-center gap-2">
                             <Button variant="ghost" size="sm" onClick={reloadActive} className="h-8 px-3 text-xs">Reload</Button>
                             {activeTab === 'discord' ? (
                                 <>
+                                    {(showDiscordAdvanced || discordDirty) && <>
                                     <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={discardDiscordChanges} disabled={!discordDirty || discordSaving}>Discard draft</Button>
                                     <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={handleDiscordSave} disabled={!discordDirty || discordSaving}>
                                         {discordSaving ? 'Saving…' : 'Save personalization'}
                                     </Button>
+                                    </>}
                                     <Button size="sm" className="h-8 px-3 text-xs" onClick={handleSave} disabled={!configDirty || saving}>
                                         {saving ? 'Saving…' : 'Save channel config'}
                                     </Button>
                                 </>
                             ) : activeTab === 'telegram' ? (
                                 <>
+                                    {(showTelegramAdvanced || discordDirty) && <>
                                     <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={discardDiscordChanges} disabled={!discordDirty || discordSaving}>Discard voice draft</Button>
                                     <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={handleTelegramStyleSave} disabled={!discordDirty || discordSaving}>
                                         {discordSaving ? 'Saving…' : 'Save Telegram voice'}
                                     </Button>
+                                    </>}
                                     <Button size="sm" className="h-8 px-3 text-xs" onClick={handleSave} disabled={!configDirty || saving}>
                                         {saving ? 'Saving…' : 'Save channel config'}
                                     </Button>
@@ -739,25 +723,13 @@ export function ChannelsPage() {
                 )}
 
                 <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'discord' | 'telegram' | 'whatsapp')} className="w-full">
-                    <TabsList className="grid w-full grid-cols-3 mb-8">
-                        <TabsTrigger value="discord" className="flex items-center gap-2">
-                            <DiscordIcon className="h-4 w-4" /> Discord
-                        </TabsTrigger>
-                        <TabsTrigger value="telegram" className="flex items-center gap-2">
-                            <Send className="h-4 w-4" /> Telegram
-                        </TabsTrigger>
-                        <TabsTrigger value="whatsapp" className="flex items-center gap-2">
-                            <WhatsAppIcon className="h-4 w-4" /> WhatsApp
-                        </TabsTrigger>
-                    </TabsList>
-
                     {/* DISCORD TAB */}
                     <TabsContent value="discord" className="space-y-6">
                         <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <DiscordIcon className="h-5 w-5 text-[#5865F2]" />
-                                    Integration Status
+                                    Discord Connection
                                 </CardTitle>
                                 <CardDescription>
                                     Enable or disable the Discord bot.
@@ -792,28 +764,27 @@ export function ChannelsPage() {
 
                                 <div className="pt-4 border-t border-border/50 space-y-4">
                                     {renderSecretField("DISCORD_TOKEN", "Discord Bot Token", "MT...")}
-
-                                    <div className="grid gap-2">
-                                        <div className="flex items-center gap-2">
-                                            <Label htmlFor="personality_whitelist">Personality Whitelist (IDs)</Label>
-                                            <span className="text-[10px] font-bold bg-primary/20 text-primary px-1.5 py-0.5 rounded uppercase tracking-wider">Restricted</span>
-                                        </div>
-                                        <Input
-                                            id="personality_whitelist"
-                                            value={config.PERSONALITY_WHITELIST || ""}
-                                            onChange={(e) => handleChange("PERSONALITY_WHITELIST", e.target.value)}
-                                            placeholder="UserID1, UserID2..."
-                                            className="font-mono text-sm"
-                                        />
-                                        <p className="text-[10px] text-muted-foreground">
-                                            Comma-separated list of Discord User IDs that can skip identity isolation and access the "Partner/Creator" persona.
-                                        </p>
-                                    </div>
                                 </div>
                             </CardContent>
                         </Card>
 
-                        {config.ENABLE_DISCORD !== 'false' && (
+                        <Button
+                            type="button"
+                            variant="outline"
+                            className="h-auto min-h-12 w-full flex-wrap justify-between gap-2 border-dashed py-3"
+                            onClick={() => setShowDiscordAdvanced((value) => !value)}
+                            disabled={!discordEnabled}
+                        >
+                            <span className="flex items-center gap-2">
+                                <SlidersHorizontal className="h-4 w-4" />
+                                Presence, access rules, and personalization
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                                {showDiscordAdvanced ? 'Hide advanced settings' : `${guildOverrideCount + channelOverrideCount + nicknameOverrideCount + themeOverrideCount} overrides configured`}
+                            </span>
+                        </Button>
+
+                        {discordEnabled && showDiscordAdvanced && (
                             <div className="space-y-6 animate-in slide-in-from-top-4 duration-300">
                                 <Card>
                                     <CardHeader>
@@ -915,6 +886,25 @@ export function ChannelsPage() {
                                             />
                                             <p className="text-xs text-muted-foreground">
                                                 Comma-separated list of Channel IDs.
+                                            </p>
+                                        </div>
+
+                                        <div className="my-6 h-[1px] bg-border" />
+
+                                        <div className="grid gap-2">
+                                            <div className="flex items-center gap-2">
+                                                <Label htmlFor="personality_whitelist">Elevated Persona User IDs</Label>
+                                                <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">Restricted</span>
+                                            </div>
+                                            <Input
+                                                id="personality_whitelist"
+                                                value={config.PERSONALITY_WHITELIST || ""}
+                                                onChange={(e) => handleChange("PERSONALITY_WHITELIST", e.target.value)}
+                                                placeholder="UserID1, UserID2..."
+                                                className="font-mono text-sm"
+                                            />
+                                            <p className="text-xs text-muted-foreground">
+                                                Users allowed to bypass identity isolation and access the Partner/Creator persona.
                                             </p>
                                         </div>
                                     </CardContent>
@@ -1187,7 +1177,7 @@ export function ChannelsPage() {
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <Send className="h-5 w-5 text-[#229ED9]" />
-                                    Integration Status
+                                    Telegram Connection
                                 </CardTitle>
                                 <CardDescription>
                                     Configure Telegram Bot API polling and access controls.
@@ -1267,6 +1257,17 @@ export function ChannelsPage() {
                                         </div>
                                     </div>
 
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="h-auto min-h-12 w-full flex-wrap justify-between gap-2 border-dashed py-3"
+                                        onClick={() => setShowTelegramAdvanced((value) => !value)}
+                                    >
+                                        <span className="flex items-center gap-2"><SlidersHorizontal className="h-4 w-4" />Voice, polling, and access rules</span>
+                                        <span className="text-xs text-muted-foreground">{showTelegramAdvanced ? 'Hide advanced settings' : 'Show advanced settings'}</span>
+                                    </Button>
+
+                                    {showTelegramAdvanced && <>
                                     <Card className="border-[#229ED9]/20 bg-[#229ED9]/5">
                                         <CardHeader>
                                             <CardTitle className="flex items-center gap-2 text-base">
@@ -1376,6 +1377,7 @@ export function ChannelsPage() {
                                     <div className="p-3 rounded bg-[#229ED9]/10 border border-[#229ED9]/20 text-xs text-muted-foreground">
                                         Telegram currently uses Bot API long polling in the backend, so changes here apply after the backend restarts.
                                     </div>
+                                    </>}
                                 </div>
                             </CardContent>
                         </Card>
@@ -1387,7 +1389,7 @@ export function ChannelsPage() {
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <WhatsAppIcon className="h-5 w-5 text-[#25D366]" />
-                                    Integration Status
+                                    WhatsApp Connection
                                 </CardTitle>
                                 <CardDescription>
                                     Enable or disable the WhatsApp bridge.
@@ -1432,7 +1434,11 @@ export function ChannelsPage() {
                                     </div>
                                 </div>
                                 <WhatsAppConnectionSection />
-                                <WhatsAppContacts />
+                                <Button type="button" variant="outline" className="h-auto min-h-12 w-full flex-wrap justify-between gap-2 border-dashed py-3" onClick={() => setShowWhatsAppContacts((value) => !value)}>
+                                    <span className="flex items-center gap-2"><Users className="h-4 w-4" />Contact approvals and access</span>
+                                    <span className="text-xs text-muted-foreground">{showWhatsAppContacts ? 'Hide contacts' : 'Manage contacts'}</span>
+                                </Button>
+                                {showWhatsAppContacts && <WhatsAppContacts />}
                             </div>
                         )}
                     </TabsContent>

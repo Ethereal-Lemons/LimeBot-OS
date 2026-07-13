@@ -301,7 +301,7 @@ export function SubagentsPage() {
                       <CardTitle className="text-base flex items-center gap-2">
                         {subagent.name}
                         {subagent.active ? (
-                          <Badge variant="outline" className="border-emerald-500/30 text-emerald-500">
+                          <Badge variant="outline" className="border-primary/30 text-primary">
                             Active
                           </Badge>
                         ) : (

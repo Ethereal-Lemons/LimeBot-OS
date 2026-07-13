@@ -180,7 +180,7 @@ export function TaskQueuePanel() {
                 return <Clock className="w-4 h-4 text-blue-500 animate-pulse" />;
             case "completed":
             case "sent":
-                return <CheckCircle2 className="w-4 h-4 text-emerald-500" />;
+                return <CheckCircle2 className="h-4 w-4 text-primary" />;
             case "failed":
             case "cancelled":
                 return <XCircle className="w-4 h-4 text-red-500" />;
@@ -267,7 +267,7 @@ export function TaskQueuePanel() {
                     <div className="flex items-center gap-2">
                         <span className="text-sm text-muted-foreground">Live Updates</span>
                         <div
-                            className={`w-10 h-5 rounded-full p-1 cursor-pointer transition-colors ${autoRefresh ? "bg-emerald-500" : "bg-muted"}`}
+                            className={`h-5 w-10 cursor-pointer rounded-full p-1 transition-colors ${autoRefresh ? "bg-primary" : "bg-muted"}`}
                             onClick={() => setAutoRefresh(!autoRefresh)}
                         >
                             <div className={`w-3 h-3 bg-white rounded-full transition-transform ${autoRefresh ? "translate-x-5" : "translate-x-0"}`} />
@@ -340,10 +340,10 @@ export function TaskQueuePanel() {
                 <Card className="flex flex-col h-full border-border/50 shadow-sm overflow-hidden">
                     <CardHeader className="bg-card pb-4 shrink-0">
                         <CardTitle className="flex items-center gap-2">
-                            <Server className="w-5 h-5 text-emerald-500" />
+                            <Server className="h-5 w-5 text-primary" />
                             Outbound Deliveries
                             {activeDeliveries.length > 0 && (
-                                <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-500 ml-2">
+                                <Badge variant="secondary" className="ml-2 bg-primary/10 text-primary">
                                     {activeDeliveries.length} Pending
                                 </Badge>
                             )}
@@ -353,10 +353,10 @@ export function TaskQueuePanel() {
                         <Tabs defaultValue="active" className="h-full flex flex-col">
                             <div className="px-6 border-b border-border/50 bg-card">
                                 <TabsList className="bg-transparent mb-0 h-10 w-full justify-start">
-                                    <TabsTrigger value="active" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-emerald-500 rounded-none px-4">
+                                    <TabsTrigger value="active" className="rounded-none px-4 data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent">
                                         Queue ({activeDeliveries.length})
                                     </TabsTrigger>
-                                    <TabsTrigger value="past" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-emerald-500 rounded-none px-4">
+                                    <TabsTrigger value="past" className="rounded-none px-4 data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent">
                                         Sent ({pastDeliveries.length})
                                     </TabsTrigger>
                                 </TabsList>

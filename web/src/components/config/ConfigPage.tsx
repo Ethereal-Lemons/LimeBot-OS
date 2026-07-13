@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from "@/lib/api";
-import { Save, Settings, Key, Cpu, RefreshCw, Globe, Server, User, Trash, Plus } from 'lucide-react';
+import { Save, Settings, Key, Cpu, RefreshCw, Globe, Server, User, Trash, Plus, BrainCircuit, PlugZap, ShieldCheck, CheckCircle2, Circle } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -36,6 +36,7 @@ interface ConfigState {
     BROWSER_USER_DATA_DIR?: string;
     BROWSER_PROFILE_DIRECTORY?: string;
     SEARCH_PROVIDER?: string;
+    VIDEO_WHISPER_ENABLED?: string;
     [key: string]: ConfigValue;
 }
 
@@ -60,6 +61,39 @@ const SECRET_KEYS = [
 
 const DEFAULT_CUSTOM_MODEL = "ollama/llama3";
 
+type SecretKey = typeof SECRET_KEYS[number];
+
+const AI_PROVIDER_SECRETS: Array<{ key: SecretKey; label: string; placeholder: string; note: string }> = [
+    { key: "OPENAI_API_KEY", label: "OpenAI", placeholder: "sk-...", note: "GPT models, image generation, and optional Whisper" },
+    { key: "GEMINI_API_KEY", label: "Google Gemini", placeholder: "AIza...", note: "Gemini chat and embeddings" },
+    { key: "ANTHROPIC_API_KEY", label: "Anthropic", placeholder: "sk-ant-...", note: "Claude models" },
+    { key: "OPENROUTER_API_KEY", label: "OpenRouter", placeholder: "sk-or-...", note: "Multi-provider model routing" },
+    { key: "XAI_API_KEY", label: "xAI", placeholder: "xai-...", note: "Grok models" },
+    { key: "DEEPSEEK_API_KEY", label: "DeepSeek", placeholder: "sk-...", note: "DeepSeek models" },
+    { key: "MOONSHOT_API_KEY", label: "Moonshot / Kimi", placeholder: "sk-...", note: "Kimi and Moonshot models" },
+    { key: "NVIDIA_API_KEY", label: "NVIDIA NIM", placeholder: "nvapi-...", note: "NVIDIA-hosted models" },
+    { key: "DASHSCOPE_API_KEY", label: "Qwen / DashScope", placeholder: "sk-...", note: "Alibaba Qwen models" },
+];
+
+const CAPABILITY_SECRETS: SecretKey[] = [
+    "TAVILY_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "SERPAPI_API_KEY",
+    "ELEVENLABS_API_KEY",
+];
+
+const PROVIDER_SECRET_KEYS: Record<string, SecretKey> = {
+    openai: "OPENAI_API_KEY",
+    gemini: "GEMINI_API_KEY",
+    anthropic: "ANTHROPIC_API_KEY",
+    openrouter: "OPENROUTER_API_KEY",
+    xai: "XAI_API_KEY",
+    deepseek: "DEEPSEEK_API_KEY",
+    moonshot: "MOONSHOT_API_KEY",
+    nvidia: "NVIDIA_API_KEY",
+    qwen: "DASHSCOPE_API_KEY",
+};
+
 
 export function ConfigPage() {
     const [config, setConfig] = useState<ConfigState>({});
@@ -73,6 +107,7 @@ export function ConfigPage() {
     const [availableModels, setAvailableModels] = useState<LlmModelOption[]>([]);
     const [modelsLoading, setModelsLoading] = useState(false);
     const [showAllModels, setShowAllModels] = useState(false);
+    const [showAllProviderKeys, setShowAllProviderKeys] = useState(false);
 
     useEffect(() => {
         fetchConfig();
@@ -192,15 +227,25 @@ export function ConfigPage() {
         setClearedSecrets(prev => prev.includes(key) ? prev : [...prev, key]);
     };
 
-    const renderSecretInput = (key: typeof SECRET_KEYS[number], label: string, placeholder: string) => {
+    const isSecretConfigured = (key: SecretKey) => (
+        !clearedSecrets.includes(key)
+        && (!!secretDrafts[key]?.trim() || getSecretInfo(secretMeta, key).configured)
+    );
+
+    const renderSecretInput = (key: SecretKey, label: string, placeholder: string, note?: string) => {
         const info = getSecretInfo(secretMeta, key);
         const isCleared = clearedSecrets.includes(key);
+        const configured = isSecretConfigured(key);
         return (
-            <div className="grid gap-2">
+            <div className="grid gap-3 rounded-xl border border-border/60 bg-background/40 p-4">
                 <div className="flex items-center justify-between gap-2">
-                    <Label htmlFor={key.toLowerCase()}>{label}</Label>
-                    <span className="text-[10px] text-muted-foreground">
-                        {isCleared ? 'Will be cleared' : info.configured ? `Stored ${info.masked}` : 'Not configured'}
+                    <div className="min-w-0">
+                        <Label htmlFor={key.toLowerCase()} className="font-semibold">{label}</Label>
+                        {note && <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{note}</p>}
+                    </div>
+                    <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${configured ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                        {configured ? <CheckCircle2 className="h-3 w-3" /> : <Circle className="h-3 w-3" />}
+                        {isCleared ? 'Clear on save' : configured ? 'Connected' : 'Optional'}
                     </span>
                 </div>
                 <div className="flex gap-2">
@@ -217,11 +262,109 @@ export function ConfigPage() {
                         size="icon"
                         onClick={() => markSecretForClear(key)}
                         title={`Clear ${label}`}
+                        disabled={!configured && !secretDrafts[key]}
                     >
                         <Trash className="h-4 w-4" />
                     </Button>
                 </div>
+                {info.configured && !isCleared && (
+                    <p className="text-[10px] text-muted-foreground">Stored securely as {info.masked}</p>
+                )}
             </div>
+        );
+    };
+
+    const renderAiProviderKeys = () => {
+        const connected = AI_PROVIDER_SECRETS.filter(({ key }) => isSecretConfigured(key)).length;
+        const selectedKey = PROVIDER_SECRET_KEYS[selectedProvider];
+        const visibleProviders = showAllProviderKeys
+            ? AI_PROVIDER_SECRETS
+            : AI_PROVIDER_SECRETS.filter(({ key }) => key === selectedKey || isSecretConfigured(key));
+        const hiddenCount = AI_PROVIDER_SECRETS.length - visibleProviders.length;
+        return (
+            <Card>
+                <CardHeader className="gap-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <CardTitle className="flex items-center gap-2">
+                                <Key className="h-5 w-5" />
+                                AI Provider Connections
+                            </CardTitle>
+                            <CardDescription className="mt-1.5">
+                                Add only the providers you use. Keys stay redacted after saving.
+                            </CardDescription>
+                        </div>
+                        <span className="rounded-full border border-border/60 bg-muted/40 px-3 py-1 text-xs text-muted-foreground">
+                            {connected} of {AI_PROVIDER_SECRETS.length} connected
+                        </span>
+                    </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    {visibleProviders.length > 0 ? (
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            {visibleProviders.map(({ key, label, placeholder, note }) => (
+                                <div key={key}>{renderSecretInput(key, label, placeholder, note)}</div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="rounded-xl border border-dashed border-border/70 p-5 text-sm text-muted-foreground">
+                            The selected local/custom provider does not need a cloud API key.
+                        </div>
+                    )}
+                    {(hiddenCount > 0 || showAllProviderKeys) && (
+                        <Button type="button" variant="ghost" className="w-full border border-dashed" onClick={() => setShowAllProviderKeys((value) => !value)}>
+                            {showAllProviderKeys ? 'Hide unused providers' : `Show ${hiddenCount} other providers`}
+                        </Button>
+                    )}
+                </CardContent>
+            </Card>
+        );
+    };
+
+    const renderAppAccessKey = () => {
+        const configured = isSecretConfigured("APP_API_KEY");
+        return (
+            <Card className="border-amber-500/25">
+                <CardHeader>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <CardTitle className="flex items-center gap-2">
+                                <ShieldCheck className="h-5 w-5 text-amber-500" />
+                                Dashboard Access Key
+                            </CardTitle>
+                            <CardDescription className="mt-1.5">
+                                Protects the LimeBot dashboard and API. This is not an AI provider credential.
+                            </CardDescription>
+                        </div>
+                        <span className={`rounded-full px-3 py-1 text-xs font-medium ${configured ? 'bg-primary/10 text-primary' : 'bg-amber-500/10 text-amber-500'}`}>
+                            {configured ? 'Protected' : 'Not configured'}
+                        </span>
+                    </div>
+                </CardHeader>
+                <CardContent>
+                    <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+                        <div className="flex gap-2">
+                            <Input
+                                id="app_api_key"
+                                type="password"
+                                value={secretDrafts.APP_API_KEY || ""}
+                                onChange={(e) => handleSecretChange("APP_API_KEY", e.target.value)}
+                                placeholder={getSecretPlaceholder(secretMeta, 'APP_API_KEY', 'Generate or enter an access key')}
+                                className="bg-background/70"
+                            />
+                            <Button type="button" variant="outline" size="icon" onClick={() => handleSecretChange("APP_API_KEY", crypto.randomUUID())} title="Generate new key">
+                                <RefreshCw className="h-4 w-4" />
+                            </Button>
+                            <Button type="button" variant="outline" size="icon" onClick={() => markSecretForClear("APP_API_KEY")} title="Clear access key" disabled={!configured}>
+                                <Trash className="h-4 w-4" />
+                            </Button>
+                        </div>
+                        <p className="mt-3 text-xs text-muted-foreground">
+                            Changing this key signs clients out. Save it somewhere secure before restarting LimeBot.
+                        </p>
+                    </div>
+                </CardContent>
+            </Card>
         );
     };
 
@@ -250,18 +393,21 @@ export function ConfigPage() {
     const additionalDisplayModels = selectedHiddenModel
         ? additionalModels.filter((model) => model.id !== selectedHiddenModel.id)
         : additionalModels;
+    const connectedAiProviders = AI_PROVIDER_SECRETS.filter(({ key }) => isSecretConfigured(key)).length;
+    const connectedCapabilities = CAPABILITY_SECRETS.filter((key) => isSecretConfigured(key)).length;
+    const dashboardProtected = isSecretConfigured("APP_API_KEY");
 
     return (
         <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">
-            <div className="max-w-4xl mx-auto space-y-8">
-                <header className="flex items-center justify-between">
+            <div className="max-w-5xl mx-auto space-y-7">
+                <header className="sticky top-0 z-20 -mx-2 flex items-center justify-between gap-4 rounded-2xl border border-border/50 bg-background/90 px-4 py-3 shadow-sm backdrop-blur-xl">
                     <div>
                         <h1 className="text-2xl font-bold flex items-center gap-2">
                             <Settings className="h-6 w-6 text-primary" />
-                            Configuration
+                            Settings
                         </h1>
                         <p className="text-muted-foreground mt-1">
-                            Manage your bot's environment variables and model settings.
+                            Connect providers, enable capabilities, and define LimeBot's safety boundaries.
                         </p>
                     </div>
                     <Button onClick={handleSave} disabled={saving} className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold">
@@ -269,7 +415,9 @@ export function ConfigPage() {
                             <>Saving...</>
                         ) : (
                             <>
-                                <Save className="mr-2 h-4 w-4" /> Save Changes
+                                <Save className="mr-2 h-4 w-4" />
+                                <span className="hidden sm:inline">Save Changes</span>
+                                <span className="sm:hidden">Save</span>
                             </>
                         )}
                     </Button>
@@ -283,15 +431,44 @@ export function ConfigPage() {
                     </Alert>
                 )}
 
-                <Tabs defaultValue="general" className="w-full">
-                    <TabsList className="grid w-full grid-cols-3 max-w-[400px]">
-                        <TabsTrigger value="general">General</TabsTrigger>
-                        <TabsTrigger value="credentials">Credentials</TabsTrigger>
-                        <TabsTrigger value="system">System</TabsTrigger>
+                <div className="grid gap-3 md:grid-cols-3">
+                    <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
+                        <div className="flex items-center justify-between">
+                            <BrainCircuit className="h-5 w-5 text-primary" />
+                            <span className="text-xs text-muted-foreground">{connectedAiProviders} connected</span>
+                        </div>
+                        <p className="mt-3 font-semibold">AI & Models</p>
+                        <p className="mt-1 text-xs text-muted-foreground">Choose the brain and connect only its provider.</p>
+                    </div>
+                    <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
+                        <div className="flex items-center justify-between">
+                            <PlugZap className="h-5 w-5 text-primary" />
+                            <span className="text-xs text-muted-foreground">{connectedCapabilities} services</span>
+                        </div>
+                        <p className="mt-3 font-semibold">Capabilities</p>
+                        <p className="mt-1 text-xs text-muted-foreground">Search, video transcription, voice, and browser behavior.</p>
+                    </div>
+                    <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
+                        <div className="flex items-center justify-between">
+                            <ShieldCheck className="h-5 w-5 text-amber-500" />
+                            <span className={`text-xs ${dashboardProtected ? 'text-primary' : 'text-amber-500'}`}>
+                                {dashboardProtected ? 'Protected' : 'Needs attention'}
+                            </span>
+                        </div>
+                        <p className="mt-3 font-semibold">Security & Runtime</p>
+                        <p className="mt-1 text-xs text-muted-foreground">Approvals, sandbox paths, access, and advanced execution.</p>
+                    </div>
+                </div>
+
+                <Tabs defaultValue="ai" className="w-full">
+                    <TabsList className="grid h-auto w-full grid-cols-3 rounded-xl bg-muted/60 p-1">
+                        <TabsTrigger value="ai" className="gap-2 py-2.5"><BrainCircuit className="h-4 w-4" /><span className="hidden sm:inline">AI & Models</span><span className="sm:hidden">AI</span></TabsTrigger>
+                        <TabsTrigger value="capabilities" className="gap-2 py-2.5"><PlugZap className="h-4 w-4" /><span className="hidden sm:inline">Capabilities</span><span className="sm:hidden">Tools</span></TabsTrigger>
+                        <TabsTrigger value="security" className="gap-2 py-2.5"><ShieldCheck className="h-4 w-4" /><span className="hidden sm:inline">Security & Runtime</span><span className="sm:hidden">Safety</span></TabsTrigger>
                     </TabsList>
 
-                    {/* GENERAL SETTINGS */}
-                    <TabsContent value="general" className="space-y-4 mt-6">
+                    {/* AI & MODEL SETTINGS */}
+                    <TabsContent value="ai" className="space-y-4 mt-6">
                         <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
@@ -469,11 +646,13 @@ export function ConfigPage() {
                             </CardContent>
                         </Card>
 
+                        {renderAiProviderKeys()}
+
                         <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <Settings className="h-5 w-5" />
-                                    Agent Tooling
+                                    Model Tool Awareness
                                 </CardTitle>
                                 <CardDescription>
                                     Tune how much tool schema is sent to the model on each turn.
@@ -505,11 +684,11 @@ export function ConfigPage() {
                                 <CardDescription>Configure how the bot interacts with users.</CardDescription>
                             </CardHeader>
                             <CardContent>
-                                <div className="flex items-center justify-between p-4 bg-cyan-500/10 rounded-lg border border-cyan-500/20">
+                                <div className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/10 p-4">
                                     <div className="space-y-0.5">
                                         <div className="flex items-center gap-2">
                                             <Label htmlFor="dynamic_personality">Adaptive Persona</Label>
-                                            <span className="text-[10px] font-bold bg-cyan-500 text-white px-1.5 py-0.5 rounded uppercase tracking-wider">Experimental</span>
+                                            <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary-foreground">Experimental</span>
                                         </div>
                                         <p className="text-xs text-muted-foreground max-w-md">
                                             Allows the bot to learn from your conversations, adjusting its tone and relationship level dynamically based on interactions.
@@ -526,90 +705,24 @@ export function ConfigPage() {
                     </TabsContent>
 
 
-                    {/* CREDENTIALS */}
-                    <TabsContent value="credentials" className="space-y-4 mt-6">
-                        <Card>
-                            <CardHeader>
-                                <CardTitle className="flex items-center gap-2">
-                                    <Key className="h-5 w-5" />
-                                    API Keys
-                                </CardTitle>
-                                <CardDescription>Manage keys for AI providers and external services.</CardDescription>
-                            </CardHeader>
-                            <CardContent className="space-y-6">
-                                <div className="grid gap-2 p-4 bg-primary/5 rounded-lg border border-primary/10">
-                                    <Label htmlFor="app_api_key" className="text-foreground/90 font-semibold">LimeBot Access Key</Label>
-                                    <div className="text-[10px] text-muted-foreground">
-                                        {clearedSecrets.includes('APP_API_KEY')
-                                            ? 'Will be cleared on save'
-                                            : getSecretInfo(secretMeta, 'APP_API_KEY').configured
-                                                ? `Stored ${getSecretInfo(secretMeta, 'APP_API_KEY').masked}`
-                                                : 'Not configured'}
-                                    </div>
-                                    <div className="flex gap-2">
-                                        <Input
-                                            id="app_api_key"
-                                            type="password"
-                                            value={secretDrafts.APP_API_KEY || ""}
-                                            onChange={(e) => handleSecretChange("APP_API_KEY", e.target.value)}
-                                            placeholder={getSecretPlaceholder(secretMeta, 'APP_API_KEY', 'Secure Key...')}
-                                            className="bg-background/50 flex-1"
-                                        />
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="icon"
-                                            onClick={() => handleSecretChange("APP_API_KEY", crypto.randomUUID())}
-                                            title="Regenerate Key"
-                                        >
-                                            <RefreshCw className="h-4 w-4" />
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="icon"
-                                            onClick={() => markSecretForClear("APP_API_KEY")}
-                                            title="Clear Key"
-                                        >
-                                            <Trash className="h-4 w-4" />
-                                        </Button>
-                                    </div>
-                                    <p className="text-[10px] text-muted-foreground">
-                                        Used to secure the frontend connection. if changed, you must update the frontend or re-login.
-                                    </p>
-                                </div>
-
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="grid gap-4 border p-4 rounded-lg bg-background/30">
-                                        {renderSecretInput("GEMINI_API_KEY", "Google Gemini API Key", "sk-...")}
-                                    </div>
-                                    {renderSecretInput("OPENAI_API_KEY", "OpenAI API Key", "sk-...")}
-                                    {renderSecretInput("OPENROUTER_API_KEY", "OpenRouter API Key", "sk-or-...")}
-                                    {renderSecretInput("ANTHROPIC_API_KEY", "Anthropic API Key", "sk-ant-...")}
-                                    {renderSecretInput("XAI_API_KEY", "xAI (Grok) API Key", "xai-...")}
-                                    {renderSecretInput("DEEPSEEK_API_KEY", "DeepSeek API Key", "sk-...")}
-                                    {renderSecretInput("MOONSHOT_API_KEY", "Moonshot / Kimi API Key", "sk-...")}
-                                    {renderSecretInput("NVIDIA_API_KEY", "NVIDIA API Key", "nvapi-...")}
-                                    {renderSecretInput("DASHSCOPE_API_KEY", "Qwen (DashScope) API Key", "ds-...")}
-                                </div>
-
-                                <div className="rounded-lg border border-border/60 bg-background/30 p-4">
-                                    <p className="text-sm font-medium">Channel credentials live under Channels & Presence</p>
-                                    <p className="mt-1 text-[11px] text-muted-foreground">
-                                        Telegram, Discord, and WhatsApp connection settings are managed in their channel tabs so tokens and enable switches stay together.
-                                    </p>
-                                </div>
-                            </CardContent>
-                        </Card>
+                    {/* OPTIONAL CAPABILITIES */}
+                    <TabsContent value="capabilities" className="space-y-4 mt-6">
+                        <Alert className="border-primary/20 bg-primary/5">
+                            <PlugZap className="h-4 w-4 text-primary" />
+                            <AlertTitle>Connect only what LimeBot should use</AlertTitle>
+                            <AlertDescription>
+                                Every service below is optional. Channel tokens remain under Channels & Presence so connection settings stay with their channel.
+                            </AlertDescription>
+                        </Alert>
 
                         <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <Globe className="h-5 w-5" />
-                                    Web Search
+                                    Web Intelligence
                                 </CardTitle>
                                 <CardDescription>
-                                    Optional keys for higher-quality web, news, image, and deep-research results. With none set, LimeBot falls back to keyless DuckDuckGo and the browser skill.
+                                    Search, news, images, and deep research. Keyless fallback remains available when no provider is connected.
                                 </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-6">
@@ -637,9 +750,38 @@ export function ConfigPage() {
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    {renderSecretInput("TAVILY_API_KEY", "Tavily API Key", "tvly-...")}
-                                    {renderSecretInput("BRAVE_SEARCH_API_KEY", "Brave Search API Key", "BSA...")}
-                                    {renderSecretInput("SERPAPI_API_KEY", "SerpAPI Key", "...")}
+                                    {renderSecretInput("TAVILY_API_KEY", "Tavily", "tvly-...", "Best fit for deep research and extracted page content")}
+                                    {renderSecretInput("BRAVE_SEARCH_API_KEY", "Brave Search", "BSA...", "Web, news, and image search")}
+                                    {renderSecretInput("SERPAPI_API_KEY", "SerpAPI", "...", "Google-backed web, news, and image results")}
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        <Card>
+                            <CardHeader>
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <CardTitle>Video Understanding</CardTitle>
+                                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-medium ${isSecretConfigured("OPENAI_API_KEY") ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                                        {isSecretConfigured("OPENAI_API_KEY") ? 'OpenAI connected' : 'Uses captions without a key'}
+                                    </span>
+                                </div>
+                                <CardDescription>
+                                    Optional transcription fallback for videos without captions.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                <div className="flex items-center justify-between gap-6 rounded-lg border border-border/60 bg-background/30 p-4">
+                                    <div className="space-y-1">
+                                        <Label htmlFor="video_whisper_enabled">Use OpenAI Whisper</Label>
+                                        <p className="text-xs text-muted-foreground">
+                                            When enabled, caption-less video audio is uploaded to OpenAI for transcription. Uses the existing OpenAI API key and is disabled by default.
+                                        </p>
+                                    </div>
+                                    <Switch
+                                        id="video_whisper_enabled"
+                                        checked={config.VIDEO_WHISPER_ENABLED === 'true'}
+                                        onCheckedChange={(checked) => handleChange('VIDEO_WHISPER_ENABLED', checked ? 'true' : 'false')}
+                                    />
                                 </div>
                             </CardContent>
                         </Card>
@@ -648,7 +790,7 @@ export function ConfigPage() {
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <Key className="h-5 w-5" />
-                                    Voice (ElevenLabs)
+                                    Voice & Audio
                                 </CardTitle>
                                 <CardDescription>
                                     Text-to-speech key. Manage voices and playback in the Voice tab.
@@ -656,19 +798,21 @@ export function ConfigPage() {
                             </CardHeader>
                             <CardContent className="space-y-6">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    {renderSecretInput("ELEVENLABS_API_KEY", "ElevenLabs API Key", "sk_...")}
+                                    {renderSecretInput("ELEVENLABS_API_KEY", "ElevenLabs", "sk_...", "Text-to-speech voices and playable audio replies")}
                                 </div>
                             </CardContent>
                         </Card>
                     </TabsContent>
 
-                    {/* SYSTEM SETTINGS */}
-                    <TabsContent value="system" className="space-y-4 mt-6">
+                    {/* SECURITY & RUNTIME */}
+                    <TabsContent value="security" className="space-y-4 mt-6">
+                        {renderAppAccessKey()}
+
                         <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <Cpu className="h-5 w-5 text-yellow-500" />
-                                    Approval Policy
+                                    Safety & Execution
                                 </CardTitle>
                                 <CardDescription className="text-yellow-500/80">
                                     Choose how sensitive tools are reviewed before LimeBot runs them.
@@ -801,7 +945,7 @@ export function ConfigPage() {
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <Globe className="h-5 w-5" />
-                                    Browser Session
+                                    Browser Runtime
                                 </CardTitle>
                                 <CardDescription>
                                     Control whether the browser tool uses isolated LimeBot profiles, a shared LimeBot profile, your system browser profile, or a live browser session over CDP.
@@ -891,7 +1035,7 @@ export function ConfigPage() {
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     <Settings className="h-5 w-5" />
-                                    Workspace Security
+                                    Workspace Access
                                 </CardTitle>
                                 <CardDescription>Control file access and permissions.</CardDescription>
                             </CardHeader>
@@ -1021,11 +1165,11 @@ function RemoteStatus({ port }: { port: string }) {
     return (
         <div className="space-y-3">
             {tailscale ? (
-                <div className="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded text-sm">
-                    <div className="flex items-center gap-2 text-emerald-500 font-medium mb-1">
+                <div className="rounded border border-primary/20 bg-primary/10 p-2 text-sm">
+                    <div className="mb-1 flex items-center gap-2 font-medium text-primary">
                         <span className="relative flex h-2 w-2">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75"></span>
+                            <span className="relative inline-flex h-2 w-2 rounded-full bg-primary"></span>
                         </span>
                         Tailscale Active
                     </div>

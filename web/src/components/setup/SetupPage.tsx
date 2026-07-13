@@ -437,7 +437,7 @@ export function SetupPage() {
                                                 Codex Auth Status
                                             </span>
                                             {codexAuth?.configured ? (
-                                                <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] uppercase font-bold px-2 py-0.5">
+                                                <Badge className="border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase text-primary">
                                                     ✓ Configured
                                                 </Badge>
                                             ) : (

@@ -25,6 +25,7 @@ ARG LIMEBOT_FEATURES=""
 RUN for feature in $LIMEBOT_FEATURES; do \
       case "$feature" in \
         browser|memory|documents|mcp) pip install --no-cache-dir -r "requirements-$feature.txt" ;; \
+        video) apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir -r requirements-video.txt ;; \
         *) echo "Unknown LIMEBOT_FEATURES entry: $feature" >&2; exit 2 ;; \
       esac; \
     done

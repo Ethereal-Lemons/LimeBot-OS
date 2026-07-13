@@ -388,6 +388,20 @@ BASE_TOOLS = [
         "params": {},
         "required": [],
     },
+    {
+        "name": "analyze_video",
+        "description": "Analyze one allowed local video or public HTTP(S) video. Returns a bounded transcript and up to three timestamped contact sheets. Use transcript for audio-only questions, efficient for quick visual scans, and balanced for summaries, UI recordings, ads, and visual questions.",
+        "params": {
+            "source": {"type": "string", "description": "Allowed local video path or public HTTP(S) video URL."},
+            "question": {"type": "string", "description": "What to inspect or answer about the video."},
+            "detail": {"type": "string", "enum": ["transcript", "efficient", "balanced"], "description": "Analysis detail; defaults to balanced."},
+            "start": {"type": "string", "description": "Optional range start as SS, MM:SS, or HH:MM:SS."},
+            "end": {"type": "string", "description": "Optional range end as SS, MM:SS, or HH:MM:SS."},
+            "max_frames": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Candidate-frame cap from 1 to 100."},
+            "resolution": {"type": "integer", "enum": [512, 1024], "description": "Frame tile resolution; use 1024 only for small on-screen text."},
+        },
+        "required": ["source"],
+    },
 ]
 
 
@@ -600,6 +614,7 @@ _TOOL_FAMILIES = {
     "deep_research": "search",
     "send_media": "media",
     "send_voice": "media",
+    "analyze_video": "video",
     "browser_navigate": "browser",
     "browser_click": "browser",
     "browser_type": "browser",
@@ -728,6 +743,10 @@ _FAMILY_HINTS = {
         "server",
         "user",
     },
+    "video": {
+        "video", "watch", "transcript", "captions", "screen", "recording",
+        "youtube", "youtu", "vimeo", "tiktok", "loom", "mp4", "mov", "mkv", "webm", "m4v", "avi",
+    },
 }
 
 _MANDATORY_FAMILY_TOOLS = {
@@ -748,6 +767,7 @@ _MANDATORY_FAMILY_TOOLS = {
     "agent": {"spawn_agent"},
     "media": {"generate_image", "send_media", "send_voice"},
     "discord": {"send_discord_message", "send_discord_embed", "list_discord_channels"},
+    "video": {"analyze_video"},
 }
 
 _TOOL_HINTS = {
@@ -773,6 +793,7 @@ _TOOL_HINTS = {
     "deep_research": {"research", "investigate", "deep", "compare", "analysis", "report", "sources", "cite"},
     "send_media": {"send", "share", "picture", "photo", "pic", "image", "file", "attach"},
     "send_voice": {"voice", "audio", "speak", "say", "voicenote", "tts", "read", "aloud", "message"},
+    "analyze_video": {"video", "watch", "transcript", "caption", "youtube", "youtu", "vimeo", "tiktok", "loom", "mp4", "mov", "mkv", "webm", "m4v", "avi", "recording"},
     "browser_navigate": {"url", "open", "visit", "navigate", "website", "web"},
     "browser_snapshot": {"snapshot", "page", "elements", "buttons", "form"},
     "browser_click": {"click", "press", "tap", "select"},

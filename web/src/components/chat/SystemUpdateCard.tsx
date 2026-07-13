@@ -11,25 +11,14 @@ export function SystemUpdateCard({ content }: SystemUpdateCardProps) {
         ? "AI behavior profiles, identity parameters, and core response guidelines have been dynamically compiled and synchronized."
         : "Workspace system state, dynamic memory indices, and persistent environment buffers have been successfully synchronized.";
 
-    const theme = isPersonaUpdate
-        ? {
-              accent: "#10b981",
-              accentMuted: "rgba(16,185,129,0.15)",
-              accentDim: "rgba(16,185,129,0.06)",
-              accentGlow: "rgba(16,185,129,0.35)",
-              accentSoft: "rgba(16,185,129,0.08)",
-              badge: "emerald",
-              label: "Identity Sync",
-          }
-        : {
-              accent: "#06b6d4",
-              accentMuted: "rgba(6,182,212,0.15)",
-              accentDim: "rgba(6,182,212,0.06)",
-              accentGlow: "rgba(6,182,212,0.35)",
-              accentSoft: "rgba(6,182,212,0.08)",
-              badge: "cyan",
-              label: "Memory Write",
-          };
+    const theme = {
+        accent: "hsl(var(--primary))",
+        accentMuted: "hsl(var(--primary) / 0.15)",
+        accentDim: "hsl(var(--primary) / 0.06)",
+        accentGlow: "hsl(var(--primary) / 0.35)",
+        accentSoft: "hsl(var(--primary) / 0.08)",
+        label: isPersonaUpdate ? "Identity Sync" : "Memory Write",
+    };
 
     return (
         <div

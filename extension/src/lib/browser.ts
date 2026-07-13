@@ -5,6 +5,15 @@ export type CapturedPageContext = {
   url: string;
   selectedText: string;
   visibleText: string;
+  video: CapturedVideoContext;
+};
+
+export type CapturedVideoContext = {
+  detected: boolean;
+  currentTimeSeconds: number | null;
+  durationSeconds: number | null;
+  paused: boolean | null;
+  label: string;
 };
 
 export type TabContextResult =
@@ -148,12 +157,45 @@ function capturePageSnapshot(selectionLimit: number, visibleTextLimit: number): 
 
   const selectedText = collapseWhitespace(window.getSelection?.()?.toString() ?? "");
   const visibleText = collapseWhitespace(document.body?.innerText ?? "");
+  const candidates = Array.from(document.querySelectorAll("video"))
+    .map((video) => {
+      const rect = video.getBoundingClientRect();
+      const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+      const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+      const visibleArea = visibleWidth * visibleHeight;
+      const score = (video.paused ? 0 : 1_000_000_000) + visibleArea;
+      return { video, score };
+    })
+    .filter(({ score }) => score > 0)
+    .sort((left, right) => right.score - left.score);
+  const activeVideo = candidates[0]?.video;
+  const finiteNumber = (value: number) => Number.isFinite(value) && value >= 0 ? value : null;
 
   return {
     title: collapseWhitespace(document.title || ""),
     url: window.location.href,
     selectedText: clip(selectedText, selectionLimit),
     visibleText: clip(visibleText, visibleTextLimit),
+    video: activeVideo
+      ? {
+          detected: true,
+          currentTimeSeconds: finiteNumber(activeVideo.currentTime),
+          durationSeconds: finiteNumber(activeVideo.duration),
+          paused: activeVideo.paused,
+          label: collapseWhitespace(
+            activeVideo.getAttribute("aria-label") ||
+            activeVideo.getAttribute("title") ||
+            activeVideo.closest("figure")?.querySelector("figcaption")?.textContent ||
+            ""
+          ),
+        }
+      : {
+          detected: false,
+          currentTimeSeconds: null,
+          durationSeconds: null,
+          paused: null,
+          label: "",
+        },
   };
 }
 

@@ -37,7 +37,7 @@ export function ConfirmationCard({ request }: ConfirmationCardProps) {
                                 <span className={cn(
                                     "text-xs px-2 py-0.5 rounded-full font-medium",
                                     request.status === 'approved'
-                                        ? "bg-green-500/20 text-green-400"
+                                        ? "bg-primary/20 text-primary"
                                         : "bg-red-500/20 text-red-400"
                                 )}>
                                     {request.status === 'approved' ? 'Approved' : 'Denied'}

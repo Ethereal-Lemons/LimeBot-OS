@@ -244,7 +244,7 @@ function StatusChip({
         <div
             className={cn(
                 "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]",
-                tone === 'good' && "border-emerald-500/20 bg-emerald-500/10 text-emerald-500",
+                tone === 'good' && "border-primary/20 bg-primary/10 text-primary",
                 tone === 'warn' && "border-amber-500/20 bg-amber-500/10 text-amber-500",
                 tone === 'default' && "border-border bg-background/70 text-muted-foreground"
             )}
@@ -573,7 +573,7 @@ const MemoizedMessageItem = memo(({
                                     ? "group max-w-[min(82%,30rem)] rounded-2xl rounded-tr-none bg-user-bubble px-3.5 py-2 text-[14px] leading-tight text-user-bubble-foreground shadow-sm transition-all duration-300 hover:shadow-md"
                                     : "w-full bg-transparent px-0 py-0 text-foreground"
                             )}>
-                                <div className="max-w-full overflow-x-auto whitespace-pre-wrap break-words">
+                                <div className="max-w-full overflow-x-auto whitespace-normal break-words">
                                     {renderableAttachments.map((attachment) => (
                                         <AttachmentPreview
                                             key={`${attachment.kind}:${attachment.name}:${attachment.url.slice(0, 24)}`}
@@ -1493,11 +1493,11 @@ export function ChatInterface({
                                 </div>
                             )}
                             {selectedSkill && (
-                                <div className="mb-1 mt-2 flex max-w-max items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/12 px-3 py-1.5 text-xs text-emerald-300 shadow-sm">
-                                    <span className="font-semibold uppercase tracking-[0.18em] text-emerald-400">
+                                <div className="mb-1 mt-2 flex max-w-max items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs text-primary shadow-sm">
+                                    <span className="font-semibold uppercase tracking-[0.18em] text-primary">
                                         Skill
                                     </span>
-                                    <span className="truncate font-medium text-emerald-100">
+                                    <span className="truncate font-medium text-foreground">
                                         {selectedSkill.name}
                                     </span>
                                     <button
@@ -1506,7 +1506,7 @@ export function ChatInterface({
                                             setSelectedSkill(null);
                                             requestAnimationFrame(() => textareaRef.current?.focus());
                                         }}
-                                        className="rounded-full p-0.5 text-emerald-200/80 transition-colors hover:bg-emerald-500/20 hover:text-emerald-50"
+                                        className="rounded-full p-0.5 text-primary/80 transition-colors hover:bg-primary/20 hover:text-primary"
                                         aria-label={`Remove ${selectedSkill.name} skill`}
                                         title={`Remove ${selectedSkill.name} skill`}
                                     >

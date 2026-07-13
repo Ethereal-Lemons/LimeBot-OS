@@ -317,7 +317,7 @@ export function McpPage() {
                                                 variant={isOnline ? "outline" : "secondary"}
                                                 className={cn(
                                                     "flex gap-1.5 items-center px-2 py-0.5 text-[10px] font-bold uppercase",
-                                                    isOnline && "text-green-500 border-green-500/20 bg-green-500/10"
+                                                    isOnline && "border-primary/20 bg-primary/10 text-primary"
                                                 )}
                                             >
                                                 <Circle className={cn(

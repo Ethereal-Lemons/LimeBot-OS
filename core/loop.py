@@ -298,6 +298,7 @@ class AgentLoop:
             "send_media": self.toolbox.send_media,
             "send_voice": self.toolbox.send_voice,
             "generate_image": self.toolbox.generate_image,
+            "analyze_video": self.toolbox.analyze_video,
             "send_discord_message": self.toolbox.send_discord_message,
             "send_discord_embed": self.toolbox.send_discord_embed,
             "list_discord_channels": self.toolbox.list_discord_channels,
@@ -4108,7 +4109,11 @@ class AgentLoop:
                 t0 = time.time()
                 try:
                     # General safety timeout for ANY tool execution (MCP, Browser, etc.)
-                    tool_timeout = getattr(self.config, "tool_timeout", 120.0)
+                    tool_timeout = (
+                        600.0
+                        if function_name == "analyze_video"
+                        else getattr(self.config, "tool_timeout", 120.0)
+                    )
                     if tool_timeout and tool_timeout > 0:
                         result = await asyncio.wait_for(
                             self._execute_tool(
@@ -5606,13 +5611,6 @@ class AgentLoop:
                 try:
                     # ── Parallel: Auto-RAG + history load ───────────────────
 
-                    await self._publish_activity(
-                        msg,
-                        "Recalling memory and loading history...",
-                        turn_id=turn_id,
-                        message_id=assistant_message_id,
-                    )
-
                     rag_timeout_s = getattr(
                         getattr(self.config, "ai_harness", None),
                         "rag_timeout_s",
@@ -5713,6 +5711,17 @@ class AgentLoop:
                         rag_task = None
 
                     hist_task = asyncio.create_task(_do_history_load())
+
+                    # Start retrieval and disk history work before publishing the
+                    # ephemeral activity update. This overlaps channel delivery
+                    # latency with pre-inference preparation without changing the
+                    # prompt or recall result.
+                    await self._publish_activity(
+                        msg,
+                        "Recalling memory and loading history...",
+                        turn_id=turn_id,
+                        message_id=assistant_message_id,
+                    )
 
                     rag_stage_metadata = {
                         "status": "skipped",

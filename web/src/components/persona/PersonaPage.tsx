@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { API_BASE_URL } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -8,8 +9,11 @@ import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Badge } from "../ui/badge";
-import { User, Sparkles, Link, MessageSquare, Save, RefreshCw, Globe, Heart, Cake, Quote, Users, Bot, Wand2, ShieldCheck, ArrowRight, Radio, Send } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import {
+    ArrowRight, Bot, Cake, Globe, Heart, Link, MessageSquare, Quote,
+    Radio, RefreshCw, Save, Send, ShieldCheck, Sparkles, User, Users, Wand2,
+} from "lucide-react";
 
 interface Relationship { id: string; name: string; affinity: number; level: string; }
 interface PersonaData {
@@ -21,21 +25,16 @@ interface PersonaData {
 }
 interface PersonaPageProps { onNavigate?: (view: string) => void; }
 type PreviewChannel = "web" | "discord" | "telegram" | "whatsapp";
-
 interface PersonaPreviewResponse {
-    channel: PreviewChannel;
-    model: string;
-    effective_style: string;
-    style_source: string;
-    system_prompt_excerpt: string;
-    preview_text?: string | null;
-    error?: string | null;
+    channel: PreviewChannel; model: string; effective_style: string; style_source: string;
+    system_prompt_excerpt: string; preview_text?: string | null; error?: string | null;
 }
 
 const DEFAULT_PERSONA: PersonaData = {
-    name: "", emoji: "", pfp_url: "", style: "", discord_style: "", telegram_style: "", whatsapp_style: "", web_style: "",
-    reaction_emojis: "", soul_summary: "", catchphrases: "", interests: "", birthday: "", mood: "",
-    enable_dynamic_personality: false, relationships: []
+    name: "", emoji: "", pfp_url: "", style: "", discord_style: "", telegram_style: "",
+    whatsapp_style: "", web_style: "", reaction_emojis: "", soul_summary: "",
+    catchphrases: "", interests: "", birthday: "", mood: "",
+    enable_dynamic_personality: false, relationships: [],
 };
 const CHANNELS: Array<{ id: PreviewChannel; label: string; accent: string }> = [
     { id: "web", label: "Web", accent: "text-primary" },
@@ -48,15 +47,16 @@ const clonePersona = (data?: Partial<PersonaData>): PersonaData =>
     JSON.parse(JSON.stringify({ ...DEFAULT_PERSONA, ...(data || {}) }));
 
 function effectiveStyle(persona: PersonaData, channel: PreviewChannel) {
-    const base = (persona.style || "").trim();
+    const base = persona.style.trim();
     const web = (persona.web_style || "").trim();
-    const platform = (persona[`${channel}_style` as keyof PersonaData] || "").toString().trim();
+    const platform = String(persona[`${channel}_style` as keyof PersonaData] || "").trim();
     if (channel === "web") return { text: web || base, source: web ? "Web override" : "Base style" };
-    return platform ? { text: platform, source: `${CHANNELS.find((item) => item.id === channel)?.label || channel} override` } : web ? { text: web, source: "Web fallback" } : { text: base, source: "Base style" };
+    if (platform) return { text: platform, source: `${CHANNELS.find((item) => item.id === channel)?.label} override` };
+    return web ? { text: web, source: "Web fallback" } : { text: base, source: "Base style" };
 }
 
-const affinityTone = (affinity: number) => affinity >= 70 ? "bg-emerald-500" : affinity >= 30 ? "bg-amber-500" : "bg-slate-500";
-const affinityLabel = (affinity: number) => affinity >= 70 ? "Close" : affinity >= 30 ? "Warm" : "Distant";
+const affinityTone = (value: number) => value >= 70 ? "bg-primary" : value >= 30 ? "bg-amber-500" : "bg-slate-500";
+const affinityLabel = (value: number) => value >= 70 ? "Close" : value >= 30 ? "Warm" : "Distant";
 
 export function PersonaPage({ onNavigate }: PersonaPageProps) {
     const [persona, setPersona] = useState<PersonaData>(clonePersona());
@@ -73,59 +73,46 @@ export function PersonaPage({ onNavigate }: PersonaPageProps) {
     const fetchPersona = async () => {
         try {
             setLoading(true);
-            const res = await axios.get(`${API_BASE_URL}/api/persona`);
-            const next = clonePersona(res.data);
+            const response = await axios.get(`${API_BASE_URL}/api/persona`);
+            const next = clonePersona(response.data);
             setPersona(next);
             setSavedPersona(next);
             setPreviewResult(null);
             setPreviewRequestKey("");
-        } catch (err) {
-            console.error("Failed to fetch persona:", err);
+        } catch (error) {
+            console.error("Failed to fetch persona:", error);
             setMessage("Error loading persona");
         } finally {
             setLoading(false);
         }
     };
 
-    useEffect(() => { fetchPersona(); }, []);
-
+    useEffect(() => { void fetchPersona(); }, []);
     const isDirty = useMemo(() => JSON.stringify(persona) !== JSON.stringify(savedPersona), [persona, savedPersona]);
     useEffect(() => {
         if (!isDirty) return;
-        const onBeforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
-        window.addEventListener("beforeunload", onBeforeUnload);
-        return () => window.removeEventListener("beforeunload", onBeforeUnload);
+        const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+        window.addEventListener("beforeunload", warn);
+        return () => window.removeEventListener("beforeunload", warn);
     }, [isDirty]);
 
-    const missing = useMemo(() => {
-        const list: string[] = [];
-        if (!persona.name.trim()) list.push("display name");
-        if (!persona.style.trim()) list.push("base style");
-        return list;
-    }, [persona.name, persona.style]);
-
+    const missing = useMemo(() => [!persona.name.trim() && "display name", !persona.style.trim() && "base style"].filter(Boolean) as string[], [persona.name, persona.style]);
     const relationships = persona.relationships || [];
     const strongest = relationships[0];
-    const avgAffinity = relationships.length ? Math.round(relationships.reduce((sum, rel) => sum + rel.affinity, 0) / relationships.length) : 0;
+    const avgAffinity = relationships.length ? Math.round(relationships.reduce((sum, item) => sum + item.affinity, 0) / relationships.length) : 0;
+    const overrideCount = CHANNELS.filter((channel) => String(persona[`${channel.id}_style` as keyof PersonaData] || "").trim()).length;
     const selectedStyle = effectiveStyle(persona, selectedChannel);
-    const previewSignature = useMemo(
-        () => JSON.stringify({ persona, selectedChannel, previewMessage }),
-        [persona, selectedChannel, previewMessage]
-    );
+    const previewSignature = useMemo(() => JSON.stringify({ persona, selectedChannel, previewMessage }), [persona, selectedChannel, previewMessage]);
     const previewIsStale = previewRequestKey !== previewSignature;
 
     const requestPreview = async () => {
         try {
             setPreviewLoading(true);
-            const res = await axios.post<PersonaPreviewResponse>(`${API_BASE_URL}/api/persona/preview`, {
-                persona,
-                channel: selectedChannel,
-                user_message: previewMessage,
-            });
-            setPreviewResult(res.data);
+            const response = await axios.post<PersonaPreviewResponse>(`${API_BASE_URL}/api/persona/preview`, { persona, channel: selectedChannel, user_message: previewMessage });
+            setPreviewResult(response.data);
             setPreviewRequestKey(previewSignature);
-        } catch (err) {
-            console.error("Failed to preview persona:", err);
+        } catch (error) {
+            console.error("Failed to preview persona:", error);
             setPreviewResult(null);
         } finally {
             setPreviewLoading(false);
@@ -136,18 +123,15 @@ export function PersonaPage({ onNavigate }: PersonaPageProps) {
         try {
             setSaving(true);
             const payload = clonePersona(persona);
-            const res = await axios.put(`${API_BASE_URL}/api/persona`, payload);
-            if (res.data.status === "success") {
-                setPersona(payload);
-                setSavedPersona(payload);
-                setMessage("Persona saved successfully.");
-                setTimeout(() => setMessage(""), 3000);
-            } else {
-                setMessage("Error: " + (res.data.error || "Unknown error"));
-            }
-        } catch (err) {
-            console.error("Failed to save persona:", err);
-            setMessage("Error saving persona");
+            const response = await axios.put(`${API_BASE_URL}/api/persona`, payload);
+            if (response.data.status !== "success") throw new Error(response.data.error || "Unknown error");
+            setPersona(payload);
+            setSavedPersona(payload);
+            setMessage("Persona saved successfully.");
+            window.setTimeout(() => setMessage(""), 3000);
+        } catch (error) {
+            console.error("Failed to save persona:", error);
+            setMessage(`Error saving persona${error instanceof Error ? `: ${error.message}` : ""}`);
         } finally {
             setSaving(false);
         }
@@ -162,216 +146,90 @@ export function PersonaPage({ onNavigate }: PersonaPageProps) {
     if (loading) return <div className="flex h-full items-center justify-center"><RefreshCw className="h-8 w-8 animate-spin text-primary" /></div>;
 
     return (
-        <div className="flex h-full flex-col overflow-hidden">
-            <div className="border-b border-border bg-card/90 backdrop-blur">
-                <div className="flex flex-col gap-4 p-6 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex h-full flex-col overflow-hidden bg-background">
+            <header className="border-b border-border bg-card/90 px-5 py-4 backdrop-blur md:px-7">
+                <div className="mx-auto flex max-w-7xl flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div>
-                        <div className="flex items-center gap-2">
-                            <h1 className="text-2xl font-bold text-foreground">Persona</h1>
-                            <Badge variant={isDirty ? "secondary" : "outline"}>{isDirty ? "Unsaved changes" : "Saved"}</Badge>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <h1 className="text-2xl font-bold">Persona Studio</h1>
+                            <Badge variant={isDirty ? "secondary" : "outline"}>{isDirty ? "Unsaved" : "Saved"}</Badge>
+                            {missing.length > 0 && <Badge variant="outline">Missing {missing.join(" + ")}</Badge>}
                         </div>
-                        <p className="mt-1 text-sm text-muted-foreground">Identity, channel voice, and adaptive behavior in one place.</p>
+                        <p className="mt-1 text-sm text-muted-foreground">Shape identity, voice, and social behavior without editing persona files by hand.</p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                        <Button variant="outline" onClick={handleReload} disabled={saving} className="gap-2"><RefreshCw className="h-4 w-4" />Reload</Button>
+                        <Button variant="ghost" onClick={handleReload} disabled={saving} className="gap-2"><RefreshCw className="h-4 w-4" />Reload</Button>
                         <Button variant="outline" onClick={handleDiscard} disabled={!isDirty || saving}>Discard</Button>
-                        <Button onClick={handleSave} disabled={saving || !isDirty} className="gap-2"><Save className="h-4 w-4" />{saving ? "Saving..." : "Save Changes"}</Button>
+                        <Button onClick={handleSave} disabled={saving || !isDirty} className="gap-2"><Save className="h-4 w-4" />{saving ? "Saving…" : "Save persona"}</Button>
                     </div>
                 </div>
-            </div>
+            </header>
 
-            <div className="flex-1 overflow-auto p-6">
-                <div className="sticky top-0 z-20 mb-6 rounded-2xl border border-border/70 bg-background/92 p-4 shadow-sm backdrop-blur">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                        <div className="space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <Badge variant={isDirty ? "secondary" : "outline"}>{isDirty ? "Draft differs from disk" : "No pending edits"}</Badge>
-                                <Badge variant="outline">{missing.length ? `Needs ${missing.join(" + ")}` : "Identity fields look complete"}</Badge>
-                                <Badge variant="outline">Dynamic persona {persona.enable_dynamic_personality ? "enabled" : "disabled"}</Badge>
+            <main className="flex-1 overflow-auto p-4 md:p-7">
+                <div className="mx-auto max-w-7xl space-y-5">
+                    {message && <div className={cn("rounded-xl border p-3 text-sm", message.startsWith("Error") ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-primary/20 bg-primary/10 text-primary")}>{message}</div>}
+
+                    <Card className="overflow-hidden border-border/70 bg-gradient-to-br from-card via-card to-primary/5">
+                        <CardContent className="grid gap-5 p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center md:p-6">
+                            <div className="flex min-w-0 items-start gap-4">
+                                <Avatar className="h-20 w-20 shrink-0 border shadow-md"><AvatarImage src={persona.pfp_url} className="object-cover" /><AvatarFallback className="bg-primary text-2xl text-primary-foreground">{persona.emoji || persona.name.charAt(0) || "?"}</AvatarFallback></Avatar>
+                                <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2"><h2 className="text-2xl font-bold">{persona.name || "Unnamed persona"}</h2><span className="text-2xl">{persona.emoji || "🍋"}</span></div>
+                                    <p className="mt-2 line-clamp-3 max-w-3xl text-sm leading-relaxed text-muted-foreground">{persona.style || "Add a base voice to define how this persona speaks and behaves."}</p>
+                                    <div className="mt-3 flex flex-wrap gap-2"><Badge variant="outline">{overrideCount} channel overrides</Badge><Badge variant="outline">{relationships.length} relationships</Badge><Badge variant={persona.enable_dynamic_personality ? "secondary" : "outline"}>Adaptive {persona.enable_dynamic_personality ? "on" : "off"}</Badge></div>
+                                </div>
                             </div>
-                            <p className="text-sm text-muted-foreground">{isDirty ? "Review the preview, then save when the voice feels right." : "Persona is in sync with disk."}</p>
+                            <div className="grid grid-cols-3 gap-2 text-center">
+                                <Metric value={CHANNELS.length} label="Channels" />
+                                <Metric value={avgAffinity} label="Affinity" />
+                                <Metric value={strongest?.name || "—"} label="Closest" compact />
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    <Tabs defaultValue="identity" className="grid gap-5 lg:grid-cols-[230px_minmax(0,1fr)] lg:items-start">
+                        <Card className="lg:sticky lg:top-0"><CardContent className="p-3"><p className="px-3 pb-2 pt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Edit persona</p><TabsList className="grid h-auto grid-cols-2 gap-1 bg-transparent p-0 sm:grid-cols-4 lg:grid-cols-1"><PersonaTab value="identity" icon={<User className="h-4 w-4" />} label="Identity" /><PersonaTab value="voice" icon={<MessageSquare className="h-4 w-4" />} label="Voice" /><PersonaTab value="preview" icon={<Wand2 className="h-4 w-4" />} label="Preview" /><PersonaTab value="adaptive" icon={<Radio className="h-4 w-4" />} label="Adaptive" /></TabsList><div className="mt-3 hidden border-t px-3 pt-3 text-xs leading-relaxed text-muted-foreground lg:block">Core values remain in <code className="rounded bg-muted px-1 py-0.5">SOUL.md</code>.</div></CardContent></Card>
+
+                        <div className="min-w-0">
+                            <TabsContent value="identity" className="mt-0"><IdentityEditor persona={persona} setPersona={setPersona} /></TabsContent>
+                            <TabsContent value="voice" className="mt-0"><VoiceEditor persona={persona} setPersona={setPersona} /></TabsContent>
+                            <TabsContent value="preview" className="mt-0"><PreviewStudio persona={persona} selectedChannel={selectedChannel} setSelectedChannel={setSelectedChannel} selectedStyle={selectedStyle} previewMessage={previewMessage} setPreviewMessage={setPreviewMessage} previewLoading={previewLoading} previewResult={previewResult} previewIsStale={previewIsStale} requestPreview={requestPreview} /></TabsContent>
+                            <TabsContent value="adaptive" className="mt-0"><AdaptiveEditor persona={persona} setPersona={setPersona} relationships={relationships} avgAffinity={avgAffinity} onNavigate={onNavigate} /></TabsContent>
                         </div>
-                        <div className="text-sm text-muted-foreground">{missing.length ? `Missing: ${missing.join(", ")}` : "Base persona is ready for platform tuning."}</div>
-                    </div>
+                    </Tabs>
                 </div>
-
-                {message && <div className={`mb-4 rounded-lg p-3 text-sm ${message.includes("Error") ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary"}`}>{message}</div>}
-
-                <div className="grid gap-6 xl:grid-cols-[1.05fr_1.35fr]">
-                    <Card className="bg-muted/30">
-                        <CardHeader><CardTitle className="text-lg">Identity Snapshot</CardTitle><CardDescription>How the bot reads before any conversation starts.</CardDescription></CardHeader>
-                        <CardContent className="space-y-4">
-                            <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
-                                <div className="flex items-start gap-4">
-                                    <Avatar className="h-20 w-20 shadow-lg">
-                                        <AvatarImage src={persona.pfp_url} className="object-cover" />
-                                        <AvatarFallback className="bg-primary text-2xl text-primary-foreground">{persona.emoji || persona.name?.charAt(0) || "?"}</AvatarFallback>
-                                    </Avatar>
-                                    <div className="min-w-0 flex-1">
-                                        <div className="flex flex-wrap items-center gap-2"><h3 className="text-2xl font-bold text-foreground">{persona.name || "Bot Name"}</h3><span className="text-2xl">{persona.emoji || "🍋"}</span></div>
-                                        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{persona.style?.trim() || "No base style defined yet. Add a general voice so previews have something real to inherit."}</p>
-                                    </div>
-                                </div>
-                            </div>
-                            <div className="grid gap-3 sm:grid-cols-2">
-                                <div className="rounded-xl border border-border bg-background/70 p-4"><div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Soul summary</div><p className="mt-2 text-sm leading-relaxed text-muted-foreground">{persona.soul_summary || "Derived from SOUL.md. Not edited here."}</p></div>
-                                <div className="rounded-xl border border-border bg-background/70 p-4"><div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Editing boundary</div><p className="mt-2 text-sm leading-relaxed text-muted-foreground">This page edits identity and channel style. Core soul values still come from <code className="rounded bg-muted px-1 py-0.5">SOUL.md</code>.</p></div>
-                            </div>
-                        </CardContent>
-                    </Card>
-
-                    <Card className="bg-muted/30">
-                        <CardHeader><CardTitle className="flex items-center gap-2 text-lg"><Wand2 className="h-4 w-4 text-primary" />Voice Preview Studio</CardTitle><CardDescription>Run the real prompt builder against a test message for each channel.</CardDescription></CardHeader>
-                        <CardContent className="space-y-4">
-                            <div className="grid gap-3 md:grid-cols-4">
-                                {CHANNELS.map((channel) => {
-                                    const current = effectiveStyle(persona, channel.id);
-                                    const selected = selectedChannel === channel.id;
-                                    return (
-                                        <button
-                                            key={channel.id}
-                                            type="button"
-                                            onClick={() => setSelectedChannel(channel.id)}
-                                            className={`h-full rounded-2xl border p-4 text-left transition-colors ${selected ? "border-primary bg-primary/5" : "border-border bg-background/70 hover:border-primary/30"}`}
-                                        >
-                                            <div className="flex flex-wrap items-start justify-between gap-2">
-                                                <span className={`min-w-0 text-base font-semibold ${channel.accent}`}>{channel.label}</span>
-                                                <Badge
-                                                    variant={selected ? "secondary" : "outline"}
-                                                    className="shrink-0 whitespace-nowrap self-start"
-                                                >
-                                                    {current.source}
-                                                </Badge>
-                                            </div>
-                                            <p className="mt-2 line-clamp-4 text-sm leading-relaxed text-muted-foreground">
-                                                {current.text ? `${current.text.slice(0, 110)}${current.text.length > 110 ? "..." : ""}` : "No explicit style text yet."}
-                                            </p>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                            <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
-                                <div className="space-y-4 rounded-2xl border border-border bg-background/70 p-4">
-                                    <div className="flex items-center justify-between gap-2"><div><div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Effective style</div><div className="mt-1 text-lg font-semibold text-foreground">{CHANNELS.find((c) => c.id === selectedChannel)?.label}</div></div><Badge variant="secondary">{previewResult?.style_source || selectedStyle.source}</Badge></div>
-                                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{previewResult?.effective_style || selectedStyle.text || "This channel is inheriting an empty base voice. Add a base or channel style to make the preview useful."}</p>
-                                    <div className="grid gap-2">
-                                        <Label>Test Message</Label>
-                                        <Textarea value={previewMessage} onChange={(e) => setPreviewMessage(e.target.value)} rows={4} placeholder="What should the bot respond to in this preview?" />
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <Button onClick={requestPreview} disabled={previewLoading} className="gap-2">
-                                            <Bot className="h-4 w-4" />
-                                            {previewLoading ? "Generating..." : "Generate Preview"}
-                                        </Button>
-                                        <Badge variant={previewIsStale ? "secondary" : "outline"}>{previewIsStale ? "Preview stale" : "Preview current"}</Badge>
-                                    </div>
-                                    <div className="rounded-xl border border-border bg-card/60 p-4">
-                                        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground"><Bot className="h-4 w-4" />Model reply</div>
-                                        <div className="mt-3 rounded-2xl rounded-tl-none border border-border bg-muted/60 p-4">
-                                            <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-foreground"><span>{persona.name || "LimeBot"}</span><span className="text-base">{persona.emoji || "🍋"}</span><ArrowRight className="h-3 w-3 text-muted-foreground" /><span className="text-muted-foreground">{CHANNELS.find((c) => c.id === selectedChannel)?.label}</span></div>
-                                            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{previewResult?.preview_text || (previewLoading ? "Generating preview..." : "Generate a preview to see a real model response with the current prompt.")}</p>
-                                            {previewResult?.error && <p className="mt-3 text-xs text-destructive">{previewResult.error}</p>}
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
-                                    <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground"><Send className="h-4 w-4" />Prompt excerpt</div>
-                                    <p className="mt-2 text-sm text-muted-foreground">This is the actual stable prompt excerpt sent to the preview model, not a hardcoded sample.</p>
-                                    <pre className="mt-3 max-h-[420px] overflow-auto rounded-2xl border border-border bg-muted/60 p-4 text-xs leading-relaxed text-foreground whitespace-pre-wrap">{previewResult?.system_prompt_excerpt || "Generate a preview to inspect the real prompt path for this channel."}</pre>
-                                </div>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-
-                <div className="mt-6 grid gap-6">
-                    <Card>
-                        <CardHeader><CardTitle className="text-lg">Identity Settings</CardTitle><CardDescription>Edit the public identity users see across every channel.</CardDescription></CardHeader>
-                        <CardContent className="grid gap-4">
-                            <div className="grid gap-4 sm:grid-cols-2">
-                                <div className="grid gap-2"><label className="flex items-center gap-2 text-sm font-medium"><User className="h-4 w-4 text-muted-foreground" />Display Name</label><Input value={persona.name} onChange={(e) => setPersona({ ...persona, name: e.target.value })} placeholder="e.g., Lisa, Sage, LimeBot" /></div>
-                                <div className="grid gap-2"><label className="flex items-center gap-2 text-sm font-medium"><Sparkles className="h-4 w-4 text-muted-foreground" />Emoji</label><Input value={persona.emoji} onChange={(e) => setPersona({ ...persona, emoji: e.target.value })} placeholder="e.g., 👑, 🍋, ✨" /></div>
-                            </div>
-                            <div className="grid gap-4 sm:grid-cols-2">
-                                <div className="grid gap-2"><label className="flex items-center gap-2 text-sm font-medium"><Link className="h-4 w-4 text-muted-foreground" />Profile Picture URL</label><Input value={persona.pfp_url} onChange={(e) => setPersona({ ...persona, pfp_url: e.target.value })} placeholder="https://example.com/avatar.jpg" /></div>
-                                <div className="grid gap-2"><label className="flex items-center gap-2 text-sm font-medium"><Cake className="h-4 w-4 text-muted-foreground" />Birthday</label><Input value={persona.birthday} onChange={(e) => setPersona({ ...persona, birthday: e.target.value })} placeholder="e.g., July 15th" /></div>
-                            </div>
-                            <div className="grid gap-2"><label className="flex items-center gap-2 text-sm font-medium"><Heart className="h-4 w-4 text-muted-foreground" />Interests</label><Input value={persona.interests} onChange={(e) => setPersona({ ...persona, interests: e.target.value })} placeholder="e.g., Coding, 3D Graphics, Electronic Music" /></div>
-                            <div className="grid gap-2"><label className="flex items-center gap-2 text-sm font-medium"><Quote className="h-4 w-4 text-muted-foreground" />Catchphrases</label><Input value={persona.catchphrases} onChange={(e) => setPersona({ ...persona, catchphrases: e.target.value })} placeholder="e.g., Stay sharp!; Lemons are life." /></div>
-                            <div className="grid gap-2"><label className="flex items-center gap-2 text-sm font-medium"><MessageSquare className="h-4 w-4 text-muted-foreground" />General Style / Base Personality</label><Textarea value={persona.style} onChange={(e) => setPersona({ ...persona, style: e.target.value })} placeholder="The root personality of the bot..." rows={4} /><p className="text-xs text-muted-foreground">This is the fallback voice unless a channel override is active.</p></div>
-                        </CardContent>
-                    </Card>
-
-                    <Card>
-                        <CardHeader><CardTitle className="text-lg">Platform Overrides</CardTitle><CardDescription>Override the base voice only when a channel really needs it.</CardDescription></CardHeader>
-                        <CardContent className="grid gap-4">
-                            {CHANNELS.map((channel) => {
-                                const current = effectiveStyle(persona, channel.id);
-                                const styleKey = `${channel.id}_style` as keyof PersonaData;
-                                const value = (persona[styleKey] || "").toString();
-                                const updateValue = (next: string) => {
-                                    setPersona({ ...persona, [styleKey]: next });
-                                };
-                                return (
-                                    <div key={channel.id} className="rounded-2xl border border-border bg-background/60 p-4">
-                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                            <label className="flex items-center gap-2 text-sm font-medium">{channel.id === "web" ? <Globe className={`h-4 w-4 ${channel.accent}`} /> : <MessageSquare className={`h-4 w-4 ${channel.accent}`} />}{channel.label} Style</label>
-                                            <div className="flex items-center gap-2"><Badge variant={value.trim() ? "secondary" : "outline"}>{value.trim() ? "Override active" : "Using fallback"}</Badge><Badge variant="outline">{current.source}</Badge></div>
-                                        </div>
-                                        <Textarea value={value} onChange={(e) => updateValue(e.target.value)} placeholder={channel.id === "web" ? (persona.style || "Fallback to base style...") : (persona.web_style || persona.style || "Fallback to previous layer...")} rows={3} className="mt-3" />
-                                        <p className="mt-2 text-xs text-muted-foreground">Effective fallback path: {current.source}.</p>
-                                    </div>
-                                );
-                            })}
-                        </CardContent>
-                    </Card>
-
-                    <Card>
-                        <CardHeader><CardTitle className="flex items-center gap-2 text-lg"><Radio className="h-4 w-4 text-primary" />Adaptive Persona Dashboard</CardTitle><CardDescription>Mood, reactions, and relationship health without a dead disabled form.</CardDescription></CardHeader>
-                        <CardContent className="space-y-6">
-                            <div className="grid gap-3 md:grid-cols-4">
-                                <div className="rounded-2xl border border-border bg-background/70 p-4"><div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Status</div><div className="mt-2 flex items-center gap-2 text-sm font-semibold text-foreground"><ShieldCheck className={`h-4 w-4 ${persona.enable_dynamic_personality ? "text-primary" : "text-muted-foreground"}`} />{persona.enable_dynamic_personality ? "Live" : "Disabled"}</div></div>
-                                <div className="rounded-2xl border border-border bg-background/70 p-4"><div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Relationships</div><div className="mt-2 text-2xl font-bold text-foreground">{relationships.length}</div></div>
-                                <div className="rounded-2xl border border-border bg-background/70 p-4"><div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Avg affinity</div><div className="mt-2 text-2xl font-bold text-foreground">{avgAffinity}</div></div>
-                                <div className="rounded-2xl border border-border bg-background/70 p-4"><div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Strongest tie</div><div className="mt-2 text-sm font-semibold text-foreground">{strongest ? strongest.name : "None yet"}</div><div className="text-xs text-muted-foreground">{strongest ? `${strongest.level} • ${strongest.affinity}` : "No profile data"}</div></div>
-                            </div>
-
-                            {!persona.enable_dynamic_personality ? (
-                                <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-                                    <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5">
-                                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-500">Adaptive layer offline</div>
-                                        <h3 className="mt-2 text-lg font-semibold text-foreground">Relationship history is visible, but live mood tracking is off.</h3>
-                                        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Enable <code className="rounded bg-background px-1 py-0.5">ENABLE_DYNAMIC_PERSONALITY</code> in configuration to persist mood shifts, relationship changes, and autonomous reactions.</p>
-                                        {onNavigate && <Button variant="outline" className="mt-4" onClick={() => onNavigate("config")}>Open Configuration</Button>}
-                                    </div>
-                                    <div className="rounded-2xl border border-border bg-background/70 p-5"><div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">What unlocks</div><ul className="mt-3 space-y-2 text-sm text-muted-foreground"><li>Live mood notes in prompts</li><li>User relationship evolution</li><li>Reaction emoji routing</li><li>More adaptive social tone</li></ul></div>
-                                </div>
-                            ) : (
-                                <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
-                                    <div className="rounded-2xl border border-border bg-background/70 p-5"><label className="flex items-center gap-2 text-sm font-medium"><Sparkles className="h-4 w-4 text-primary" />Current Mood</label><Textarea value={persona.mood} onChange={(e) => setPersona({ ...persona, mood: e.target.value })} placeholder="How are you feeling right now?" rows={3} className="mt-3" /><p className="mt-2 text-xs text-muted-foreground">Mood notes affect prompt framing.</p></div>
-                                    <div className="rounded-2xl border border-border bg-background/70 p-5"><label className="flex items-center gap-2 text-sm font-medium"><Sparkles className="h-4 w-4 text-amber-500" />Autonomous Reactions</label><Input value={persona.reaction_emojis} onChange={(e) => setPersona({ ...persona, reaction_emojis: e.target.value })} placeholder="happy:😊,😂; sad:😢,😭; ..." className="mt-3" /><p className="mt-2 text-xs text-muted-foreground">Keep this compact and structured.</p></div>
-                                </div>
-                            )}
-
-                            <div className={cn("relative rounded-2xl border border-border bg-card/50 transition-all", !persona.enable_dynamic_personality && "overflow-hidden")}>
-                                {!persona.enable_dynamic_personality && (
-                                    <div className="pointer-events-none absolute inset-0 z-10 rounded-2xl backdrop-blur-[2px] bg-background/40" />
-                                )}
-                                <div className="flex items-center justify-between border-b border-border px-5 py-4"><div><div className="flex items-center gap-2 text-sm font-semibold text-foreground"><Users className="h-4 w-4 text-muted-foreground" />Relationships</div><p className="mt-1 text-xs text-muted-foreground">Sorted by affinity, so pressure and closeness are obvious.</p></div><Badge variant="outline">{relationships.length} profiles</Badge></div>
-                                <div className="divide-y divide-border">
-                                    {relationships.length > 0 ? relationships.map((rel) => (
-                                        <div key={rel.id} className="grid gap-3 px-5 py-4 md:grid-cols-[1.1fr_0.7fr_1fr] md:items-center">
-                                            <div className="min-w-0"><div className="font-medium text-foreground">{rel.name}</div><div className="text-xs text-muted-foreground">{rel.id}</div></div>
-                                            <div className="flex items-center gap-2"><Badge variant="outline">{rel.level}</Badge><Badge variant="secondary">{affinityLabel(rel.affinity)}</Badge></div>
-                                            <div><div className="mb-1 flex items-center justify-between text-xs text-muted-foreground"><span>Affinity</span><span className="font-semibold text-foreground">{rel.affinity}</span></div><div className="h-2 rounded-full bg-muted"><div className={`h-2 rounded-full ${affinityTone(rel.affinity)}`} style={{ width: `${Math.max(4, Math.min(rel.affinity, 100))}%` }} /></div></div>
-                                        </div>
-                                    )) : <div className="px-5 py-8 text-center text-sm text-muted-foreground">No relationship profiles recorded yet.</div>}
-                                </div>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-            </div>
+            </main>
         </div>
     );
+}
+
+function Metric({ value, label, compact = false }: { value: string | number; label: string; compact?: boolean }) {
+    return <div className="min-w-20 rounded-xl border bg-background/60 px-3 py-2"><div className={cn("font-bold", compact ? "truncate text-sm" : "text-lg")}>{value}</div><div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div></div>;
+}
+
+function PersonaTab({ value, icon, label }: { value: string; icon: React.ReactNode; label: string }) {
+    return <TabsTrigger value={value} className="h-auto justify-start gap-2 px-3 py-2.5">{icon}{label}</TabsTrigger>;
+}
+
+function IdentityEditor({ persona, setPersona }: { persona: PersonaData; setPersona: (value: PersonaData) => void }) {
+    return <Card><CardHeader className="pb-4"><CardTitle className="text-lg">Identity</CardTitle><CardDescription>The public profile people see across every channel.</CardDescription></CardHeader><CardContent className="grid gap-5"><div className="grid gap-4 sm:grid-cols-2"><Field label="Display name" icon={<User className="h-4 w-4" />}><Input value={persona.name} onChange={(e) => setPersona({ ...persona, name: e.target.value })} placeholder="Lisa, Sage, LimeBot…" /></Field><Field label="Signature emoji" icon={<Sparkles className="h-4 w-4" />}><Input value={persona.emoji} onChange={(e) => setPersona({ ...persona, emoji: e.target.value })} placeholder="🍋" /></Field><Field label="Avatar URL" icon={<Link className="h-4 w-4" />}><Input value={persona.pfp_url} onChange={(e) => setPersona({ ...persona, pfp_url: e.target.value })} placeholder="https://example.com/avatar.jpg" /></Field><Field label="Birthday" icon={<Cake className="h-4 w-4" />}><Input value={persona.birthday} onChange={(e) => setPersona({ ...persona, birthday: e.target.value })} placeholder="July 15" /></Field></div><div className="grid gap-4 sm:grid-cols-2"><Field label="Interests" icon={<Heart className="h-4 w-4" />}><Input value={persona.interests} onChange={(e) => setPersona({ ...persona, interests: e.target.value })} placeholder="Coding, 3D art, electronic music…" /></Field><Field label="Catchphrases" icon={<Quote className="h-4 w-4" />}><Input value={persona.catchphrases} onChange={(e) => setPersona({ ...persona, catchphrases: e.target.value })} placeholder="Separate phrases with semicolons" /></Field></div><details className="rounded-xl border bg-muted/20"><summary className="cursor-pointer px-4 py-3 text-sm font-medium">View read-only soul summary</summary><div className="border-t px-4 py-3 text-sm leading-relaxed text-muted-foreground">{persona.soul_summary || "No soul summary is available."}</div></details></CardContent></Card>;
+}
+
+function Field({ label, icon, children }: { label: string; icon: React.ReactNode; children: React.ReactNode }) {
+    return <div className="grid gap-2"><Label className="flex items-center gap-2">{<span className="text-muted-foreground">{icon}</span>}{label}</Label>{children}</div>;
+}
+
+function VoiceEditor({ persona, setPersona }: { persona: PersonaData; setPersona: (value: PersonaData) => void }) {
+    return <div className="space-y-4"><Card><CardHeader className="pb-4"><CardTitle className="text-lg">Base voice</CardTitle><CardDescription>The default personality inherited by every channel.</CardDescription></CardHeader><CardContent><Textarea value={persona.style} onChange={(e) => setPersona({ ...persona, style: e.target.value })} placeholder="Warm, concise, playful, direct…" rows={5} /></CardContent></Card><Card><CardHeader className="pb-4"><CardTitle className="text-lg">Channel overrides</CardTitle><CardDescription>Leave a field empty to inherit its fallback.</CardDescription></CardHeader><CardContent className="grid gap-4 md:grid-cols-2">{CHANNELS.map((channel) => { const current = effectiveStyle(persona, channel.id); const key = `${channel.id}_style` as keyof PersonaData; const value = String(persona[key] || ""); return <div key={channel.id} className="rounded-xl border bg-background/60 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><Label className={cn("flex items-center gap-2", channel.accent)}>{channel.id === "web" ? <Globe className="h-4 w-4" /> : <MessageSquare className="h-4 w-4" />}{channel.label}</Label><Badge variant={value.trim() ? "secondary" : "outline"}>{value.trim() ? "Custom" : current.source}</Badge></div><Textarea value={value} onChange={(e) => setPersona({ ...persona, [key]: e.target.value })} placeholder={`Inherits: ${current.text || "empty base voice"}`} rows={3} className="mt-3" /></div>; })}</CardContent></Card></div>;
+}
+
+interface PreviewStudioProps { persona: PersonaData; selectedChannel: PreviewChannel; setSelectedChannel: (value: PreviewChannel) => void; selectedStyle: { text: string; source: string }; previewMessage: string; setPreviewMessage: (value: string) => void; previewLoading: boolean; previewResult: PersonaPreviewResponse | null; previewIsStale: boolean; requestPreview: () => Promise<void>; }
+function PreviewStudio(props: PreviewStudioProps) {
+    const { persona, selectedChannel, setSelectedChannel, selectedStyle, previewMessage, setPreviewMessage, previewLoading, previewResult, previewIsStale, requestPreview } = props;
+    return <Card><CardHeader className="pb-4"><CardTitle className="flex items-center gap-2 text-lg"><Wand2 className="h-4 w-4 text-primary" />Voice preview</CardTitle><CardDescription>Test the real prompt path before saving.</CardDescription></CardHeader><CardContent className="space-y-5"><div className="flex flex-wrap gap-2">{CHANNELS.map((channel) => <Button key={channel.id} size="sm" variant={selectedChannel === channel.id ? "default" : "outline"} onClick={() => setSelectedChannel(channel.id)}>{channel.label}</Button>)}</div><div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]"><div className="space-y-4"><div className="rounded-xl border bg-muted/20 p-4"><div className="flex justify-between gap-2"><span className="text-sm font-semibold">Effective style</span><Badge variant="outline">{previewResult?.style_source || selectedStyle.source}</Badge></div><p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{previewResult?.effective_style || selectedStyle.text || "No effective style yet."}</p></div><Field label="Test message" icon={<MessageSquare className="h-4 w-4" />}><Textarea value={previewMessage} onChange={(e) => setPreviewMessage(e.target.value)} rows={4} /></Field><Button onClick={() => void requestPreview()} disabled={previewLoading} className="gap-2"><Bot className="h-4 w-4" />{previewLoading ? "Generating…" : "Generate preview"}</Button></div><div className="rounded-xl border bg-muted/20 p-4"><div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><Bot className="h-4 w-4" />{persona.name || "LimeBot"}<ArrowRight className="h-3 w-3" />{CHANNELS.find((item) => item.id === selectedChannel)?.label}<Badge variant={previewIsStale ? "secondary" : "outline"} className="ml-auto">{previewIsStale ? "Stale" : "Current"}</Badge></div><p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed">{previewResult?.preview_text || (previewLoading ? "Generating preview…" : "Generate a preview to see the model response.")}</p>{previewResult?.error && <p className="mt-3 text-xs text-destructive">{previewResult.error}</p>}</div></div><details className="rounded-xl border"><summary className="flex cursor-pointer items-center gap-2 px-4 py-3 text-sm font-medium"><Send className="h-4 w-4" />Inspect prompt excerpt</summary><pre className="max-h-[360px] overflow-auto whitespace-pre-wrap border-t bg-muted/30 p-4 text-xs leading-relaxed">{previewResult?.system_prompt_excerpt || "Generate a preview to inspect the prompt excerpt."}</pre></details></CardContent></Card>;
+}
+
+interface AdaptiveEditorProps { persona: PersonaData; setPersona: (value: PersonaData) => void; relationships: Relationship[]; avgAffinity: number; onNavigate?: (view: string) => void; }
+function AdaptiveEditor({ persona, setPersona, relationships, avgAffinity, onNavigate }: AdaptiveEditorProps) {
+    return <Card><CardHeader className="pb-4"><CardTitle className="flex items-center gap-2 text-lg"><Radio className="h-4 w-4 text-primary" />Adaptive personality</CardTitle><CardDescription>Mood, reactions, and relationship context learned over time.</CardDescription></CardHeader><CardContent className="space-y-5"><div className="grid gap-3 sm:grid-cols-3"><Metric value={persona.enable_dynamic_personality ? "Active" : "Off"} label="Status" compact /><Metric value={relationships.length} label="Relationships" /><Metric value={avgAffinity} label="Avg affinity" /></div>{!persona.enable_dynamic_personality ? <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4"><div className="flex items-center gap-2 font-semibold"><ShieldCheck className="h-4 w-4" />Adaptive behavior is off</div><p className="mt-1 text-sm text-muted-foreground">Enable dynamic personality in Configuration to persist mood and relationship changes.</p>{onNavigate && <Button variant="outline" size="sm" className="mt-3" onClick={() => onNavigate("config")}>Open Configuration</Button>}</div> : <div className="grid gap-4 md:grid-cols-2"><Field label="Current mood" icon={<Sparkles className="h-4 w-4" />}><Textarea value={persona.mood} onChange={(e) => setPersona({ ...persona, mood: e.target.value })} rows={3} /></Field><Field label="Reaction emoji map" icon={<Sparkles className="h-4 w-4" />}><Textarea value={persona.reaction_emojis} onChange={(e) => setPersona({ ...persona, reaction_emojis: e.target.value })} rows={3} placeholder="happy: 😊, 😂; sad: 😢" /></Field></div>}<div className="overflow-hidden rounded-xl border"><div className="flex items-center justify-between border-b px-4 py-3"><div className="flex items-center gap-2 text-sm font-semibold"><Users className="h-4 w-4" />Relationships</div><Badge variant="outline">{relationships.length}</Badge></div><div className="divide-y">{relationships.length ? relationships.map((item) => <div key={item.id} className="grid gap-3 px-4 py-3 md:grid-cols-[1fr_auto_1fr] md:items-center"><div className="min-w-0"><div className="truncate font-medium">{item.name}</div><div className="truncate text-xs text-muted-foreground">{item.id}</div></div><div className="flex gap-2"><Badge variant="outline">{item.level}</Badge><Badge variant="secondary">{affinityLabel(item.affinity)}</Badge></div><div><div className="mb-1 flex justify-between text-xs text-muted-foreground"><span>Affinity</span><span>{item.affinity}</span></div><div className="h-1.5 rounded-full bg-muted"><div className={cn("h-1.5 rounded-full", affinityTone(item.affinity))} style={{ width: `${Math.max(4, Math.min(item.affinity, 100))}%` }} /></div></div></div>) : <div className="p-6 text-center text-sm text-muted-foreground">No relationship profiles yet.</div>}</div></div></CardContent></Card>;
 }

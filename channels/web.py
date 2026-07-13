@@ -152,6 +152,7 @@ _ALLOWED_SETUP_ENV_KEYS = {
     "ENABLE_WHATSAPP",
     "WHATSAPP_BRIDGE_URL",
     "ENABLE_DYNAMIC_PERSONALITY",
+    "VIDEO_WHISPER_ENABLED",
 }
 
 
@@ -1611,6 +1612,9 @@ class WebChannel(BaseChannel):
                 "APP_API_KEY": cfg.whitelist.api_key,
                 "ENABLE_DYNAMIC_PERSONALITY": str(
                     getattr(cfg.llm, "enable_dynamic_personality", False)
+                ).lower(),
+                "VIDEO_WHISPER_ENABLED": str(
+                    getattr(getattr(cfg, "video", None), "whisper_enabled", False)
                 ).lower(),
                 "MAX_ITERATIONS": str(getattr(cfg, "max_iterations", 30)),
                 "COMMAND_TIMEOUT": str(getattr(cfg, "command_timeout", 0)),

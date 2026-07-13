@@ -11,6 +11,7 @@ import {
   createNoticeAction,
   createPromptAction,
   createSelectedTextAction,
+  createWatchVideoAction,
   MAX_SELECTION_CHARS,
   MAX_VISIBLE_TEXT_CHARS,
 } from "@/lib/pageContext";
@@ -73,7 +74,7 @@ export function App() {
     }
   }
 
-  async function queuePageAction(kind: "ask" | "selection") {
+  async function queuePageAction(kind: "ask" | "selection" | "video") {
     setBusyAction(kind);
     setStatusMessage(null);
 
@@ -88,9 +89,10 @@ export function App() {
         return;
       }
 
-      const action =
-        kind === "selection"
-          ? createSelectedTextAction("popup", captured.page)
+      const action = kind === "selection"
+        ? createSelectedTextAction("popup", captured.page)
+        : kind === "video"
+          ? createWatchVideoAction("popup", captured.page)
           : createPromptAction("popup", captured.page);
 
       await enqueuePendingAction(action);
@@ -172,7 +174,7 @@ export function App() {
           <div className="hero-card">
             <div className="hero-copy">
               <p className="eyebrow">{identity.name} Companion</p>
-              <h1>Page help, selections, & approvals</h1>
+              <h1>Pages, videos, & approvals</h1>
               <p className="lede">
                 Keep {identity.name} beside your browsing without living in a separate pop-out.
               </p>
@@ -204,6 +206,16 @@ export function App() {
               disabled={Boolean(busyAction)}
             >
               Ask this page
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => {
+                void queuePageAction("video");
+              }}
+              disabled={Boolean(busyAction)}
+            >
+              Watch video
             </button>
             <button
               className="secondary-button"

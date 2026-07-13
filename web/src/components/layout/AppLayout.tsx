@@ -57,7 +57,7 @@ export function AppLayout({
                             <span
                                 className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal ${
                                     runtimeStatus?.isConnected
-                                        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-500"
+                                        ? "border-primary/20 bg-primary/10 text-primary"
                                         : "border-amber-500/20 bg-amber-500/10 text-amber-500"
                                 }`}
                             >

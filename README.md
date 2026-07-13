@@ -289,6 +289,7 @@ same command again.
 | Semantic memory (LanceDB) | `npm run lime-bot feature install memory` | 100-300 MB |
 | Word/PDF helpers | `npm run lime-bot feature install documents` | 10-30 MB |
 | MCP integration | `npm run lime-bot feature install mcp` | 10-30 MB |
+| Video analysis (`yt-dlp`, Pillow, FFmpeg checks) | `npm run lime-bot feature install video` | 100-300 MB |
 | WhatsApp bridge | `npm run lime-bot feature install whatsapp` | 200-500 MB |
 | Browser companion build tools | `npm run lime-bot feature install extension` | 100-300 MB |
 | All optional features + Chromium | `npm run lime-bot feature install all` | Platform-dependent |
@@ -297,6 +298,17 @@ WhatsApp is installed and built automatically before its first launch.
 `npm run extension:build` installs the extension workspace before building it.
 If an optional package is absent, only that capability is unavailable; core
 chat still starts.
+
+Video analysis accepts allowed local files and public, unauthenticated HTTP(S)
+media. It rejects playlists, livestreams, private network destinations, media
+over two hours, and downloads over 500 MiB. Enable the separately installed
+`watch` skill to teach the model its `/watch` workflow. Native captions are
+preferred. `VIDEO_WHISPER_ENABLED=false` keeps caption-less audio local; when
+enabled, that audio is sent to OpenAI using the configured `OPENAI_API_KEY`.
+
+The video installer verifies both `ffmpeg` and `ffprobe`. If they are missing,
+install FFmpeg with `winget install --id Gyan.FFmpeg -e` (Windows),
+`brew install ffmpeg` (macOS), or your Linux package manager, then retry.
 
 ### First-run troubleshooting
 
@@ -458,6 +470,7 @@ APP_API_KEY=optional_dashboard_password
 
 # Features
 ENABLE_DYNAMIC_PERSONALITY=false   # per-user affinity, mood tracking, proactive greetings
+VIDEO_WHISPER_ENABLED=false        # opt in to sending caption-less audio to OpenAI Whisper
 LLM_PROXY_URL=http://localhost:8080/v1 # Optional: Route all traffic through a gateway
 ```
 

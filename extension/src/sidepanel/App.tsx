@@ -9,6 +9,8 @@ import {
   createNoticeAction,
   createPromptAction,
   createSelectedTextAction,
+  createWatchVideoAction,
+  isCurrentVideoRequest,
   MAX_SELECTION_CHARS,
   MAX_VISIBLE_TEXT_CHARS,
 } from "@/lib/pageContext";
@@ -71,7 +73,7 @@ export function App() {
     }
   }
 
-  async function queueCapturedAction(kind: "ask" | "selection") {
+  async function queueCapturedAction(kind: "ask" | "selection" | "video") {
     setPanelBusyAction(kind);
     try {
       const captured = await captureTabContext(MAX_SELECTION_CHARS, MAX_VISIBLE_TEXT_CHARS);
@@ -80,12 +82,32 @@ export function App() {
         return;
       }
 
-      const action =
-        kind === "selection"
-          ? createSelectedTextAction("sidepanel", captured.page)
+      const action = kind === "selection"
+        ? createSelectedTextAction("sidepanel", captured.page)
+        : kind === "video"
+          ? createWatchVideoAction("sidepanel", captured.page)
           : createPromptAction("sidepanel", captured.page);
 
       await enqueuePendingAction(action);
+    } finally {
+      setPanelBusyAction(null);
+    }
+  }
+
+  async function handleManualSend(value: string) {
+    if (!isCurrentVideoRequest(value)) {
+      return client.sendPrompt(value);
+    }
+
+    setPanelBusyAction("video-prompt");
+    try {
+      const captured = await captureTabContext(MAX_SELECTION_CHARS, MAX_VISIBLE_TEXT_CHARS);
+      if (!captured.ok) {
+        await enqueuePendingAction(createNoticeAction("sidepanel", captured.reason, "warning"));
+        return true;
+      }
+      await enqueuePendingAction(createWatchVideoAction("sidepanel", captured.page, value));
+      return true;
     } finally {
       setPanelBusyAction(null);
     }
@@ -144,6 +166,16 @@ export function App() {
       <section className="button-grid panel-actions">
         <button
           className="primary-button"
+          type="button"
+          onClick={() => {
+            void queueCapturedAction("video");
+          }}
+          disabled={Boolean(panelBusyAction)}
+        >
+          Watch video
+        </button>
+        <button
+          className="secondary-button"
           type="button"
           onClick={() => {
             void queueCapturedAction("ask");
@@ -293,7 +325,7 @@ export function App() {
             ))
           ) : (
             <p className="empty-state">
-              Nothing here yet. Ask {identity.name} about the current page or send a text selection.
+              Nothing here yet. Ask {identity.name} about the page, watch the current video, or send a text selection.
             </p>
           )}
         </div>
@@ -302,7 +334,7 @@ export function App() {
       <section className="card composer-card">
         <ManualComposer
           disabled={!client.canSendPrompt}
-          onSend={(value) => client.sendPrompt(value)}
+          onSend={handleManualSend}
           botName={identity.name}
         />
       </section>

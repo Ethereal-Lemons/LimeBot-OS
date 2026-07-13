@@ -6,6 +6,11 @@ export const FEATURE_DEFINITIONS = Object.freeze({
     memory: Object.freeze({ kind: 'python', manifest: 'requirements-memory.txt' }),
     documents: Object.freeze({ kind: 'python', manifest: 'requirements-documents.txt' }),
     mcp: Object.freeze({ kind: 'python', manifest: 'requirements-mcp.txt' }),
+    video: Object.freeze({
+        kind: 'python',
+        manifest: 'requirements-video.txt',
+        requiredBinaries: Object.freeze(['ffmpeg', 'ffprobe']),
+    }),
     whatsapp: Object.freeze({ kind: 'node', workspace: 'bridge' }),
     extension: Object.freeze({ kind: 'node', workspace: 'extension' }),
 });
@@ -15,9 +20,22 @@ export const FULL_FEATURE_INSTALL_ORDER = Object.freeze([
     'memory',
     'documents',
     'mcp',
+    'video',
     'whatsapp',
     'extension',
 ]);
+
+export function getVideoBinaryInstallInstructions(platform = process.platform) {
+    if (platform === 'win32') return 'winget install --id Gyan.FFmpeg -e';
+    if (platform === 'darwin') return 'brew install ffmpeg';
+    return 'sudo apt install ffmpeg  # Debian/Ubuntu\n  sudo dnf install ffmpeg  # Fedora/RHEL';
+}
+
+export function getVideoReadinessState({ pythonDependenciesReady, binariesReady }) {
+    if (!pythonDependenciesReady) return 'python-dependencies-missing';
+    if (!binariesReady) return 'ffmpeg-missing';
+    return 'ready';
+}
 
 export function getFeatureDefinition(name) {
     return FEATURE_DEFINITIONS[String(name || '').toLowerCase()] || null;

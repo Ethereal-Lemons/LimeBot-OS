@@ -151,6 +151,23 @@ Sandboxed OS interface. All methods check `_is_path_allowed()` before touching t
 | `cron_list()` | No | List all pending scheduled jobs |
 | `cron_remove(job_id)` | **Yes** | Cancel a scheduled job |
 | `spawn_agent(task)` | No | Delegate a long, parallelizable, or specialist-matched task to a sub-agent |
+| `analyze_video(source, question, detail, start, end, max_frames, resolution)` | No | Analyze an allowed local video or public HTTP(S) video and return a transcript plus up to three contact sheets. |
+
+### `core/video/` — Native Video Analysis
+
+The optional video package prefers native captions, then uses OpenAI Whisper
+only when `VIDEO_WHISPER_ENABLED=true`, and otherwise returns frames-only
+evidence for visual modes. Remote `yt-dlp` traffic is forced through a
+per-job loopback proxy that validates and pins every destination to public IP
+space, enforces a 500 MiB aggregate response limit, and exists only for the
+job lifetime. FFmpeg receives local paths through argument arrays with
+`-nostdin`; URLs are never passed to it. Jobs live under random
+`temp/video/` directories and expire after one hour.
+
+`analyze_video` is a native tool even when the optional dependencies are not
+installed; in that state it returns `npm run lime-bot feature install video`.
+The separately enabled `watch` skill only teaches selection of transcript,
+efficient, balanced, focused ranges, and 1024-resolution text inspection.
 
 **`run_command` security filter:** Blocks `;`, `&&`, `||`, `|`, `>`, `<`, `` ` ``, `$()`, `\n`, `sudo`, `chmod`, `chown`, `ifs=`, `pythonpath=`.
 
@@ -308,6 +325,7 @@ FastAPI application serving:
 - Manifest V3 browser companion for page help, selected text handoff, live task status, and tool approvals
 - Reuses the web channel backend over REST and WebSocket instead of introducing a separate backend service
 - Uses LimeBot's persona name and avatar when `/api/identity` returns them
+- Captures an explicitly requested active video page plus its HTML5 player timestamp for `analyze_video`; it never forwards browser cookies or video bytes
 - Chrome and Edge open the companion with `chrome.sidePanel`
 - Opera GX falls back to opening the same companion surface in a regular extension tab when native side panel support is unavailable
 - The old web mascot pop-out flow is not part of the current product surface
@@ -468,7 +486,7 @@ npm run lime-bot <command> [options]
 | `skill enable <name>` | Enable a disabled skill |
 | `skill disable <name>` | Disable without uninstalling |
 | `install-browser` | Install Chromium for Playwright |
-| `feature install <browser\|memory\|documents\|mcp\|whatsapp\|extension\|all>` | Install one closed optional profile, or all profiles plus launch-verified Chromium |
+| `feature install <browser\|memory\|documents\|mcp\|video\|whatsapp\|extension\|all>` | Install one closed optional profile, or all profiles plus launch-verified Chromium |
 | `review-diff --diff-file <path> --output <path>` | Parse only the supplied unified diff and write a redacted review artifact; `--invoke-model` optionally calls the configured LLM without tools. |
 
 **Codex OAuth notes:**
@@ -497,7 +515,8 @@ npm link
   `APP_API_KEY` and removal of that unauthenticated proxy-only assumption.
 - WhatsApp uses the optional `whatsapp` Compose profile and binds its bridge to
   the container network. Core Docker startup must not build or start it.
-- `LIMEBOT_DOCKER_FEATURES` selects optional Python build profiles;
+- `LIMEBOT_DOCKER_FEATURES` selects optional Python build profiles, including
+  `video` (which installs FFmpeg in the backend image);
   `LIMEBOT_DOCKER_INSTALL_BROWSER=1` adds and launch-installs Chromium.
 - Root, web, and bridge images use committed lockfiles with `npm ci`. The
   backend installs only root runtime Node dependencies; web and bridge builds
@@ -520,7 +539,7 @@ npm link
 - **Per-tool result limits** — each tool has its own character limit instead of one global cap, preserving context window budget proportionally
 - **Grep cache** — `search_grep` results are cached for 30 seconds to avoid scanning all memory files on every message
 - **History summarization** — when the session exceeds the token budget, the LLM summarizes older turns before they're evicted; the summary is inserted back into history as a system message
-- **Dependency profiles** — normal startup installs only `requirements.txt` plus root/web npm. Browser, memory, documents, and MCP are explicit optional Python manifests; WhatsApp and extension are optional Node workspace profiles. `requirements-dev.txt` includes all Python profiles and test tooling.
+- **Dependency profiles** — normal startup installs only `requirements.txt` plus root/web npm. Browser, memory, documents, MCP, and video are explicit optional Python manifests; WhatsApp and extension are optional Node workspace profiles. `requirements-dev.txt` includes all Python profiles and test tooling.
 - **Dependency fingerprints** — state schema 2 records core profiles and successful optional features. Old broad-install state forces one core refresh. Independent core npm/Python lanes run concurrently, then write `data/dependency-state.json` once after both settle; failed lanes are never current.
 - **Optional capability contract** — every optional capability declares a profile, closed install command, missing/degraded readiness behavior, and fingerprint or sentinel. Optional imports cannot break core startup. Browser setup launch-verifies Chromium. The project-directory watcher observes first `.env` creation, and WhatsApp installs/builds before launch.
 - **Liveness-first combined startup** — normal backend + frontend startup waits only for `/api/live`, then starts Vite immediately while capabilities continue loading. Backend-only startup and diagnostics still wait for authenticated `/api/ready`; the web composer and automatic persona kickoff keep using capability readiness before accepting agent work.

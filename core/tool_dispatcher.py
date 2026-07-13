@@ -32,6 +32,7 @@ TOOL_RESULT_LIMITS: Dict[str, int] = {
     "browser_list_media": 1_000,
     "list_dir": 500,
     "generate_image": 2_000,
+    "analyze_video": 30_000,
 }
 DEFAULT_TOOL_RESULT_LIMIT = 2_000
 
@@ -68,7 +69,7 @@ TOOL_INTENT_RE = re.compile(
     r"\b("
     # Exact tool names
     r"read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|"
-    r"cron_add|cron_list|cron_remove|spawn_agent|generate_image|send_media|send_voice|"
+    r"cron_add|cron_list|cron_remove|spawn_agent|generate_image|send_media|send_voice|analyze_video|"
     # Search tool names
     r"web_search|image_search|deep_research|"
     # Browser tool names
@@ -82,7 +83,7 @@ TOOL_INTENT_RE = re.compile(
     r"search|browse|download|upload|install|uninstall|deploy|execute|"
     r"open|save|fetch|scrape|navigate|lookup|look\s+up|"
     # Object nouns that imply tool-backed actions
-    r"image|photo|picture|screenshot|website|webpage|internet|"
+    r"image|photo|picture|screenshot|video|watch|transcript|website|webpage|internet|"
     r"url|http|www|\.com|\.org|\.net|"
     r"file|code|script|project|repo|"
     r"reminder|alarm|timer|notify"

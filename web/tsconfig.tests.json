@@ -20,14 +20,19 @@
     "src/lib/chat-state.ts",
     "src/lib/agent-readiness.ts",
     "src/lib/markdown-code.ts",
+    "src/lib/markdown-spacing.ts",
     "src/lib/llm-models.ts",
     "src/lib/setup-state.ts",
     "src/lib/stream-rendering.ts",
+    "src/lib/whatsapp-contact-identity.ts",
     "tests/agent-readiness.test.ts",
     "tests/chat-state.test.ts",
     "tests/markdown-code.test.ts",
+    "tests/markdown-spacing.test.ts",
     "tests/llm-models.test.ts",
     "tests/setup-state.test.ts",
-    "tests/stream-rendering.test.ts"
+    "tests/stream-rendering.test.ts",
+    "tests/theme-accent.test.ts",
+    "tests/whatsapp-contact-identity.test.ts"
   ]
 }

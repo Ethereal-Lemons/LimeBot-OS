@@ -2,6 +2,7 @@ import { lazy, memo, Suspense } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { classifyMarkdownCode } from "@/lib/markdown-code";
+import { compactMarkdownSpacing } from "@/lib/markdown-spacing";
 import { cn } from "@/lib/utils";
 import { ChatImage } from "./ChatImage";
 
@@ -37,12 +38,14 @@ function MarkdownMessageRenderer({
 }) {
     if (!content) return null;
 
-    // Replace 3 or more consecutive newlines with exactly 2 to prevent huge vertical gaps
-    const normalizedContent = content.replace(/\n{3,}/g, "\n\n");
+    // Keep ordinary paragraph breaks, but turn blank-line-separated list items
+    // into tight lists. Models frequently emit loose Markdown lists, which can
+    // otherwise make a short answer consume most of the viewport.
+    const normalizedContent = compactMarkdownSpacing(content);
 
     return (
         <div className={cn(
-            "max-w-none break-words font-sans text-[14.5px] leading-[1.5] text-inherit",
+            "chat-markdown max-w-none break-words font-sans text-[15px] leading-[1.5] text-inherit",
             isStreaming && "streaming-markdown"
         )}>
             <ReactMarkdown
@@ -68,10 +71,13 @@ function MarkdownMessageRenderer({
                             />
                         );
                     },
-                    p: (props) => <p {...withoutMarkdownNode(props)} className="mb-1.5 last:mb-0 leading-[1.5]" />,
-                    ul: (props) => <ul {...withoutMarkdownNode(props)} className="list-disc pl-5 my-1.5 space-y-0.5" />,
-                    ol: (props) => <ol {...withoutMarkdownNode(props)} className="list-decimal pl-5 my-1.5 space-y-0.5" />,
-                    li: (props) => <li {...withoutMarkdownNode(props)} className="leading-[1.45] pl-0.5 text-[14px]" />,
+                    p: (props) => <p {...withoutMarkdownNode(props)} className="mb-2 last:mb-0 leading-[1.55] text-foreground/95" />,
+                    ul: (props) => <ul {...withoutMarkdownNode(props)} className="my-2 list-disc space-y-1 pl-5 marker:text-primary/75" />,
+                    ol: (props) => <ol {...withoutMarkdownNode(props)} className="my-2 list-decimal space-y-1 pl-5 marker:font-semibold marker:text-primary/80" />,
+                    li: (props) => <li {...withoutMarkdownNode(props)} className="pl-1 text-[14.5px] leading-[1.5] [&>p]:m-0" />,
+                    strong: (props) => <strong {...withoutMarkdownNode(props)} className="font-semibold text-foreground" />,
+                    em: (props) => <em {...withoutMarkdownNode(props)} className="text-foreground/85" />,
+                    del: (props) => <del {...withoutMarkdownNode(props)} className="text-muted-foreground decoration-destructive/60" />,
                     pre: ({ children }) => <>{children}</>,
                     code: (componentProps) => {
                         const { className, children, ...props } = withoutMarkdownNode(componentProps);
@@ -95,21 +101,22 @@ function MarkdownMessageRenderer({
                         );
                     },
                     table: (props) => (
-                        <div className="my-2.5 w-full overflow-x-auto rounded-xl border border-border bg-card/30 backdrop-blur-sm shadow-sm">
+                        <div className="my-3 w-full overflow-x-auto rounded-xl border border-border/80 bg-card/50 shadow-sm">
                             <table className="w-full text-left text-[13px]" {...withoutMarkdownNode(props)} />
                         </div>
                     ),
                     thead: (props) => <thead className="bg-muted/50 text-muted-foreground border-b border-border" {...withoutMarkdownNode(props)} />,
                     tbody: (props) => <tbody className="divide-y divide-border/30" {...withoutMarkdownNode(props)} />,
-                    tr: (props) => <tr className="hover:bg-muted/20 transition-colors" {...withoutMarkdownNode(props)} />,
-                    th: (props) => <th className="px-4 py-3 font-bold text-[11px] uppercase tracking-wider opacity-70" {...withoutMarkdownNode(props)} />,
-                    td: (props) => <td className="px-4 py-3 align-top" {...withoutMarkdownNode(props)} />,
-                    h1: (props) => <h1 className="text-base font-bold mt-2.5 mb-1 text-foreground tracking-tight" {...withoutMarkdownNode(props)} />,
-                    h2: (props) => <h2 className="text-[14.5px] font-bold mt-2 mb-0.5 text-foreground/90 tracking-tight" {...withoutMarkdownNode(props)} />,
-                    h3: (props) => <h3 className="text-[13.5px] font-bold mt-1.5 mb-0.5 text-foreground/80 tracking-tight" {...withoutMarkdownNode(props)} />,
+                    tr: (props) => <tr className="odd:bg-muted/10 transition-colors hover:bg-primary/5" {...withoutMarkdownNode(props)} />,
+                    th: (props) => <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-foreground/75" {...withoutMarkdownNode(props)} />,
+                    td: (props) => <td className="px-4 py-2.5 align-top leading-relaxed" {...withoutMarkdownNode(props)} />,
+                    h1: (props) => <h1 className="mb-2 mt-5 border-b border-border/70 pb-2 text-lg font-bold tracking-tight text-foreground first:mt-0" {...withoutMarkdownNode(props)} />,
+                    h2: (props) => <h2 className="mb-1.5 mt-4 border-l-2 border-primary pl-2.5 text-base font-semibold tracking-tight text-foreground first:mt-0" {...withoutMarkdownNode(props)} />,
+                    h3: (props) => <h3 className="mb-1 mt-3 text-[14.5px] font-semibold tracking-tight text-foreground/90 first:mt-0" {...withoutMarkdownNode(props)} />,
                     blockquote: (props) => (
-                        <blockquote className="my-2.5 rounded-xl border-l-4 border-primary/30 bg-muted/30 px-3.5 py-2 text-muted-foreground/90 italic text-[13.5px]" {...withoutMarkdownNode(props)} />
+                        <blockquote className="my-3 rounded-r-xl border-l-2 border-primary bg-primary/5 px-4 py-2.5 text-[14px] text-foreground/80" {...withoutMarkdownNode(props)} />
                     ),
+                    hr: (props) => <hr className="my-4 border-border/70" {...withoutMarkdownNode(props)} />,
                     img: (props) => {
                         const { src, alt } = withoutMarkdownNode(props);
                         return <ChatImage src={src || ""} alt={alt || ""} />;

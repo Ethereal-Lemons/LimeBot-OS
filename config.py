@@ -138,6 +138,11 @@ def load_config(force_reload=False):
         "BROWSER_PROFILE_DIRECTORY", ""
     ).strip()
 
+    config.video = SimpleNamespace()
+    config.video.whisper_enabled = _load_bool_env(
+        "VIDEO_WHISPER_ENABLED", default=False
+    )
+
     # Hybrid web search: use a keyed provider when configured, otherwise fall
     # back to the keyless DuckDuckGo/browser chain. Keys are used in-process
     # only; _sanitized_env() strips them from spawned subprocesses.

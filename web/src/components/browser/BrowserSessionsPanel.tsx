@@ -74,7 +74,7 @@ export function BrowserSessionsPanel() {
         switch (mode) {
             case "isolated": return "bg-blue-500/10 text-blue-500 border-blue-500/20";
             case "shared": return "bg-purple-500/10 text-purple-500 border-purple-500/20";
-            case "system": return "bg-emerald-500/10 text-emerald-500 border-emerald-500/20";
+            case "system": return "border-primary/20 bg-primary/10 text-primary";
             case "attach": return "bg-amber-500/10 text-amber-500 border-amber-500/20";
             default: return "bg-gray-500/10 text-gray-500 border-gray-500/20";
         }
@@ -91,7 +91,7 @@ export function BrowserSessionsPanel() {
                     <div className="flex items-center gap-2">
                         <span className="text-sm text-muted-foreground">Auto-refresh</span>
                         <div 
-                            className={`w-10 h-5 rounded-full p-1 cursor-pointer transition-colors ${autoRefresh ? 'bg-emerald-500' : 'bg-muted'}`}
+                            className={`h-5 w-10 cursor-pointer rounded-full p-1 transition-colors ${autoRefresh ? 'bg-primary' : 'bg-muted'}`}
                             onClick={() => setAutoRefresh(!autoRefresh)}
                         >
                             <div className={`w-3 h-3 bg-white rounded-full transition-transform ${autoRefresh ? 'translate-x-5' : 'translate-x-0'}`} />
@@ -129,7 +129,7 @@ export function BrowserSessionsPanel() {
                                             <div className="mt-1">
                                                 {session.is_live ? (
                                                     <div title="Connection Live">
-                                                        <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+                                                        <CheckCircle2 className="h-5 w-5 text-primary" />
                                                     </div>
                                                 ) : (
                                                     <div title="Connection Lost / Stale">

@@ -103,10 +103,43 @@ class Toolbox:
             "__pycache__",
             "node_modules",
         }
+        try:
+            from core.video.service import sweep_expired_jobs
+
+            sweep_expired_jobs()
+        except Exception as exc:
+            logger.debug(f"Video temp cleanup skipped: {exc}")
 
     def set_agent(self, agent: Any):
         """Set the agent loop instance."""
         self.agent = agent
+
+    async def analyze_video(
+        self,
+        source: str,
+        question: str = "",
+        detail: str = "balanced",
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        max_frames: Optional[int] = None,
+        resolution: int = 512,
+    ) -> str:
+        """Delegate to the optional native video pipeline."""
+        from core.video import analyze_video
+
+        video_config = getattr(self.config, "video", None)
+        return await analyze_video(
+            source=source,
+            question=question,
+            detail=detail,
+            start=start,
+            end=end,
+            max_frames=max_frames,
+            resolution=resolution,
+            is_path_allowed=self._is_path_allowed,
+            whisper_enabled=bool(getattr(video_config, "whisper_enabled", False)),
+            openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        )
 
     def set_scheduler(self, scheduler: Any):
         """Set the scheduler instance."""

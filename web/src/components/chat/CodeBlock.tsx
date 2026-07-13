@@ -72,8 +72,8 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
                 >
                     {copied ? (
                         <>
-                            <Check className="h-3 w-3 text-green-500" />
-                            <span className="text-green-500">Copied!</span>
+                            <Check className="h-3 w-3 text-primary" />
+                            <span className="text-primary">Copied!</span>
                         </>
                     ) : (
                         <>

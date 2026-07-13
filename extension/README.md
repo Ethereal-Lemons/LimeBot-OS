@@ -5,6 +5,7 @@ LimeBot Companion is the browser extension for LimeBot. It gives you a lightweig
 ## What it does
 
 - Ask LimeBot about the current page
+- Watch and analyze the video currently open in the active tab
 - Send selected text to LimeBot
 - Show recent replies, live status, and tool activity
 - Let you approve or deny pending tools
@@ -88,6 +89,14 @@ LimeBot receives the page title, URL, visible text excerpt, and your current ses
 2. Open the extension
 3. Click `Send selected text`
 
+### Watch the current video
+
+1. Open a public video page such as YouTube, Vimeo, TikTok, or Loom
+2. Click `Watch video`, use the matching context-menu action, or type `watch the current video` in the companion
+3. LimeBot sends the page URL and current playback position through the guarded native `analyze_video` tool
+
+The extension does not copy browser cookies or stream video bytes to LimeBot. Private, authenticated, DRM-protected, playlist-only, and livestream sources remain unsupported.
+
 ### Approve tools
 
 When LimeBot requests approval for a tool, the companion shows the request so you can approve or deny it without switching back to the main dashboard.
@@ -106,6 +115,7 @@ When LimeBot requests approval for a tool, the companion shows the request so yo
 - The companion connects to LimeBot
 - `Ask this page` sends page context
 - `Send selected text` sends the selected content
+- `Watch video` captures the active video URL and playback position
 - Pending approvals appear and can be handled
 - Opera GX opens the companion in a tab
 
@@ -115,4 +125,5 @@ The extension only sends page content after you explicitly trigger an action suc
 
 - `Ask this page`
 - `Send selected text`
+- `Watch video` or a current-video request typed in the companion
 - the matching context menu actions

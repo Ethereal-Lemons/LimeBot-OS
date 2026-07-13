@@ -23,6 +23,8 @@ import {
     getCoreNpmInstallSpec,
     getDependencySpawnSpec,
     getFeatureInstallSpec,
+    getVideoBinaryInstallInstructions,
+    getVideoReadinessState,
     installRequestedFeatureSet,
     installFeatureThen,
     settleDependencyLanes,
@@ -39,6 +41,7 @@ import {
 } from './startup-flow.js';
 import { describeSupportedNode, isSupportedNodeVersion } from './runtime-support.js';
 import { cleanupStoppedTaskState } from './task-state.js';
+import { refreshWindowsProcessPath } from './windows-path.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1122,7 +1125,7 @@ ${colors.reset}
     ${colors.dim}limebot skill update <name>${colors.reset}
 
   ${colors.bright}Feature Commands:${colors.reset}
-    ${colors.dim}limebot feature install <browser|memory|documents|mcp|whatsapp|extension|all>${colors.reset}
+    ${colors.dim}limebot feature install <browser|memory|documents|mcp|video|whatsapp|extension|all>${colors.reset}
 
   ${colors.bright}Review Options:${colors.reset}
     ${colors.dim}limebot review-diff --diff-file change.patch --output review.json${colors.reset}
@@ -1355,6 +1358,22 @@ async function cmdDoctor(args = []) {
     (await checkPlaywrightBrowsers())
         ? success('Browser tool: Chromium installed')
         : info(`Browser tool: Not installed ${colors.dim}(run ${colors.cyan}limebot install-browser${colors.dim} to enable)${colors.reset}`);
+    const videoPythonReady = fs.existsSync(venvPython)
+        && await pythonModuleAvailable(venvPython, 'yt_dlp')
+        && await pythonModuleAvailable(venvPython, 'PIL');
+    const videoBinariesReady = (await missingVideoBinaries()).length === 0;
+    const videoState = getVideoReadinessState({
+        pythonDependenciesReady: videoPythonReady,
+        binariesReady: videoBinariesReady,
+    });
+    if (videoState === 'python-dependencies-missing') {
+        info(`Video analysis: Python dependencies missing ${colors.dim}(run ${colors.cyan}limebot feature install video${colors.dim})${colors.reset}`);
+    } else if (videoState === 'ffmpeg-missing') {
+        warning('Video analysis: FFmpeg/ffprobe missing');
+        info(`Install them with: ${getVideoBinaryInstallInstructions()}`);
+    } else {
+        success('Video analysis: ready');
+    }
 
     if (runTests) {
         console.log('');
@@ -1425,6 +1444,16 @@ async function ensureBrowserAndChromium() {
     success('Chromium installed and launch-verified successfully!');
 }
 
+async function missingVideoBinaries(required = ['ffmpeg', 'ffprobe']) {
+    const missing = [];
+    for (const binary of required) {
+        if (!(await commandExists(binary)) || !(await getVersion(binary, ['-version']))) {
+            missing.push(binary);
+        }
+    }
+    return missing;
+}
+
 async function cmdInstallBrowser() {
     console.log(`${colors.lime}${colors.bright}\n  🍋 Browser Tool Setup${colors.reset}\n`);
     await ensureBrowserAndChromium();
@@ -1475,6 +1504,15 @@ async function installOptionalFeature(feature) {
         ? [path.join(rootDir, 'node_modules', '.package-lock.json'), nodeFeatureSentinels[name]]
         : [venvPython];
     if (isFeatureCurrent(state, name, fingerprint, sentinels)) {
+        if (name === 'video') {
+            const missing = await missingVideoBinaries(definition.requiredBinaries || []);
+            if (missing.length) {
+                throw new Error(
+                    `Video Python dependencies are current, but ${missing.join(' and ')} are missing. ` +
+                    `Install FFmpeg and retry:\n  ${getVideoBinaryInstallInstructions()}`
+                );
+            }
+        }
         success(`${name} feature dependencies unchanged.`);
         return;
     }
@@ -1485,6 +1523,15 @@ async function installOptionalFeature(feature) {
         label: `${name} feature installation`,
         retryCommand: `${spec.command} ${spec.args.join(' ')}`,
     });
+    if (name === 'video') {
+        const missing = await missingVideoBinaries(definition.requiredBinaries || []);
+        if (missing.length) {
+            throw new Error(
+                `Video Python dependencies installed, but ${missing.join(' and ')} are missing. ` +
+                `Install FFmpeg and retry:\n  ${getVideoBinaryInstallInstructions()}`
+            );
+        }
+    }
     writeDependencyStateAtomic(
         DEPENDENCY_STATE_PATH,
         recordFeatureInstall(state, name, fingerprint),
@@ -2225,6 +2272,8 @@ async function main() {
         info('Upgrade Node.js, then run this command again. No setup files were changed.');
         process.exit(1);
     }
+
+    await refreshWindowsProcessPath();
 
     const args = process.argv.slice(2);
     const command = args[0]?.toLowerCase() || 'help';
