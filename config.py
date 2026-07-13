@@ -260,8 +260,8 @@ def load_config(force_reload=False):
 
     config.image_generation = SimpleNamespace()
     config.image_generation.model = (
-        os.getenv("IMAGE_GENERATION_MODEL", "openai/gpt-image-1").strip()
-        or "openai/gpt-image-1"
+        os.getenv("IMAGE_GENERATION_MODEL", "openai/gpt-image-2").strip()
+        or "openai/gpt-image-2"
     )
     config.image_generation.size = (
         os.getenv("IMAGE_GENERATION_SIZE", "1024x1024").strip() or "1024x1024"

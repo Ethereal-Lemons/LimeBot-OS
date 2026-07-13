@@ -276,8 +276,10 @@ BASE_TOOLS = [
     {
         "name": "generate_image",
         "description": (
-            "Generate an image from a text prompt using the configured image-capable model. "
-            "Use this when the user asks to create, draw, render, or generate a new picture. "
+            "Generate or edit an image using the configured image-capable model. "
+            "Use this when the user asks to create, draw, render, generate, or transform a picture. "
+            "Images attached to the current message can be used automatically as visual references, "
+            "including for named people and follow-up requests such as 'make it' or 'generate it'. "
             "The tool saves generated files locally and sends the image back to the active chat when supported."
         ),
         "params": {
@@ -288,7 +290,7 @@ BASE_TOOLS = [
             "model": {
                 "type": "string",
                 "description": (
-                    "Optional image backend. Examples: openai-codex/gpt-5.4-mini, openai/gpt-image-1, "
+                    "Optional image backend. Examples: openai-codex/gpt-5.4-mini, openai/gpt-image-2, "
                     "gemini/gemini-3.1-flash-image, gemini/gemini-3-pro-image, "
                     "gemini/gemini-2.5-flash-image."
                 ),
@@ -304,6 +306,22 @@ BASE_TOOLS = [
             "count": {
                 "type": "integer",
                 "description": "Number of images to generate. Defaults to 1; currently capped at 4.",
+            },
+            "reference_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional allowed local image paths to use as visual references. "
+                    "Usually omit this for chat uploads; LimeBot carries the current or recently attached image automatically."
+                ),
+            },
+            "use_attached_images": {
+                "type": "boolean",
+                "description": (
+                    "Use images attached to the current or immediately preceding chat turn as references. "
+                    "Set true when the user says this image/photo, same image, make it, or generate it. "
+                    "Set false only when the user explicitly wants a fresh text-only image."
+                ),
             },
         },
         "required": ["prompt"],

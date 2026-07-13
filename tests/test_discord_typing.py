@@ -93,6 +93,54 @@ async def test_discord_typing_keepalive_is_reused():
 
 
 @pytest.mark.asyncio
+async def test_discord_waits_for_complete_response_without_stream_events():
+    from core.bus import MessageBus
+    from core.events import InboundMessage
+    from core.loop import AgentLoop
+
+    class _TestAgentLoop(AgentLoop):
+        async def _init_skills_and_tools(self) -> None:
+            self._tool_definitions = []
+            self._warmed = True
+
+    async def _stream():
+        for content in ("This is ", "the complete ", "Discord response."):
+            delta = SimpleNamespace(content=content, tool_calls=None)
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=delta)],
+                usage=None,
+            )
+
+    bus = MessageBus()
+    agent = _TestAgentLoop(bus=bus)
+    msg = InboundMessage(
+        channel="discord",
+        sender_id="user-1",
+        chat_id="123",
+        content="answer this",
+        metadata={"mentioned": True},
+    )
+    queued_outputs = []
+
+    result = await agent._consume_stream(
+        _stream(),
+        msg,
+        msg.session_key,
+        on_output_queued=queued_outputs.append,
+    )
+    full_content, tool_calls, _, streamed_to_web, streamed_to_discord = (
+        agent._unpack_stream_result(result)
+    )
+
+    assert full_content == "This is the complete Discord response."
+    assert tool_calls == []
+    assert streamed_to_web is False
+    assert streamed_to_discord is False
+    assert queued_outputs == []
+    assert bus.outbound.empty()
+
+
+@pytest.mark.asyncio
 async def test_discord_forbidden_dm_reports_to_origin_chat():
     import discord
     from channels.discord import DiscordChannel

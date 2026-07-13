@@ -38,6 +38,16 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("hello tool", str(result))
 
+    async def test_generate_image_has_no_outer_tool_timeout(self):
+        from core.loop import AgentLoop
+
+        agent = object.__new__(AgentLoop)
+        agent.config = SimpleNamespace(tool_timeout=300.0)
+
+        self.assertIsNone(agent._tool_execution_timeout("generate_image"))
+        self.assertEqual(agent._tool_execution_timeout("analyze_video"), 600.0)
+        self.assertEqual(agent._tool_execution_timeout("read_file"), 300.0)
+
     async def test_tool_call_search_files(self):
         from core.bus import MessageBus
         from core.loop import AgentLoop
@@ -331,6 +341,270 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent[0].metadata["image"].startswith("/temp/generated_images/"))
         self.assertEqual(sent[0].metadata["attachments"][0]["kind"], "image")
         self.assertEqual(sent[0].metadata["attachments"][0]["url"], sent[0].metadata["image"])
+
+    async def test_image_model_candidates_use_gpt_image_2_as_api_fallback(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(
+            skills=SimpleNamespace(enabled=[]),
+            llm=SimpleNamespace(model="openai-codex/gpt-5.4-mini"),
+            image_generation=SimpleNamespace(model="", size="1024x1024", quality="auto"),
+        )
+        toolbox = Toolbox(
+            allowed_paths=[str(Path.cwd())],
+            bus=MessageBus(),
+            config=config,
+        )
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "openai-test-key"}, clear=False):
+            candidates = toolbox._image_model_candidates("")
+
+        self.assertIn("openai/gpt-image-2", candidates)
+        self.assertNotIn("openai/gpt-image-1", candidates)
+
+    async def test_generate_image_uses_current_chat_image_as_openai_reference(self):
+        import json
+
+        from core.bus import MessageBus
+        from core.context import tool_context
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(
+            skills=SimpleNamespace(enabled=[]),
+            llm=SimpleNamespace(model="openai/gpt-5.4-mini"),
+            image_generation=SimpleNamespace(
+                model="openai/gpt-image-2",
+                size="1024x1536",
+                quality="high",
+            ),
+        )
+        toolbox = Toolbox(
+            allowed_paths=[str(Path.cwd())], bus=MessageBus(), config=config
+        )
+        reference = Path("temp/reference-jisoo.jpg")
+        reference.parent.mkdir(exist_ok=True)
+        reference.write_bytes(b"reference-image")
+        token = tool_context.set(
+            {
+                "channel": "discord",
+                "chat_id": "123",
+                "attachments": [
+                    {
+                        "kind": "image",
+                        "path": reference.as_posix(),
+                        "name": reference.name,
+                    }
+                ],
+                "auto_reference_images": True,
+            }
+        )
+        generated_path = None
+        try:
+            with patch.dict(
+                "os.environ", {"OPENAI_API_KEY": "openai-test-key"}, clear=False
+            ), patch.object(
+                toolbox,
+                "_generate_openai_image_edit",
+                return_value=[{"b64": "aW1hZ2U=", "mime_type": "image/png"}],
+            ) as image_edit, patch.object(
+                toolbox,
+                "_generate_litellm_image",
+                side_effect=AssertionError("Reference requests must use image edits."),
+            ):
+                result = await toolbox.generate_image(
+                    "Create a collectible card featuring BLACKPINK Jisoo"
+                )
+            payload = json.loads(result)
+            generated_path = Path(payload["paths"][0])
+        finally:
+            tool_context.reset(token)
+            reference.unlink(missing_ok=True)
+            if generated_path:
+                generated_path.unlink(missing_ok=True)
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["reference_count"], 1)
+        image_edit.assert_awaited_once()
+        call = image_edit.await_args
+        self.assertEqual(call.args[1], "openai/gpt-image-2")
+        self.assertEqual(call.args[-1][0]["name"], "reference-jisoo.jpg")
+
+    async def test_generate_image_does_not_fall_back_when_reference_is_missing(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(
+            skills=SimpleNamespace(enabled=[]),
+            llm=SimpleNamespace(model="openai-codex/gpt-5.4-mini"),
+            image_generation=SimpleNamespace(
+                model="openai/gpt-image-2",
+                size="1024x1024",
+                quality="auto",
+            ),
+        )
+        toolbox = Toolbox(
+            allowed_paths=[str(Path.cwd())], bus=MessageBus(), config=config
+        )
+
+        with patch.object(
+            toolbox,
+            "_generate_litellm_image",
+            side_effect=AssertionError("A missing reference must not become text-only."),
+        ):
+            result = await toolbox.generate_image(
+                "keep this person's identity",
+                reference_images=["temp/does-not-exist.png"],
+            )
+
+        self.assertTrue(result.startswith("Error:"))
+        self.assertIn("does not exist", result)
+
+    async def test_openai_reference_edit_uses_documented_multipart_fields(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        class _Response:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"data": [{"b64_json": "aW1hZ2U="}]}
+
+        class _Client:
+            request = None
+
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, url, **kwargs):
+                type(self).request = (url, kwargs)
+                return _Response()
+
+        config = SimpleNamespace(
+            skills=SimpleNamespace(enabled=[]),
+            image_generation=SimpleNamespace(
+                model="openai/gpt-image-2",
+                size="1024x1024",
+                quality="high",
+            ),
+        )
+        toolbox = Toolbox(
+            allowed_paths=[str(Path.cwd())], bus=MessageBus(), config=config
+        )
+        references = [
+            {
+                "name": "jisoo.jpg",
+                "bytes": b"reference",
+                "mime_type": "image/jpeg",
+            }
+        ]
+
+        with patch.dict(
+            "os.environ", {"OPENAI_API_KEY": "openai-test-key"}, clear=False
+        ), patch("httpx.AsyncClient", _Client):
+            images = await toolbox._generate_openai_image_edit(
+                "Keep Jisoo recognizable in a collectible card",
+                "openai/gpt-image-2",
+                1,
+                "1024x1536",
+                "high",
+                references,
+            )
+
+        url, request = _Client.request
+        self.assertEqual(url, "https://api.openai.com/v1/images/edits")
+        self.assertEqual(request["data"]["model"], "gpt-image-2")
+        self.assertEqual(request["data"]["quality"], "high")
+        self.assertEqual(request["files"][0][0], "image[]")
+        self.assertEqual(request["files"][0][1][0], "jisoo.jpg")
+        self.assertEqual(images[0]["b64"], "aW1hZ2U=")
+
+    async def test_codex_image_generation_includes_reference_image_input(self):
+        import json
+
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        class _StreamResponse:
+            status_code = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def aiter_lines(self):
+                event = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "image_generation_call",
+                        "result": "aW1hZ2U=",
+                    },
+                }
+                yield "data: " + json.dumps(event)
+
+        class _Client:
+            payload = None
+
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def stream(self, _method, _url, **kwargs):
+                type(self).payload = kwargs["json"]
+                return _StreamResponse()
+
+        config = SimpleNamespace(
+            skills=SimpleNamespace(enabled=[]),
+            image_generation=SimpleNamespace(
+                model="openai-codex/gpt-5.4-mini",
+                size="1024x1024",
+                quality="auto",
+            ),
+        )
+        toolbox = Toolbox(
+            allowed_paths=[str(Path.cwd())], bus=MessageBus(), config=config
+        )
+        reference = {
+            "data_url": "data:image/jpeg;base64,cmVmZXJlbmNl",
+            "name": "jisoo.jpg",
+        }
+
+        with patch(
+            "core.oauth_profiles.resolve_codex_oauth_api_key",
+            return_value="token",
+        ), patch.object(
+            toolbox, "_codex_account_id", return_value="account-1"
+        ), patch(
+            "httpx.AsyncClient", _Client
+        ):
+            images = await toolbox._generate_codex_image(
+                "Keep BLACKPINK Jisoo recognizable",
+                "openai-codex/gpt-5.4-mini",
+                1,
+                "1024x1536",
+                "high",
+                [reference],
+            )
+
+        content = _Client.payload["input"][0]["content"]
+        self.assertEqual(content[0]["type"], "input_text")
+        self.assertEqual(content[1]["type"], "input_image")
+        self.assertEqual(content[1]["image_url"], reference["data_url"])
+        self.assertEqual(images[0]["b64"], "aW1hZ2U=")
 
     async def test_tool_call_generate_image_skips_gemini_without_key_and_uses_codex(self):
         from core.bus import MessageBus

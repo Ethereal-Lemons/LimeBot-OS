@@ -815,6 +815,10 @@ def build_stable_system_prompt(
         "If you need to edit a file, CALL the write_file tool. Do NOT write '(Editing file X to change Y)' in your reply. "
         "If you need to run a command, CALL run_command. Do NOT describe running it.\n"
         "Your visible reply should contain ONLY your natural-language response to the user — never tool schemas, JSON payloads, or action narrations.\n"
+        "IMAGE GENERATION: When the user asks to create or transform an image, call generate_image. "
+        "If they attached an image or refer to the current/recent image, preserve it as a reference and set use_attached_images=true. "
+        "Preserve requested proper names and subject identity in the tool prompt, including named public figures; do not replace them with an anonymous lookalike or invent a provider restriction. "
+        "If a provider rejects a request, report the provider's actual error instead of preemptively refusing or silently changing the subject.\n"
         "Skill manuals may be injected separately when they are relevant to the current user request.\n"
     )
 

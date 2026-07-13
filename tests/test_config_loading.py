@@ -133,6 +133,11 @@ class TestConfigLoading(unittest.TestCase):
         enabled = self._load_config_with_env({"VIDEO_WHISPER_ENABLED": "true"})
         self.assertTrue(enabled.video.whisper_enabled)
 
+    def test_image_generation_defaults_to_gpt_image_2(self):
+        loaded = self._load_config_with_env({"IMAGE_GENERATION_MODEL": ""})
+
+        self.assertEqual(loaded.image_generation.model, "openai/gpt-image-2")
+
     def test_ai_harness_fast_mode_uses_fast_timeout(self):
         loaded = self._load_config_with_env(
             {

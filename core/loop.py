@@ -88,6 +88,7 @@ from core.vectors import get_vector_service
 
 TOOL_BROADCAST_MAX_CHARS = 500
 _TOOL_LOCAL_IMAGE_MAX_BYTES = 4 * 1024 * 1024
+_RECENT_IMAGE_REFERENCE_TTL_S = 30 * 60
 _TOOL_MEDIA_PAYLOAD_START = "<limebot-tool-payload>"
 _TOOL_MEDIA_PAYLOAD_END = "</limebot-tool-payload>"
 
@@ -342,6 +343,9 @@ class AgentLoop:
         self._last_history_flush: Dict[str, float] = {}
         self._image_input_fallback_sessions: Set[str] = set()
         self._sessions_pending_tool_image_reply: Set[str] = set()
+        self._recent_image_attachments: Dict[
+            str, Tuple[float, List[Dict[str, Any]]]
+        ] = {}
         self._workspace_changesets: Dict[str, Tuple[str, str]] = {}
 
     def _set_readiness_phase(self, phase: str) -> None:
@@ -694,7 +698,7 @@ class AgentLoop:
                 note = (
                     "[Image attachment shared, but the current model does not support vision]"
                 )
-                if url:
+                if url and not url.lower().startswith("data:"):
                     note = f"{note}: {url}"
                 image_notes.append(note)
 
@@ -1103,6 +1107,162 @@ class AgentLoop:
                 if isinstance(item, dict) and item.get("type") == "image_url":
                     return True
         return False
+
+    @staticmethod
+    def _collect_image_inputs(
+        attachments: List[Dict[str, Any]],
+        metadata_images: Any = None,
+        legacy_image: str = "",
+    ) -> List[str]:
+        """Prefer inline image data without adding its CDN URL a second time."""
+        image_inputs: List[str] = []
+        represented_urls: set[str] = set()
+
+        for attachment in attachments:
+            if attachment.get("kind") != "image":
+                continue
+            remote_url = str(attachment.get("url") or "").strip()
+            preferred = str(
+                attachment.get("data_url") or remote_url or ""
+            ).strip()
+            if preferred and preferred not in image_inputs:
+                image_inputs.append(preferred)
+            if remote_url:
+                represented_urls.add(remote_url)
+
+        extra_images = (
+            [metadata_images]
+            if isinstance(metadata_images, str)
+            else list(metadata_images or [])
+        )
+        for candidate in [*extra_images, legacy_image]:
+            value = str(candidate or "").strip()
+            if value and value not in represented_urls and value not in image_inputs:
+                image_inputs.append(value)
+
+        return image_inputs
+
+    def _remember_image_attachments(
+        self, session_key: str, attachments: List[Dict[str, Any]]
+    ) -> None:
+        images = [
+            dict(attachment)
+            for attachment in attachments
+            if attachment.get("kind") == "image"
+            and str(attachment.get("path") or "").strip()
+        ][:4]
+        if images:
+            self._recent_image_attachments[session_key] = (time.time(), images)
+
+    def _get_recent_image_attachments(
+        self, session_key: str
+    ) -> List[Dict[str, Any]]:
+        remembered = self._recent_image_attachments.get(session_key)
+        if not remembered:
+            return []
+        remembered_at, attachments = remembered
+        if time.time() - remembered_at > _RECENT_IMAGE_REFERENCE_TTL_S:
+            self._recent_image_attachments.pop(session_key, None)
+            return []
+        usable = [
+            dict(attachment)
+            for attachment in attachments
+            if str(attachment.get("path") or "").strip()
+            and Path(str(attachment.get("path"))).is_file()
+        ]
+        if not usable:
+            self._recent_image_attachments.pop(session_key, None)
+        return usable
+
+    @staticmethod
+    def _message_refers_to_recent_image(content: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:image|photo|picture|attachment|reference|same|this|that|"
+                r"imagen|foto|adjunt[oa]|referencia|misma|esta|esa|"
+                r"generate\s+it|make\s+it|generala|gen[eé]rala|creala|cr[eé]ala|hazla)\b",
+                str(content or ""),
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _image_safe_history_content(content: Any) -> Any:
+        """Replace image bytes and expiring URLs with a durable small marker."""
+        if not isinstance(content, list):
+            return content
+        text_parts = [
+            str(item.get("text") or "").strip()
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        image_count = sum(
+            1
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "image_url"
+        )
+        if not image_count:
+            return content
+        marker = (
+            "[Image attachment processed]"
+            if image_count == 1
+            else f"[{image_count} image attachments processed]"
+        )
+        return " ".join([part for part in text_parts if part] + [marker]).strip()
+
+    @classmethod
+    def _history_summary_payload(cls, messages: List[Dict[str, Any]]) -> str:
+        """Serialize history for summarization without embedding image payloads."""
+        safe_messages = []
+        for message in messages:
+            safe_message = dict(message)
+            safe_message["content"] = cls._image_safe_history_content(
+                message.get("content")
+            )
+            safe_messages.append(safe_message)
+        return json.dumps(safe_messages, ensure_ascii=False, default=str)
+
+    def _evict_history_image_inputs(self, session_key: str) -> None:
+        changed = False
+        for message in self.history.get(session_key, []):
+            original_content = message.get("content")
+            safe_content = self._image_safe_history_content(original_content)
+            if safe_content is not original_content:
+                message["content"] = safe_content
+                changed = True
+        if changed:
+            self._mark_dirty(session_key)
+
+    def _truncate_history_fallback(
+        self, conv: List[Dict[str, Any]], target_tokens: int
+    ) -> List[Dict[str, Any]]:
+        """Trim old turns without deleting the latest user request."""
+        current_tokens = self._estimate_tokens(conv)
+
+        while conv and current_tokens > target_tokens:
+            latest_user_index = max(
+                (
+                    index
+                    for index, message in enumerate(conv)
+                    if message.get("role") == "user"
+                ),
+                default=len(conv),
+            )
+            if latest_user_index <= 0:
+                break
+
+            popped = conv.pop(0)
+            current_tokens -= self._estimate_tokens([popped])
+
+            if popped.get("role") == "assistant" and popped.get("tool_calls"):
+                while conv and conv[0].get("role") == "tool":
+                    tool_msg = conv.pop(0)
+                    current_tokens -= self._estimate_tokens([tool_msg])
+            while conv and conv[0].get("role") == "tool":
+                tool_msg = conv.pop(0)
+                current_tokens -= self._estimate_tokens([tool_msg])
+
+        return conv
 
     def _downgrade_image_messages_for_text_model(
         self, messages: List[Dict[str, Any]], session_key: str
@@ -1884,11 +2044,21 @@ class AgentLoop:
         O(n) token estimate (~4 chars per token, slightly conservative).
         Used in the pruning loop to avoid O(n²) token_counter calls.
         """
-        total = 0
+        text_chars = 0
+        image_tokens = 0
         for m in messages:
             c = m.get("content", "")
-            total += sum(len(str(i)) for i in c) if isinstance(c, list) else len(str(c))
-        return total // 4
+            if not isinstance(c, list):
+                text_chars += len(str(c))
+                continue
+            for item in c:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    # Image inputs are billed by dimensions/detail, not by the
+                    # character length of a base64 data URL.
+                    image_tokens += 1_024
+                else:
+                    text_chars += len(str(item))
+        return (text_chars // 4) + image_tokens
 
     async def run(self) -> None:
         self._running = True
@@ -2053,7 +2223,14 @@ class AgentLoop:
         if not force and (now - last) < self._history_flush_interval:
             return
 
-        await self.session_manager.save_history(session_key, self.history[session_key])
+        persistable_history = []
+        for message in self.history[session_key]:
+            persisted_message = dict(message)
+            persisted_message["content"] = self._image_safe_history_content(
+                message.get("content")
+            )
+            persistable_history.append(persisted_message)
+        await self.session_manager.save_history(session_key, persistable_history)
         self._history_dirty[session_key] = False
         self._last_history_flush[session_key] = now
 
@@ -2745,7 +2922,23 @@ class AgentLoop:
 
         logger.info(f"🔄 Token limit ({max_tokens}) reached. Summarising…")
 
-        num_to_summarise = max(1, len(conv) // 3)
+        latest_user_index = max(
+            (
+                index
+                for index, message in enumerate(conv)
+                if message.get("role") == "user"
+            ),
+            default=len(conv),
+        )
+        if latest_user_index <= 0:
+            logger.warning(
+                "Current user turn exceeds the history budget; preserving it for the model."
+            )
+            self.history[session_key] = [system_msg] + conv
+            self._mark_dirty(session_key)
+            return
+
+        num_to_summarise = min(max(1, len(conv) // 3), latest_user_index)
         to_summarise = conv[:num_to_summarise]
         remaining = conv[num_to_summarise:]
 
@@ -2758,7 +2951,10 @@ class AgentLoop:
                     "role": "system",
                     "content": "Summarise in ≤200 words: key decisions, user facts, task state.",
                 },
-                {"role": "user", "content": json.dumps(to_summarise)},
+                {
+                    "role": "user",
+                    "content": self._history_summary_payload(to_summarise),
+                },
             ]
             provider = self.llm_client.resolve_provider(
                 self.model,
@@ -2814,19 +3010,7 @@ class AgentLoop:
             logger.error(f"❌ Summarisation failed: {e}. Falling back to truncation.")
 
             target_tokens = max_tokens - sys_tokens
-            current_tokens = self._estimate_tokens(conv)
-
-            while conv and current_tokens > target_tokens:
-                popped = conv.pop(0)
-                current_tokens -= self._estimate_tokens([popped])
-
-                if popped.get("role") == "assistant" and popped.get("tool_calls"):
-                    while conv and conv[0].get("role") == "tool":
-                        tool_msg = conv.pop(0)
-                        current_tokens -= self._estimate_tokens([tool_msg])
-                while conv and conv[0].get("role") == "tool":
-                    tool_msg = conv.pop(0)
-                    current_tokens -= self._estimate_tokens([tool_msg])
+            conv = self._truncate_history_fallback(conv, target_tokens)
 
         self.history[session_key] = [system_msg] + conv
         self._mark_dirty(session_key)
@@ -3287,9 +3471,19 @@ class AgentLoop:
                 self.tool_cache.clear()
 
             return result
-
         except Exception as e:
             return f"Error executing '{function_name}': {e}"
+
+    def _tool_execution_timeout(self, function_name: str) -> Optional[float]:
+        """Return the outer LimeBot deadline for a native tool invocation."""
+        if function_name == "generate_image":
+            # Image providers can legitimately take several minutes, especially
+            # for high-quality reference edits and fallback attempts. Their own
+            # request timeouts still bound individual network operations.
+            return None
+        if function_name == "analyze_video":
+            return 600.0
+        return getattr(self.config, "tool_timeout", 120.0)
 
     @staticmethod
     def _extract_run_command_exit_code(result: Any) -> Optional[int]:
@@ -3891,6 +4085,17 @@ class AgentLoop:
             is_internal = False
 
             try:
+                current_image_attachments = [
+                    dict(attachment)
+                    for attachment in (
+                        (msg.metadata.get("attachments") or []) if msg else []
+                    )
+                    if isinstance(attachment, dict)
+                    and attachment.get("kind") == "image"
+                ]
+                recent_image_attachments = self._get_recent_image_attachments(
+                    session_key
+                )
                 tool_context.set(
                     {
                         "tc_id": tc_id,
@@ -3899,6 +4104,15 @@ class AgentLoop:
                         "chat_id": msg.chat_id if msg else "system",
                         "turn_id": turn_id or "",
                         "message_id": message_id or "",
+                        "attachments": current_image_attachments,
+                        "recent_image_attachments": recent_image_attachments,
+                        "auto_reference_images": bool(current_image_attachments)
+                        or bool(
+                            recent_image_attachments
+                            and self._message_refers_to_recent_image(
+                                msg.content if msg else ""
+                            )
+                        ),
                     }
                 )
 
@@ -4108,12 +4322,9 @@ class AgentLoop:
 
                 t0 = time.time()
                 try:
-                    # General safety timeout for ANY tool execution (MCP, Browser, etc.)
-                    tool_timeout = (
-                        600.0
-                        if function_name == "analyze_video"
-                        else getattr(self.config, "tool_timeout", 120.0)
-                    )
+                    # Image generation deliberately has no outer LimeBot deadline;
+                    # each provider request retains its own transport timeout.
+                    tool_timeout = self._tool_execution_timeout(function_name)
                     if tool_timeout and tool_timeout > 0:
                         result = await asyncio.wait_for(
                             self._execute_tool(
@@ -4455,14 +4666,30 @@ class AgentLoop:
                 return []
 
             if isinstance(parsed.get("prompt"), str) and parsed["prompt"].strip():
-                image_keys = {"model", "size", "quality", "count"}
+                image_keys = {
+                    "model",
+                    "size",
+                    "quality",
+                    "count",
+                    "reference_images",
+                    "use_attached_images",
+                }
                 if image_keys.intersection(parsed.keys()):
                     return _make_tool_call(
                         "generate_image",
                         {
                             key: value
                             for key, value in parsed.items()
-                            if key in {"prompt", "model", "size", "quality", "count"}
+                            if key
+                            in {
+                                "prompt",
+                                "model",
+                                "size",
+                                "quality",
+                                "count",
+                                "reference_images",
+                                "use_attached_images",
+                            }
                         },
                     )
 
@@ -4797,10 +5024,6 @@ class AgentLoop:
         last_flush = time.monotonic()
         flush_interval_s = 0.08
         flush_min_chars = 256
-        last_discord_flush = time.monotonic()
-        discord_flush_interval_s = 0.45
-        discord_flush_min_chars = 48
-        last_discord_content = ""
         thinking_buffer: str = ""
         extracted_from = "provider_tool_calls"
         chunk_index = 0
@@ -5004,36 +5227,9 @@ class AgentLoop:
                                     close_idx + len(closing) :
                                 ]
 
-                    if (
-                        msg.channel == "discord"
-                        and not is_potential_json
-                        and full_content.strip()
-                    ):
-                        now = time.monotonic()
-                        should_flush_discord = (
-                            len(full_content) - len(last_discord_content)
-                            >= discord_flush_min_chars
-                            or (now - last_discord_flush) >= discord_flush_interval_s
-                        )
-                        if should_flush_discord and full_content != last_discord_content:
-                            await self.bus.publish_outbound(
-                                OutboundMessage(
-                                    channel=msg.channel,
-                                    chat_id=msg.chat_id,
-                                    content=full_content,
-                                    metadata=self._with_trace_metadata(
-                                        {"type": "full_content"},
-                                        turn_id=turn_id,
-                                        message_id=message_id,
-                                    ),
-                                )
-                            )
-                            if on_output_queued:
-                                on_output_queued("content")
-                            streamed_to_discord = True
-                            last_discord_flush = now
-                            last_discord_content = full_content
-
+                # Discord intentionally buffers provider deltas. Its typing
+                # indicator stays active and the normal delivery path sends
+                # only the completed response. Web remains token-streamed.
                 thinking = getattr(delta, "reasoning_content", None) or getattr(
                     delta, "thinking", None
                 )
@@ -5253,19 +5449,6 @@ class AgentLoop:
                             ),
                         )
                     )
-                elif msg.channel == "discord" and streamed_to_discord:
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content=full_content,
-                            metadata=self._with_trace_metadata(
-                                {"type": "full_content"},
-                                turn_id=turn_id,
-                                message_id=message_id,
-                            ),
-                        )
-                    )
 
         if (
             is_potential_json
@@ -5355,6 +5538,7 @@ class AgentLoop:
                 for attachment in (msg.metadata.get("attachments") or [])
                 if isinstance(attachment, dict)
             ]
+            self._remember_image_attachments(session_key, attachments)
             self._log_session_event(
                 session_key,
                 {
@@ -5851,27 +6035,11 @@ class AgentLoop:
                         "content": system_prompt,
                     }
 
-                    image_urls = [
-                        str(
-                            attachment.get("data_url")
-                            or attachment.get("url")
-                            or ""
-                        ).strip()
-                        for attachment in attachments
-                        if attachment.get("kind") == "image"
-                        and str(
-                            attachment.get("data_url")
-                            or attachment.get("url")
-                            or ""
-                        ).strip()
-                    ]
-                    for url in msg.metadata.get("images") or []:
-                        image_url = str(url or "").strip()
-                        if image_url and image_url not in image_urls:
-                            image_urls.append(image_url)
-                    legacy_image = str(msg.metadata.get("image") or "").strip()
-                    if legacy_image and legacy_image not in image_urls:
-                        image_urls.insert(0, legacy_image)
+                    image_urls = self._collect_image_inputs(
+                        attachments,
+                        msg.metadata.get("images") or [],
+                        str(msg.metadata.get("image") or "").strip(),
+                    )
 
                     user_text_payload = user_text_content or content or " "
                     if image_urls and self._image_inputs_disabled_for_session(
@@ -6730,6 +6898,7 @@ class AgentLoop:
                 task = await _tracker.get_task(_msg_task_id)
                 if task and task.status == "running":
                     await _tracker.complete_task(_msg_task_id)
+            self._evict_history_image_inputs(session_key)
             await self._flush_history(session_key, force=True)
             self.active_tasks.pop(session_key, None)
             # Always notify frontend that processing is done

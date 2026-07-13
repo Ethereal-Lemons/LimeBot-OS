@@ -1,5 +1,5 @@
 from contextvars import ContextVar
-from typing import Dict
+from typing import Any, Dict
 
 
-tool_context: ContextVar[Dict[str, str]] = ContextVar("tool_context", default={})
+tool_context: ContextVar[Dict[str, Any]] = ContextVar("tool_context", default={})

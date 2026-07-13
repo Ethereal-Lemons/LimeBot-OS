@@ -144,6 +144,7 @@ Sandboxed OS interface. All methods check `_is_path_allowed()` before touching t
 | `deep_research(query, depth)` | No | Multi-source research: searches, reads top pages, returns a cited synthesis |
 | `send_media(path, caption)` | No | Share a local file **or remote http(s) URL** into the current web/Discord/WhatsApp chat |
 | `send_voice(text, channel)` | No | Synthesize `text` with ElevenLabs and send it as a voice message — an mp3 file on Discord/WhatsApp, an inline playable clip on web. Requires `ELEVENLABS_API_KEY`. |
+| `generate_image(prompt, model, size, quality, count, reference_images, use_attached_images)` | No | Generate a new image or transform up to four allowed local/current-chat reference images. Current images and reference-style follow-ups can reuse the session's most recent image for 30 minutes; missing references fail closed instead of silently becoming text-only generation. Image generation has no outer LimeBot tool deadline, while individual provider requests retain transport timeouts. |
 | `send_discord_message(message, channel_id, user_id)` | No | Send a Discord message to a server channel or user DM |
 | `send_discord_embed(...)` | No | Send a native Discord embed to a server channel or user DM |
 | `list_discord_channels()` | No | List guild text channels available to the bot |

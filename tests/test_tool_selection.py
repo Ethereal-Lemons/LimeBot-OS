@@ -72,6 +72,18 @@ class TestToolSelection(unittest.TestCase):
         self.assertIn("browser_click", names)
         self.assertNotIn("read_file", names)
 
+    def test_generate_image_schema_supports_chat_references(self):
+        from core.tool_defs import build_tool_definitions
+
+        tools = build_tool_definitions(enabled_skills=[])
+        generate = next(
+            tool for tool in tools if tool["function"]["name"] == "generate_image"
+        )
+        properties = generate["function"]["parameters"]["properties"]
+
+        self.assertEqual(properties["reference_images"]["type"], "array")
+        self.assertEqual(properties["use_attached_images"]["type"], "boolean")
+
     def test_agent_normalizes_common_tool_aliases(self):
         from core.loop import AgentLoop
         from core.metrics import MetricsCollector

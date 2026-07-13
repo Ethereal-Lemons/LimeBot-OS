@@ -38,6 +38,9 @@ _SENSITIVE_NAMES = frozenset(
 _SENSITIVE_EXTENSIONS = frozenset({".pem", ".key", ".p12", ".pfx"})
 # Max bytes for remote downloads (send_media / fetch_url_to_temp).
 _MAX_DOWNLOAD_BYTES = 15 * 1024 * 1024
+_MAX_IMAGE_REFERENCE_BYTES = 50 * 1024 * 1024
+_MAX_IMAGE_REFERENCES = 4
+_IMAGE_REFERENCE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 _DOWNLOAD_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -1963,7 +1966,7 @@ class Toolbox:
             else "openai-codex/gpt-5.4-mini"
         )
 
-        raw_candidates = [requested, configured, codex_model, "openai/gpt-image-1"]
+        raw_candidates = [requested, configured, codex_model, "openai/gpt-image-2"]
         candidates: List[str] = []
         for candidate in raw_candidates:
             candidate = str(candidate or "").strip()
@@ -1976,6 +1979,79 @@ class Toolbox:
             candidates.append(candidate)
         return candidates
 
+    async def _resolve_image_references(
+        self,
+        reference_images: Optional[List[str]],
+        use_attached_images: Optional[bool],
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        from core.context import tool_context
+
+        explicit = (
+            [reference_images]
+            if isinstance(reference_images, str)
+            else list(reference_images or [])
+        )
+        ctx = tool_context.get() or {}
+        should_use_attached = (
+            bool(ctx.get("auto_reference_images"))
+            if use_attached_images is None
+            else bool(use_attached_images)
+        )
+        candidates: List[str] = [str(path or "").strip() for path in explicit]
+        if should_use_attached:
+            for attachment in [
+                *(ctx.get("attachments") or []),
+                *(ctx.get("recent_image_attachments") or []),
+            ]:
+                if not isinstance(attachment, dict):
+                    continue
+                path = str(attachment.get("path") or "").strip()
+                if path:
+                    candidates.append(path)
+
+        reference_requested = bool(explicit) or should_use_attached
+        references: List[Dict[str, Any]] = []
+        seen: set[Path] = set()
+        for candidate in candidates:
+            if not candidate:
+                continue
+            allowed, reason, path = self._is_path_shareable(candidate)
+            if not allowed or path is None:
+                if explicit:
+                    raise ValueError(reason or f"Reference image is unavailable: {candidate}")
+                continue
+            if path in seen:
+                continue
+            if path.suffix.lower() not in _IMAGE_REFERENCE_EXTENSIONS:
+                raise ValueError(
+                    f"Unsupported reference image format '{path.suffix or 'unknown'}'. "
+                    "Use PNG, JPEG, or WebP."
+                )
+            size = path.stat().st_size
+            if size <= 0 or size > _MAX_IMAGE_REFERENCE_BYTES:
+                raise ValueError(
+                    f"Reference image '{path.name}' must be between 1 byte and 50 MiB."
+                )
+            blob = await asyncio.to_thread(path.read_bytes)
+            mime_type = mimetypes.guess_type(path.name)[0] or "image/png"
+            references.append(
+                {
+                    "name": path.name,
+                    "path": path,
+                    "mime_type": mime_type,
+                    "bytes": blob,
+                    "data_url": (
+                        f"data:{mime_type};base64,"
+                        f"{base64.b64encode(blob).decode('ascii')}"
+                    ),
+                }
+            )
+            seen.add(path)
+            if len(references) >= _MAX_IMAGE_REFERENCES:
+                break
+
+        return references, reference_requested
+
     async def _generate_codex_image(
         self,
         prompt: str,
@@ -1983,6 +2059,7 @@ class Toolbox:
         count: int,
         size: str,
         quality: str,
+        references: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, str]]:
         from core.oauth_profiles import resolve_codex_oauth_api_key
 
@@ -2002,6 +2079,17 @@ class Toolbox:
         if prompt_hints:
             full_prompt = f"{prompt}\n\n" + "\n".join(prompt_hints)
 
+        input_content: List[Dict[str, Any]] = [
+            {"type": "input_text", "text": full_prompt}
+        ]
+        input_content.extend(
+            {
+                "type": "input_image",
+                "image_url": reference["data_url"],
+            }
+            for reference in (references or [])
+        )
+
         payload = {
             "model": self._codex_image_model(model),
             "instructions": (
@@ -2013,7 +2101,7 @@ class Toolbox:
             "input": [
                 {
                     "role": "user",
-                    "content": [{"type": "input_text", "text": full_prompt}],
+                    "content": input_content,
                 }
             ],
             "tools": [{"type": "image_generation"}],
@@ -2073,6 +2161,7 @@ class Toolbox:
         model: str,
         count: int,
         size: str,
+        references: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, str]]:
         from core.llm_utils import get_api_key_for_model
 
@@ -2094,8 +2183,18 @@ class Toolbox:
             "https://generativelanguage.googleapis.com/v1/models/"
             f"{bare_model}:generateContent"
         )
+        parts: List[Dict[str, Any]] = [{"text": prompt}]
+        parts.extend(
+            {
+                "inlineData": {
+                    "mimeType": reference["mime_type"],
+                    "data": base64.b64encode(reference["bytes"]).decode("ascii"),
+                }
+            }
+            for reference in (references or [])
+        )
         payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
+            "contents": [{"parts": parts}],
             "generationConfig": generation_config,
         }
         images: List[Dict[str, str]] = []
@@ -2187,6 +2286,85 @@ class Toolbox:
                     )
         return images
 
+    async def _generate_openai_image_edit(
+        self,
+        prompt: str,
+        model: str,
+        count: int,
+        size: str,
+        quality: str,
+        references: List[Dict[str, Any]],
+    ) -> List[Dict[str, str]]:
+        """Call the native Images edit endpoint with one or more references."""
+        from core.llm_utils import get_api_key_for_model
+
+        import httpx
+
+        api_key = get_api_key_for_model(model)
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is not configured for image editing.")
+
+        bare_model = model.removeprefix("openai/")
+        form: Dict[str, str] = {
+            "model": bare_model,
+            "prompt": prompt,
+            "n": str(count),
+            "size": size,
+        }
+        if quality and quality != "auto":
+            form["quality"] = quality
+        files = [
+            (
+                "image[]",
+                (
+                    reference["name"],
+                    reference["bytes"],
+                    reference["mime_type"],
+                ),
+            )
+            for reference in references
+        ]
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/images/edits",
+                headers={"Authorization": f"Bearer {api_key}"},
+                data=form,
+                files=files,
+            )
+            if response.status_code >= 400:
+                try:
+                    error = response.json().get("error") or {}
+                    detail = str(error.get("message") or "Image edit request failed.")
+                except Exception:
+                    detail = "Image edit request failed."
+                raise RuntimeError(
+                    f"OpenAI image edit failed ({response.status_code}): {detail[:500]}"
+                )
+            payload = response.json()
+
+        images: List[Dict[str, str]] = []
+        for item in payload.get("data", []) or []:
+            b64 = item.get("b64_json") if isinstance(item, dict) else None
+            url = item.get("url") if isinstance(item, dict) else None
+            if b64:
+                images.append({"b64": b64, "mime_type": "image/png"})
+                continue
+            if url:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    downloaded = await client.get(url)
+                    downloaded.raise_for_status()
+                    images.append(
+                        {
+                            "b64": base64.b64encode(downloaded.content).decode(
+                                "ascii"
+                            ),
+                            "mime_type": downloaded.headers.get(
+                                "content-type", "image/png"
+                            ),
+                        }
+                    )
+        return images
+
     async def _publish_generated_image_preview(
         self,
         paths: List[Path],
@@ -2263,8 +2441,10 @@ class Toolbox:
         size: str = "",
         quality: str = "",
         count: int = 1,
+        reference_images: Optional[List[str]] = None,
+        use_attached_images: Optional[bool] = None,
     ) -> str:
-        """Generate image files using OpenAI-compatible or Gemini image models."""
+        """Generate or edit image files using text and optional references."""
         prompt = str(prompt or "").strip()
         if not prompt:
             return "Error: prompt is required."
@@ -2282,6 +2462,18 @@ class Toolbox:
         except Exception:
             count = 1
 
+        try:
+            references, reference_requested = await self._resolve_image_references(
+                reference_images, use_attached_images
+            )
+        except (OSError, ValueError) as exc:
+            return f"Error: {exc}"
+        if reference_requested and not references:
+            return (
+                "Error: The requested reference image is no longer available. "
+                "Attach it again and retry."
+            )
+
         candidates = self._image_model_candidates(requested_model)
         if not candidates:
             return (
@@ -2296,19 +2488,29 @@ class Toolbox:
             try:
                 if self._is_gemini_image_model(candidate):
                     candidate_images = await self._generate_gemini_image(
-                        prompt, candidate, count, size
+                        prompt, candidate, count, size, references
                     )
                 elif candidate.startswith("openai-codex/"):
                     candidate_images = await self._generate_codex_image(
-                        prompt, candidate, count, size, quality
+                        prompt, candidate, count, size, quality, references
                     )
                 elif self._is_openai_image_model(candidate):
-                    candidate_images = await self._generate_litellm_image(
-                        prompt, candidate, count, size, quality
-                    )
+                    if references:
+                        candidate_images = await self._generate_openai_image_edit(
+                            prompt,
+                            candidate,
+                            count,
+                            size,
+                            quality,
+                            references,
+                        )
+                    else:
+                        candidate_images = await self._generate_litellm_image(
+                            prompt, candidate, count, size, quality
+                        )
                 else:
                     candidate_images = await self._generate_codex_image(
-                        prompt, candidate, count, size, quality
+                        prompt, candidate, count, size, quality, references
                     )
 
                 if candidate_images:
@@ -2353,6 +2555,7 @@ class Toolbox:
                 "status": "ok",
                 "model": used_model,
                 "count": len(saved),
+                "reference_count": len(references),
                 "paths": display_paths,
                 "note": "Generated images were saved locally and sent to the active chat when supported.",
             }

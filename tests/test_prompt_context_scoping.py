@@ -97,3 +97,23 @@ class TestPromptContextScoping(unittest.TestCase):
         self.assertIn("PRIVATE CONTEXT POLICY", prompt)
         self.assertIn("Shared memory files are intentionally hidden", volatile)
         self.assertNotIn("Trusted long-term memory.", volatile)
+
+    def test_image_generation_prompt_preserves_named_reference_subjects(self):
+        from core.prompt import build_stable_system_prompt
+
+        prompt = build_stable_system_prompt(
+            sender_id="owner",
+            channel="discord",
+            chat_id="123",
+            model="test-model",
+            allowed_paths=[],
+            skill_registry=None,
+            config=self.config,
+            soul=self.soul,
+            identity_raw=self.identity,
+            sender_name="Owner",
+        )
+
+        self.assertIn("set use_attached_images=true", prompt)
+        self.assertIn("including named public figures", prompt)
+        self.assertIn("do not replace them with an anonymous lookalike", prompt)
