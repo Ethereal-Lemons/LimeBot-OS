@@ -22,6 +22,22 @@ logger = logging.getLogger(__name__)
 _OPENAI_TOOL_CALL_ID_MAX_LENGTH = 64
 
 
+def _provider_requires_reasoning_none_for_tools(error: Exception) -> bool:
+    """Recognize the OpenAI-compatible error for tool calls plus reasoning.
+
+    Some newer OpenAI-compatible models expose reasoning on chat completions but
+    reject function tools while reasoning is enabled. The provider tells us the
+    safe compatibility setting in its error, so keep the retry narrowly scoped
+    instead of disabling reasoning for every model.
+    """
+    message = str(error).lower()
+    return (
+        "function tools with reasoning_effort" in message
+        and "reasoning_effort" in message
+        and "none" in message
+    )
+
+
 def _bounded_tool_call_id(tool_call_id: Any) -> str:
     """Return a deterministic OpenAI-safe ID without breaking tool-result links."""
     normalized = str(tool_call_id or "")
@@ -204,4 +220,17 @@ class LimeLLMClient:
         if request.max_tokens is not None:
             kwargs["max_tokens"] = request.max_tokens
 
-        return await acompletion(**kwargs)
+        try:
+            return await acompletion(**kwargs)
+        except Exception as exc:
+            if not request.tools or not _provider_requires_reasoning_none_for_tools(exc):
+                raise
+
+            compatibility_kwargs = dict(kwargs)
+            compatibility_kwargs["reasoning_effort"] = "none"
+            logger.warning(
+                "Provider rejected reasoning with function tools for %s; "
+                "retrying with reasoning_effort=none.",
+                provider.source_model,
+            )
+            return await acompletion(**compatibility_kwargs)

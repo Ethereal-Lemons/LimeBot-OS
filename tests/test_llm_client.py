@@ -121,6 +121,40 @@ class TestLlmClient(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(kwargs["stream"])
         self.assertNotIn("stream_options", kwargs)
 
+    async def test_complete_retries_tool_call_without_reasoning_effort(self):
+        client = LimeLLMClient()
+        provider = ProviderConfig(
+            source_model="openai/gpt-5.6-luna",
+            model="gpt-5.6-luna",
+            base_url="https://api.openai.com/v1",
+            api_key="openai-secret",
+            custom_llm_provider="openai",
+            is_codex=False,
+        )
+        request = ChatRequest(
+            messages=[{"role": "user", "content": "check GitHub"}],
+            tools=[{"type": "function", "function": {"name": "list_repos"}}],
+        )
+        response = object()
+        provider_error = Exception(
+            "Function tools with reasoning_effort are not supported for "
+            "gpt-5.6-luna in /v1/chat/completions. To use function tools, "
+            "use /v1/responses or set reasoning_effort to 'none'."
+        )
+
+        with patch(
+            "core.llm_client.acompletion",
+            new=AsyncMock(side_effect=[provider_error, response]),
+        ) as mock_completion:
+            result = await client.complete(provider, request)
+
+        self.assertIs(result, response)
+        self.assertEqual(mock_completion.await_count, 2)
+        self.assertNotIn("reasoning_effort", mock_completion.await_args_list[0].kwargs)
+        self.assertEqual(
+            mock_completion.await_args_list[1].kwargs["reasoning_effort"], "none"
+        )
+
     async def test_complete_bounds_long_tool_call_ids_and_preserves_links(self):
         client = LimeLLMClient()
         provider = ProviderConfig(
