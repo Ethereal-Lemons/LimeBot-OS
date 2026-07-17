@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 from loguru import logger
+from core.runtime_paths import get_skill_dirs
 
 try:
     import yaml
@@ -30,7 +31,7 @@ class SkillLoader:
             skill_dirs: List of directories to scan for skills.
                        Defaults to ['./skills']
         """
-        self.skill_dirs = skill_dirs or ["./skills"]
+        self.skill_dirs = skill_dirs or [str(path) for path in get_skill_dirs()]
         self.skills: Dict[str, Dict[str, Any]] = {}
 
     def discover_skills(self) -> Dict[str, Dict[str, Any]]:

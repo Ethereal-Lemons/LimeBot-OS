@@ -6,7 +6,9 @@ Single source of truth — imported by prompt.py, tag_parser.py, loop.py, reflec
 
 from pathlib import Path
 
-_BASE_DIR = Path(__file__).resolve().parent.parent
+from core.runtime_paths import get_state_dir
+
+_BASE_DIR = get_state_dir()
 
 PERSONA_DIR = _BASE_DIR / "persona"
 USERS_DIR = PERSONA_DIR / "users"

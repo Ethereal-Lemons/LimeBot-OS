@@ -29,8 +29,10 @@ from typing import Optional
 
 from loguru import logger
 
-SKILLS_DIR = Path("skills")
-CONFIG_FILE = Path("limebot.json")
+from core.runtime_paths import get_config_file, get_skills_dir
+
+SKILLS_DIR = get_skills_dir()
+CONFIG_FILE = get_config_file()
 
 try:
     import yaml
@@ -66,6 +68,7 @@ class SkillInstaller:
         self.config["skills"].setdefault("enabled", [])
         self.config["skills"].setdefault("installed", {})
         try:
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
             CONFIG_FILE.write_text(
                 json.dumps(self.config, indent=2, ensure_ascii=False), encoding="utf-8"
             )

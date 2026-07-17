@@ -89,6 +89,7 @@ persona/USER.md
 
 # Sensitive Data
 data/*.json
+/.limebot-update-backups/
 contacts.json
 server_diagnostics/
 
@@ -110,4 +111,3 @@ plans/*
 
 # Scratch
 scratch/
-

@@ -6,10 +6,11 @@ import httpx
 from typing import Dict, Any, List
 from loguru import logger
 from pathlib import Path
+from core.runtime_paths import get_config_file, get_state_dir
 
 # Paths
-LIMEBOT_CONFIG_PATH = Path("limebot.json")
-TEMP_DIR = Path("temp")
+LIMEBOT_CONFIG_PATH = get_config_file()
+TEMP_DIR = get_state_dir() / "temp"
 
 # Filename prefix used by every synthesis call site (synthesize_and_save /
 # synthesize_to_file both default to this) — also doubles as the glob pattern
@@ -80,6 +81,7 @@ class ElevenLabsTTS:
 
         tmp_path = LIMEBOT_CONFIG_PATH.with_suffix(".json.tmp")
         try:
+            LIMEBOT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             tmp_path.replace(LIMEBOT_CONFIG_PATH)

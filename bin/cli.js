@@ -42,6 +42,11 @@ import {
 import { describeSupportedNode, isSupportedNodeVersion } from './runtime-support.js';
 import { cleanupStoppedTaskState } from './task-state.js';
 import { refreshWindowsProcessPath } from './windows-path.js';
+import {
+    applyUpdate,
+    inspectWorktree,
+    rollbackUpdate,
+} from './updater.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -590,6 +595,11 @@ async function getUpdateStatus({ forceRefresh = false } = {}) {
 
     const snapshot = await getLocalGitSnapshot();
     if (!snapshot) return null;
+    const worktree = await inspectWorktree({ runGit });
+    const worktreeChanges = Array.isArray(worktree.changes) ? worktree.changes : [];
+    const worktreeToken = worktree.available
+        ? worktreeChanges.map((change) => change.raw).join('\n')
+        : '';
     const packageInfo = readLocalPackageInfo();
 
     const now = Date.now();
@@ -604,6 +614,7 @@ async function getUpdateStatus({ forceRefresh = false } = {}) {
         cached.remoteBranch === snapshot.remoteBranch &&
         cached.currentVersion === packageInfo.currentVersion &&
         cached.packageName === packageInfo.packageName &&
+        cached.worktreeToken === worktreeToken &&
         (now - cached.checkedAt) < UPDATE_CHECK_TTL_MS
     ) {
         return cached;
@@ -650,6 +661,11 @@ async function getUpdateStatus({ forceRefresh = false } = {}) {
         latestVersionSource: latestVersionSummary.latestVersionSource,
         hasVersionUpdate: latestVersionSummary.hasVersionUpdate,
         hasUpdate: behind > 0 || latestVersionSummary.hasVersionUpdate,
+        worktreeKind: worktree.kind,
+        worktreeToken,
+        worktreeChanges: worktreeChanges.map((change) => change.path),
+        codeDirty: Boolean(worktree.codeDirty),
+        stateOnly: Boolean(worktree.stateOnly),
     };
     writeUpdateCheckCache(status);
     return status;
@@ -672,6 +688,13 @@ function printUpdateStatus(status, { alwaysShowSummary = false } = {}) {
             info('Latest version: unavailable');
         }
         info(`Git state: ${status.branchName} @ ${shortSha(status.localHead)} (ahead ${status.ahead}, behind ${status.behind})`);
+        if (status.worktreeKind === 'clean') {
+            success('Working tree is clean.');
+        } else if (status.worktreeKind === 'state-only') {
+            warning('Local runtime state will be preserved during an update.');
+        } else if (status.worktreeKind === 'code-dirty') {
+            warning('Tracked source changes are present; automatic update is blocked.');
+        }
     }
 
     if (status.hasVersionUpdate) {
@@ -1092,6 +1115,7 @@ ${colors.reset}
     ${colors.cyan}start${colors.reset}            Start LimeBot (backend + frontend)
     ${colors.cyan}stop${colors.reset}             Stop all running LimeBot processes
     ${colors.cyan}status${colors.reset}           Check if LimeBot services are running
+    ${colors.cyan}update${colors.reset}           Safely fast-forward source and preserve local state
     ${colors.cyan}update-check${colors.reset}     Check current version, latest version, and git update status
     ${colors.cyan}auth${colors.reset}             Manage CLI-only auth providers like Codex OAuth
     ${colors.cyan}skill${colors.reset}            Manage skills (install, uninstall, update, list)
@@ -1134,6 +1158,9 @@ ${colors.reset}
 
   ${colors.bright}Examples:${colors.reset}
     ${colors.dim}limebot start${colors.reset}
+    ${colors.dim}limebot update${colors.reset}
+    ${colors.dim}limebot update --check${colors.reset}
+    ${colors.dim}limebot update --rollback${colors.reset}
     ${colors.dim}limebot update-check${colors.reset}
     ${colors.dim}limebot auth codex login${colors.reset}
     ${colors.dim}limebot start --quick${colors.reset}
@@ -1442,6 +1469,96 @@ async function ensureBrowserAndChromium() {
         );
     }
     success('Chromium installed and launch-verified successfully!');
+}
+
+async function refreshDependenciesAfterUpdate() {
+    const childEnv = buildChildEnv();
+    const npmLock = path.join(rootDir, 'package-lock.json');
+    if (fs.existsSync(npmLock)) {
+        await runDependencyCommand(
+            npmExecutable(),
+            ['ci', '--ignore-scripts'],
+            {
+                env: childEnv,
+                label: 'NPM dependency refresh',
+                retryCommand: `${npmExecutable()} ci --ignore-scripts`,
+            },
+        );
+    }
+
+    const venvPython = venvPythonPath();
+    const requirements = path.join(rootDir, 'requirements.txt');
+    if (fs.existsSync(venvPython) && fs.existsSync(requirements)) {
+        await runDependencyCommand(
+            venvPython,
+            ['-m', 'pip', 'install', '-r', 'requirements.txt', '--quiet'],
+            {
+                env: childEnv,
+                label: 'Python dependency refresh',
+                retryCommand: `"${venvPython}" -m pip install -r requirements.txt`,
+            },
+        );
+    }
+}
+
+async function cmdUpdate(args = []) {
+    const checkOnly = args.includes('--check') || args.includes('--cached');
+    const rollback = args.includes('--rollback');
+    const refreshDeps = !args.includes('--no-deps');
+
+    console.log(`${colors.lime}${colors.bright}\n  🍋 LimeBot Update${colors.reset}\n`);
+    if (rollback) {
+        const result = await rollbackUpdate({ runGit, rootDir, fsImpl: fs });
+        if (!result.ok) {
+            error(result.message || 'Rollback was not applied.');
+            process.exitCode = 1;
+        } else {
+            success('Rolled back the last guarded update.');
+            info('Run `limebot start` to restart LimeBot on the restored source.');
+        }
+        console.log('');
+        return;
+    }
+
+    if (checkOnly) {
+        const status = await getUpdateStatus({ forceRefresh: !args.includes('--cached') });
+        printUpdateStatus(status, { alwaysShowSummary: true });
+        console.log('');
+        return;
+    }
+
+    const result = await applyUpdate({ runGit, rootDir, fsImpl: fs });
+    if (!result.ok) {
+        error(result.message || `Update was not applied (${result.reason}).`);
+        if (result.reason === 'code-dirty') {
+            info('Use `limebot update --check` to review the files, then commit or copy source changes aside.');
+        } else if (result.reason === 'diverged') {
+            info('Automatic updates only fast-forward. Reinstall from a fresh checkout if you need to discard local commits.');
+        }
+        process.exitCode = 1;
+        console.log('');
+        return;
+    }
+    if (!result.updated) {
+        success('LimeBot is already up to date.');
+        if (result.worktree?.stateOnly) info('Local runtime state is preserved.');
+        console.log('');
+        return;
+    }
+
+    success(`Updated ${shortSha(result.record.previousHead)} -> ${shortSha(result.record.newHead)}.`);
+    info(`Runtime backup: ${result.backup.backupDir}`);
+    if (refreshDeps) {
+        try {
+            await refreshDependenciesAfterUpdate();
+            success('Dependencies refreshed.');
+        } catch (err) {
+            warning(`Dependency refresh deferred: ${err.message}`);
+            info('Run `limebot start` to retry dependency installation.');
+        }
+    }
+    info('Restart LimeBot with `limebot start` to load the new source.');
+    console.log('');
 }
 
 async function missingVideoBinaries(required = ['ffmpeg', 'ffprobe']) {
@@ -2293,6 +2410,7 @@ async function main() {
         case 'start': await cmdStart(args.slice(1), updateStatus); break;
         case 'stop': await cmdStop(); break;
         case 'status': await cmdStatus(); break;
+        case 'update': await cmdUpdate(args.slice(1)); break;
         case 'update-check': await cmdUpdateCheck(args.slice(1)); break;
         case 'auth': await cmdAuth(args.slice(1)); break;
         case 'doctor': await cmdDoctor(args.slice(1)); break;

@@ -172,6 +172,13 @@ efficient, balanced, focused ranges, and 1024-resolution text inspection.
 
 **`run_command` security filter:** Blocks `;`, `&&`, `||`, `|`, `>`, `<`, `` ` ``, `$()`, `\n`, `sudo`, `chmod`, `chown`, `ifs=`, `pythonpath=`.
 
+`run_command` also rejects the root `main.py` service entrypoint because it is
+long-running and belongs behind `limebot start`. One-shot commands use
+`RUN_COMMAND_MAX_SECONDS` (default 180 seconds) as a hard safety cap even when
+`COMMAND_TIMEOUT=0`; command cancellation closes stdin and kills the process
+tree. Skill docs must invoke their own entrypoint, for example
+`python {baseDir}/main.py user-info` for the GitHub skill.
+
 **Tool result limits** (per-tool, to control context window growth):
 
 | Tool | Limit |
@@ -478,6 +485,9 @@ npm run lime-bot <command> [options]
 | `start -- --quick` | Fast boot, skip dependency and update checks |
 | `stop` | Kill all LimeBot processes |
 | `status` | Check active ports (8000 backend, 5173 frontend) |
+| `update` | Fast-forward source safely, back up runtime state, and refresh dependencies |
+| `update --check` | Report remote status and classify local changes before updating |
+| `update --rollback` | Restore the previous guarded commit when no tracked source edits exist |
 | `auth codex <login\|import\|status\|logout>` | Manage local ChatGPT Codex OAuth from the CLI |
 | `doctor` | Validate Python, Node, `.env` config |
 | `logs` | Tail `logs/limebot.log` |
@@ -489,6 +499,10 @@ npm run lime-bot <command> [options]
 | `install-browser` | Install Chromium for Playwright |
 | `feature install <browser\|memory\|documents\|mcp\|video\|whatsapp\|extension\|all>` | Install one closed optional profile, or all profiles plus launch-verified Chromium |
 | `review-diff --diff-file <path> --output <path>` | Parse only the supplied unified diff and write a redacted review artifact; `--invoke-model` optionally calls the configured LLM without tools. |
+
+`LIMEBOT_STATE_DIR` can point at a user-owned directory outside the checkout.
+When set, mutable configuration, persona data, and installed skills use that
+directory while shipped skills continue loading from the repository.
 
 **Codex OAuth notes:**
 - The OAuth sign-in flow is intentionally CLI-only (`limebot auth codex ...`), not browser-dashboard driven.

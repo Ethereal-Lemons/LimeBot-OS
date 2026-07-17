@@ -172,7 +172,7 @@ Skills extend what LimeBot can do. Each skill is a folder with a `SKILL.md` (the
 | `download_image` | Download high-res images from Pinterest, Reddit, Wikimedia, or direct URLs |
 | `filesystem` | Extended file operations beyond the core toolbox |
 | `discord` | Optional higher-level Discord administration helpers |
-| `docx-creator` | Generate formatted Microsoft Word `.docx` documents |
+| `docx-creator` | Create, inspect, edit, and validate Microsoft Word `.docx` documents |
 
 **Install community skills from GitHub:**
 ```bash
@@ -360,6 +360,9 @@ You can use the following commands in the root directory to manage your LimeBot 
 | **`npm run start:quick`** | Launches with dependency and update checks skipped; use this only after a successful normal start. |
 | **`npm run stop`** | Safely stops all active LimeBot background processes. |
 | **`npm run status`** | Checks active ports (Backend on `8000`, Frontend on `5173`). |
+| **`npm run update`** | Safely fast-forwards a Git checkout, backs up runtime state, and refreshes dependencies. |
+| **`npm run update:check`** | Shows update availability and whether local changes can be updated automatically. |
+| **`npm run lime-bot update --rollback`** | Reverts the last guarded update when no tracked source edits are present. |
 | **`npm run doctor`** | Validates your local setup, environment variables, Node.js and Python runtimes. |
 | **`npm run logs`** | Tails the live logger (`logs/limebot.log`). |
 | **`npm run test:cli`** | Runs the Node.js CLI & dependency validation tests. |
@@ -369,6 +372,22 @@ You can use the following commands in the root directory to manage your LimeBot 
 | **`npm run lime-bot skill install <url>`** | Installs a new skill from a GitHub URL or repository path. |
 
 Normal combined startup opens the dashboard as soon as the backend reports process liveness at `/api/live`. Agent capabilities may continue loading after the UI appears; the authenticated `/api/ready` endpoint remains the source of full capability readiness. Remote update discovery also runs in the background after local processes launch. Backend-only startup continues to wait for full readiness so it can report a diagnostic result.
+
+#### Hassle-free updates
+
+Run `npm run update` from the checkout. The updater only applies a
+fast-forward, refuses to overwrite tracked source edits, and preserves legacy
+runtime files such as `.env`, `limebot.json`, persona data, and custom skills.
+Before changing source it writes a local backup under
+`.limebot-update-backups/`. If a dependency refresh is unavailable, the next
+normal `npm start` retries it automatically. Use `--no-deps` to defer the
+refresh explicitly, or `--rollback` to restore the previous guarded commit.
+
+For new installs, set `LIMEBOT_STATE_DIR` to a user-owned directory outside the
+Git checkout. LimeBot then stores mutable configuration, persona data, and
+installed skills there, so future updates do not create merge conflicts with
+local state. Existing installs can adopt this path incrementally; the checkout
+root remains the compatibility default when the variable is not set.
 
 ### Manual Start (Developers)
 ```bash

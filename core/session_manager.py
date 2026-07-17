@@ -9,12 +9,13 @@ from typing import Dict, Any, Optional
 from loguru import logger
 
 from core.paths import PERSONA_DIR
+from core.runtime_paths import get_config_file, get_skill_dirs
 
 SESSION_DIR = PERSONA_DIR / "sessions"
 SESSION_FILE = SESSION_DIR / "sessions.json"
 LOGS_DIR = SESSION_DIR / "logs"
 EVENTS_DIR = SESSION_DIR / "events"
-SKILLS_DIR = Path("skills")
+SKILLS_DIRS = get_skill_dirs()
 _STRUCTURAL_RESIDUE_RE = re.compile(r"^[`{}\[\],:;\s]+$")
 _LEGACY_XML_TOOL_TAG_NAMES = (
     "read_file|write_file|delete_file|list_dir|search_files|run_command|"
@@ -565,17 +566,19 @@ class SessionManager:
         skills = []
         enabled = []
         try:
-            config_path = Path("limebot.json")
+            config_path = get_config_file()
             if config_path.exists():
                 data = json.loads(config_path.read_text(encoding="utf-8"))
                 enabled = data.get("skills", {}).get("enabled", [])
         except Exception:
             pass
 
-        if SKILLS_DIR.exists():
-            for item in SKILLS_DIR.iterdir():
+        for skills_dir in SKILLS_DIRS:
+            if not skills_dir.exists():
+                continue
+            for item in skills_dir.iterdir():
                 if item.is_dir() and not item.name.startswith("__"):
-                    if item.name in enabled:
+                    if item.name in enabled and item.name not in skills:
                         skills.append(item.name)
 
         self._skills_cache = sorted(skills)

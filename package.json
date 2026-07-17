@@ -13,6 +13,8 @@
     "start": "node bin/cli.js start",
     "start:quick": "node bin/cli.js start --quick",
     "status": "node bin/cli.js status",
+    "update": "node bin/cli.js update",
+    "update:check": "node bin/cli.js update --check",
     "doctor": "node bin/cli.js doctor",
     "stop": "node bin/cli.js stop",
     "logs": "node bin/cli.js logs",

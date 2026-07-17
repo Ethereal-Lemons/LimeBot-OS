@@ -9,9 +9,10 @@ from typing import Any, Dict
 
 import httpx
 from loguru import logger
+from core.runtime_paths import get_config_file
 
 
-LIMEBOT_CONFIG_PATH = Path("limebot.json")
+LIMEBOT_CONFIG_PATH = get_config_file()
 ELEVENLABS_STT_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 
 
