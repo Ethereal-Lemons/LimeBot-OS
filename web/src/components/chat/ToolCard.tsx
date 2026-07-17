@@ -61,7 +61,10 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
         if (execution.logs && execution.logs.length > 0 && !isExpanded && execution.status === 'running') {
             setIsExpanded(true);
         }
-    }, [execution.logs, execution.status]);
+        if (execution.status === 'error' && !isExpanded) {
+            setIsExpanded(true);
+        }
+    }, [execution.logs, execution.status, isExpanded]);
 
     // Check if the action is blocked by backend
     const isBlocked = execution.status === 'waiting_confirmation' || execution.result?.includes("ACTION BLOCKED: Confirmation Required");

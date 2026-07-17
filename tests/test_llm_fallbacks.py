@@ -106,6 +106,11 @@ class TestLlmFallbacks(unittest.IsolatedAsyncioTestCase):
         second_provider = mocked.await_args_list[1].args[0]
         self.assertEqual(first_provider.model, "grok-4-fast-reasoning")
         self.assertEqual(second_provider.model, "gemini-2.0-flash")
+        self.assertEqual(
+            loop.model,
+            "xai/grok-4-fast-reasoning",
+            "fallback selection must not replace the configured primary model",
+        )
 
     async def test_llm_call_times_out_instead_of_hanging_turn(self):
         from core.loop import AgentLoop

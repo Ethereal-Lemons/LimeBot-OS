@@ -310,10 +310,7 @@ class TaskTracker:
             task = self._active.get(task_id)
             if task is None:
                 return None
-            if task.status not in {
-                TaskStatus.QUEUED.value,
-                TaskStatus.WAITING.value,
-            }:
+            if task.status in _TERMINAL_STATUSES:
                 return None
             task.status = TaskStatus.CANCELLED.value
             task.completed_at = time.time()

@@ -76,6 +76,11 @@ from core.prompt_modes import (
     build_ponytail_prompt_addition,
     normalize_ponytail_mode,
 )
+from core.provider_circuit_breaker import (
+    ProviderCircuitBreaker,
+    ProviderCircuitOpenError,
+)
+from core.runtime_paths import get_skill_dirs
 from core.skill_invocation import parse_skill_invocation
 from core.session_manager import SessionManager
 from core.skills import SkillRegistry
@@ -265,6 +270,13 @@ class AgentLoop:
         self.tool_cache = ToolCache()
         self.pending_confirmations: Dict[str, Dict[str, Any]] = {}
         self.active_tasks: Dict[str, asyncio.Task] = {}
+        # Background subagents are durable TaskTracker records plus live
+        # asyncio handles. The handle map is intentionally separate from
+        # active_tasks because these jobs outlive the parent turn.
+        self.background_subagent_tasks: Dict[str, asyncio.Task] = {}
+        self.background_subagent_sessions: Dict[str, str] = {}
+        self.background_subagent_parents: Dict[str, str] = {}
+        self.background_subagent_results: Dict[str, str] = {}
 
         self._history_dirty: Dict[str, bool] = {}
 
@@ -276,6 +288,7 @@ class AgentLoop:
             self.model = cfg.llm.model
         self.primary_model = self.model
         self.fallback_models = list(getattr(cfg.llm, "fallback_models", []) or [])
+        self.provider_circuit_breaker = ProviderCircuitBreaker()
 
         self._provider: Tuple = self._resolve_provider()
 
@@ -309,7 +322,7 @@ class AgentLoop:
             "create_skill": self.toolbox.create_skill,
         }
 
-        self.skill_registry = SkillRegistry(skill_dirs=["./skills"], config=cfg)
+        self.skill_registry = SkillRegistry(skill_dirs=[str(path) for path in get_skill_dirs()], config=cfg)
         self.subagent_registry = SubagentRegistry()
         self.toolbox.set_subagent_registry(self.subagent_registry)
 
@@ -613,6 +626,41 @@ class AgentLoop:
             for provider in chain
         ]
 
+    def _get_provider_circuit_breaker(self) -> ProviderCircuitBreaker:
+        """Lazily provide a breaker for lightweight test/embedded instances."""
+        breaker = getattr(self, "provider_circuit_breaker", None)
+        if breaker is None:
+            breaker = ProviderCircuitBreaker()
+            self.provider_circuit_breaker = breaker
+        return breaker
+
+    @staticmethod
+    def _provider_circuit_key(
+        source_model: str,
+        model: str,
+        base_url: Optional[str],
+        custom_llm_provider: Optional[str],
+    ) -> str:
+        return "|".join(
+            str(value or "")
+            for value in (source_model, model, base_url, custom_llm_provider)
+        )
+
+    def _provider_circuit_identity(
+        self,
+        source_model: str,
+        model: str,
+        base_url: Optional[str],
+        api_key: Optional[str],
+        custom_llm_provider: Optional[str],
+    ) -> Tuple[str, str]:
+        return (
+            self._provider_circuit_key(
+                source_model, model, base_url, custom_llm_provider
+            ),
+            ProviderCircuitBreaker.credential_fingerprint(api_key),
+        )
+
     def set_model(self, model: str) -> None:
         """Switch the active model and refresh cached provider config."""
         self.model = model
@@ -627,6 +675,7 @@ class AgentLoop:
             "active_model": self.model,
             "fallback_models": list(self.fallback_models),
             "using_fallback": self.model != self.primary_model,
+            "provider_circuits": self._get_provider_circuit_breaker().snapshot(),
         }
 
     @staticmethod
@@ -2094,6 +2143,23 @@ class AgentLoop:
             await asyncio.gather(*active_tasks, return_exceptions=True)
         active_task_registry.clear()
 
+        # Background subagents are first-class jobs, but their live handles
+        # remain outside the per-turn registry because they intentionally outlive
+        # the parent turn.  Shutdown still owns them and must cancel/await every
+        # handle before the loop exits.
+        background_handles = [
+            task
+            for task in getattr(self, "background_subagent_tasks", {}).values()
+            if task is not current_task and not task.done()
+        ]
+        for task in background_handles:
+            task.cancel()
+        if background_handles:
+            await asyncio.gather(*background_handles, return_exceptions=True)
+        getattr(self, "background_subagent_tasks", {}).clear()
+        getattr(self, "background_subagent_sessions", {}).clear()
+        getattr(self, "background_subagent_parents", {}).clear()
+
         # Persist the latest durable delivery state before bus workers are cancelled.
         try:
             from core.delivery_tracker import get_delivery_tracker
@@ -2106,6 +2172,200 @@ class AgentLoop:
             await asyncio.to_thread(self.metrics.flush, 2.0)
         except Exception:
             pass
+
+    @staticmethod
+    def _task_channel_chat(session_key: str) -> Tuple[str, str]:
+        channel, separator, chat_id = str(session_key or "").partition(":")
+        return (channel if separator else "", chat_id if separator else session_key)
+
+    async def start_background_subagent(
+        self,
+        parent_session_key: str,
+        sub_session_key: str,
+        task: str,
+        agent_name: Optional[str] = None,
+    ) -> str:
+        """Create and retain a durable, cancellable background subagent job."""
+        from core.task_tracker import TaskStatus, TaskType, get_task_tracker
+
+        tracker = get_task_tracker()
+        channel, chat_id = self._task_channel_chat(parent_session_key)
+        task_id = await tracker.create_task(
+            task_type=TaskType.SUBAGENT_JOB.value,
+            summary=str(task or "").strip()[:300],
+            channel=channel,
+            session_key=sub_session_key,
+            chat_id=chat_id,
+            metadata={
+                "background": True,
+                "parent_session_key": parent_session_key,
+                "sub_session_key": sub_session_key,
+                "agent_name": agent_name or "",
+            },
+        )
+        await tracker.update_task(task_id, status=TaskStatus.RUNNING.value)
+        handle = asyncio.create_task(
+            self._run_background_subagent_task(
+                task_id,
+                parent_session_key,
+                sub_session_key,
+                task,
+                agent_name,
+            ),
+            name=f"limebot-subagent-{task_id}",
+        )
+        if not hasattr(self, "background_subagent_tasks"):
+            self.background_subagent_tasks = {}
+        if not hasattr(self, "background_subagent_sessions"):
+            self.background_subagent_sessions = {}
+        if not hasattr(self, "background_subagent_parents"):
+            self.background_subagent_parents = {}
+        self.background_subagent_tasks[task_id] = handle
+        self.background_subagent_sessions[task_id] = sub_session_key
+        self.background_subagent_parents[task_id] = parent_session_key
+        if not hasattr(self, "background_subagent_results"):
+            self.background_subagent_results = {}
+        return task_id
+
+    async def _run_background_subagent_task(
+        self,
+        task_id: str,
+        parent_session_key: str,
+        sub_session_key: str,
+        task: str,
+        agent_name: Optional[str],
+    ) -> str:
+        from core.task_tracker import TaskStatus, get_task_tracker
+
+        tracker = get_task_tracker()
+        status = TaskStatus.COMPLETED.value
+        error = ""
+        result = ""
+        try:
+            result = str(
+                await self.run_subagent(
+                    parent_session_key,
+                    sub_session_key,
+                    task,
+                    agent_name=agent_name,
+                )
+                or ""
+            )
+            if result.startswith("Error"):
+                status = TaskStatus.FAILED.value
+                error = result[:500]
+            return result
+        except asyncio.CancelledError:
+            status = TaskStatus.CANCELLED.value
+            error = "Background subagent cancelled."
+            raise
+        except Exception as exc:
+            status = TaskStatus.FAILED.value
+            error = str(exc)[:500]
+            logger.error(f"Error in background sub-agent '{sub_session_key}': {exc}")
+            return f"Error in sub-agent '{sub_session_key}': {exc}"
+        finally:
+            # The wrapper is the only completion owner.  A repeated kill/wait or
+            # a late cancellation therefore cannot publish duplicate terminal
+            # task records.
+            try:
+                await asyncio.shield(
+                    tracker.update_task(
+                        task_id,
+                        status=status,
+                        summary=(result or error or task).strip()[:300],
+                        error=error or None,
+                        metadata_update={
+                            "outcome": status,
+                            "result_preview": (result or error).strip()[:500],
+                        },
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"Could not finalize background task {task_id}: {exc}"
+                )
+            current = asyncio.current_task()
+            if result or error:
+                self.background_subagent_results[task_id] = result or error
+                # Keep completed output bounded while TaskTracker retains the
+                # durable status and a short preview.
+                while len(self.background_subagent_results) > 500:
+                    self.background_subagent_results.pop(
+                        next(iter(self.background_subagent_results)), None
+                    )
+            if self.background_subagent_tasks.get(task_id) is current:
+                self.background_subagent_tasks.pop(task_id, None)
+            self.background_subagent_sessions.pop(task_id, None)
+            self.background_subagent_parents.pop(task_id, None)
+
+    async def get_background_subagent_task(self, task_id: str):
+        from core.task_tracker import get_task_tracker
+
+        return await get_task_tracker().get_task(task_id)
+
+    async def get_background_subagent_output(
+        self, task_id: str, timeout: Optional[float] = None
+    ) -> Optional[str]:
+        if timeout is not None and float(timeout) > 0:
+            task = await self.wait_background_subagent_task(task_id, timeout)
+        else:
+            task = await self.get_background_subagent_task(task_id)
+        if task is None:
+            return None
+        output = getattr(self, "background_subagent_results", {}).get(task_id)
+        if output is None:
+            output = str((task.metadata or {}).get("result_preview") or "")
+        return (
+            f"Task {task.task_id}\n"
+            f"Status: {task.status}\n"
+            f"Summary: {task.summary}\n"
+            f"{output}".strip()
+        )
+
+    async def wait_background_subagent_task(
+        self, task_id: str, timeout: Optional[float] = None
+    ):
+        handle = self.background_subagent_tasks.get(task_id)
+        if handle is not None and not handle.done():
+            waiter = asyncio.shield(handle)
+            if timeout is None:
+                await waiter
+            else:
+                await asyncio.wait_for(waiter, timeout=max(0.0, float(timeout)))
+        return await self.get_background_subagent_task(task_id)
+
+    async def kill_background_subagent_task(self, task_id: str):
+        from core.task_tracker import TaskStatus, TaskType, get_task_tracker
+
+        tracker = get_task_tracker()
+        handle = self.background_subagent_tasks.get(task_id)
+        if handle is not None and not handle.done():
+            handle.cancel()
+            await asyncio.gather(handle, return_exceptions=True)
+        task = await tracker.get_task(task_id)
+        if (
+            task is not None
+            and task.type == TaskType.SUBAGENT_JOB.value
+            and task.status not in {
+                TaskStatus.COMPLETED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED.value,
+            }
+        ):
+            task = await tracker.cancel_task(task_id)
+        return task
+
+    # Short lifecycle aliases mirror Grok's task vocabulary for callers that
+    # manage jobs directly instead of going through the REST/tool adapters.
+    async def get_task(self, task_id: str):
+        return await self.get_background_subagent_task(task_id)
+
+    async def wait_task(self, task_id: str, timeout: Optional[float] = None):
+        return await self.wait_background_subagent_task(task_id, timeout)
+
+    async def kill_task(self, task_id: str):
+        return await self.kill_background_subagent_task(task_id)
 
     async def cancel_session(self, session_key: str) -> bool:
         cancelled_any = False
@@ -2132,6 +2392,18 @@ class AgentLoop:
                         "parent": session_key,
                     },
                 )
+                cancelled_any = True
+
+        # A background subagent is keyed by its stable task id rather than by
+        # the parent session's short-lived turn handle.
+        for task_id, sub_session in list(
+            getattr(self, "background_subagent_sessions", {}).items()
+        ):
+            parent = getattr(self, "background_subagent_parents", {}).get(task_id)
+            if parent not in related_sessions and sub_session not in related_sessions:
+                continue
+            if await self.kill_background_subagent_task(task_id):
+                logger.info(f"Cancelled background subagent task {task_id}")
                 cancelled_any = True
 
         for conf_id, conf in list(self.pending_confirmations.items()):
@@ -2537,10 +2809,35 @@ class AgentLoop:
             ]
         else:
             provider_chain = self._resolve_provider_chain()
-        selected_index = 0
-        active_source_model, model, base_url, api_key, custom_llm_provider = (
-            provider_chain[selected_index]
-        )
+        if not provider_chain:
+            raise RuntimeError("No LLM provider is configured")
+
+        breaker = self._get_provider_circuit_breaker()
+
+        def _select_provider(start_index: int):
+            for index in range(start_index, len(provider_chain)):
+                candidate = provider_chain[index]
+                circuit_key, credential_fingerprint = self._provider_circuit_identity(
+                    *candidate
+                )
+                if breaker.allow(
+                    circuit_key,
+                    credential_fingerprint=credential_fingerprint,
+                ):
+                    return index, candidate, circuit_key, credential_fingerprint
+            return None
+
+        selection = _select_provider(0)
+        if selection is None:
+            raise ProviderCircuitOpenError("all configured providers")
+        selected_index, candidate, circuit_key, credential_fingerprint = selection
+        (
+            active_source_model,
+            model,
+            base_url,
+            api_key,
+            custom_llm_provider,
+        ) = candidate
         self._log_tool_debug(
             "llm_call_prepare",
             session_key=session_key,
@@ -2578,24 +2875,21 @@ class AgentLoop:
                     ),
                 )
                 if llm_timeout > 0:
-                    return await asyncio.wait_for(llm_call, timeout=llm_timeout)
-                return await llm_call
-                kwargs: Dict[str, Any] = dict(
-                    model=model,
-                    messages=messages,
-                    stream=stream,
-                    base_url=base_url,
-                    api_key=api_key,
-                    custom_llm_provider=custom_llm_provider,
+                    response = await asyncio.wait_for(llm_call, timeout=llm_timeout)
+                else:
+                    response = await llm_call
+                breaker.record_success(
+                    circuit_key,
+                    credential_fingerprint=credential_fingerprint,
                 )
-                if tools:
-                    kwargs["tools"] = tools
-                    kwargs["tool_choice"] = "auto"
-                if stream:
-                    kwargs["stream_options"] = {"include_usage": True}
-                return await acompletion(**kwargs)
-
+                return response
             except AuthenticationError as e:
+                failed_source_model = active_source_model
+                breaker.record_failure(
+                    circuit_key,
+                    credential_fingerprint=credential_fingerprint,
+                    authentication=True,
+                )
                 self._log_tool_debug(
                     "llm_call_error",
                     session_key=session_key,
@@ -2604,26 +2898,19 @@ class AgentLoop:
                     error_type=type(e).__name__,
                     error=str(e),
                 )
-                next_provider = provider_chain[selected_index + 1 : selected_index + 2]
-                if next_provider:
-                    selected_index += 1
+                selection = _select_provider(selected_index + 1)
+                if selection:
+                    selected_index, candidate, circuit_key, credential_fingerprint = selection
                     (
                         active_source_model,
                         model,
                         base_url,
                         api_key,
                         custom_llm_provider,
-                    ) = provider_chain[selected_index]
-                    self.model = active_source_model
-                    self._provider = (
-                        model,
-                        base_url,
-                        api_key,
-                        custom_llm_provider,
-                    )
+                    ) = candidate
                     qwen_auth_failover_attempted.clear()
                     logger.warning(
-                        f"LLM auth failed for '{provider_chain[selected_index - 1][0]}'; switching to fallback '{active_source_model}'."
+                        f"LLM auth failed for '{failed_source_model}'; switching to fallback '{active_source_model}'."
                     )
                     if msg and not model_failover_announced:
                         await self.bus.publish_outbound(
@@ -2675,6 +2962,11 @@ class AgentLoop:
                 APIConnectionError,
                 ServiceUnavailableError,
             ) as e:
+                failed_source_model = active_source_model
+                breaker.record_failure(
+                    circuit_key,
+                    credential_fingerprint=credential_fingerprint,
+                )
                 self._log_tool_debug(
                     "llm_call_error",
                     session_key=session_key,
@@ -2686,26 +2978,19 @@ class AgentLoop:
                 is_500 = isinstance(e, InternalServerError)
                 is_conn = isinstance(e, (APIConnectionError, ServiceUnavailableError))
                 wait_time = (2**attempt) * 5
-                next_provider = provider_chain[selected_index + 1 : selected_index + 2]
-                if next_provider:
-                    selected_index += 1
+                selection = _select_provider(selected_index + 1)
+                if selection:
+                    selected_index, candidate, circuit_key, credential_fingerprint = selection
                     (
                         active_source_model,
                         model,
                         base_url,
                         api_key,
                         custom_llm_provider,
-                    ) = provider_chain[selected_index]
-                    self.model = active_source_model
-                    self._provider = (
-                        model,
-                        base_url,
-                        api_key,
-                        custom_llm_provider,
-                    )
+                    ) = candidate
                     qwen_auth_failover_attempted.clear()
                     logger.warning(
-                        f"LLM provider '{provider_chain[selected_index - 1][0]}' failed; switching to fallback '{active_source_model}'."
+                        f"LLM provider '{failed_source_model}' failed; switching to fallback '{active_source_model}'."
                     )
                     if msg and not model_failover_announced:
                         err_str = str(e).lower()
@@ -2795,7 +3080,17 @@ class AgentLoop:
                             )
                         )
                 raise
+            except asyncio.CancelledError:
+                breaker.record_aborted(
+                    circuit_key,
+                    credential_fingerprint=credential_fingerprint,
+                )
+                raise
             except asyncio.TimeoutError as e:
+                breaker.record_failure(
+                    circuit_key,
+                    credential_fingerprint=credential_fingerprint,
+                )
                 self._log_tool_debug(
                     "llm_call_error",
                     session_key=session_key,
@@ -2808,6 +3103,22 @@ class AgentLoop:
                     f"AI provider timed out after {llm_timeout:g}s. Try again or switch models."
                 ) from e
             except Exception as e:
+                failed_source_model = active_source_model
+                auth_like_error = any(
+                    marker in str(e or "").lower()
+                    for marker in ("incorrect api key", "invalid api key", "authentication", "auth failed")
+                )
+                if auth_like_error:
+                    breaker.record_failure(
+                        circuit_key,
+                        credential_fingerprint=credential_fingerprint,
+                        authentication=True,
+                    )
+                elif self._should_failover_model(e):
+                    breaker.record_failure(
+                        circuit_key,
+                        credential_fingerprint=credential_fingerprint,
+                    )
                 self._log_tool_debug(
                     "llm_call_error",
                     session_key=session_key,
@@ -2816,26 +3127,24 @@ class AgentLoop:
                     error_type=type(e).__name__,
                     error=str(e),
                 )
-                next_provider = provider_chain[selected_index + 1 : selected_index + 2]
-                if next_provider and self._should_failover_model(e):
-                    selected_index += 1
+                failover_worthy = self._should_failover_model(e)
+                selection = (
+                    _select_provider(selected_index + 1)
+                    if failover_worthy
+                    else None
+                )
+                if selection and failover_worthy:
+                    selected_index, candidate, circuit_key, credential_fingerprint = selection
                     (
                         active_source_model,
                         model,
                         base_url,
                         api_key,
                         custom_llm_provider,
-                    ) = provider_chain[selected_index]
-                    self.model = active_source_model
-                    self._provider = (
-                        model,
-                        base_url,
-                        api_key,
-                        custom_llm_provider,
-                    )
+                    ) = candidate
                     qwen_auth_failover_attempted.clear()
                     logger.warning(
-                        f"LLM call failed for '{provider_chain[selected_index - 1][0]}'; switching to fallback '{active_source_model}'."
+                        f"LLM call failed for '{failed_source_model}'; switching to fallback '{active_source_model}'."
                     )
                     if msg and not model_failover_announced:
                         err_msg = str(e).lower()
@@ -3368,6 +3677,55 @@ class AgentLoop:
             return "User profile saved."
         return "Tag action completed."
 
+    async def _execute_background_task_tool(
+        self, function_name: str, function_args: Dict[str, Any]
+    ) -> str:
+        raw_ids = function_args.get("task_ids")
+        if raw_ids is None and function_args.get("task_id") is not None:
+            raw_ids = [function_args.get("task_id")]
+        if isinstance(raw_ids, str):
+            raw_ids = [raw_ids]
+        task_ids: List[str] = []
+        seen: Set[str] = set()
+        for value in raw_ids or []:
+            task_id = str(value or "").strip()
+            if task_id and task_id not in seen:
+                task_ids.append(task_id)
+                seen.add(task_id)
+            if len(task_ids) >= 20:
+                break
+        if not task_ids:
+            return "Error: at least one background task_id is required."
+
+        try:
+            timeout_ms = max(0, min(int(function_args.get("timeout_ms") or 0), 300_000))
+        except (TypeError, ValueError):
+            timeout_ms = 0
+        timeout_s = timeout_ms / 1000.0
+
+        if function_name == "kill_task":
+            task = await self.kill_background_subagent_task(task_ids[0])
+            if task is None:
+                return f"Task not found: {task_ids[0]}"
+            if task.status == "cancelled":
+                return f"Task {task.task_id} killed (cancelled)."
+            return f"Task {task.task_id} already exited with status {task.status}."
+
+        outputs: List[str] = []
+        for task_id in task_ids:
+            try:
+                output = await self.get_background_subagent_output(
+                    task_id,
+                    timeout=timeout_s if timeout_s > 0 else None,
+                )
+            except asyncio.TimeoutError:
+                output = f"Task {task_id}\nStatus: running\nWait timed out."
+            if output is None:
+                outputs.append(f"Task not found: {task_id}")
+            else:
+                outputs.append(output)
+        return "\n\n".join(outputs)
+
     async def _execute_tool(
         self, function_name: str, function_args: dict, session_key: str
     ) -> Any:
@@ -3414,6 +3772,10 @@ class AgentLoop:
             if function_name == "spawn_agent":
                 result = await self.toolbox.spawn_agent(
                     session_key=session_key, **function_args
+                )
+            elif function_name in {"get_task_output", "wait_tasks", "kill_task"}:
+                result = await self._execute_background_task_tool(
+                    function_name, function_args
                 )
             elif function_name in _SEARCH_TOOLS:
                 result = await self._execute_search_tool(

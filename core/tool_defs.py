@@ -172,6 +172,49 @@ BASE_TOOLS = [
         "required": ["task"],
     },
     {
+        "name": "get_task_output",
+        "description": "Get status and output for a background sub-agent by task ID. Pass timeout_ms > 0 to wait; omit it or use 0 for a non-blocking poll.",
+        "params": {
+            "task_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "One or more stable background task IDs.",
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "description": "Optional maximum wait in milliseconds; 0 means poll.",
+            },
+        },
+        "required": ["task_ids"],
+    },
+    {
+        "name": "wait_tasks",
+        "description": "Wait for one or more background sub-agent tasks to finish. This is a compatibility alias for get_task_output with a positive timeout.",
+        "params": {
+            "task_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Stable background task IDs.",
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "description": "Maximum wait in milliseconds.",
+            },
+        },
+        "required": ["task_ids"],
+    },
+    {
+        "name": "kill_task",
+        "description": "Cancel a running background sub-agent by its stable task ID. Completed tasks are reported as already exited.",
+        "params": {
+            "task_id": {
+                "type": "string",
+                "description": "Stable background task ID returned by spawn_agent.",
+            }
+        },
+        "required": ["task_id"],
+    },
+    {
         "name": "cron_add",
         "description": (
             "Schedule a reminder or recurring task when the user asks to be reminded later or to automate something on a schedule. "
@@ -623,6 +666,9 @@ _TOOL_FAMILIES = {
     "send_discord_embed": "discord",
     "list_discord_channels": "discord",
     "spawn_agent": "agent",
+    "get_task_output": "agent",
+    "wait_tasks": "agent",
+    "kill_task": "agent",
     "cron_add": "scheduler",
     "cron_list": "scheduler",
     "cron_remove": "scheduler",
@@ -782,7 +828,7 @@ _MANDATORY_FAMILY_TOOLS = {
     "search": {"web_search", "google_search", "image_search", "deep_research"},
     "scheduler": {"cron_add", "cron_list", "cron_remove"},
     "memory": {"memory_search"},
-    "agent": {"spawn_agent"},
+    "agent": {"spawn_agent", "get_task_output", "wait_tasks", "kill_task"},
     "media": {"generate_image", "send_media", "send_voice"},
     "discord": {"send_discord_message", "send_discord_embed", "list_discord_channels"},
     "video": {"analyze_video"},
@@ -801,6 +847,9 @@ _TOOL_HINTS = {
     "send_discord_embed": {"discord", "embed", "structured", "send", "channel", "dm"},
     "list_discord_channels": {"discord", "channels", "guild", "server", "list"},
     "spawn_agent": {"delegate", "background", "subagent", "parallel"},
+    "get_task_output": {"task", "subagent", "background", "output", "status", "result", "poll"},
+    "wait_tasks": {"task", "subagent", "background", "wait", "finish", "complete"},
+    "kill_task": {"task", "subagent", "background", "cancel", "stop", "kill"},
     "cron_add": {"remind", "schedule", "later", "daily", "weekly", "every"},
     "cron_list": {"scheduled", "reminders", "jobs", "cron"},
     "cron_remove": {"cancel", "remove", "delete", "scheduled", "reminder"},

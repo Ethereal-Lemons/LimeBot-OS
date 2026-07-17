@@ -6,13 +6,19 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from pathlib import Path
+from core.runtime_paths import PROJECT_DIR, get_state_dir
 
+_project_env_path = PROJECT_DIR / ".env"
+if _project_env_path.exists():
+    # Load the project file first so it can opt into LIMEBOT_STATE_DIR for
+    # the rest of the configuration bootstrap.
+    load_dotenv(dotenv_path=_project_env_path, override=False)
 
-env_path = Path(__file__).parent / ".env"
-if env_path.exists():
+_state_env_path = get_state_dir() / ".env"
+if _state_env_path.exists() and _state_env_path != _project_env_path:
     # Keep runtime/container env vars authoritative; only fill missing keys from .env.
-    load_dotenv(dotenv_path=env_path, override=False)
-else:
+    load_dotenv(dotenv_path=_state_env_path, override=False)
+if not _state_env_path.exists() and not _project_env_path.exists():
     load_dotenv()
 
 
@@ -58,6 +64,8 @@ def load_config(force_reload=False):
         return _cached_config
 
     config = SimpleNamespace()
+    state_dir = get_state_dir()
+    config.runtime = SimpleNamespace(state_dir=str(state_dir))
 
     config.discord = SimpleNamespace()
     config.discord.enabled = os.getenv("ENABLE_DISCORD", "true").lower() == "true"
@@ -185,6 +193,16 @@ def load_config(force_reload=False):
     except ValueError:
         logger.warning("Invalid COMMAND_TIMEOUT in .env, defaulting to 0.")
         config.command_timeout = 0
+
+    try:
+        config.run_command_max_seconds = float(
+            os.getenv("RUN_COMMAND_MAX_SECONDS", "180")
+        )
+    except ValueError:
+        logger.warning(
+            "Invalid RUN_COMMAND_MAX_SECONDS in .env, defaulting to 180."
+        )
+        config.run_command_max_seconds = 180.0
  
     try:
         config.tool_timeout = float(
@@ -303,9 +321,10 @@ def load_config(force_reload=False):
             config.whitelist.allowed_paths.append(p.strip())
 
     # 2. Load from allowed_paths.txt (one path per line), creating it if missing
-    paths_file = os.path.join(os.getcwd(), "allowed_paths.txt")
+    paths_file = state_dir / "allowed_paths.txt"
     if not os.path.exists(paths_file):
         try:
+            state_dir.mkdir(parents=True, exist_ok=True)
             with open(paths_file, "w", encoding="utf-8") as f:
                 f.write("# Add your allowed workspace paths here, one per line.\n")
                 f.write("# These directories will be accessible to LimeBot.\n")
@@ -328,9 +347,10 @@ def load_config(force_reload=False):
         except Exception as e:
             logger.error(f"Error reading allowed_paths.txt: {e}")
 
-    limebot_root = os.getcwd()
-    if limebot_root not in config.whitelist.allowed_paths:
-        config.whitelist.allowed_paths.append(limebot_root)
+    limebot_root = str(PROJECT_DIR)
+    for allowed_root in (limebot_root, str(state_dir)):
+        if allowed_root not in config.whitelist.allowed_paths:
+            config.whitelist.allowed_paths.append(allowed_root)
 
     config.whitelist.api_key = os.getenv("APP_API_KEY")
     config.personality_whitelist = [
@@ -343,8 +363,8 @@ def load_config(force_reload=False):
         os.environ.setdefault("GEMINI_API_KEY", config.llm.api_key)
         os.environ.setdefault("GOOGLE_API_KEY", config.llm.api_key)
 
-    limebot_config_path = os.path.join(os.getcwd(), "limebot.json")
-    if os.path.exists(limebot_config_path):
+    limebot_config_path = state_dir / "limebot.json"
+    if limebot_config_path.exists():
         import json
 
         try:

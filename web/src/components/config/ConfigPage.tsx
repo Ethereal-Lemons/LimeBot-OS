@@ -866,7 +866,7 @@ export function ConfigPage() {
                                             Command Timeout (Seconds)
                                         </Label>
                                         <p className="text-xs text-muted-foreground">
-                                            The maximum duration a tool (like Discord Voice) can run before being forcefully stopped. Set to 0 for infinite (no timeout).
+                                            The configured duration for a command. Set to 0 to use the hard safety cap below; commands never wait forever.
                                         </p>
                                     </div>
                                     <div className="flex items-center gap-4">
@@ -876,6 +876,27 @@ export function ConfigPage() {
                                             min="0"
                                             value={config.COMMAND_TIMEOUT !== undefined ? config.COMMAND_TIMEOUT : "300.0"}
                                             onChange={(e) => handleChange("COMMAND_TIMEOUT", e.target.value)}
+                                            className="w-24 font-mono text-center"
+                                        />
+                                    </div>
+                                </div>
+                                <div className="mt-4 grid gap-3 p-4 bg-card/50 rounded-lg border border-border/50">
+                                    <div className="space-y-1">
+                                        <Label htmlFor="run_command_max_seconds" className="font-semibold flex items-center gap-2">
+                                            One-Shot Safety Cap (Seconds)
+                                        </Label>
+                                        <p className="text-xs text-muted-foreground">
+                                            Absolute maximum for run_command, including when Command Timeout is 0. This prevents a server or prompt from leaving the chat stuck.
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-4">
+                                        <Input
+                                            id="run_command_max_seconds"
+                                            type="number"
+                                            min="10"
+                                            max="3600"
+                                            value={config.RUN_COMMAND_MAX_SECONDS !== undefined ? config.RUN_COMMAND_MAX_SECONDS : "180"}
+                                            onChange={(e) => handleChange("RUN_COMMAND_MAX_SECONDS", e.target.value)}
                                             className="w-24 font-mono text-center"
                                         />
                                     </div>

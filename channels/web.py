@@ -36,6 +36,12 @@ from core.events import OutboundMessage
 from core.llm_client import ChatRequest, LimeLLMClient
 from core.prompt_modes import normalize_ponytail_mode
 from core.oauth_profiles import get_codex_oauth_status
+from core.runtime_paths import (
+    get_allowed_paths_file,
+    get_config_file,
+    get_env_file,
+    get_skill_dirs,
+)
 from core.session_manager import SessionManager
 from core.tools import Toolbox
 
@@ -1618,6 +1624,9 @@ class WebChannel(BaseChannel):
                 ).lower(),
                 "MAX_ITERATIONS": str(getattr(cfg, "max_iterations", 30)),
                 "COMMAND_TIMEOUT": str(getattr(cfg, "command_timeout", 0)),
+                "RUN_COMMAND_MAX_SECONDS": str(
+                    getattr(cfg, "run_command_max_seconds", 180)
+                ),
                 "STALL_TIMEOUT": str(getattr(cfg, "stall_timeout", 0)),
                 "PERSONALITY_WHITELIST": ",".join(
                     getattr(cfg, "personality_whitelist", [])
@@ -1698,7 +1707,7 @@ class WebChannel(BaseChannel):
         async def get_discord_config():
             from pathlib import Path
 
-            cfg_path = Path("limebot.json")
+            cfg_path = get_config_file()
             if not cfg_path.exists():
                 return {"discord": {}}
             try:
@@ -1712,7 +1721,7 @@ class WebChannel(BaseChannel):
         async def update_discord_config(payload: dict):
             from pathlib import Path
 
-            cfg_path = Path("limebot.json")
+            cfg_path = get_config_file()
             try:
                 data = {}
                 if cfg_path.exists():
@@ -1738,14 +1747,14 @@ class WebChannel(BaseChannel):
             try:
                 from pathlib import Path
 
-                env_file = Path(".env")
+                env_file = get_env_file()
                 new_env = data.get("env", {})
                 clear_secrets = {
                     str(key).strip()
                     for key in data.get("clear_secrets", []) or []
                     if str(key).strip()
                 }
-                cfg_json_file = Path("limebot.json")
+                cfg_json_file = get_config_file()
 
                 if not isinstance(new_env, dict):
                     return {"error": "env must be an object"}
@@ -1782,7 +1791,7 @@ class WebChannel(BaseChannel):
 
                 if "ALLOWED_PATHS" in new_env:
                     paths_data = new_env.pop("ALLOWED_PATHS")
-                    paths_file = Path("allowed_paths.txt")
+                    paths_file = get_allowed_paths_file()
                     if isinstance(paths_data, list):
                         paths = [str(p).strip() for p in paths_data if str(p).strip()]
                     else:
@@ -2407,7 +2416,7 @@ class WebChannel(BaseChannel):
                 data = {}
             if not hasattr(self, "_skill_api"):
                 self._skill_registry = SkillRegistry(
-                    skill_dirs=["./skills"], config={"skills": {"entries": {}}}
+                    skill_dirs=[str(path) for path in get_skill_dirs()], config={"skills": {"entries": {}}}
                 )
                 self._skill_registry.discover_and_load()
                 self._skill_api = SkillAPI(
@@ -3246,7 +3255,48 @@ class WebChannel(BaseChannel):
         async def get_tasks():
             from core.task_tracker import get_task_tracker
             tasks = await get_task_tracker().list_tasks()
-            return {"tasks": tasks}
+            return {"tasks": [asdict(task) for task in tasks]}
+
+        @self.app.get(
+            "/api/tasks/{task_id}", dependencies=[Depends(self.verify_auth)]
+        )
+        async def get_task(task_id: str):
+            from core.task_tracker import get_task_tracker
+
+            task = await get_task_tracker().get_task(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="Task not found")
+            return {"task": asdict(task)}
+
+        @self.app.post(
+            "/api/tasks/{task_id}/wait", dependencies=[Depends(self.verify_auth)]
+        )
+        async def wait_task(task_id: str, timeout: Optional[float] = None):
+            if not self.agent or not hasattr(self.agent, "wait_background_subagent_task"):
+                raise HTTPException(status_code=503, detail="Agent is unavailable")
+            try:
+                task = await self.agent.wait_background_subagent_task(task_id, timeout)
+            except asyncio.TimeoutError:
+                from core.task_tracker import get_task_tracker
+
+                task = await get_task_tracker().get_task(task_id)
+                if task is None:
+                    raise HTTPException(status_code=404, detail="Task not found")
+                return {"task": asdict(task), "timed_out": True}
+            if task is None:
+                raise HTTPException(status_code=404, detail="Task not found")
+            return {"task": asdict(task), "timed_out": False}
+
+        @self.app.post(
+            "/api/tasks/{task_id}/kill", dependencies=[Depends(self.verify_auth)]
+        )
+        async def kill_task(task_id: str):
+            if not self.agent or not hasattr(self.agent, "kill_background_subagent_task"):
+                raise HTTPException(status_code=503, detail="Agent is unavailable")
+            task = await self.agent.kill_background_subagent_task(task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="Task not found")
+            return {"task": asdict(task)}
 
         @self.app.get("/api/workspaces", dependencies=[Depends(self.verify_auth)])
 

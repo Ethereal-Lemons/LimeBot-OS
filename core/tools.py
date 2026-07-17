@@ -40,6 +40,7 @@ _SENSITIVE_EXTENSIONS = frozenset({".pem", ".key", ".p12", ".pfx"})
 _MAX_DOWNLOAD_BYTES = 15 * 1024 * 1024
 _MAX_IMAGE_REFERENCE_BYTES = 50 * 1024 * 1024
 _MAX_IMAGE_REFERENCES = 4
+_DEFAULT_RUN_COMMAND_MAX_SECONDS = 180.0
 _IMAGE_REFERENCE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 _DOWNLOAD_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -334,6 +335,51 @@ class Toolbox:
             if char == ";" and not in_single and not in_double:
                 return True
         return False
+
+    def _long_running_command_hint(self, command: str) -> Optional[str]:
+        """Reject commands that start LimeBot itself through the one-shot tool.
+
+        ``main.py`` is the service entrypoint, not a GitHub/skill CLI. Running
+        it through `run_command` leaves the tool waiting forever by design.
+        The model commonly produces this mistake when a skill documents
+        `python main.py ...` without its skill directory prefix.
+        """
+        tokens = [
+            (match.group(1) or match.group(2) or match.group(3) or "").strip()
+            for match in re.finditer(
+                r'''"([^"]+)"|'([^']+)'|([^\s]+)''', str(command or "")
+            )
+        ]
+        if not tokens:
+            return None
+
+        root = self.allowed_paths[0] if self.allowed_paths else Path.cwd()
+        root_main = (root / "main.py").resolve()
+        for index, token in enumerate(tokens):
+            if not token.lower().endswith("main.py"):
+                continue
+            preceding = tokens[:index]
+            if not any(
+                Path(item).name.lower() in {"python", "python3", "py", "python.exe"}
+                or Path(item).name.lower().startswith("python")
+                for item in preceding[-3:]
+            ):
+                continue
+            try:
+                candidate = Path(token)
+                if not candidate.is_absolute():
+                    candidate = root / candidate
+                if candidate.resolve() != root_main:
+                    continue
+            except (OSError, ValueError):
+                continue
+            return (
+                "Error: This command starts LimeBot's long-running backend, so "
+                "run_command will never finish. Use `limebot start`/`npm start` "
+                "to launch the service. For GitHub authentication, run the skill "
+                "entrypoint instead: `python skills/github/main.py user-info`."
+            )
+        return None
 
     async def send_progress(self, message: str):
         """Broadcast tool progress if an agent/bus is available."""
@@ -1091,14 +1137,28 @@ class Toolbox:
 
     async def run_command(self, command: str) -> str:
         """Execute a terminal command with real-time progress updates."""
+        command = str(command or "").strip()
         forbidden_regex = r"(\$\(|\`|&&|\|\||>|<|\n)"
         pseudo_call_match = re.match(
             r"^\s*([A-Za-z_][\w\.]*)\s*\((.*)\)\s*$", str(command or ""), re.DOTALL
         )
 
-        unsafe_allowed = False
-        if self.config:
-            unsafe_allowed = getattr(self.config, "allow_unsafe_commands", False)
+        unsafe_allowed = bool(
+            getattr(self.config, "allow_unsafe_commands", False)
+        ) if self.config else False
+
+        if not unsafe_allowed and re.search(
+            r"^\s*cd\s+/d\s+.+&&", command, re.IGNORECASE
+        ):
+            return (
+                "Error: Chained shell commands are blocked. LimeBot already runs "
+                "commands from the project directory; run only the intended command "
+                "(for example, python skills/github/main.py user-info)."
+            )
+
+        long_running_hint = self._long_running_command_hint(command)
+        if long_running_hint:
+            return long_running_hint
 
         if pseudo_call_match:
             call_name = pseudo_call_match.group(1)
@@ -1206,6 +1266,7 @@ class Toolbox:
                 )
 
             kwargs = {
+                "stdin": asyncio.subprocess.DEVNULL,
                 "stdout": asyncio.subprocess.PIPE,
                 "stderr": asyncio.subprocess.PIPE,
                 "cwd": str(self.allowed_paths[0]),
@@ -1307,7 +1368,7 @@ class Toolbox:
                 if not STALL_TIMEOUT:
                     return
                 while process.returncode is None:
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(min(1.0, max(0.1, STALL_TIMEOUT / 4)))
                     idle = _time.monotonic() - last_activity
                     if idle >= STALL_TIMEOUT:
                         stall_detected = True
@@ -1334,12 +1395,24 @@ class Toolbox:
                     except (ValueError, TypeError):
                         pass
 
-            # Bypass overall command timeout for installation/download/update commands
+            # Installation/download/update commands may exceed the configured
+            # one-shot timeout, but still receive the hard safety cap below.
             if is_install_cmd:
                 timeout_val = None
 
-            if timeout_val is not None and timeout_val <= 0:
-                timeout_val = None
+            if timeout_val is None or timeout_val <= 0:
+                try:
+                    timeout_val = float(
+                        getattr(
+                            self.config,
+                            "run_command_max_seconds",
+                            _DEFAULT_RUN_COMMAND_MAX_SECONDS,
+                        )
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    timeout_val = _DEFAULT_RUN_COMMAND_MAX_SECONDS
+                if timeout_val <= 0:
+                    timeout_val = _DEFAULT_RUN_COMMAND_MAX_SECONDS
 
             try:
                 await asyncio.wait_for(
@@ -1469,25 +1542,17 @@ class Toolbox:
 
         try:
             if use_background:
-
-                async def _run_in_background() -> None:
-                    try:
-                        await self.agent.run_subagent(
-                            session_key,
-                            sub_session_key,
-                            task,
-                            agent_name=agent,
-                        )
-                    except Exception as exc:
-                        logger.error(
-                            f"Error in background sub-agent '{sub_session_key}': {exc}"
-                        )
-
-                asyncio.create_task(_run_in_background())
+                task_id = await self.agent.start_background_subagent(
+                    session_key,
+                    sub_session_key,
+                    task,
+                    agent_name=agent,
+                )
                 mode_label = f"'{agent}'" if agent else "generic worker"
                 return (
                     f"Started background sub-agent {mode_label} as "
-                    f"'{sub_session_key}'. It will report back when finished."
+                    f"'{sub_session_key}' (task_id: {task_id}). "
+                    "It will report back when finished."
                 )
 
             result = await self.agent.run_subagent(
