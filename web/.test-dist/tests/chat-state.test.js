@@ -1,6 +1,6 @@
 import test from "node:test";
 import { strict as assert } from "node:assert";
-import { applyUserMessageEdit, applyFinalAssistantMessage, applyStopTyping, getUserTurnIndex, upsertToolExecution, upsertStreamDelta, } from "../src/lib/chat-state.js";
+import { applyUserMessageEdit, applyFinalAssistantMessage, applyStopTyping, getUserTurnIndex, upsertChangeSet, upsertToolExecution, upsertStreamDelta, } from "../src/lib/chat-state.js";
 test("stream deltas and final message target the same bot bubble by message_id", () => {
     const initial = [
         { sender: "user", content: "ok do it" },
@@ -164,4 +164,34 @@ test("user turn index counts only user messages", () => {
     assert.equal(getUserTurnIndex(initial, "usr-1"), 0);
     assert.equal(getUserTurnIndex(initial, "usr-2"), 1);
     assert.equal(getUserTurnIndex(initial, "missing"), -1);
+});
+test("change set updates survive out-of-order progress and retain the terminal state", () => {
+    const planned = upsertChangeSet([], {
+        turnId: "turn-review",
+        changeSet: {
+            id: "changeset-1",
+            status: "awaiting_approval",
+            summary: "One file staged",
+            changed_files: [{ file_id: "file-1", added: 2, removed: 1 }],
+        },
+    });
+    const verified = upsertChangeSet(planned, {
+        turnId: "turn-review",
+        changeSet: {
+            id: "changeset-1",
+            status: "verified",
+            summary: "One file staged",
+            verification: [{ id: "verification-1", label: "Tests", status: "passed" }],
+        },
+    });
+    const staleProgress = upsertChangeSet(verified, {
+        turnId: "turn-review",
+        changeSet: {
+            id: "changeset-1",
+            status: "applied",
+            summary: "One file staged",
+        },
+    });
+    assert.equal(staleProgress.length, 1);
+    assert.equal(staleProgress[0].changeSet?.status, "verified");
 });

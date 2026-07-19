@@ -249,3 +249,39 @@ export function upsertToolExecution(messages, update) {
     updated.splice(finalIndex, 0, newMessage);
     return updated;
 }
+const changeSetKey = (changeSet, target) => changeSet.id || target.turnId || `${changeSet.status}:${changeSet.summary}`;
+export function upsertChangeSet(messages, update) {
+    const key = changeSetKey(update.changeSet, update);
+    const index = messages.findIndex((message) => message.type === 'changeset' &&
+        message.changeSet &&
+        changeSetKey(message.changeSet, message) === key);
+    if (index === -1) {
+        return [
+            ...messages,
+            {
+                sender: 'bot',
+                type: 'changeset',
+                content: '',
+                messageId: update.messageId || undefined,
+                turnId: update.turnId || undefined,
+                changeSet: update.changeSet,
+            },
+        ];
+    }
+    const updated = [...messages];
+    const prior = updated[index].changeSet;
+    const terminalStatuses = new Set(['verified', 'failed', 'blocked']);
+    const preserveTerminal = terminalStatuses.has(prior.status) && !terminalStatuses.has(update.changeSet.status);
+    updated[index] = {
+        ...updated[index],
+        messageId: update.messageId || updated[index].messageId,
+        turnId: update.turnId || updated[index].turnId,
+        changeSet: {
+            ...prior,
+            ...update.changeSet,
+            status: preserveTerminal ? prior.status : update.changeSet.status,
+            verification: update.changeSet.verification || updated[index].changeSet?.verification,
+        },
+    };
+    return updated;
+}

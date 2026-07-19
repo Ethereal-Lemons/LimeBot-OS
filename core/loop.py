@@ -1,6 +1,7 @@
 import asyncio
 import ast
 import base64
+import contextvars
 import hashlib
 import json
 import mimetypes
@@ -70,6 +71,7 @@ from core.cache import ToolCache
 from core.context import tool_context
 from core.events import InboundMessage, OutboundMessage
 from core.llm_client import ChatRequest, LimeLLMClient, ProviderConfig
+from core.managed_tasks import ManagedTaskRegistry
 from core import prompt as prompt_module
 from core.metrics import MetricsCollector
 from core.prompt_modes import (
@@ -96,6 +98,11 @@ _TOOL_LOCAL_IMAGE_MAX_BYTES = 4 * 1024 * 1024
 _RECENT_IMAGE_REFERENCE_TTL_S = 30 * 60
 _TOOL_MEDIA_PAYLOAD_START = "<limebot-tool-payload>"
 _TOOL_MEDIA_PAYLOAD_END = "</limebot-tool-payload>"
+_HISTORY_TOOL_OUTPUT_MAX_CHARS = 8_000
+_HISTORY_INTERRUPTED_TOOL_MESSAGE = (
+    "[Tool call interrupted before a result was recorded. The previous runtime "
+    "did not persist a tool result.]"
+)
 
 
 # Tool result limits and browser cacheability are now in core/tool_dispatcher.py
@@ -105,6 +112,9 @@ _TOOL_MEDIA_PAYLOAD_END = "</limebot-tool-payload>"
 # SENSITIVE_TOOLS, APPROVE_WORDS, DENY_WORDS come from core/confirmation.py.
 
 _INTERIM_SAVE_EVERY = 5
+_CURRENT_TASK_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "limebot_current_task_id", default=None
+)
 
 CODING_PHASES = frozenset(
     {"inspect", "plan", "apply", "verify", "repair", "complete", "blocked"}
@@ -116,7 +126,35 @@ _READ_ONLY_TOOL_NAMES = frozenset(
         "browser_snapshot", "browser_list_media", "google_search",
     }
 )
-_MUTATION_TOOL_NAMES = frozenset({"write_file", "delete_file"})
+_MUTATION_TOOL_NAMES = frozenset({"write_file", "create_spreadsheet", "delete_file"})
+_RESEARCH_TOOL_NAMES = frozenset(
+    {
+        "web_search",
+        "google_search",
+        "deep_research",
+        "image_search",
+        "browser_navigate",
+        "browser_click",
+        "browser_type",
+        "browser_snapshot",
+        "browser_scroll",
+        "browser_wait",
+        "browser_press_key",
+        "browser_go_back",
+        "browser_tabs",
+        "browser_switch_tab",
+        "browser_extract",
+        "browser_get_page_text",
+        "browser_list_media",
+        "browser_download",
+    }
+)
+_ARTIFACT_REQUEST_RE = re.compile(
+    r"\b(?:xlsx|excel|spreadsheet|csv|pdf|docx|report|document|download|export|"
+    r"attachment|attach|file|archivo|adjunta|adjuntar|descarga|descargar|exporta|"
+    r"exportar|informe|documento|hoja\s+de\s+c[aá]lculo)\b",
+    re.IGNORECASE,
+)
 _CODING_HINT_RE = re.compile(
     r"\b(code|coding|program|repo|repository|bug|fix|test|pytest|lint|build|compile|"
     r"implement|refactor|function|file|patch|error|failure)\b",
@@ -187,6 +225,18 @@ _FAST_TOOL_ACTION_VERBS = frozenset(
         "show",
         "find",
         "inspect",
+        # Short Spanish follow-ups are action requests too.  Without these,
+        # fast mode mistakes commands such as "hazlo" for casual smalltalk and
+        # removes the tools needed to continue the previous task.
+        "haz",
+        "hazlo",
+        "hazla",
+        "hazme",
+        "continua",
+        "corrige",
+        "arregla",
+        "edita",
+        "revisa",
     }
 )
 
@@ -201,6 +251,22 @@ _CASUAL_PHRASE_PREFIXES = (
     "good evening",
     "thank you",
     "thanks",
+)
+
+_EXPLICIT_TOOL_REQUEST_RE = re.compile(
+    r"\b(?:browse|open|visit|navigate|search|research|investigate|download|export|"
+    r"abrir|abre|visitar|navegar|buscar|busca|investigar|investiga|investigue|"
+    r"descargar|descarga|exportar|exporta|utilizar|utiliza|utilice|probar|prueba)\b",
+    re.IGNORECASE,
+)
+
+# Some providers occasionally serialize a native tool call into assistant text
+# instead of the structured tool-call field.  Recover the exact visible form
+# emitted by those providers and keep it out of the user-facing response.
+_VISIBLE_PROVIDER_TOOL_CALL_PREFIX_RE = re.compile(
+    r"(?:^|\s)to\s*=\s*functions\.(?P<name>[A-Za-z_][\w]*)"
+    r"(?:\s+code)?\s*:\s*",
+    re.IGNORECASE,
 )
 
 _GHOST_TAG_RE = re.compile(
@@ -270,6 +336,10 @@ class AgentLoop:
         self.tool_cache = ToolCache()
         self.pending_confirmations: Dict[str, Dict[str, Any]] = {}
         self.active_tasks: Dict[str, asyncio.Task] = {}
+        # One registry owns every live turn and background job.  The legacy
+        # maps below remain as compatibility indexes for channel adapters, but
+        # lifecycle operations use this registry as the source of truth.
+        self.task_registry = ManagedTaskRegistry()
         # Background subagents are durable TaskTracker records plus live
         # asyncio handles. The handle map is intentionally separate from
         # active_tasks because these jobs outlive the parent turn.
@@ -304,6 +374,8 @@ class AgentLoop:
         self._tool_registry: Dict[str, Any] = {
             "read_file": self.toolbox.read_file,
             "write_file": self.toolbox.write_file,
+            "create_spreadsheet": self.toolbox.create_spreadsheet,
+            "calculate": self.toolbox.calculate,
             "delete_file": self.toolbox.delete_file,
             "list_dir": self.toolbox.list_dir,
             "search_files": self.toolbox.search_files,
@@ -493,28 +565,6 @@ class AgentLoop:
                 return
             logger.info("âœ… LLM connection pool warmed.")
             return
-            if is_codex_model_name(self.primary_model):
-                await asyncio.to_thread(
-                    complete_codex_response,
-                    self.primary_model,
-                    [{"role": "user", "content": "hi"}],
-                    None,
-                    "__warmup__",
-                )
-                logger.info("✅ Codex connection warmed.")
-                return
-
-            model, base_url, api_key, custom_llm_provider = self._provider
-            await acompletion(
-                model=model,
-                messages=[{"role": "user", "content": "hi"}],
-                max_tokens=_LLM_WARMUP_MAX_TOKENS,
-                stream=False,
-                base_url=base_url,
-                api_key=api_key,
-                custom_llm_provider=custom_llm_provider,
-            )
-            logger.info("✅ LLM connection pool warmed.")
         except Exception as e:
             # Warmup failure is never fatal — log and continue
             if prompt_module.is_setup_complete():
@@ -535,10 +585,22 @@ class AgentLoop:
             self._refresh_tool_definitions()
         return self._tool_definitions
 
-    def _get_tool_definitions_for_turn(self, user_text: str = "") -> List[Dict]:
+    def _get_tool_definitions_for_turn(
+        self, user_text: str = "", forced_skill_name: Optional[str] = None
+    ) -> List[Dict]:
         all_tools = self._get_tool_definitions()
+        skill_registry = getattr(self, "skill_registry", None)
+        required_tool_names = (
+            skill_registry.get_required_tool_names(forced_skill_name)
+            if skill_registry is not None
+            else []
+        )
         if self._tool_shortlist_enabled():
-            selected = shortlist_tool_definitions(all_tools, user_text)
+            selected = shortlist_tool_definitions(
+                all_tools,
+                user_text,
+                required_tool_names=required_tool_names,
+            )
             strategy = "shortlist"
         else:
             selected = list(all_tools)
@@ -554,6 +616,8 @@ class AgentLoop:
             total_tools=all_names,
             selected_tool_count=len(selected_names),
             selected_tools=selected_names,
+            forced_skill=forced_skill_name,
+            required_skill_tools=required_tool_names,
         )
         return selected
 
@@ -1271,6 +1335,130 @@ class AgentLoop:
             safe_messages.append(safe_message)
         return json.dumps(safe_messages, ensure_ascii=False, default=str)
 
+    @staticmethod
+    def _tool_call_id(tool_call: Any) -> str:
+        """Return the stable provider ID from a dict or SDK tool-call object."""
+        if isinstance(tool_call, dict):
+            return str(
+                tool_call.get("id") or tool_call.get("tool_call_id") or ""
+            ).strip()
+        return str(
+            getattr(tool_call, "id", None)
+            or getattr(tool_call, "tool_call_id", None)
+            or ""
+        ).strip()
+
+    @classmethod
+    def _normalize_tool_history_messages(
+        cls,
+        messages: List[Dict[str, Any]],
+        *,
+        tool_output_limit: int = _HISTORY_TOOL_OUTPUT_MAX_CHARS,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Repair tool-call/result pairing and cap persisted tool output.
+
+        Providers require every assistant ``tool_calls`` message to be followed
+        by one tool result per call.  A process crash, cancellation, or partial
+        history write can violate that contract and make every subsequent turn
+        fail before LimeBot can recover.  This normalizer inserts deterministic
+        synthetic results for missing calls, drops orphan tool rows, and keeps
+        all tool content within a bounded character budget.
+        """
+        normalized: List[Dict[str, Any]] = []
+        pending: Dict[str, str] = {}
+        changed = False
+
+        def flush_pending() -> None:
+            nonlocal changed
+            if not pending:
+                return
+            for tool_call_id, tool_name in pending.items():
+                normalized.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": tool_name or "tool",
+                        "content": _HISTORY_INTERRUPTED_TOOL_MESSAGE,
+                    }
+                )
+            pending.clear()
+            changed = True
+
+        for original in messages or []:
+            if not isinstance(original, dict):
+                changed = True
+                continue
+
+            role = str(original.get("role") or "").strip().lower()
+            if role == "assistant" and isinstance(original.get("tool_calls"), list):
+                # A new assistant turn closes any previous incomplete batch.
+                flush_pending()
+                message = dict(original)
+                valid_calls: List[Dict[str, Any]] = []
+                for raw_call in original.get("tool_calls") or []:
+                    if isinstance(raw_call, dict):
+                        tool_call = dict(raw_call)
+                    elif hasattr(raw_call, "model_dump"):
+                        tool_call = raw_call.model_dump()
+                    else:
+                        continue
+                    tool_call_id = cls._tool_call_id(tool_call)
+                    if not tool_call_id or tool_call_id in pending:
+                        changed = True
+                        continue
+                    function = tool_call.get("function")
+                    tool_name = (
+                        function.get("name")
+                        if isinstance(function, dict)
+                        else tool_call.get("name")
+                    )
+                    pending[tool_call_id] = str(tool_name or "tool")
+                    valid_calls.append(tool_call)
+
+                if valid_calls:
+                    message["tool_calls"] = valid_calls
+                else:
+                    message.pop("tool_calls", None)
+                    if original.get("tool_calls"):
+                        changed = True
+                if message != original:
+                    changed = True
+                normalized.append(message)
+                continue
+
+            if role == "tool":
+                tool_call_id = str(original.get("tool_call_id") or "").strip()
+                if not tool_call_id or tool_call_id not in pending:
+                    # Orphan/duplicate tool rows are invalid upstream and are
+                    # safer to discard than to let them poison the next call.
+                    changed = True
+                    continue
+                message = dict(original)
+                bounded_content = truncate_tool_result(
+                    message.get("content", ""), tool_output_limit
+                )
+                if bounded_content != str(message.get("content", "")):
+                    changed = True
+                message["content"] = bounded_content
+                normalized.append(message)
+                pending.pop(tool_call_id, None)
+                continue
+
+            flush_pending()
+            normalized.append(original)
+
+        flush_pending()
+        return normalized, changed
+
+    def _normalize_history_in_place(self, session_key: str) -> List[Dict[str, Any]]:
+        """Normalize and persist the in-memory history for one session."""
+        history = self.history.get(session_key, [])
+        normalized, changed = self._normalize_tool_history_messages(history)
+        if changed:
+            self.history[session_key] = normalized
+            self._mark_dirty(session_key)
+        return self.history.get(session_key, normalized)
+
     def _evict_history_image_inputs(self, session_key: str) -> None:
         changed = False
         for message in self.history.get(session_key, []):
@@ -1416,8 +1604,12 @@ class AgentLoop:
 
     def _log_session_event(self, session_key: str, event: dict) -> None:
         try:
+            payload = dict(event or {})
+            task_id = _CURRENT_TASK_ID.get()
+            if task_id:
+                payload.setdefault("task_id", task_id)
             asyncio.create_task(
-                self.session_manager.append_event_log(session_key, event)
+                self.session_manager.append_event_log(session_key, payload)
             )
         except Exception:
             pass
@@ -1536,12 +1728,17 @@ class AgentLoop:
         metadata: Optional[Dict[str, Any]] = None,
         turn_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         payload = dict(metadata or {})
         if turn_id:
             payload.setdefault("turn_id", turn_id)
         if message_id:
             payload.setdefault("message_id", message_id)
+        resolved_task_id = task_id or _CURRENT_TASK_ID.get()
+        if resolved_task_id:
+            payload.setdefault("task_id", resolved_task_id)
+        payload.setdefault("event_id", f"evt_{uuid.uuid4().hex[:20]}")
         return payload
 
     def _normalize_tool_alias(
@@ -1679,6 +1876,34 @@ class AgentLoop:
         if self._looks_like_action_or_path_request(content):
             return True
         return not self._is_fast_casual_turn(content)
+
+    @staticmethod
+    def _requires_initial_tool_call(
+        content: str, tool_definitions: Optional[List[Dict[str, Any]]]
+    ) -> bool:
+        """Require evidence-producing tool use for explicit external actions."""
+        if not str(content or "").strip() or not tool_definitions:
+            return False
+        tool_names = {
+            str(tool.get("function", {}).get("name", ""))
+            for tool in tool_definitions
+        }
+        has_external_tool = bool(
+            tool_names
+            & {
+                "browser_navigate",
+                "web_search",
+                "deep_research",
+                "google_search",
+                "run_command",
+            }
+        )
+        if not has_external_tool:
+            return False
+        raw = str(content)
+        if re.search(r"https?://|www\.", raw, re.IGNORECASE):
+            return True
+        return bool(_EXPLICIT_TOOL_REQUEST_RE.search(raw))
 
     @staticmethod
     def _build_provider_config(
@@ -2109,13 +2334,215 @@ class AgentLoop:
                     text_chars += len(str(item))
         return (text_chars // 4) + image_tokens
 
+    def _get_task_registry(self) -> ManagedTaskRegistry:
+        """Return the live registry, including for lightweight test doubles."""
+        registry = getattr(self, "task_registry", None)
+        if registry is None:
+            registry = ManagedTaskRegistry()
+            self.task_registry = registry
+        return registry
+
+    async def _persist_managed_task_terminal(self, entry: Any) -> None:
+        """Close the durable task projection when a live handle is cancelled early."""
+        from core.task_tracker import TaskStatus, get_task_tracker
+
+        if self.active_tasks.get(entry.session_key) is entry.handle:
+            self.active_tasks.pop(entry.session_key, None)
+        background_tasks = getattr(self, "background_subagent_tasks", {})
+        if background_tasks.get(entry.task_id) is entry.handle:
+            background_tasks.pop(entry.task_id, None)
+            getattr(self, "background_subagent_sessions", {}).pop(
+                entry.task_id, None
+            )
+            getattr(self, "background_subagent_parents", {}).pop(
+                entry.task_id, None
+            )
+
+        tracker = get_task_tracker()
+        tracked = await tracker.get_task(entry.task_id)
+        needs_terminal_delivery = bool(
+            tracked is not None
+            and tracked.status
+            not in {
+                TaskStatus.COMPLETED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED.value,
+            }
+        )
+        if tracked is None or tracked.status in {
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+        }:
+            return
+        await tracker.update_task(
+            entry.task_id,
+            status=entry.status,
+            error=entry.error or None,
+            metadata_update={
+                "result_preview": str(entry.result or entry.error or "")[:500]
+            },
+        )
+        if needs_terminal_delivery and entry.kind == "inbound_message":
+            bus = getattr(self, "bus", None)
+            if bus is not None:
+                try:
+                    await bus.publish_outbound(
+                        OutboundMessage(
+                            channel=str(entry.metadata.get("channel") or "web"),
+                            chat_id=str(entry.metadata.get("chat_id") or "system"),
+                            content="",
+                            metadata=self._with_trace_metadata(
+                                {
+                                    "type": "stop_typing",
+                                    "task_status": entry.status,
+                                    "is_error": entry.status == TaskStatus.FAILED.value,
+                                    "is_cancellation": entry.status
+                                    == TaskStatus.CANCELLED.value,
+                                },
+                                task_id=entry.task_id,
+                            ),
+                        )
+                    )
+                except Exception:
+                    pass
+
+    async def _dispatch_message(self, msg: InboundMessage) -> asyncio.Task:
+        """Register an inbound turn before scheduling its coroutine.
+
+        The old dispatch path created an untracked asyncio task.  If shutdown
+        or the user's stop action raced before ``_process_message`` assigned
+        ``active_tasks[session_key]``, that turn could continue forever from the
+        UI's point of view.  Durable and live identities are now allocated at
+        the dispatch boundary.
+        """
+        from core.task_tracker import get_task_tracker
+
+        task_id = uuid.uuid4().hex[:12]
+        tracker = get_task_tracker()
+        await tracker.create_task(
+            task_type="inbound_message",
+            summary=f"{msg.channel}: {(msg.content or '')[:80]}",
+            channel=msg.channel,
+            session_key=msg.session_key,
+            chat_id=msg.chat_id,
+            metadata={
+                "runtime": True,
+                "sender_id": msg.sender_id,
+                "workspace_id": msg.metadata.get("workspace_id")
+                if isinstance(msg.metadata, dict)
+                else "",
+                "client_message_id": msg.metadata.get("client_message_id")
+                if isinstance(msg.metadata, dict)
+                else "",
+            },
+            task_id=task_id,
+        )
+        start_gate = asyncio.Event()
+        handle = asyncio.create_task(
+            self._run_managed_message(msg, task_id, start_gate),
+            name=f"limebot-turn-{task_id}",
+        )
+        try:
+            await self._get_task_registry().register(
+                task_id,
+                handle,
+                kind="inbound_message",
+                session_key=msg.session_key,
+                metadata={"channel": msg.channel, "chat_id": msg.chat_id},
+                on_terminal=self._persist_managed_task_terminal,
+            )
+        except BaseException:
+            handle.cancel()
+            await asyncio.gather(handle, return_exceptions=True)
+            raise
+        finally:
+            start_gate.set()
+        # Keep this index for existing channel adapters; the registry is the
+        # authoritative source and also retains queued turns before this map is
+        # populated by the inner processing path.
+        self.active_tasks[msg.session_key] = handle
+        return handle
+
+    async def _run_managed_message(
+        self,
+        msg: InboundMessage,
+        task_id: str,
+        start_gate: Optional[asyncio.Event] = None,
+    ) -> None:
+        from core.task_tracker import TaskStatus, get_task_tracker
+
+        tracker = get_task_tracker()
+        registry = self._get_task_registry()
+        if start_gate is not None:
+            await start_gate.wait()
+        await registry.mark_running(task_id)
+        try:
+            await self._process_message(msg, _task_id=task_id)
+        except asyncio.CancelledError:
+            # The inner processor may not have started far enough to create its
+            # normal finalization record, so the wrapper closes that gap.
+            with_cancel_error = "Inbound turn cancelled."
+            tracked = await tracker.get_task(task_id)
+            if tracked is not None and tracked.status not in {
+                TaskStatus.COMPLETED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED.value,
+            }:
+                await tracker.update_task(
+                    task_id,
+                    status=TaskStatus.CANCELLED.value,
+                    error=with_cancel_error,
+                )
+            raise
+        except Exception as exc:
+            logger.exception("Unhandled managed inbound turn error: %s", exc)
+            tracked = await tracker.get_task(task_id)
+            if tracked is not None and tracked.status not in {
+                TaskStatus.COMPLETED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED.value,
+            }:
+                await tracker.update_task(
+                    task_id,
+                    status=TaskStatus.FAILED.value,
+                    error=str(exc)[:500],
+                )
+        finally:
+            tracked = await tracker.get_task(task_id)
+            status = (
+                tracked.status
+                if tracked is not None
+                else TaskStatus.COMPLETED.value
+            )
+            if status not in {
+                TaskStatus.COMPLETED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED.value,
+            }:
+                current = asyncio.current_task()
+                status = (
+                    TaskStatus.CANCELLED.value
+                    if current
+                    and getattr(current, "cancelling", lambda: 0)()
+                    else TaskStatus.COMPLETED.value
+                )
+                await tracker.update_task(task_id, status=status)
+            await registry.finalize(
+                task_id,
+                status,
+                error=(tracked.error if tracked is not None else None),
+            )
+            if self.active_tasks.get(msg.session_key) is asyncio.current_task():
+                self.active_tasks.pop(msg.session_key, None)
+
     async def run(self) -> None:
         self._running = True
         logger.info(f"Agent loop started (model: {self.model})")
         while self._running:
             try:
                 msg = await self.bus.consume_inbound()
-                asyncio.create_task(self._process_message(msg))
+                await self._dispatch_message(msg)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -2127,35 +2554,39 @@ class AgentLoop:
             self._initialization_task.cancel()
             await asyncio.gather(self._initialization_task, return_exceptions=True)
 
-        # A config change restarts the backend. Cancel provider calls before the
-        # old process exits so no detached request keeps running after the web
-        # client reconnects to a fresh AgentLoop.
+        # A config change restarts the backend.  The managed registry owns both
+        # ordinary turns and background subagents, so shutdown can cancel and
+        # await them through one lifecycle instead of relying on detached maps.
         current_task = asyncio.current_task()
-        active_task_registry = getattr(self, "active_tasks", {})
-        active_tasks = [
-            task
-            for task in active_task_registry.values()
-            if task is not current_task and not task.done()
-        ]
-        for task in active_tasks:
-            task.cancel()
-        if active_tasks:
-            await asyncio.gather(*active_tasks, return_exceptions=True)
-        active_task_registry.clear()
+        await self._get_task_registry().cancel_all(
+            exclude={current_task} if current_task is not None else None
+        )
 
-        # Background subagents are first-class jobs, but their live handles
-        # remain outside the per-turn registry because they intentionally outlive
-        # the parent turn.  Shutdown still owns them and must cancel/await every
-        # handle before the loop exits.
-        background_handles = [
+        # Keep a compatibility fallback for test doubles or legacy tasks that
+        # were inserted directly into the old maps.
+        active_task_registry = getattr(self, "active_tasks", {})
+        legacy_handles = list(active_task_registry.values()) + list(
+            getattr(self, "background_subagent_tasks", {}).values()
+        )
+        legacy_tasks = [
             task
-            for task in getattr(self, "background_subagent_tasks", {}).values()
+            for task in legacy_handles
             if task is not current_task and not task.done()
         ]
-        for task in background_handles:
+        for task in legacy_tasks:
             task.cancel()
-        if background_handles:
-            await asyncio.gather(*background_handles, return_exceptions=True)
+        if legacy_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*legacy_tasks, return_exceptions=True),
+                    timeout=2.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Timed out waiting for %d legacy task handles during shutdown.",
+                    len(legacy_tasks),
+                )
+        active_task_registry.clear()
         getattr(self, "background_subagent_tasks", {}).clear()
         getattr(self, "background_subagent_sessions", {}).clear()
         getattr(self, "background_subagent_parents", {}).clear()
@@ -2204,6 +2635,7 @@ class AgentLoop:
             },
         )
         await tracker.update_task(task_id, status=TaskStatus.RUNNING.value)
+        start_gate = asyncio.Event()
         handle = asyncio.create_task(
             self._run_background_subagent_task(
                 task_id,
@@ -2211,9 +2643,30 @@ class AgentLoop:
                 sub_session_key,
                 task,
                 agent_name,
+                start_gate,
             ),
             name=f"limebot-subagent-{task_id}",
         )
+        try:
+            await self._get_task_registry().register(
+                task_id,
+                handle,
+                kind=TaskType.SUBAGENT_JOB.value,
+                session_key=sub_session_key,
+                metadata={
+                    "background": True,
+                    "parent_session_key": parent_session_key,
+                    "agent_name": agent_name or "",
+                },
+                on_terminal=self._persist_managed_task_terminal,
+            )
+            await self._get_task_registry().mark_running(task_id)
+        except BaseException:
+            handle.cancel()
+            await asyncio.gather(handle, return_exceptions=True)
+            raise
+        finally:
+            start_gate.set()
         if not hasattr(self, "background_subagent_tasks"):
             self.background_subagent_tasks = {}
         if not hasattr(self, "background_subagent_sessions"):
@@ -2234,10 +2687,14 @@ class AgentLoop:
         sub_session_key: str,
         task: str,
         agent_name: Optional[str],
+        start_gate: Optional[asyncio.Event] = None,
     ) -> str:
         from core.task_tracker import TaskStatus, get_task_tracker
 
         tracker = get_task_tracker()
+        if start_gate is not None:
+            await start_gate.wait()
+        task_context_token = _CURRENT_TASK_ID.set(task_id)
         status = TaskStatus.COMPLETED.value
         error = ""
         result = ""
@@ -2285,6 +2742,13 @@ class AgentLoop:
                 logger.warning(
                     f"Could not finalize background task {task_id}: {exc}"
                 )
+            await self._get_task_registry().finalize(
+                task_id,
+                status,
+                result=result or None,
+                error=error or None,
+                metadata_update={"result_preview": (result or error).strip()[:500]},
+            )
             current = asyncio.current_task()
             if result or error:
                 self.background_subagent_results[task_id] = result or error
@@ -2298,6 +2762,7 @@ class AgentLoop:
                 self.background_subagent_tasks.pop(task_id, None)
             self.background_subagent_sessions.pop(task_id, None)
             self.background_subagent_parents.pop(task_id, None)
+            _CURRENT_TASK_ID.reset(task_context_token)
 
     async def get_background_subagent_task(self, task_id: str):
         from core.task_tracker import get_task_tracker
@@ -2326,23 +2791,42 @@ class AgentLoop:
     async def wait_background_subagent_task(
         self, task_id: str, timeout: Optional[float] = None
     ):
-        handle = self.background_subagent_tasks.get(task_id)
-        if handle is not None and not handle.done():
-            waiter = asyncio.shield(handle)
-            if timeout is None:
-                await waiter
-            else:
-                await asyncio.wait_for(waiter, timeout=max(0.0, float(timeout)))
+        managed = await self._get_task_registry().get(task_id)
+        if managed is not None and not managed.terminal:
+            await self._get_task_registry().wait(task_id, timeout)
+        else:
+            handle = self.background_subagent_tasks.get(task_id)
+            if handle is not None and not handle.done():
+                waiter = asyncio.shield(handle)
+                if timeout is None:
+                    await waiter
+                else:
+                    await asyncio.wait_for(
+                        waiter, timeout=max(0.0, float(timeout))
+                    )
         return await self.get_background_subagent_task(task_id)
 
     async def kill_background_subagent_task(self, task_id: str):
         from core.task_tracker import TaskStatus, TaskType, get_task_tracker
 
         tracker = get_task_tracker()
-        handle = self.background_subagent_tasks.get(task_id)
-        if handle is not None and not handle.done():
-            handle.cancel()
-            await asyncio.gather(handle, return_exceptions=True)
+        managed = await self._get_task_registry().get(task_id)
+        if managed is not None and not managed.terminal:
+            await self._get_task_registry().cancel(task_id)
+        else:
+            handle = self.background_subagent_tasks.get(task_id)
+            if handle is not None and not handle.done():
+                handle.cancel()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(handle, return_exceptions=True),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Timed out waiting for background task %s to cancel.",
+                        task_id,
+                    )
         task = await tracker.get_task(task_id)
         if (
             task is not None
@@ -2378,6 +2862,17 @@ class AgentLoop:
         for sk, meta in list(getattr(self.session_manager, "sessions", {}).items()):
             if meta.get("parent_id") == session_key:
                 related_sessions.add(sk)
+
+        managed_entries = await self._get_task_registry().active_for(
+            lambda entry: (
+                entry.session_key in related_sessions
+                or str(entry.metadata.get("parent_session_key") or "")
+                in related_sessions
+            )
+        )
+        for entry in managed_entries:
+            if await self._get_task_registry().cancel(entry.task_id):
+                cancelled_any = True
 
         for sk in related_sessions:
             task = self.active_tasks.get(sk)
@@ -2784,6 +3279,7 @@ class AgentLoop:
         message_id: Optional[str] = None,
         tool_definitions_override: Optional[List[Dict[str, Any]]] = None,
         model_override: Optional[str] = None,
+        tool_choice: Optional[str] = "auto",
     ) -> Any:
 
         messages = self._sanitize_messages_for_llm(messages, session_key)
@@ -2850,6 +3346,7 @@ class AgentLoop:
             tool_names=self._tool_definition_names(tools),
             last_message=messages[-1].get("content", "") if messages else "",
             fallback_chain=[item[0] for item in provider_chain],
+            tool_choice=tool_choice,
         )
         qwen_auth_failover_attempted: Set[str] = set()
         image_fallback_attempted = False
@@ -2872,6 +3369,7 @@ class AgentLoop:
                         tools=tools or None,
                         stream=stream,
                         session_id=session_key,
+                        tool_choice=tool_choice,
                     ),
                 )
                 if llm_timeout > 0:
@@ -3197,6 +3695,9 @@ class AgentLoop:
         if session_key not in self.history or len(self.history[session_key]) <= 1:
             return
 
+        # Normalize before measuring so an interrupted or oversized tool
+        # result cannot consume the entire next model context window.
+        self._normalize_history_in_place(session_key)
         history = self.history[session_key]
         system_msg = history[0]
         conv = history[1:]
@@ -3227,6 +3728,7 @@ class AgentLoop:
 
         if total_tokens <= max_tokens:
             self.history[session_key] = [system_msg] + conv
+            self._normalize_history_in_place(session_key)
             return
 
         logger.info(f"🔄 Token limit ({max_tokens}) reached. Summarising…")
@@ -3244,6 +3746,7 @@ class AgentLoop:
                 "Current user turn exceeds the history budget; preserving it for the model."
             )
             self.history[session_key] = [system_msg] + conv
+            self._normalize_history_in_place(session_key)
             self._mark_dirty(session_key)
             return
 
@@ -3277,23 +3780,6 @@ class AgentLoop:
                     session_id=f"{session_key}::history-summary",
                 ),
             )
-            if False and self.model:
-                resp = await asyncio.to_thread(
-                    complete_codex_response,
-                    self.model,
-                    summary_messages,
-                    None,
-                    f"{session_key}::history-summary",
-                )
-            elif False:
-                resp = await asyncio.to_thread(
-                    completion,
-                    model=self.model,
-                    messages=summary_messages,
-                    max_tokens=300,
-                    base_url=self.config.llm.base_url,
-                    api_key=self.config.llm.api_key,
-                )
             summary_text = resp.choices[0].message.content
             summary_msg = {
                 "role": "system",
@@ -3322,6 +3808,7 @@ class AgentLoop:
             conv = self._truncate_history_fallback(conv, target_tokens)
 
         self.history[session_key] = [system_msg] + conv
+        self._normalize_history_in_place(session_key)
         self._mark_dirty(session_key)
 
     async def _execute_browser_tool(
@@ -3338,6 +3825,11 @@ class AgentLoop:
                     args.get("url", ""), on_progress=on_progress
                 ),
                 "browser_click": lambda: browser.click(args.get("element_id", "")),
+                "browser_download": lambda: browser.download(
+                    args.get("element_id", ""),
+                    args.get("filename", ""),
+                    args.get("timeout_ms", 30_000),
+                ),
                 "browser_type": lambda: browser.type_text(
                     args.get("element_id", ""), args.get("text", "")
                 ),
@@ -3455,20 +3947,60 @@ class AgentLoop:
                     session_key=session_key, config=self.config
                 )
                 raw = await browser.google_search(query, on_progress=on_progress)
-                if raw.get("success") and raw.get("results_summary"):
+                raw_results = raw.get("results") if isinstance(raw, dict) else None
+                if (
+                    isinstance(raw, dict)
+                    and raw.get("success")
+                    and isinstance(raw_results, list)
+                    and raw_results
+                ):
                     from core.web_search import SearchResponse, SearchResult
 
                     scraped = SearchResponse(
                         kind=kind, query=query, provider="google-scrape"
                     )
-                    # Keep the human-readable summary as a single pseudo-result.
-                    scraped.answer = raw["results_summary"]
-                    return scraped, ""
+                    for item in raw_results[:count]:
+                        if not isinstance(item, dict):
+                            continue
+                        url = str(item.get("url") or "").strip()
+                        if not url:
+                            continue
+                        scraped.results.append(
+                            SearchResult(
+                                title=str(item.get("title") or url),
+                                url=url,
+                                snippet=str(item.get("snippet") or ""),
+                                source="google-scrape",
+                            )
+                        )
+                    if scraped.results:
+                        return scraped, ""
+                if isinstance(raw, dict):
+                    last_err = str(raw.get("error") or "no parseable Google results")
             except Exception as e:
                 last_err = str(e)
                 logger.warning(f"Browser google_search fallback failed: {e}")
 
         return None, last_err
+
+    @staticmethod
+    def _artifact_delivery_requested(text: str) -> bool:
+        """Return whether the user expects a concrete file/download outcome."""
+        return bool(_ARTIFACT_REQUEST_RE.search(str(text or "")))
+
+    @staticmethod
+    def _artifact_reserve_tool_definitions(
+        tool_definitions: Optional[List[Dict[str, Any]]],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Remove open-ended research tools while preserving creation/delivery tools."""
+        if not tool_definitions:
+            return tool_definitions
+        reserved = []
+        for definition in tool_definitions:
+            name = str(definition.get("function", {}).get("name") or "")
+            if name not in _RESEARCH_TOOL_NAMES:
+                reserved.append(definition)
+        return reserved
 
     async def _execute_search_tool(
         self, function_name: str, args: Dict[str, Any], session_key: str
@@ -3505,11 +4037,10 @@ class AgentLoop:
             return (
                 f"Error: web search failed ({last_err or 'no provider available'}). "
                 "Configure a search API key (TAVILY_API_KEY / BRAVE_SEARCH_API_KEY / "
-                "SERPAPI_API_KEY) or enable the browser skill."
+                "SERPAPI_API_KEY) or enable the browser skill. Do not repeat web_search "
+                "with rephrased queries in this turn; navigate to one known official URL "
+                "or continue with explicit caveats."
             )
-        # The browser-scrape fallback returns a pre-formatted summary in `answer`.
-        if response.provider == "google-scrape" and not response.results:
-            return f"**Search:** {query} (via google-scrape)\n{response.answer}"
         return format_search_response(response)
 
     async def _run_deep_research(
@@ -4378,7 +4909,14 @@ class AgentLoop:
     def _sanitize_messages_for_llm(
         self, messages: List[Dict[str, Any]], session_key: str
     ) -> List[Dict[str, Any]]:
-        """Repair assistant tool calls in-place before sending history upstream."""
+        """Repair tool history and assistant arguments before sending upstream."""
+        normalized, changed = self._normalize_tool_history_messages(messages)
+        if changed:
+            # Preserve the caller's list identity.  Some provider adapters and
+            # tests intentionally hold a reference to the session history.
+            messages[:] = normalized
+            if getattr(self, "history", {}).get(session_key) is messages:
+                self._mark_dirty(session_key)
         for message in messages:
             if not isinstance(message, dict):
                 continue
@@ -4497,6 +5035,20 @@ class AgentLoop:
                 is_whatsapp = (
                     msg is not None and getattr(msg, "channel", "") == "whatsapp"
                 )
+
+                if function_name == "run_command":
+                    validation_error = self.toolbox.validate_command(
+                        str(function_args.get("command") or "")
+                    )
+                    if validation_error:
+                        return (
+                            tc_id,
+                            function_name,
+                            function_args,
+                            validation_error,
+                            False,
+                            is_internal,
+                        )
 
                 if function_name in _SENSITIVE_TOOLS:
                     approval = self._get_tool_approval_decision(
@@ -4895,6 +5447,8 @@ class AgentLoop:
         default_arg_names = {
             "read_file": "path",
             "write_file": "content",
+            "create_spreadsheet": "path",
+            "calculate": "expression",
             "delete_file": "path",
             "list_dir": "path",
             "search_files": "query",
@@ -4945,6 +5499,8 @@ class AgentLoop:
             arg_names = {
                 "read_file": ["path"],
                 "write_file": ["path", "content"],
+                "create_spreadsheet": ["path", "sheets", "title"],
+                "calculate": ["expression"],
                 "delete_file": ["path"],
                 "list_dir": ["path"],
                 "search_files": ["query", "path"],
@@ -5124,6 +5680,21 @@ class AgentLoop:
         if tool_calls:
             return tool_calls
 
+        # Some OpenAI-compatible bridges serialize a tool call using the
+        # provider-facing ``to=functions.name code: {...}`` envelope. Recover
+        # it instead of leaking the protocol text into the visible reply.
+        try:
+            provider_envelope = _VISIBLE_PROVIDER_TOOL_CALL_PREFIX_RE.search(content)
+            if provider_envelope:
+                raw_tail = content[provider_envelope.end() :].lstrip()
+                parsed_args, _ = json.JSONDecoder().raw_decode(raw_tail)
+                if isinstance(parsed_args, dict):
+                    return _make_tool_call(
+                        provider_envelope.group("name"), parsed_args
+                    )
+        except Exception:
+            pass
+
         try:
             pipe_tag_pattern = re.compile(
                 r"<\|(?P<tag>[A-Za-z_][\w]*)\|>\s*(?P<body>{.*?})\s*<\|/(?P=tag)\|>",
@@ -5240,6 +5811,10 @@ class AgentLoop:
         inline_match = re.search(r"(?::?functions\.\w+(?::\d+)?\s*\{)", cleaned)
         if inline_match:
             marker_positions.append(inline_match.start())
+
+        visible_provider_match = _VISIBLE_PROVIDER_TOOL_CALL_PREFIX_RE.search(cleaned)
+        if visible_provider_match:
+            marker_positions.append(visible_provider_match.start())
 
         block_match = re.search(r"<\|tool_call_begin\|>", cleaned)
         if block_match:
@@ -5846,7 +6421,9 @@ class AgentLoop:
 
         return full_content, tool_calls, usage, streamed_to_web, streamed_to_discord
 
-    async def _process_message(self, msg: InboundMessage) -> None:
+    async def _process_message(
+        self, msg: InboundMessage, _task_id: Optional[str] = None
+    ) -> None:
         session_key = msg.session_key
         turn_id = f"turn_{uuid.uuid4().hex[:12]}"
         assistant_message_id = f"msg_{uuid.uuid4().hex[:12]}"
@@ -5881,18 +6458,32 @@ class AgentLoop:
         # ── Task tracking ────────────────────────────────────────────────
         from core.task_tracker import get_task_tracker
         _tracker = get_task_tracker()
-        _msg_task_id = None
+        _msg_task_id = _task_id
+        task_context_token = (
+            _CURRENT_TASK_ID.set(_task_id) if _task_id else None
+        )
 
         try:
-            _msg_task_id = await _tracker.create_task(
-                task_type="inbound_message",
-                summary=f"{msg.channel}: {(msg.content or '')[:80]}",
-                channel=msg.channel,
-                session_key=session_key,
-                chat_id=msg.chat_id,
-                metadata={"turn_id": turn_id, "sender_id": msg.sender_id},
-            )
-            await _tracker.update_task(_msg_task_id, status="running")
+            if _msg_task_id:
+                await _tracker.update_task(
+                    _msg_task_id,
+                    status="running",
+                    metadata_update={
+                        "turn_id": turn_id,
+                        "sender_id": msg.sender_id,
+                    },
+                )
+            else:
+                _msg_task_id = await _tracker.create_task(
+                    task_type="inbound_message",
+                    summary=f"{msg.channel}: {(msg.content or '')[:80]}",
+                    channel=msg.channel,
+                    session_key=session_key,
+                    chat_id=msg.chat_id,
+                    metadata={"turn_id": turn_id, "sender_id": msg.sender_id},
+                )
+                task_context_token = _CURRENT_TASK_ID.set(_msg_task_id)
+                await _tracker.update_task(_msg_task_id, status="running")
 
             content = msg.content or ""
             attachments = [
@@ -6554,8 +7145,9 @@ class AgentLoop:
                     asyncio.create_task(self._flush_history(session_key))
 
                     plan_mode = self._is_read_only_plan_request(content, msg)
-                    include_tools = (
-                        self._should_include_tools_for_turn(content) and not plan_mode
+                    include_tools = bool(
+                        (forced_skill_name or self._should_include_tools_for_turn(content))
+                        and not plan_mode
                     )
                     self._log_tool_debug(
                         "tool_gate_decision",
@@ -6567,7 +7159,7 @@ class AgentLoop:
                     if include_tools:
                         tool_schema_started = time.perf_counter()
                         initial_tool_definitions = self._get_tool_definitions_for_turn(
-                            content
+                            content, forced_skill_name=forced_skill_name
                         )
                         self._record_stage_timing(
                             session_key,
@@ -6582,6 +7174,14 @@ class AgentLoop:
                                 ),
                             },
                         )
+                    initial_tool_choice = (
+                        "required"
+                        if include_tools
+                        and self._requires_initial_tool_call(
+                            content, initial_tool_definitions
+                        )
+                        else "auto"
+                    )
                     llm_first_call_started = time.perf_counter()
                     plan_instruction = (
                         "This is read-only coding Plan mode. Do not call or propose tool "
@@ -6604,6 +7204,7 @@ class AgentLoop:
                         turn_id=turn_id,
                         message_id=assistant_message_id,
                         tool_definitions_override=initial_tool_definitions,
+                        tool_choice=initial_tool_choice,
                     )
                     self._record_stage_timing(
                         session_key,
@@ -6747,6 +7348,19 @@ class AgentLoop:
                         if not is_blocked and not recovery_blocked:
                             max_iterations = getattr(self.config, "max_iterations", 30)
                             iteration = 0
+                            artifact_requested = self._artifact_delivery_requested(content)
+                            artifact_reserve_steps = max(
+                                4, min(8, max(1, int(max_iterations)) // 4)
+                            )
+                            research_actions_used = sum(
+                                1
+                                for call in tool_calls
+                                if str(call.get("function", {}).get("name") or "")
+                                in _RESEARCH_TOOL_NAMES
+                            )
+                            research_action_limit = max(
+                                8, min(18, max(1, int(max_iterations)) - 8)
+                            )
 
                             while iteration < max_iterations:
                                 iteration += 1
@@ -6772,8 +7386,11 @@ class AgentLoop:
                                         active_output_queued = make_output_queued_recorder(
                                             "synthesis", iteration
                                         )
+                                        normalized_history = self._normalize_history_in_place(
+                                            session_key
+                                        )
                                         synthesis_stream = await self._llm_call_with_retry(
-                                            messages=self.history[session_key]
+                                            messages=normalized_history
                                             + [{"role": "system", "content": synthesis_instruction}],
                                             session_key=session_key,
                                             msg=msg,
@@ -6822,13 +7439,46 @@ class AgentLoop:
                                 active_output_queued = make_output_queued_recorder(
                                     "post_tool", iteration
                                 )
+                                normalized_history = self._normalize_history_in_place(
+                                    session_key
+                                )
+                                post_tool_messages = normalized_history
+                                post_tool_definitions = initial_tool_definitions
+                                if (
+                                    artifact_requested
+                                    and (
+                                        iteration
+                                        >= max(1, max_iterations - artifact_reserve_steps)
+                                        or research_actions_used >= research_action_limit
+                                    )
+                                ):
+                                    post_tool_messages = normalized_history + [
+                                        {
+                                            "role": "system",
+                                            "content": (
+                                                "Artifact completion reserve is active. Stop all open-ended "
+                                                "searching and browsing now. Use the evidence already gathered "
+                                                "to create, verify, and deliver the requested file. If some facts "
+                                                "remain uncertain, put explicit caveats and source URLs in the "
+                                                "artifact instead of abandoning delivery. Use the literal value "
+                                                "'Unverified' for every unsupported field and do not contradict "
+                                                "that status with a numeric claim elsewhere in the same row."
+                                            ),
+                                        }
+                                    ]
+                                    post_tool_definitions = (
+                                        self._artifact_reserve_tool_definitions(
+                                            initial_tool_definitions
+                                        )
+                                    )
                                 nxt_stream = await self._llm_call_with_retry(
-                                    messages=self.history[session_key],
+                                    messages=post_tool_messages,
                                     session_key=session_key,
                                     msg=msg,
                                     stream=True,
                                     include_tools=not force_tool_image_reply,
                                     tool_context_text=content,
+                                    tool_definitions_override=post_tool_definitions,
                                     turn_id=turn_id,
                                     message_id=assistant_message_id,
                                 )
@@ -6904,6 +7554,13 @@ class AgentLoop:
                                 nxt_am["tool_calls"] = nxt_tool_calls
                                 self.history[session_key].append(nxt_am)
                                 self._mark_dirty(session_key)
+
+                                research_actions_used += sum(
+                                    1
+                                    for call in nxt_tool_calls
+                                    if str(call.get("function", {}).get("name") or "")
+                                    in _RESEARCH_TOOL_NAMES
+                                )
 
                                 tool_batch_started = time.perf_counter()
                                 nxt_blocked = await self._execute_tool_batch(
@@ -7173,6 +7830,8 @@ class AgentLoop:
                                     "chat_id": outbound.chat_id,
                                     "content_preview": (outbound.content or "")[:500],
                                     "metadata_type": outbound.metadata.get("type"),
+                                    "event_id": outbound.metadata.get("event_id"),
+                                    "task_id": outbound.metadata.get("task_id"),
                                 },
                             )
 
@@ -7259,10 +7918,24 @@ class AgentLoop:
             if _msg_task_id:
                 task = await _tracker.get_task(_msg_task_id)
                 if task and task.status == "running":
-                    await _tracker.complete_task(_msg_task_id)
+                    current = asyncio.current_task()
+                    is_cancelled = bool(
+                        current
+                        and getattr(current, "cancelling", lambda: 0)()
+                    )
+                    if is_cancelled:
+                        await _tracker.update_task(
+                            _msg_task_id,
+                            status="cancelled",
+                            error="Inbound turn cancelled.",
+                        )
+                    else:
+                        await _tracker.complete_task(_msg_task_id)
             self._evict_history_image_inputs(session_key)
             await self._flush_history(session_key, force=True)
-            self.active_tasks.pop(session_key, None)
+            current_task = asyncio.current_task()
+            if self.active_tasks.get(session_key) is current_task:
+                self.active_tasks.pop(session_key, None)
             # Always notify frontend that processing is done
             try:
                 if msg:
@@ -7280,3 +7953,5 @@ class AgentLoop:
                     )
             except Exception:
                 pass
+            if task_context_token is not None:
+                _CURRENT_TASK_ID.reset(task_context_token)

@@ -258,6 +258,44 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outbound.metadata["type"], "file")
         self.assertEqual(outbound.metadata["caption"], "Here you go")
 
+    async def test_send_media_blocks_duplicate_path_within_one_turn(self):
+        from core.bus import MessageBus
+        from core.context import tool_context
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
+        bus = MessageBus()
+        sent = []
+
+        async def _capture(msg):
+            sent.append(msg)
+
+        bus.publish_outbound = _capture
+        toolbox = Toolbox(allowed_paths=[str(Path.cwd())], bus=bus, config=config)
+        tmp_dir = Path("temp")
+        tmp_dir.mkdir(exist_ok=True)
+        tmp_file = tmp_dir / "send_media_duplicate_test.txt"
+        tmp_file.write_text("share once", encoding="utf-8")
+
+        token = tool_context.set(
+            {
+                "channel": "discord",
+                "chat_id": "12345",
+                "sender_id": "user-1",
+                "turn_id": "turn-one",
+            }
+        )
+        try:
+            first = await toolbox.send_media(str(tmp_file), "First caption")
+            duplicate = await toolbox.send_media(str(tmp_file), "Changed caption")
+        finally:
+            tool_context.reset(token)
+            tmp_file.unlink(missing_ok=True)
+
+        self.assertIn("Sent 'temp", first)
+        self.assertTrue(duplicate.startswith("ACTION BLOCKED:"))
+        self.assertEqual(len(sent), 1)
+
     async def test_tool_call_send_media_blocks_persona_files(self):
         from core.bus import MessageBus
         from core.context import tool_context
@@ -341,6 +379,23 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent[0].metadata["image"].startswith("/temp/generated_images/"))
         self.assertEqual(sent[0].metadata["attachments"][0]["kind"], "image")
         self.assertEqual(sent[0].metadata["attachments"][0]["url"], sent[0].metadata["image"])
+
+    async def test_generate_image_rejects_explicit_negative_prompt_before_provider_use(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
+        toolbox = Toolbox(
+            allowed_paths=[str(Path.cwd())],
+            bus=MessageBus(),
+            config=config,
+        )
+
+        with patch.object(toolbox, "_image_model_candidates") as candidates:
+            result = await toolbox.generate_image("No image generation needed")
+
+        candidates.assert_not_called()
+        self.assertTrue(result.startswith("ACTION BLOCKED:"))
 
     async def test_image_model_candidates_use_gpt_image_2_as_api_fallback(self):
         from core.bus import MessageBus

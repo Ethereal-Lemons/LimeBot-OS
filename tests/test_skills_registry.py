@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 
 class TestSkillsRegistry(unittest.IsolatedAsyncioTestCase):
@@ -114,3 +115,101 @@ class TestSkillsRegistry(unittest.IsolatedAsyncioTestCase):
             self.assertIn("`jira`", additions)
             self.assertIn("`manage_cafeteria_credit`", additions)
             self.assertNotIn("### jira", additions)
+
+    async def test_skill_with_missing_binary_is_not_activated(self):
+        from core.skills import SkillRegistry
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skill_dir = root / "external-browser"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: external-browser\n"
+                "description: External browser\n"
+                "dependencies:\n"
+                "  binaries:\n"
+                "    - definitely-not-installed-browser-command\n"
+                "---\n"
+                "Use the external browser.\n",
+                encoding="utf-8",
+            )
+
+            registry = SkillRegistry(
+                skill_dirs=[str(root)],
+                config={"skills": {"enabled": ["external-browser"]}},
+            )
+            with patch("core.skills.registry.shutil.which", return_value=None):
+                registry.discover_and_load()
+
+            self.assertFalse(registry.skills["external-browser"]["active"])
+            self.assertEqual(
+                registry.skills["external-browser"]["missing_dependencies"],
+                ["definitely-not-installed-browser-command"],
+            )
+            self.assertNotIn(
+                "external-browser", registry.get_system_prompt_additions()
+            )
+
+    async def test_skill_with_missing_python_package_is_not_activated(self):
+        from core.skills import SkillRegistry
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skill_dir = root / "python-dependent"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: python-dependent\n"
+                "description: Needs a package\n"
+                "dependencies:\n"
+                "  python:\n"
+                "    - definitely-not-a-real-python-package>=1.0\n"
+                "---\n"
+                "Use the package.\n",
+                encoding="utf-8",
+            )
+
+            registry = SkillRegistry(
+                skill_dirs=[str(root)],
+                config={"skills": {"enabled": ["python-dependent"]}},
+            )
+            registry.discover_and_load()
+
+            self.assertFalse(registry.skills["python-dependent"]["active"])
+            self.assertEqual(
+                registry.skills["python-dependent"]["missing_dependencies"],
+                ["python:definitely-not-a-real-python-package"],
+            )
+
+    async def test_active_skill_exposes_declared_required_tools(self):
+        from core.skills import SkillRegistry
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skill_dir = root / "document-maker"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: document-maker\n"
+                "description: Create documents\n"
+                "metadata:\n"
+                "  required_tools:\n"
+                "    - run_command\n"
+                "    - send_media\n"
+                "---\n"
+                "Create and deliver documents.\n",
+                encoding="utf-8",
+            )
+
+            registry = SkillRegistry(
+                skill_dirs=[str(root)],
+                config={"skills": {"enabled": ["document-maker"]}},
+            )
+            registry.discover_and_load()
+
+            self.assertEqual(
+                registry.get_required_tool_names("document-maker"),
+                ["run_command", "send_media"],
+            )
+            self.assertEqual(registry.get_required_tool_names("missing"), [])

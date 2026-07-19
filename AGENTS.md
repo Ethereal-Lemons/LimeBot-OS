@@ -135,16 +135,18 @@ Sandboxed OS interface. All methods check `_is_path_allowed()` before touching t
 |------|-----------------------|-------------|
 | `read_file(path)` | No | Read file contents (20k char limit) |
 | `write_file(path, content)` | **Yes** | Create or overwrite a file |
+| `create_spreadsheet(path, sheets, title)` | **Yes** | Create a styled, formula-capable `.xlsx` workbook without an ad-hoc script |
 | `delete_file(path)` | **Yes** | Delete a file or directory tree |
 | `list_dir(path)` | No | List directory contents |
 | `run_command(command)` | **Yes** | Execute shell command in project root |
+| `calculate(expression)` | No | Safely evaluate bounded arithmetic for prices, totals, percentages, and conversions |
 | `memory_search(query)` | No | Semantic search across vector memory |
 | `web_search(query, count, kind)` | No | Hybrid live web/news search via the provider chain (see below) |
 | `image_search(query, count)` | No | Image search returning image URLs + source pages |
 | `deep_research(query, depth)` | No | Multi-source research: searches, reads top pages, returns a cited synthesis |
-| `send_media(path, caption)` | No | Share a local file **or remote http(s) URL** into the current web/Discord/WhatsApp chat |
+| `send_media(path, caption)` | No | Share a local file **or remote http(s) URL** into the current web/Discord/WhatsApp chat; duplicate delivery of the same path within one turn is blocked |
 | `send_voice(text, channel)` | No | Synthesize `text` with ElevenLabs and send it as a voice message — an mp3 file on Discord/WhatsApp, an inline playable clip on web. Requires `ELEVENLABS_API_KEY`. |
-| `generate_image(prompt, model, size, quality, count, reference_images, use_attached_images)` | No | Generate a new image or transform up to four allowed local/current-chat reference images. Current images and reference-style follow-ups can reuse the session's most recent image for 30 minutes; missing references fail closed instead of silently becoming text-only generation. Image generation has no outer LimeBot tool deadline, while individual provider requests retain transport timeouts. |
+| `generate_image(prompt, model, size, quality, count, reference_images, use_attached_images)` | No | Generate a new image or transform up to four allowed local/current-chat reference images. Explicit prompts saying not to generate an image fail closed before provider use. Current images and reference-style follow-ups can reuse the session's most recent image for 30 minutes; missing references fail closed instead of silently becoming text-only generation. Image generation has no outer LimeBot tool deadline, while individual provider requests retain transport timeouts. |
 | `send_discord_message(message, channel_id, user_id)` | No | Send a Discord message to a server channel or user DM |
 | `send_discord_embed(...)` | No | Send a native Discord embed to a server channel or user DM |
 | `list_discord_channels()` | No | List guild text channels available to the bot |
@@ -466,7 +468,7 @@ Enabled by `ENABLE_DYNAMIC_PERSONALITY=true`.
 
 ## 🛠️ CLI Reference
 
-The JavaScript toolchain requires Node.js 20.19 or newer. Both `start` and `doctor` reject an older runtime before dependency installation begins.
+The JavaScript toolchain requires Node.js 22.19 or newer. Both `start` and `doctor` reject an older runtime before dependency installation begins.
 
 First start installs the `core` profile only: root + `web` npm workspaces and
 `requirements.txt`. Optional features use a closed allowlist in
@@ -545,7 +547,7 @@ npm link
 
 ## ⚡ Performance Notes
 
-- **Fast response path (default)** — `LIMEBOT_AI_HARNESS_MODE=fast` uses an 80ms Auto-RAG budget, request-specific tool schemas capped at 12 tools, and no tools for clearly casual turns. `balanced` keeps the 200ms/full-schema compatibility behavior. This optimizes LimeBot overhead, not provider generation speed.
+- **Fast response path (default)** — `LIMEBOT_AI_HARNESS_MODE=fast` uses an 80ms Auto-RAG budget; `balanced` uses 200ms. Casual turns omit tools by default so greetings and small talk cannot trigger accidental actions; explicit actions, URLs, paths, and slash commands still expose tools. Request-specific schemas capped at 12 tools require the explicit `LIMEBOT_ENABLE_TOOL_SHORTLIST=true` opt-in. Set `LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL=false` to expose tools on every non-empty turn. These settings optimize LimeBot overhead, not provider generation speed.
 - **First-output metrics** — every provider iteration records `provider_first_delta` and `turn_first_output_queued` with `initial`, `post_tool`, or `synthesis` iteration metadata; typing indicators are excluded.
 - **Rendered memory cache** — today's last five journal entries and the first 800 long-term-memory characters are cached by date, privacy scope, resolved path, nanosecond mtime, and size. Writes invalidate on the next prompt build; RAG results are never cached here.
 - **Stable prompt cache** — 30s TTL per `(sender_id, channel)` pair avoids rebuilding the full system prompt on every message

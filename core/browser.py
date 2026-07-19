@@ -120,6 +120,7 @@ class BrowserManager:
     BASE_DIR = Path.home() / ".limebot" / "browser"
     PROFILES_DIR = BASE_DIR / "profiles"
     SCREENSHOTS_DIR = BASE_DIR / "screenshots"
+    DOWNLOADS_DIR = Path.cwd() / "temp" / "downloads" / "browser"
     SNAPSHOT_SKIP_NAMES = frozenset(
         {
             "cache",
@@ -171,6 +172,7 @@ class BrowserManager:
         storage_name = self._storage_name(storage_key)
         self.user_data_dir: Optional[Path] = None
         self.screenshots_dir = self.SCREENSHOTS_DIR / storage_name
+        self.downloads_dir = self.DOWNLOADS_DIR / storage_name
 
         if self.mode in {"isolated", "shared"}:
             self.user_data_dir = self.PROFILES_DIR / storage_name / "user-data"
@@ -182,6 +184,7 @@ class BrowserManager:
                 self.channel = detected_channel
 
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
+        self.downloads_dir.mkdir(parents=True, exist_ok=True)
 
         self._browser_lock = asyncio.Lock()
 
@@ -980,6 +983,62 @@ class BrowserManager:
                 logger.error(f"Click failed: {e}")
                 return {"success": False, "error": str(e)}
 
+    async def download(
+        self,
+        element_id: str,
+        filename: str = "",
+        timeout_ms: int = 30_000,
+    ) -> Dict[str, Any]:
+        """Click a known element, wait for its download, and save it locally."""
+        async with self._action_lock:
+            if element_id not in self._element_map:
+                return {
+                    "success": False,
+                    "error": f"Element '{element_id}' not found. Run snapshot first.",
+                }
+
+            try:
+                timeout_ms = max(1_000, min(int(timeout_ms or 30_000), 120_000))
+                locator = self._element_map[element_id]
+                try:
+                    await locator.scroll_into_view_if_needed(timeout=2_000)
+                except Exception:
+                    pass
+
+                page = await self._ensure_browser()
+                async with page.expect_download(timeout=timeout_ms) as pending:
+                    await locator.click()
+                download = await pending.value
+
+                failure = await download.failure()
+                if failure:
+                    return {"success": False, "error": f"Download failed: {failure}"}
+
+                requested_name = Path(str(filename or "")).name
+                suggested_name = Path(download.suggested_filename or "").name
+                safe_name = requested_name or suggested_name or f"download_{int(time.time())}"
+                safe_name = re.sub(r"[^A-Za-z0-9._ -]+", "_", safe_name).strip(" .")
+                if not safe_name:
+                    safe_name = f"download_{int(time.time())}"
+
+                destination = self.downloads_dir / safe_name
+                if destination.exists():
+                    destination = destination.with_name(
+                        f"{destination.stem}_{int(time.time())}{destination.suffix}"
+                    )
+                await download.save_as(str(destination))
+
+                return {
+                    "success": True,
+                    "message": f"Downloaded {destination.name}",
+                    "path": str(destination.resolve()),
+                    "suggested_filename": suggested_name,
+                    "url": download.url,
+                }
+            except Exception as e:
+                logger.error(f"Download failed: {e}")
+                return {"success": False, "error": str(e)}
+
     async def type_text(self, element_id: str, text: str) -> Dict[str, Any]:
         """Type text into an element with human-like typing speed."""
         async with self._action_lock:
@@ -1232,31 +1291,69 @@ class BrowserManager:
                 if on_progress:
                     await on_progress("📄 Extracting top results...")
                 results = []
+                seen_urls = set()
 
-                for container in (await page.query_selector_all("div.g"))[:5]:
-                    title_elem = await container.query_selector("h3")
-                    link_elem = await container.query_selector("a")
-                    snippet_elem = await container.query_selector("div.VwiC3b")
+                # Google's wrapper classes change frequently. Anchor the parse on
+                # the comparatively stable result shape (a link containing an h3)
+                # and use the legacy container selector only as a fallback.
+                result_links = await page.query_selector_all("a:has(h3)")
+                for link_elem in result_links[:12]:
+                    title_elem = await link_elem.query_selector("h3")
+                    url = await link_elem.get_attribute("href")
+                    if not title_elem or not url or not url.startswith(("http://", "https://")):
+                        continue
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    title = (await title_elem.inner_text()).strip()
+                    if not title:
+                        continue
+                    snippet = ""
+                    try:
+                        container = await link_elem.query_selector("xpath=ancestor::div[@data-snhf][1]")
+                        if container:
+                            text = (await container.inner_text()).strip()
+                            snippet = text[len(title) :].strip()[:600]
+                    except Exception:
+                        snippet = ""
+                    results.append({"title": title, "url": url, "snippet": snippet})
+                    if len(results) >= 5:
+                        break
 
-                    if title_elem and link_elem:
-                        results.append(
-                            {
-                                "title": await title_elem.inner_text(),
-                                "url": await link_elem.get_attribute("href"),
-                                "snippet": await snippet_elem.inner_text()
-                                if snippet_elem
-                                else "",
-                            }
-                        )
+                if not results:
+                    for container in (await page.query_selector_all("div.g"))[:8]:
+                        title_elem = await container.query_selector("h3")
+                        link_elem = await container.query_selector("a")
+                        snippet_elem = await container.query_selector("div.VwiC3b")
+
+                        if title_elem and link_elem:
+                            url = await link_elem.get_attribute("href")
+                            title = (await title_elem.inner_text()).strip()
+                            if not url or not title or url in seen_urls:
+                                continue
+                            seen_urls.add(url)
+                            results.append(
+                                {
+                                    "title": title,
+                                    "url": url,
+                                    "snippet": await snippet_elem.inner_text()
+                                    if snippet_elem
+                                    else "",
+                                }
+                            )
 
                 if not results:
                     text = await page.inner_text("body")
-                    if "No results found" in text:
-                        return {
-                            "success": True,
-                            "results": [],
-                            "message": "No results found",
-                        }
+                    explicit_no_results = "No results found" in text
+                    return {
+                        "success": False,
+                        "results": [],
+                        "error": (
+                            "Google returned no results."
+                            if explicit_no_results
+                            else "Google results were present but could not be parsed."
+                        ),
+                    }
 
                 result_text = "".join(
                     f"{i}. {r['title']}\n   URL: {r['url']}\n   {r['snippet']}\n\n"
@@ -1272,8 +1369,8 @@ class BrowserManager:
                 return {
                     "success": True,
                     "query": query,
-                    "results_summary": result_text
-                    or "Results found but could not be parsed.",
+                    "results": results,
+                    "results_summary": result_text,
                     "elements": a11y_tree,
                 }
 
