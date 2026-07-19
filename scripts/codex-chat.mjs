@@ -1,4 +1,4 @@
-import { complete, getModel } from '@earendil-works/pi-ai';
+import { complete, getModel } from '@earendil-works/pi-ai/compat';
 import { fileURLToPath } from 'url';
 
 import { resolveCodexApiKey } from './codex-oauth.mjs';
@@ -47,13 +47,17 @@ function serializeAssistantMessage(message) {
     };
 }
 
+export function resolveCodexModel(modelId) {
+    return getModel('openai-codex', String(modelId || '').trim());
+}
+
 async function completeCodex(payload) {
     const modelId = String(payload?.model || '').trim();
     if (!modelId) {
         throw new Error('Missing Codex model id.');
     }
 
-    const model = getModel('openai-codex', modelId);
+    const model = resolveCodexModel(modelId);
     if (!model) {
         throw new Error(`Unknown Codex model: ${modelId}`);
     }

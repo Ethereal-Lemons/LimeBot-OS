@@ -5,13 +5,14 @@ import path from 'path';
 import readline from 'readline/promises';
 import { fileURLToPath } from 'url';
 
-import { getOAuthApiKey, loginOpenAICodex } from '@earendil-works/pi-ai/oauth';
+import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 const providerId = 'openai-codex';
 const storePath = path.join(rootDir, 'data', 'oauth_profiles.json');
+const codexOAuth = openaiCodexProvider().auth.oauth;
 
 function emptyStore() {
     return { version: 1, providers: {} };
@@ -225,23 +226,65 @@ async function promptUser(prompt) {
     }
 }
 
+async function promptAuthUser(prompt) {
+    if (prompt?.type !== 'select') {
+        return promptUser(prompt);
+    }
+
+    const options = Array.isArray(prompt.options) ? prompt.options : [];
+    const rendered = options
+        .map((option, index) => `${index + 1}. ${option.label}${option.description ? ` - ${option.description}` : ''}`)
+        .join('\n');
+    const answer = String(await promptUser({
+        message: `${prompt.message}\n${rendered}`,
+        placeholder: options[0]?.label,
+    })).trim();
+    if (!answer) return options[0]?.id || '';
+    const numericIndex = Number.parseInt(answer, 10) - 1;
+    if (Number.isInteger(numericIndex) && options[numericIndex]) {
+        return options[numericIndex].id;
+    }
+    const selected = options.find(
+        (option) => option.id === answer || option.label.toLowerCase() === answer.toLowerCase(),
+    );
+    return selected?.id || answer;
+}
+
+function handleAuthEvent(event) {
+    if (!event || typeof event !== 'object') return;
+    if (event.type === 'auth_url') {
+        console.log('\nOpen this URL to continue Codex sign-in:\n');
+        console.log(event.url);
+        if (event.instructions) console.log(`\n${event.instructions}\n`);
+        openBrowser(event.url);
+        return;
+    }
+    if (event.type === 'device_code') {
+        console.log(`\nOpen ${event.verificationUri} and enter code ${event.userCode}.\n`);
+        openBrowser(event.verificationUri);
+        return;
+    }
+    if ((event.type === 'progress' || event.type === 'info') && event.message) {
+        console.log(event.message);
+    }
+}
+
+function toRuntimeOAuthCredential(credential) {
+    const expiresSeconds = normalizeExpiry(credential?.expires, 0);
+    return {
+        ...credential,
+        type: 'oauth',
+        expires: expiresSeconds > 0 ? expiresSeconds * 1000 : 0,
+    };
+}
+
 export async function loginCodexAuth() {
-    const credential = await loginOpenAICodex({
-        onAuth: ({ url, instructions }) => {
-            console.log('\nOpen this URL to continue Codex sign-in:\n');
-            console.log(url);
-            if (instructions) {
-                console.log(`\n${instructions}\n`);
-            } else {
-                console.log('\nIf the browser callback does not complete, paste the code or redirect URL when prompted.\n');
-            }
-            openBrowser(url);
-        },
-        onPrompt: promptUser,
-        onProgress: (message) => {
-            if (message) console.log(message);
-        },
-        originator: 'limebot',
+    if (!codexOAuth) {
+        throw new Error('The installed pi-ai package does not provide Codex OAuth.');
+    }
+    const credential = await codexOAuth.login({
+        prompt: promptAuthUser,
+        notify: handleAuthEvent,
     });
     return storeCredential(credential, 'cli-login');
 }
@@ -267,19 +310,25 @@ export async function resolveCodexApiKey() {
         throw new Error('No stored Codex OAuth profile found. Run `limebot auth codex login` or `limebot auth codex import` first.');
     }
 
-    const result = await getOAuthApiKey(providerId, {
-        [providerId]: entry.credential,
-    });
-    if (!result) {
+    if (!codexOAuth) {
+        throw new Error('The installed pi-ai package does not provide Codex OAuth.');
+    }
+
+    let credential = toRuntimeOAuthCredential(entry.credential);
+    if (Date.now() >= credential.expires) {
+        credential = await codexOAuth.refresh(credential);
+    }
+    const auth = await codexOAuth.toAuth(credential);
+    if (!auth?.apiKey) {
         throw new Error('Stored Codex OAuth profile could not produce an API key.');
     }
 
-    const status = storeCredential(result.newCredentials, entry.source || 'cli-login', {
+    const status = storeCredential(credential, entry.source || 'cli-login', {
         importedFrom: entry.importedFrom,
     });
 
     return {
-        apiKey: result.apiKey,
+        apiKey: auth.apiKey,
         status,
     };
 }

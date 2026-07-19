@@ -224,3 +224,21 @@ class TestLlmUtils(unittest.TestCase):
                 "openai-codex/gpt-5.4",
             ],
         )
+
+    def test_codex_sol_appends_supported_legacy_fallbacks(self):
+        cfg = SimpleNamespace(llm=SimpleNamespace(proxy_url=""))
+        with patch("config.load_config", return_value=cfg), patch(
+            "core.llm_utils.resolve_codex_oauth_api_key",
+            return_value="codex-secret",
+        ):
+            chain = build_provider_chain("openai-codex/gpt-5.6-sol", [])
+
+        self.assertEqual(
+            [item[0] for item in chain],
+            [
+                "openai-codex/gpt-5.6-sol",
+                "openai-codex/gpt-5.5",
+                "openai-codex/gpt-5.4",
+                "openai-codex/gpt-5.4-mini",
+            ],
+        )

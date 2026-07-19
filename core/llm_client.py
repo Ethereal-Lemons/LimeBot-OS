@@ -195,6 +195,7 @@ class LimeLLMClient:
                 messages,
                 request.tools,
                 request.session_id,
+                request.tool_choice,
             )
 
         messages = _normalize_openai_tool_call_ids(messages)

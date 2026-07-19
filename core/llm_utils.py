@@ -360,6 +360,20 @@ def resolve_provider_config(model: str, default_base_url: Optional[str] = None) 
 # Codex requests reject those legacy models. Keep automatic failover limited to
 # the small set we know the ChatGPT Codex endpoint accepts.
 CODEX_CHATGPT_FALLBACKS_BY_MODEL = {
+    "openai-codex/gpt-5.6-sol": [
+        "openai-codex/gpt-5.5",
+        "openai-codex/gpt-5.4",
+        "openai-codex/gpt-5.4-mini",
+    ],
+    "openai-codex/gpt-5.6-luna": [
+        "openai-codex/gpt-5.4-mini",
+        "openai-codex/gpt-5.4",
+    ],
+    "openai-codex/gpt-5.6-terra": [
+        "openai-codex/gpt-5.5",
+        "openai-codex/gpt-5.4",
+        "openai-codex/gpt-5.4-mini",
+    ],
     "openai-codex/gpt-5.5": ["openai-codex/gpt-5.4", "openai-codex/gpt-5.4-mini"],
     "openai-codex/gpt-5.4": ["openai-codex/gpt-5.4-mini"],
     "openai-codex/gpt-5.4-mini": ["openai-codex/gpt-5.4"],
