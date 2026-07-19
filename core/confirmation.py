@@ -19,7 +19,9 @@ from typing import Any, Dict, List, Optional
 
 
 # Tools that always require explicit user approval unless whitelisted.
-SENSITIVE_TOOLS = frozenset({"delete_file", "run_command", "write_file", "cron_remove"})
+SENSITIVE_TOOLS = frozenset(
+    {"delete_file", "run_command", "write_file", "create_spreadsheet", "cron_remove"}
+)
 
 APPROVE_WORDS = frozenset(
     {"proceed", "yes", "approve", "confirm", "ok", "sure", "y", "go", "run", "do it"}
@@ -102,6 +104,30 @@ class ConfirmationManager:
         except Exception as e:
             preview["diff_error"] = str(e)
 
+        return preview
+
+    def build_spreadsheet_preview(self, function_args: dict) -> Dict[str, Any]:
+        """Preview a native XLSX creation without persisting workbook contents."""
+        target = str(function_args.get("path", "") or "")
+        sheets = function_args.get("sheets")
+        sheet_count = len(sheets) if isinstance(sheets, list) else 0
+        preview: Dict[str, Any] = {
+            "kind": "create_spreadsheet",
+            "path": target,
+            "summary": f"Create Excel workbook with {sheet_count} worksheet(s) at {target or '(missing path)'}",
+        }
+        if not target:
+            return preview
+        try:
+            path = Path(target).resolve()
+        except Exception:
+            return preview
+        preview["path"] = self.toolbox._to_display_path(path)
+        if not self.toolbox._is_path_allowed(path):
+            preview["summary"] = f"Attempt to write outside allowed paths: {target}"
+            preview["risk_flags"] = ["outside_allowed_paths"]
+            return preview
+        preview["mode"] = "overwrite" if path.exists() else "create"
         return preview
 
     def build_delete_preview(self, function_args: dict) -> Dict[str, Any]:
@@ -261,6 +287,8 @@ class ConfirmationManager:
         """Return a rich preview dict for any sensitive *function_name*."""
         if function_name == "write_file":
             preview = self.build_write_preview(function_args)
+        elif function_name == "create_spreadsheet":
+            preview = self.build_spreadsheet_preview(function_args)
         elif function_name == "delete_file":
             preview = self.build_delete_preview(function_args)
         elif function_name == "run_command":
@@ -312,7 +340,7 @@ class ConfirmationManager:
                         "inline": False,
                     }
                 )
-        elif function_name == "write_file":
+        elif function_name in {"write_file", "create_spreadsheet"}:
             if preview.get("path"):
                 fields.append(
                     {

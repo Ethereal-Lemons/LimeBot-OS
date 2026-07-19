@@ -111,3 +111,8 @@ plans/*
 
 # Scratch
 scratch/
+/tmp_*.py
+
+# Local agent reports and generated web test output
+advisor-plans/
+web/.test-dist/

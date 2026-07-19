@@ -1,4 +1,4 @@
-export const MIN_NODE_VERSION = Object.freeze({ major: 20, minor: 19, patch: 0 });
+export const MIN_NODE_VERSION = Object.freeze({ major: 22, minor: 19, patch: 0 });
 
 export function parseNodeVersion(value) {
     const match = String(value || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)/);

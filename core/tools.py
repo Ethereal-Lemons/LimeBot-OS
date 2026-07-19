@@ -4,6 +4,7 @@ Provides safe, whitelisted, and confirmed interface for file/OS operations.
 """
 
 import asyncio
+import ast
 import base64
 import ipaddress
 import json
@@ -15,6 +16,7 @@ import socket
 import subprocess
 import urllib.parse
 import uuid
+from decimal import Decimal, DivisionByZero, InvalidOperation, localcontext
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from loguru import logger
@@ -90,6 +92,11 @@ class Toolbox:
         self.scheduler = None
         self.channels: List[Any] = []
         self.vector_service = get_vector_service(config)
+        # Delivery tools are side effects. Keep a small, turn-scoped ledger so
+        # a model cannot resend the same file repeatedly while it is reasoning
+        # through one response. Captions are intentionally excluded from the
+        # fingerprint because changing narration must not bypass the guard.
+        self._sent_media_by_turn: Dict[str, set[str]] = {}
 
         if allowed_paths:
             for p in allowed_paths:
@@ -712,6 +719,198 @@ class Toolbox:
         except Exception as e:
             return f"Error writing file: {e}"
 
+    async def calculate(self, expression: str) -> str:
+        """Evaluate bounded arithmetic without invoking a shell or interpreter."""
+        expression = str(expression or "").strip()
+        if not expression:
+            return "Error: An arithmetic expression is required."
+        if len(expression) > 500:
+            return "Error: Expression is too long (maximum 500 characters)."
+
+        binary_ops = {
+            ast.Add: lambda a, b: a + b,
+            ast.Sub: lambda a, b: a - b,
+            ast.Mult: lambda a, b: a * b,
+            ast.Div: lambda a, b: a / b,
+            ast.FloorDiv: lambda a, b: a // b,
+            ast.Mod: lambda a, b: a % b,
+            ast.Pow: lambda a, b: a**int(b),
+        }
+        unary_ops = {ast.UAdd: lambda value: value, ast.USub: lambda value: -value}
+
+        def evaluate(node: ast.AST, depth: int = 0) -> Decimal:
+            if depth > 30:
+                raise ValueError("expression nesting is too deep")
+            if isinstance(node, ast.Expression):
+                return evaluate(node.body, depth + 1)
+            if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+                return Decimal(str(node.value))
+            if isinstance(node, ast.UnaryOp) and type(node.op) in unary_ops:
+                return unary_ops[type(node.op)](evaluate(node.operand, depth + 1))
+            if isinstance(node, ast.BinOp) and type(node.op) in binary_ops:
+                left = evaluate(node.left, depth + 1)
+                right = evaluate(node.right, depth + 1)
+                if isinstance(node.op, ast.Pow):
+                    if right != right.to_integral_value() or abs(right) > 20:
+                        raise ValueError("power must be an integer between -20 and 20")
+                value = binary_ops[type(node.op)](left, right)
+                if abs(value) > Decimal("1e100"):
+                    raise ValueError("result magnitude is too large")
+                return value
+            raise ValueError(f"unsupported expression element: {type(node).__name__}")
+
+        try:
+            parsed = ast.parse(expression, mode="eval")
+            with localcontext() as context:
+                context.prec = 28
+                value = evaluate(parsed)
+        except (SyntaxError, ValueError, InvalidOperation, DivisionByZero, ZeroDivisionError) as exc:
+            return f"Error: Invalid arithmetic expression ({exc})."
+
+        rendered = format(value, "f")
+        if "." in rendered:
+            rendered = rendered.rstrip("0").rstrip(".")
+        if rendered in {"", "-0"}:
+            rendered = "0"
+        return f"Result: {rendered}"
+
+    async def create_spreadsheet(
+        self,
+        path: str,
+        sheets: List[Dict[str, Any]],
+        title: str = "",
+    ) -> str:
+        """Create a styled, formula-capable XLSX workbook as a native tool."""
+        if not self._is_path_allowed(path):
+            return f"Error: Access denied to path '{path}'."
+        target = Path(path).resolve()
+        if target.suffix.lower() != ".xlsx":
+            return "Error: create_spreadsheet requires a path ending in .xlsx."
+        try:
+            resolved_persona = PERSONA_DIR.resolve()
+            if target == resolved_persona or resolved_persona in target.parents:
+                return "Error: Direct modification of state-managed files under 'persona/' is blocked."
+        except Exception as exc:
+            logger.error(f"Error checking spreadsheet path safety: {exc}")
+
+        if not isinstance(sheets, list) or not sheets:
+            return "Error: At least one worksheet is required."
+        if len(sheets) > 20:
+            return "Error: A workbook may contain at most 20 worksheets."
+
+        total_cells = 0
+        normalized_sheets: List[tuple[str, List[List[Any]]]] = []
+        used_names: set[str] = set()
+        for index, sheet in enumerate(sheets, start=1):
+            if not isinstance(sheet, dict):
+                return f"Error: Worksheet {index} must be an object."
+            raw_name = str(sheet.get("name") or f"Sheet{index}")
+            name = re.sub(r"[\\/*?:\[\]]", "-", raw_name).strip(" '")[:31]
+            name = name or f"Sheet{index}"
+            base_name = name
+            suffix = 2
+            while name.lower() in used_names:
+                marker = f"-{suffix}"
+                name = f"{base_name[: 31 - len(marker)]}{marker}"
+                suffix += 1
+            used_names.add(name.lower())
+
+            rows = sheet.get("rows")
+            if not isinstance(rows, list) or not rows:
+                return f"Error: Worksheet '{name}' must include at least one row."
+            if len(rows) > 2000:
+                return f"Error: Worksheet '{name}' exceeds the 2,000-row limit."
+            normalized_rows: List[List[Any]] = []
+            for row_number, row in enumerate(rows, start=1):
+                if not isinstance(row, list):
+                    return f"Error: Row {row_number} in worksheet '{name}' must be an array."
+                if len(row) > 50:
+                    return f"Error: Row {row_number} in worksheet '{name}' exceeds 50 columns."
+                normalized_rows.append(row)
+                total_cells += len(row)
+                if total_cells > 20_000:
+                    return "Error: Workbook exceeds the 20,000-cell safety limit."
+            normalized_sheets.append((name, normalized_rows))
+
+        def build_workbook() -> tuple[int, int]:
+            try:
+                from openpyxl import Workbook
+                from openpyxl.styles import Alignment, Font, PatternFill
+                from openpyxl.utils import get_column_letter
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Spreadsheet support is unavailable because openpyxl is not installed."
+                ) from exc
+
+            workbook = Workbook()
+            workbook.remove(workbook.active)
+            workbook.calculation.fullCalcOnLoad = True
+            workbook.calculation.forceFullCalc = True
+            workbook.calculation.calcMode = "auto"
+            if title:
+                workbook.properties.title = str(title)[:255]
+            header_fill = PatternFill("solid", fgColor="1F4E78")
+            header_font = Font(color="FFFFFF", bold=True)
+            band_fill = PatternFill("solid", fgColor="DDEBF7")
+            formulas = 0
+
+            for sheet_name, rows in normalized_sheets:
+                worksheet = workbook.create_sheet(sheet_name)
+                for row_index, row in enumerate(rows, start=1):
+                    for column_index, value in enumerate(row, start=1):
+                        cell = worksheet.cell(row=row_index, column=column_index, value=value)
+                        cell.alignment = Alignment(vertical="top", wrap_text=True)
+                        if isinstance(value, str) and value.startswith("="):
+                            formulas += 1
+                        if isinstance(value, str) and value.startswith(("https://", "http://")):
+                            cell.hyperlink = value
+                            cell.style = "Hyperlink"
+                    if row_index > 1 and row_index % 2 == 0:
+                        for cell in worksheet[row_index]:
+                            if cell.fill.fill_type is None:
+                                cell.fill = band_fill
+
+                for cell in worksheet[1]:
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = Alignment(vertical="center", wrap_text=True)
+
+                if len(rows) > 1:
+                    worksheet.freeze_panes = "A2"
+                    worksheet.auto_filter.ref = worksheet.dimensions
+
+                headers = [str(value or "").strip().lower() for value in rows[0]]
+                for column_index in range(1, worksheet.max_column + 1):
+                    header = headers[column_index - 1] if column_index <= len(headers) else ""
+                    values = [worksheet.cell(row=r, column=column_index).value for r in range(1, worksheet.max_row + 1)]
+                    width = min(60, max(10, max((len(str(v)) for v in values if v is not None), default=8) + 2))
+                    worksheet.column_dimensions[get_column_letter(column_index)].width = width
+                    if any(token in header for token in ("usd", "cost", "price", "monthly", "annual", "total")):
+                        for row_index in range(2, worksheet.max_row + 1):
+                            worksheet.cell(row=row_index, column=column_index).number_format = '$#,##0.00'
+                    elif "percent" in header or "%" in header:
+                        for row_index in range(2, worksheet.max_row + 1):
+                            worksheet.cell(row=row_index, column=column_index).number_format = "0.00%"
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.tmp.xlsx")
+            try:
+                workbook.save(temporary)
+                os.replace(temporary, target)
+            finally:
+                if temporary.exists():
+                    temporary.unlink(missing_ok=True)
+            return len(normalized_sheets), formulas
+
+        try:
+            sheet_count, formula_count = await asyncio.to_thread(build_workbook)
+            return (
+                f"Successfully created spreadsheet '{path}' with {sheet_count} worksheet(s), "
+                f"{total_cells} cells, and {formula_count} formula(s). Use send_media to deliver it."
+            )
+        except Exception as exc:
+            return f"Error creating spreadsheet: {exc}"
+
     async def delete_file(self, path: str) -> str:
         """Delete a file or directory."""
         if not self._is_path_allowed(path):
@@ -1135,9 +1334,11 @@ class Toolbox:
             sanitized[key] = value
         return sanitized
 
-    async def run_command(self, command: str) -> str:
-        """Execute a terminal command with real-time progress updates."""
+    def validate_command(self, command: str) -> Optional[str]:
+        """Return a deterministic validation error before approval/execution."""
         command = str(command or "").strip()
+        if not command:
+            return "Error: Command is required."
         forbidden_regex = r"(\$\(|\`|&&|\|\||>|<|\n)"
         pseudo_call_match = re.match(
             r"^\s*([A-Za-z_][\w\.]*)\s*\((.*)\)\s*$", str(command or ""), re.DOTALL
@@ -1203,6 +1404,15 @@ class Toolbox:
                 "Error: Privileged commands are blocked. "
                 "Enable 'Allow Unsafe Commands' in Config to allow them."
             )
+
+        return None
+
+    async def run_command(self, command: str) -> str:
+        """Execute a terminal command with real-time progress updates."""
+        command = str(command or "").strip()
+        validation_error = self.validate_command(command)
+        if validation_error:
+            return validation_error
 
         try:
             command, browser_launch_error = self._normalize_browser_launch_command(command)
@@ -1847,6 +2057,25 @@ class Toolbox:
         if not source:
             return "Error: A local file path or http(s) URL is required."
 
+        turn_id = str(ctx.get("turn_id") or "").strip()
+        if source.lower().startswith(("http://", "https://")):
+            media_fingerprint = source
+        else:
+            try:
+                media_fingerprint = os.path.normcase(
+                    str(Path(source).expanduser().resolve())
+                )
+            except Exception:
+                media_fingerprint = os.path.normcase(os.path.normpath(source))
+
+        delivered_this_turn = self._sent_media_by_turn.get(turn_id, set())
+        if turn_id and media_fingerprint in delivered_this_turn:
+            return (
+                "ACTION BLOCKED: Duplicate send_media suppressed because this "
+                "file was already delivered during the current turn. Continue "
+                "with the task or reply in text instead of sending it again."
+            )
+
         if source.lower().startswith(("http://", "https://")):
             downloaded = await self.fetch_url_to_temp(source)
             if downloaded.startswith("Error:"):
@@ -1861,6 +2090,8 @@ class Toolbox:
 
         if channel == "web":
             await self._publish_web_media(resolved, caption)
+            if turn_id:
+                self._remember_sent_media(turn_id, media_fingerprint)
             return f"Displayed '{self._to_display_path(resolved)}' in the web chat."
 
         await self.bus.publish_outbound(
@@ -1875,8 +2106,18 @@ class Toolbox:
                 },
             )
         )
+        if turn_id:
+            self._remember_sent_media(turn_id, media_fingerprint)
         display_path = self._to_display_path(resolved)
         return f"Sent '{display_path}' to the current {channel} chat."
+
+    def _remember_sent_media(self, turn_id: str, fingerprint: str) -> None:
+        """Remember successful media deliveries without growing forever."""
+        bucket = self._sent_media_by_turn.setdefault(turn_id, set())
+        bucket.add(fingerprint)
+        while len(self._sent_media_by_turn) > 128:
+            oldest_turn = next(iter(self._sent_media_by_turn))
+            self._sent_media_by_turn.pop(oldest_turn, None)
 
     async def send_voice(self, text: str, channel: str = "") -> str:
         """Speak `text` aloud as a voice message in the current chat.
@@ -1972,6 +2213,19 @@ class Toolbox:
             bare.startswith(("gpt-image-", "dall-e-"))
             or bare == "chatgpt-image-latest"
         )
+
+    @staticmethod
+    def _is_negated_image_generation_prompt(prompt: str) -> bool:
+        """Detect explicit instructions saying that no image should be made."""
+        normalized = str(prompt or "").strip().lower()
+        patterns = (
+            r"\bno\s+image\s+generation\s+(?:is\s+)?needed\b",
+            r"\b(?:do\s+not|don't|dont)\s+(?:generate|create|draw|render)\s+"
+            r"(?:an?\s+)?(?:image|picture|photo)\b",
+            r"\bno\s+(?:es\s+)?necesari[oa]\s+(?:generar|crear|dibujar|renderizar)\s+"
+            r"(?:una?\s+)?(?:imagen|foto)\b",
+        )
+        return any(re.search(pattern, normalized) for pattern in patterns)
 
     @staticmethod
     def _image_extension_for_mime(mime_type: str) -> str:
@@ -2513,6 +2767,11 @@ class Toolbox:
         prompt = str(prompt or "").strip()
         if not prompt:
             return "Error: prompt is required."
+        if self._is_negated_image_generation_prompt(prompt):
+            return (
+                "ACTION BLOCKED: The image prompt explicitly says that no image "
+                "should be generated. Continue without calling generate_image."
+            )
 
         image_cfg = getattr(self.config, "image_generation", None)
         requested_model = model or getattr(image_cfg, "model", "") or ""

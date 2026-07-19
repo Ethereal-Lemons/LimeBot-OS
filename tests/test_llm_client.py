@@ -81,6 +81,7 @@ class TestLlmClient(unittest.IsolatedAsyncioTestCase):
             [{"role": "user", "content": "hi"}],
             None,
             "session-123",
+            "auto",
         )
 
     async def test_complete_uses_litellm_with_tools_when_present(self):

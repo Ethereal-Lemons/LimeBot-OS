@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import asyncio
+import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
 from loguru import logger
@@ -134,6 +135,9 @@ class SessionManager:
         self._lock = asyncio.Lock()
         self._save_task: Optional[asyncio.Task] = None
         self._save_debounce_s: float = 2.0
+        self._event_locks: Dict[str, asyncio.Lock] = {}
+        self._event_sequences: Dict[str, int] = {}
+        self._event_sequence_loaded: set[str] = set()
 
         self.sessions = self._load_sessions()
 
@@ -288,20 +292,55 @@ class SessionManager:
 
         await asyncio.to_thread(_sync_write)
 
+    @staticmethod
+    def _read_event_sequence_sync(session_key: str) -> int:
+        log_file = EVENTS_DIR / f"{session_key}.jsonl"
+        if not log_file.exists():
+            return 0
+        latest = 0
+        try:
+            with open(log_file, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        value = json.loads(line).get("sequence", 0)
+                        if isinstance(value, int):
+                            latest = max(latest, value)
+                    except Exception:
+                        continue
+        except Exception:
+            return latest
+        return latest
+
     async def append_event_log(self, session_key: str, event: Dict[str, Any]):
-        """Append a structured event to the session audit log."""
+        """Append a versioned, uniquely identified session event."""
+        clean_session_key = str(session_key or "").strip()
+        lock = self._event_locks.setdefault(clean_session_key, asyncio.Lock())
+        async with lock:
+            if clean_session_key not in self._event_sequence_loaded:
+                self._event_sequences[clean_session_key] = await asyncio.to_thread(
+                    self._read_event_sequence_sync, clean_session_key
+                )
+                self._event_sequence_loaded.add(clean_session_key)
+            self._event_sequences[clean_session_key] = (
+                self._event_sequences.get(clean_session_key, 0) + 1
+            )
+            payload = dict(event)
+            payload.setdefault("schema_version", 1)
+            payload.setdefault(
+                "event_id", f"evt_{uuid.uuid4().hex[:20]}"
+            )
+            payload.setdefault("sequence", self._event_sequences[clean_session_key])
+            payload.setdefault("timestamp", time.time())
 
-        def _sync_append():
-            log_file = EVENTS_DIR / f"{session_key}.jsonl"
-            try:
-                payload = dict(event)
-                payload.setdefault("timestamp", time.time())
-                with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(payload, default=str) + "\n")
-            except Exception as e:
-                logger.error(f"Error appending event log: {e}")
+            def _sync_append():
+                log_file = EVENTS_DIR / f"{clean_session_key}.jsonl"
+                try:
+                    with open(log_file, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(payload, default=str) + "\n")
+                except Exception as e:
+                    logger.error(f"Error appending event log: {e}")
 
-        await asyncio.to_thread(_sync_append)
+            await asyncio.to_thread(_sync_append)
 
     async def save_history(self, session_key: str, history: list):
         """Persist full conversation history to disk (JSON)."""

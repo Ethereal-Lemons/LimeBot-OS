@@ -51,6 +51,21 @@ class TestWebModelRegistry(unittest.TestCase):
         registry = """
 export const MODELS = {
   "openai-codex": {
+    "gpt-5.6-sol": {
+      id: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      provider: "openai-codex",
+    },
+    "gpt-5.6-luna": {
+      id: "gpt-5.6-luna",
+      name: "GPT-5.6 Luna",
+      provider: "openai-codex",
+    },
+    "gpt-5.6-terra": {
+      id: "gpt-5.6-terra",
+      name: "GPT-5.6 Terra",
+      provider: "openai-codex",
+    },
     "gpt-5.3-codex": {
       id: "gpt-5.3-codex",
       name: "GPT-5.3 Codex",
@@ -91,6 +106,21 @@ export const MODELS = {
         self.assertEqual(
             models,
             [
+                {
+                    "id": "openai-codex/gpt-5.6-sol",
+                    "name": "GPT-5.6 Sol",
+                    "provider": "openai-codex",
+                },
+                {
+                    "id": "openai-codex/gpt-5.6-luna",
+                    "name": "GPT-5.6 Luna",
+                    "provider": "openai-codex",
+                },
+                {
+                    "id": "openai-codex/gpt-5.6-terra",
+                    "name": "GPT-5.6 Terra",
+                    "provider": "openai-codex",
+                },
                 {
                     "id": "openai-codex/gpt-5.4",
                     "name": "GPT-5.4",
@@ -148,6 +178,13 @@ export const MODELS = {
         self.assertIn(
             "openai-codex/gpt-5.4",
             {model["id"] for model in codex_models},
+        )
+        self.assertTrue(
+            {
+                "openai-codex/gpt-5.6-sol",
+                "openai-codex/gpt-5.6-luna",
+                "openai-codex/gpt-5.6-terra",
+            }.issubset({model["id"] for model in codex_models})
         )
         self.assertNotIn(
             "openai-codex/gpt-5.3-codex",

@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+_DEFAULT_CODEX_BRIDGE_TIMEOUT_SECONDS = 300.0
+
+
 def is_codex_model_name(model: str | None) -> bool:
     return str(model or "").strip().startswith("openai-codex/")
 
@@ -24,9 +27,17 @@ def _node_executable() -> str:
 
 def _bridge_timeout_seconds() -> float:
     try:
-        return max(1.0, float(os.getenv("CODEX_BRIDGE_TIMEOUT", "20")))
+        return max(
+            1.0,
+            float(
+                os.getenv(
+                    "CODEX_BRIDGE_TIMEOUT",
+                    str(_DEFAULT_CODEX_BRIDGE_TIMEOUT_SECONDS),
+                )
+            ),
+        )
     except Exception:
-        return 20.0
+        return _DEFAULT_CODEX_BRIDGE_TIMEOUT_SECONDS
 
 
 def _tool_arguments_to_object(arguments: Any) -> Dict[str, Any]:
@@ -418,10 +429,24 @@ def complete_codex_response(
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]] = None,
     session_id: Optional[str] = None,
+    tool_choice: Optional[str] = "auto",
 ) -> CodexResponse:
+    request_messages = list(messages or [])
+    if tool_choice == "required" and tools:
+        request_messages.insert(
+            0,
+            {
+                "role": "system",
+                "content": (
+                    "A tool call is required for this response. Call at least one of the "
+                    "provided tools before giving any natural-language answer. Do not "
+                    "claim a capability is unavailable without attempting its tool."
+                ),
+            },
+        )
     payload = {
         "model": normalize_codex_model_id(model),
-        "context": build_codex_context(messages, tools),
+        "context": build_codex_context(request_messages, tools),
         "sessionId": session_id,
     }
     result = _run_codex_bridge(payload)
@@ -459,6 +484,7 @@ def stream_codex_response(
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]] = None,
     session_id: Optional[str] = None,
+    tool_choice: Optional[str] = "auto",
 ) -> CodexSyntheticStream:
     return CodexSyntheticStream(
         complete_codex_response(
@@ -466,5 +492,6 @@ def stream_codex_response(
             messages=messages,
             tools=tools,
             session_id=session_id,
+            tool_choice=tool_choice,
         )
     )

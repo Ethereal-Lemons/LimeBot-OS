@@ -97,6 +97,7 @@ class SkillLoader:
             "base_dir": base_dir,
             "documentation": documentation,
             "metadata": metadata.get("metadata", {}),
+            "dependencies": metadata.get("dependencies", {}) or {},
             "requires_backend": requires_backend or has_api,
             "has_api": has_api,
         }

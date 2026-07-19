@@ -72,6 +72,70 @@ class TestToolSelection(unittest.TestCase):
         self.assertIn("browser_click", names)
         self.assertNotIn("read_file", names)
 
+    def test_spanish_browser_export_workflow_keeps_complete_tool_chain(self):
+        from core.tool_defs import build_tool_definitions, shortlist_tool_definitions
+
+        tools = build_tool_definitions(enabled_skills=["browser"])
+        prompt = (
+            "Utilice la calculadora de Azure https://azure.microsoft.com/es-es/pricing/calculator/ "
+            "para calcular una máquina virtual, exportar la hoja de Excel y adjuntar una captura."
+        )
+
+        shortlisted = shortlist_tool_definitions(tools, prompt)
+        names = {tool["function"]["name"] for tool in shortlisted}
+
+        self.assertLessEqual(len(shortlisted), 12)
+        self.assertTrue(
+            {
+                "browser_navigate",
+                "browser_snapshot",
+                "browser_click",
+                "browser_download",
+                "run_command",
+                "list_dir",
+                "read_file",
+                "send_media",
+            }
+            <= names
+        )
+
+    def test_price_research_excel_workflow_keeps_native_math_and_workbook_tools(self):
+        from core.tool_defs import build_tool_definitions, shortlist_tool_definitions
+
+        tools = build_tool_definitions(enabled_skills=["browser"])
+        shortlisted = shortlist_tool_definitions(
+            tools,
+            "Search current Azure VPS prices, calculate monthly totals, create an Excel workbook, and send the file",
+        )
+        names = {tool["function"]["name"] for tool in shortlisted}
+
+        self.assertLessEqual(len(shortlisted), 12)
+        self.assertIn("web_search", names)
+        self.assertIn("calculate", names)
+        self.assertIn("create_spreadsheet", names)
+        self.assertIn("send_media", names)
+
+    def test_explicit_url_and_research_requests_require_initial_tool_use(self):
+        AgentLoop = self._require_fast_harness_loop_integration()
+        tools = [
+            {"function": {"name": "browser_navigate"}},
+            {"function": {"name": "web_search"}},
+        ]
+
+        self.assertTrue(
+            AgentLoop._requires_initial_tool_call(
+                "Analice https://example.com y haga un resumen", tools
+            )
+        )
+        self.assertTrue(
+            AgentLoop._requires_initial_tool_call(
+                "Investigue los precios actuales de Azure", tools
+            )
+        )
+        self.assertFalse(
+            AgentLoop._requires_initial_tool_call("Explique qué es un servidor", tools)
+        )
+
     def test_generate_image_schema_supports_chat_references(self):
         from core.tool_defs import build_tool_definitions
 
@@ -148,7 +212,7 @@ class TestToolSelection(unittest.TestCase):
         self.assertEqual(args["start_line"], 1)
         self.assertEqual(args["end_line"], 40)
 
-    def test_agent_uses_full_tool_schema_in_explicit_balanced_mode(self):
+    def test_agent_uses_full_tool_schema_when_shortlist_disabled_in_fast_mode(self):
         from core.loop import AgentLoop
 
         agent = object.__new__(AgentLoop)
@@ -160,7 +224,7 @@ class TestToolSelection(unittest.TestCase):
         agent._get_tool_definitions = lambda: all_tools
         agent.config = SimpleNamespace(
             tool_shortlist_enabled=False,
-            ai_harness=SimpleNamespace(mode="balanced"),
+            ai_harness=SimpleNamespace(mode="fast"),
         )
         agent._log_tool_debug = lambda *args, **kwargs: None
 
@@ -230,7 +294,7 @@ class TestToolSelection(unittest.TestCase):
         )
         self.assertTrue(agent._should_include_tools_for_turn("read ./README.md"))
 
-    def test_fast_harness_shortlists_without_env_flag(self):
+    def test_fast_harness_shortlists_when_explicitly_enabled(self):
         AgentLoop = self._require_fast_harness_loop_integration()
         from core.tool_defs import shortlist_tool_definitions
 
@@ -261,6 +325,30 @@ class TestToolSelection(unittest.TestCase):
                 "open https://example.com and inspect the page",
             ),
         )
+
+    def test_agent_adds_forced_skill_required_tools_to_shortlist(self):
+        AgentLoop = self._require_fast_harness_loop_integration()
+        from core.tool_defs import build_tool_definitions
+
+        agent = object.__new__(AgentLoop)
+        agent.config = SimpleNamespace(tool_shortlist_enabled=True)
+        agent.skill_registry = SimpleNamespace(
+            get_required_tool_names=lambda name: (
+                ["run_command", "send_media"] if name == "docx-creator" else []
+            )
+        )
+        agent._get_tool_definitions = lambda: build_tool_definitions(
+            enabled_skills=[]
+        )
+        agent._log_tool_debug = lambda *args, **kwargs: None
+
+        selected = agent._get_tool_definitions_for_turn(
+            "use this skill for that, also in APA please",
+            forced_skill_name="docx-creator",
+        )
+        names = {tool["function"]["name"] for tool in selected}
+
+        self.assertTrue({"run_command", "send_media"} <= names)
 
     def test_actual_registry_routing_matrix_is_bounded_and_capable(self):
         from core.tool_defs import build_tool_definitions, shortlist_tool_definitions
@@ -295,3 +383,19 @@ class TestToolSelection(unittest.TestCase):
 
         ambiguous = "help me with this"
         self.assertEqual(shortlist_tool_definitions(tools, ambiguous), tools)
+
+    def test_shortlist_preserves_tools_required_by_forced_skill(self):
+        from core.tool_defs import build_tool_definitions, shortlist_tool_definitions
+
+        tools = build_tool_definitions(enabled_skills=[])
+        shortlisted = shortlist_tool_definitions(
+            tools,
+            "use this skill for that, also in APA please",
+            required_tool_names={"read_file", "list_dir", "run_command", "send_media"},
+        )
+        names = {tool["function"]["name"] for tool in shortlisted}
+
+        self.assertTrue(
+            {"read_file", "list_dir", "run_command", "send_media"} <= names
+        )
+        self.assertLessEqual(len(shortlisted), 12)

@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 
 def _cfg(**kw):
@@ -227,6 +228,65 @@ class TestSendMediaRemote(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.startswith("Error:"))
         self.assertEqual(sent, [])
+
+
+class TestGoogleScrapeFallback(unittest.IsolatedAsyncioTestCase):
+    async def test_structured_scrape_results_become_normalized_sources(self):
+        from core.loop import AgentLoop
+
+        loop = AgentLoop.__new__(AgentLoop)
+        loop.config = SimpleNamespace(skills=SimpleNamespace(enabled=["browser"]))
+        browser = SimpleNamespace(
+            google_search=AsyncMock(
+                return_value={
+                    "success": True,
+                    "results": [
+                        {
+                            "title": "Official pricing",
+                            "url": "https://example.test/pricing",
+                            "snippet": "Current price",
+                        }
+                    ],
+                    "results_summary": "legacy summary",
+                }
+            )
+        )
+
+        with patch("core.loop.get_browser_manager", AsyncMock(return_value=browser)), patch(
+            "core.web_search.build_provider_chain", return_value=[]
+        ):
+            response, error = await loop._gather_search(
+                "official pricing", 5, "web", "web_test"
+            )
+
+        self.assertEqual(error, "")
+        self.assertEqual(response.provider, "google-scrape")
+        self.assertEqual(response.results[0].url, "https://example.test/pricing")
+
+    async def test_unparseable_scrape_is_a_failure_not_a_pseudo_result(self):
+        from core.loop import AgentLoop
+
+        loop = AgentLoop.__new__(AgentLoop)
+        loop.config = SimpleNamespace(skills=SimpleNamespace(enabled=["browser"]))
+        browser = SimpleNamespace(
+            google_search=AsyncMock(
+                return_value={
+                    "success": False,
+                    "results": [],
+                    "error": "Google results were present but could not be parsed.",
+                }
+            )
+        )
+
+        with patch("core.loop.get_browser_manager", AsyncMock(return_value=browser)), patch(
+            "core.web_search.build_provider_chain", return_value=[]
+        ):
+            response, error = await loop._gather_search(
+                "official pricing", 5, "web", "web_test"
+            )
+
+        self.assertIsNone(response)
+        self.assertIn("could not be parsed", error)
 
 
 class TestDeepResearch(unittest.IsolatedAsyncioTestCase):

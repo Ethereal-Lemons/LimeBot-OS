@@ -12,8 +12,10 @@ To add a new tool:
 """
 
 import copy
+import os
 import re
-from typing import Any, Dict, List
+import unicodedata
+from typing import Any, Dict, Iterable, List, Optional
 
 
 BASE_TOOLS = [
@@ -54,6 +56,61 @@ BASE_TOOLS = [
             },
         },
         "required": ["path", "content"],
+    },
+    {
+        "name": "create_spreadsheet",
+        "description": (
+            "Create a real, styled Microsoft Excel .xlsx workbook without writing a script. "
+            "Use this whenever the user asks for Excel or XLSX. Put column headings in the "
+            "first row of each sheet; strings beginning with '=' become Excel formulas. "
+            "After success, call send_media with the same path to deliver the workbook."
+        ),
+        "params": {
+            "path": {
+                "type": "string",
+                "description": "Destination path ending in .xlsx.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Optional workbook title metadata.",
+            },
+            "sheets": {
+                "type": "array",
+                "description": "One to twenty worksheets, each with a name and rectangular row arrays.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "rows": {
+                            "type": "array",
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": ["string", "number", "boolean", "null"]
+                                },
+                            },
+                        },
+                    },
+                    "required": ["name", "rows"],
+                },
+            },
+        },
+        "required": ["path", "sheets"],
+    },
+    {
+        "name": "calculate",
+        "description": (
+            "Evaluate arithmetic exactly and safely. Use this for prices, totals, percentages, "
+            "unit conversions, and comparisons instead of mental math or run_command. "
+            "Supports +, -, *, /, //, %, parentheses, and bounded powers."
+        ),
+        "params": {
+            "expression": {
+                "type": "string",
+                "description": "Arithmetic expression, for example 0.0104*730*12.",
+            }
+        },
+        "required": ["expression"],
     },
     {
         "name": "delete_file",
@@ -136,7 +193,13 @@ BASE_TOOLS = [
     },
     {
         "name": "run_command",
-        "description": "Execute a shell command only when native tools are insufficient or the user explicitly wants command execution. Prefer read_file, list_dir, search_files, or browser tools first when they can answer the request. Use this for git, test runs, scripts, or skill commands. Example: run_command(command='pytest tests/test_setup_prompt.py').",
+        "description": (
+            "Execute one shell command only when native tools are insufficient or the user explicitly "
+            "wants command execution. Commands run from the project root on "
+            f"{'Windows' if os.name == 'nt' else 'a POSIX system'}. Never use heredocs, newlines, "
+            "&&, ||, semicolon chaining, redirects, backticks, or $(). Prefer read_file, list_dir, "
+            "search_files, calculate, create_spreadsheet, or browser tools first."
+        ),
         "params": {
             "command": {
                 "type": "string",
@@ -288,7 +351,12 @@ BASE_TOOLS = [
     },
     {
         "name": "send_media",
-        "description": "Share media into the current chat (web, Discord, or WhatsApp). Accepts a local file path OR a remote http(s) URL (it is downloaded first). This is how you send the user a picture found via image_search or web_search: pass the Image URL as 'path'.",
+        "description": (
+            "Deliver a requested file or final artifact into the current chat (web, Discord, or WhatsApp). "
+            "Accepts a local file path OR a remote http(s) URL (it is downloaded first). "
+            "Use it once per artifact; never resend the same path to narrate progress or put status text in captions. "
+            "For a picture found via image_search or web_search, pass the Image URL as 'path'."
+        ),
         "params": {
             "path": {
                 "type": "string",
@@ -320,7 +388,9 @@ BASE_TOOLS = [
         "name": "generate_image",
         "description": (
             "Generate or edit an image using the configured image-capable model. "
-            "Use this when the user asks to create, draw, render, generate, or transform a picture. "
+            "Use this only when the user explicitly asks to create, draw, render, generate, or transform a picture. "
+            "A mention of images already embedded in a document is not an image-generation request. "
+            "Never call this tool with a prompt that says image generation is unnecessary. "
             "Images attached to the current message can be used automatically as visual references, "
             "including for named people and follow-up requests such as 'make it' or 'generate it'. "
             "The tool saves generated files locally and sends the image back to the active chat when supported."
@@ -490,6 +560,31 @@ BROWSER_TOOLS = [
         "required": ["element_id"],
     },
     {
+        "name": "browser_download",
+        "description": (
+            "Click an element that starts a file download and save it inside LimeBot's "
+            "allowed temp/downloads directory. Use this instead of browser_click for "
+            "Export, Download, Excel, CSV, PDF, or similar controls. Returns the exact "
+            "local path for read_file, list_dir, run_command, or send_media. Run "
+            "browser_snapshot first."
+        ),
+        "params": {
+            "element_id": {
+                "type": "string",
+                "description": "Element ID from the latest browser snapshot.",
+            },
+            "filename": {
+                "type": "string",
+                "description": "Optional safe output filename. The website suggestion is used by default.",
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "description": "Maximum wait in milliseconds (default: 30000, max: 120000).",
+            },
+        },
+        "required": ["element_id"],
+    },
+    {
         "name": "browser_type",
         "description": "Type into a known browser input element. Use only after browser_snapshot or browser_navigate identified the correct element ID.",
         "params": {
@@ -639,7 +734,7 @@ SEARCH_TOOLS = [
     },
     {
         "name": "deep_research",
-        "description": "Run multi-source research on a question: searches the web, reads the top sources, and returns a synthesized answer with inline [n] citations and a numbered sources list. Use for questions that need evidence from several pages. Slower than web_search. Example: deep_research(query='pros and cons of RAG vs fine-tuning in 2026').",
+        "description": "Run multi-source research on one focused question: searches the web, reads the top sources, and returns a synthesized answer with inline [n] citations and a numbered sources list. It is slower than web_search and is not sufficient by itself for an exhaustive table across named providers; for those comparisons, run a separate web_search scoped to each provider's official domain. Example: deep_research(query='pros and cons of RAG vs fine-tuning in 2026').",
         "params": {
             "query": {"type": "string", "description": "The research question."},
             "depth": {
@@ -655,6 +750,8 @@ SEARCH_TOOLS = [
 _TOOL_FAMILIES = {
     "read_file": "filesystem",
     "write_file": "filesystem",
+    "create_spreadsheet": "spreadsheet",
+    "calculate": "calculation",
     "delete_file": "filesystem",
     "list_dir": "filesystem",
     "search_files": "filesystem",
@@ -681,6 +778,7 @@ _TOOL_FAMILIES = {
     "analyze_video": "video",
     "browser_navigate": "browser",
     "browser_click": "browser",
+    "browser_download": "browser",
     "browser_type": "browser",
     "browser_snapshot": "browser",
     "browser_scroll": "browser",
@@ -698,17 +796,59 @@ _FAMILY_HINTS = {
     "filesystem": {
         "file",
         "files",
+        "archivo",
+        "archivos",
+        "fichero",
+        "ficheros",
         "folder",
         "folders",
+        "carpeta",
+        "carpetas",
         "directory",
         "directories",
         "path",
         "paths",
+        "ruta",
+        "rutas",
         "repo",
         "repository",
+        "repositorio",
         "code",
+        "codigo",
         "project",
+        "proyecto",
         "source",
+        "excel",
+        "xlsx",
+        "csv",
+        "pdf",
+    },
+    "spreadsheet": {
+        "excel",
+        "xlsx",
+        "spreadsheet",
+        "workbook",
+        "worksheet",
+        "hoja",
+        "libro",
+    },
+    "calculation": {
+        "calculate",
+        "calculator",
+        "calculation",
+        "math",
+        "total",
+        "cost",
+        "price",
+        "pricing",
+        "percent",
+        "percentage",
+        "calcula",
+        "calcular",
+        "calculadora",
+        "costo",
+        "precio",
+        "porcentaje",
     },
     "command": {
         "command",
@@ -726,6 +866,16 @@ _FAMILY_HINTS = {
         "pip",
         "exec",
         "run",
+        "ejecuta",
+        "ejecutar",
+        "procesa",
+        "procesar",
+        "convierte",
+        "convertir",
+        "exporta",
+        "exportar",
+        "descarga",
+        "descargar",
     },
     "browser": {
         "website",
@@ -739,6 +889,14 @@ _FAMILY_HINTS = {
         "article",
         "open",
         "navigate",
+        "sitio",
+        "pagina",
+        "navegador",
+        "clic",
+        "abrir",
+        "visitar",
+        "navegar",
+        "calculadora",
     },
     "search": {
         "web",
@@ -748,6 +906,13 @@ _FAMILY_HINTS = {
         "research",
         "internet",
         "lookup",
+        "buscar",
+        "busca",
+        "investigar",
+        "investiga",
+        "investigue",
+        "investigacion",
+        "fuentes",
     },
     "scheduler": {
         "remind",
@@ -795,6 +960,11 @@ _FAMILY_HINTS = {
         "voice",
         "audio",
         "attach",
+        "imagen",
+        "imagenes",
+        "captura",
+        "capturas",
+        "adjuntar",
     },
     "discord": {
         "discord",
@@ -822,21 +992,28 @@ _MANDATORY_FAMILY_TOOLS = {
         "browser_click",
         "browser_type",
         "browser_wait",
-        "browser_extract",
-        "browser_get_page_text",
     },
-    "search": {"web_search", "google_search", "image_search", "deep_research"},
+    "search": {"web_search"},
     "scheduler": {"cron_add", "cron_list", "cron_remove"},
     "memory": {"memory_search"},
     "agent": {"spawn_agent", "get_task_output", "wait_tasks", "kill_task"},
-    "media": {"generate_image", "send_media", "send_voice"},
+    "media": {"send_media"},
     "discord": {"send_discord_message", "send_discord_embed", "list_discord_channels"},
     "video": {"analyze_video"},
+    "spreadsheet": {"create_spreadsheet", "send_media"},
+    "calculation": {"calculate"},
 }
 
 _TOOL_HINTS = {
     "read_file": {"read", "open", "show", "file", "contents", "content"},
     "write_file": {"write", "edit", "save", "create", "overwrite", "file"},
+    "create_spreadsheet": {
+        "excel", "xlsx", "spreadsheet", "workbook", "worksheet", "table", "hoja", "libro",
+    },
+    "calculate": {
+        "calculate", "calculator", "math", "total", "cost", "price", "percent",
+        "calcula", "calcular", "calculadora", "costo", "precio", "porcentaje",
+    },
     "delete_file": {"delete", "remove", "erase", "cleanup"},
     "list_dir": {"list", "dir", "directory", "folder", "files", "browse"},
     "search_files": {"search", "find", "grep", "rg", "ripgrep", "match", "locate"},
@@ -857,13 +1034,20 @@ _TOOL_HINTS = {
     "google_search": {"google", "search", "web", "website", "results"},
     "web_search": {"search", "web", "google", "find", "lookup", "news", "results", "internet"},
     "image_search": {"image", "images", "picture", "photo", "pic", "pics", "photos", "find"},
-    "deep_research": {"research", "investigate", "deep", "compare", "analysis", "report", "sources", "cite"},
+    "deep_research": {
+        "research", "investigate", "deep", "compare", "analysis", "report", "sources", "cite",
+        "investigar", "investiga", "investigue", "investigacion", "fuentes", "citar",
+    },
     "send_media": {"send", "share", "picture", "photo", "pic", "image", "file", "attach"},
     "send_voice": {"voice", "audio", "speak", "say", "voicenote", "tts", "read", "aloud", "message"},
     "analyze_video": {"video", "watch", "transcript", "caption", "youtube", "youtu", "vimeo", "tiktok", "loom", "mp4", "mov", "mkv", "webm", "m4v", "avi", "recording"},
     "browser_navigate": {"url", "open", "visit", "navigate", "website", "web"},
     "browser_snapshot": {"snapshot", "page", "elements", "buttons", "form"},
     "browser_click": {"click", "press", "tap", "select"},
+    "browser_download": {
+        "download", "export", "save", "file", "excel", "xlsx", "csv", "pdf",
+        "descarga", "descargar", "exporta", "exportar", "guardar",
+    },
     "browser_type": {"type", "enter", "fill", "input", "search"},
     "browser_wait": {"wait", "loading", "load"},
     "browser_extract": {"extract", "article", "text", "table", "content", "scrape"},
@@ -873,15 +1057,22 @@ _TOOL_HINTS = {
 
 
 def _tokenize(text: str) -> set[str]:
+    normalized = unicodedata.normalize("NFKD", (text or "").lower())
+    normalized = "".join(
+        char for char in normalized if not unicodedata.combining(char)
+    )
     return {
         token
-        for token in re.findall(r"[a-z0-9_./:-]+", (text or "").lower())
+        for token in re.findall(r"[a-z0-9_./:-]+", normalized)
         if len(token) >= 2
     }
 
 
 def shortlist_tool_definitions(
-    tool_defs: List[Dict[str, Any]], user_text: str, max_tools: int = 12
+    tool_defs: List[Dict[str, Any]],
+    user_text: str,
+    max_tools: int = 12,
+    required_tool_names: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Return a coherent subset of tools for the current user turn."""
     text = (user_text or "").strip()
@@ -896,19 +1087,66 @@ def shortlist_tool_definitions(
         if tokens & hints:
             selected_families.add(family)
 
+    # Exporting an existing workbook from a website needs browser_download, not
+    # the native workbook creator. Keep the spreadsheet family for explicit
+    # create/build/generate requests.
+    if (
+        "spreadsheet" in selected_families
+        and "browser" in selected_families
+        and tokens & {"export", "exportar", "download", "descargar", "descarga"}
+        and not tokens
+        & {
+            "create",
+            "build",
+            "generate",
+            "make",
+            "crear",
+            "crea",
+            "generar",
+            "genera",
+            "construir",
+            "nuevo",
+            "nueva",
+        }
+    ):
+        selected_families.discard("spreadsheet")
+
     if any(marker in lowered for marker in ("http://", "https://", "www.")):
         selected_families.add("browser")
+    artifact_tokens = {
+        "download", "downloaded", "export", "exported", "spreadsheet", "excel",
+        "xlsx", "csv", "screenshot", "capture", "attach", "descarga", "descargar",
+        "descargado", "exporta", "exportar", "exportado", "hoja", "captura", "adjuntar",
+    }
+    if "browser" in selected_families and tokens & artifact_tokens:
+        # A browser artifact is not complete at the click: the agent must be able
+        # to locate, inspect or transform the download, then deliver it.
+        selected_families.update({"filesystem", "command", "media"})
     if any(
         marker in lowered
-        for marker in (".py", ".ts", ".js", ".md", ".json", "./", "../", ".\\", "..\\")
+        for marker in (
+            ".py", ".ts", ".js", ".md", ".json", ".xlsx", ".xls", ".csv", ".pdf",
+            ".docx", ".png", ".jpg", "./", "../", ".\\", "..\\",
+        )
     ):
         selected_families.add("filesystem")
     if any(marker in lowered for marker in ("git ", "pytest", "npm ", "python ", "bash", "powershell", "cmd ")):
         selected_families.add("command")
 
-    mandatory = set()
+    available_names = {
+        str(tool.get("function", {}).get("name") or "") for tool in tool_defs
+    }
+    explicitly_required = {
+        str(name).strip()
+        for name in (required_tool_names or [])
+        if str(name).strip() in available_names
+    }
+
+    mandatory = set(explicitly_required)
     for family in selected_families:
         mandatory.update(_MANDATORY_FAMILY_TOOLS.get(family, set()))
+    if "browser" in selected_families and tokens & artifact_tokens:
+        mandatory.add("browser_download")
 
     scored: list[tuple[int, str, Dict[str, Any]]] = []
     for tool in tool_defs:
@@ -923,6 +1161,8 @@ def shortlist_tool_definitions(
             score += 8
         if name in mandatory:
             score += 20
+        if name in explicitly_required:
+            score += 100
         if name in lowered:
             score += 50
 
@@ -940,6 +1180,8 @@ def shortlist_tool_definitions(
     for _, name, _ in scored:
         if name in mandatory and name not in selected_names:
             selected_names.append(name)
+        if len(selected_names) >= max_tools:
+            break
 
     for score, name, _ in scored:
         if score <= 0:

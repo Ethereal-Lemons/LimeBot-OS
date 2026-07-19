@@ -183,11 +183,43 @@ class TaskTracker:
             return
         try:
             raw = json.loads(self._data_file.read_text(encoding="utf-8"))
-            for item in raw.get("active", []):
-                task = self._coerce_task(item)
-                self._active[task.task_id] = task
             for item in raw.get("history", []):
                 self._history.append(self._coerce_task(item))
+            recovered = []
+            recovery_time = time.time()
+            for item in raw.get("active", []):
+                task = self._coerce_task(item)
+                if not task.task_id:
+                    continue
+
+                # A JSON snapshot cannot resume an in-flight coroutine.  If
+                # the previous process died after flushing an active task,
+                # leaving it in ``_active`` would make the dashboard report a
+                # task as running forever.  Convert that stale projection to
+                # one bounded terminal record during startup instead.
+                previous_status = task.status
+                metadata = dict(task.metadata or {})
+                metadata.update(
+                    {
+                        "recovered_from_restart": True,
+                        "previous_status": previous_status,
+                    }
+                )
+                task.status = TaskStatus.FAILED.value
+                task.error = "Runtime restarted before task completed."
+                task.metadata = metadata
+                task.updated_at = recovery_time
+                task.completed_at = recovery_time
+
+                # A crash can leave the same stable ID in both arrays.  Keep
+                # one terminal projection so retries/cancellation remain
+                # idempotent after reload.
+                self._history = deque(
+                    (row for row in self._history if row.task_id != task.task_id),
+                    maxlen=_MAX_HISTORY,
+                )
+                self._history.append(task)
+                recovered.append(task.task_id)
             for item in raw.get("workspaces", []):
                 workspace = self._coerce_workspace(item)
                 self._workspaces[workspace.workspace_id] = workspace
@@ -197,6 +229,13 @@ class TaskTracker:
                 f"{len(self._history)} history entries, and "
                 f"{len(self._workspaces)} workspaces."
             )
+            if recovered:
+                logger.warning(
+                    "TaskTracker: recovered %d interrupted task(s) after restart: %s",
+                    len(recovered),
+                    ", ".join(recovered),
+                )
+                self._flush_sync()
         except Exception as e:
             logger.error(f"TaskTracker: failed to load history: {e}")
 
@@ -244,23 +283,34 @@ class TaskTracker:
         chat_id: str = "",
         parent_task_id: str = "",
         metadata: Optional[Dict[str, Any]] = None,
+        task_id: Optional[str] = None,
     ) -> str:
-        task_id = uuid.uuid4().hex[:12]
-        now = time.time()
-        task = Task(
-            task_id=task_id,
-            type=task_type,
-            status=TaskStatus.QUEUED.value,
-            channel=channel,
-            session_key=session_key,
-            chat_id=chat_id,
-            summary=summary,
-            created_at=now,
-            updated_at=now,
-            parent_task_id=parent_task_id,
-            metadata=metadata or {},
-        )
+        requested_task_id = str(task_id or "").strip()
         async with self._lock:
+            task_id = requested_task_id or uuid.uuid4().hex[:12]
+            existing = self._active.get(task_id)
+            if existing is None:
+                existing = next(
+                    (row for row in reversed(self._history) if row.task_id == task_id),
+                    None,
+                )
+            if existing is not None:
+                # Dispatch/retry code can safely reuse its stable identity.
+                return task_id
+            now = time.time()
+            task = Task(
+                task_id=task_id,
+                type=task_type,
+                status=TaskStatus.QUEUED.value,
+                channel=channel,
+                session_key=session_key,
+                chat_id=chat_id,
+                summary=summary,
+                created_at=now,
+                updated_at=now,
+                parent_task_id=parent_task_id,
+                metadata=metadata or {},
+            )
             self._active[task_id] = task
             await self._schedule_flush()
         return task_id
@@ -276,7 +326,14 @@ class TaskTracker:
         async with self._lock:
             task = self._active.get(task_id)
             if task is None:
-                return None
+                # Terminal records are immutable projections.  Returning the
+                # existing snapshot makes completion/failure idempotent when a
+                # worker and its cancellation path race each other.
+                task = next(
+                    (row for row in reversed(self._history) if row.task_id == task_id),
+                    None,
+                )
+                return Task(**asdict(task)) if task is not None else None
 
             now = time.time()
             if status is not None:
@@ -309,9 +366,13 @@ class TaskTracker:
         async with self._lock:
             task = self._active.get(task_id)
             if task is None:
-                return None
+                task = next(
+                    (row for row in reversed(self._history) if row.task_id == task_id),
+                    None,
+                )
+                return Task(**asdict(task)) if task is not None else None
             if task.status in _TERMINAL_STATUSES:
-                return None
+                return Task(**asdict(task))
             task.status = TaskStatus.CANCELLED.value
             task.completed_at = time.time()
             task.updated_at = task.completed_at

@@ -531,6 +531,10 @@ class TestAppServerApi(unittest.TestCase):
                     f"/api/app/workspaces/{generated_workspace['workspace_id']}/events",
                     headers=self._headers(),
                 )
+                generated_after_cursor = client.get(
+                    f"/api/app/workspaces/{generated_workspace['workspace_id']}/events?after_sequence=1",
+                    headers=self._headers(),
+                )
 
                 legacy = asyncio.run(
                     tracker.create_workspace(
@@ -552,6 +556,8 @@ class TestAppServerApi(unittest.TestCase):
         self.assertEqual(inbound.session_key, generated_workspace["session_key"])
         self.assertEqual(generated_events.status_code, 200)
         self.assertEqual(generated_events.json()["events"][0]["event"], "turn_complete")
+        self.assertEqual(generated_after_cursor.status_code, 200)
+        self.assertEqual(generated_after_cursor.json()["events"], [])
         self.assertEqual(legacy_events.status_code, 200)
         self.assertEqual(legacy_events.json()["events"][0]["event"], "legacy_event")
 
@@ -586,6 +592,33 @@ class TestAppServerApi(unittest.TestCase):
                     self.assertEqual(
                         queued_event["workspace_id"], workspace.workspace_id
                     )
+
+    def test_legacy_websocket_confirmation_calls_agent_directly(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_channel()
+        client = TestClient(channel.app)
+        with client.websocket_connect("/ws?api_key=app-key") as socket:
+            self.assertEqual(socket.receive_json()["type"], "auth_ok")
+            socket.send_json(
+                {
+                    "type": "confirmation_response",
+                    "confirmation_id": "conf_safe",
+                    "approved": True,
+                    "session_whitelist": True,
+                    "chat_id": "must-not-become-a-chat-message",
+                }
+            )
+            response = socket.receive_json()
+
+        self.assertEqual(response["type"], "confirmation_result")
+        self.assertTrue(response["success"])
+        channel.agent.confirm_tool.assert_awaited_once_with(
+            "conf_safe", True, True, source="web"
+        )
 
     def test_outbound_app_stream_uses_stable_envelope_and_omits_tool_arguments(self):
         channel = self._make_channel()
@@ -622,11 +655,31 @@ class TestAppServerApi(unittest.TestCase):
         self.assertEqual(event["workspace_id"], "workspace-1")
         self.assertEqual(event["session_key"], "web_app_chat")
         self.assertEqual(event["event"], "tool_execution")
+        self.assertEqual(event["schema_version"], 1)
+        self.assertTrue(event["event_id"])
+        self.assertEqual(event["sequence"], 1)
+        self.assertFalse(event["terminal"])
         self.assertEqual(event["payload"]["tool"], "run_command")
         self.assertNotIn("args", event["payload"])
         self.assertNotIn("result", event["payload"])
         self.assertNotIn("command", event["payload"]["preview"])
         self.assertNotIn("secret-value", json.dumps(event))
+
+        asyncio.run(
+            channel.send(
+                OutboundMessage(
+                    channel="web",
+                    chat_id="app_chat",
+                    content="done",
+                    metadata={"type": "message", "reply_to": "app-user"},
+                )
+            )
+        )
+        completed = socket.messages[1]
+        self.assertEqual(completed["sequence"], 2)
+        self.assertNotEqual(completed["event_id"], event["event_id"])
+        self.assertTrue(completed["terminal"])
+        self.assertEqual(completed["status"], "completed")
 
 
 if __name__ == "__main__":

@@ -62,6 +62,57 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
             "{}",
         )
 
+    async def test_history_normalizer_recovers_missing_results_and_drops_orphans(self):
+        messages = [
+            {"role": "system", "content": "system"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "run_command", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "orphan", "content": "ignore me"},
+            {"role": "user", "content": "continue"},
+        ]
+
+        normalized, changed = self.agent._normalize_tool_history_messages(messages)
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            [message.get("tool_call_id") for message in normalized if message.get("role") == "tool"],
+            ["call_1"],
+        )
+        self.assertIn("interrupted", normalized[2]["content"])
+        self.assertEqual(normalized[-1]["content"], "continue")
+
+    async def test_history_normalizer_bounds_every_tool_result(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "x" * 20_000},
+        ]
+
+        normalized, changed = self.agent._normalize_tool_history_messages(messages)
+
+        self.assertTrue(changed)
+        tool_message = normalized[1]
+        self.assertLessEqual(len(tool_message["content"]), 8_000)
+        self.assertIn("truncated diagnostic", tool_message["content"])
+
     async def test_extract_tool_from_content_infers_browser_navigate_from_url_dict(self):
         tool_calls = self.agent._extract_tool_from_content(
             '{"url":"https://open.spotify.com/track/5SudOD9R1Of6CsJVWZy6CQ"}'
@@ -142,6 +193,19 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             tool_calls[0]["function"]["arguments"],
             '{"path": "C:/tmp"}',
+        )
+
+    async def test_extract_tool_from_content_recovers_provider_to_envelope(self):
+        tool_calls = self.agent._extract_tool_from_content(
+            'Voy a editarlo. to=functions.run_command code: '
+            '{"command":"python fix_docx.py"}'
+        )
+
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "run_command")
+        self.assertEqual(
+            tool_calls[0]["function"]["arguments"],
+            '{"command": "python fix_docx.py"}',
         )
 
     async def test_sanitize_tool_call_content_drops_implicit_browser_url_dict(self):

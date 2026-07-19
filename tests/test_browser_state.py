@@ -1,6 +1,7 @@
 import types
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -257,6 +258,53 @@ class TestBrowserState(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual(first, "browser call 1")
         self.assertEqual(second, "browser call 2")
+
+    async def test_browser_download_saves_to_session_download_directory(self):
+        from core.browser import BrowserManager
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch.object(BrowserManager, "PROFILES_DIR", root / "profiles"), patch.object(
+                BrowserManager, "SCREENSHOTS_DIR", root / "screenshots"
+            ), patch.object(BrowserManager, "DOWNLOADS_DIR", root / "downloads"):
+                manager = BrowserManager("web:download-test")
+
+            locator = SimpleNamespace(
+                scroll_into_view_if_needed=AsyncMock(),
+                click=AsyncMock(),
+            )
+            manager._element_map["e7"] = locator
+
+            async def _save_as(path):
+                Path(path).write_bytes(b"xlsx-test")
+
+            fake_download = SimpleNamespace(
+                suggested_filename="estimate.xlsx",
+                url="https://example.com/estimate.xlsx",
+                failure=AsyncMock(return_value=None),
+                save_as=AsyncMock(side_effect=_save_as),
+            )
+
+            class _DownloadContext:
+                async def __aenter__(self):
+                    future = __import__("asyncio").get_running_loop().create_future()
+                    future.set_result(fake_download)
+                    return SimpleNamespace(value=future)
+
+                async def __aexit__(self, *_args):
+                    return False
+
+            fake_page = SimpleNamespace(
+                expect_download=lambda **_kwargs: _DownloadContext()
+            )
+            manager._ensure_browser = AsyncMock(return_value=fake_page)
+
+            result = await manager.download("e7")
+
+            self.assertTrue(result["success"])
+            self.assertEqual(Path(result["path"]).name, "estimate.xlsx")
+            self.assertEqual(Path(result["path"]).read_bytes(), b"xlsx-test")
+            locator.click.assert_awaited_once()
 
     async def test_navigate_recovers_when_site_hands_off_to_new_tab(self):
         from core.browser import BrowserManager

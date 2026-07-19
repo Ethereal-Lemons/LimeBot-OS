@@ -52,6 +52,13 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             self.agent._sanitize_tool_call_content(
+                "Voy a editarlo.\n"
+                'to=functions.run_command code: {"command":"python fix_docx.py"}'
+            ),
+            "Voy a editarlo.",
+        )
+        self.assertEqual(
+            self.agent._sanitize_tool_call_content(
                 "Voy a hacerlo.\n<read_file>index.html</read_file>\nMas texto."
             ),
             "Voy a hacerlo.",
@@ -68,7 +75,7 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             self.agent._sanitize_tool_call_content(
-                'Checking now.\n{"path":"C:\\Users\\brite\\OneDrive\\Images\\LimeBot-OS"}'
+                'Checking now.\n{"path":"C:\\Users\\ExampleUser\\Projects\\LimeBot-OS"}'
             ),
             "Checking now.",
         )
@@ -263,10 +270,10 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
 
         async def _stream():
             yield self._chunk(
-                thinking='Use list_dir("C:/Users/brite/OneDrive/Images/LimeBot-OS").'
+                thinking='Use list_dir("C:/Users/ExampleUser/Projects/LimeBot-OS").'
             )
             yield self._chunk(
-                content='{"path":"C:\\Users\\brite\\OneDrive\\Images\\LimeBot-OS"}'
+                content='{"path":"C:\\Users\\ExampleUser\\Projects\\LimeBot-OS"}'
             )
 
         msg = InboundMessage(
@@ -286,5 +293,5 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_calls[0]["function"]["name"], "list_dir")
         self.assertEqual(
             tool_calls[0]["function"]["arguments"],
-            '{"path": "C:/Users/brite/OneDrive/Images/LimeBot-OS"}',
+            '{"path": "C:/Users/ExampleUser/Projects/LimeBot-OS"}',
         )

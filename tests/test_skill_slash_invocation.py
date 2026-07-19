@@ -36,7 +36,7 @@ class TestSkillInvocationParser(unittest.TestCase):
 
     def test_rejects_path_like_strings(self):
         self.assertEqual(parse_skill_invocation("/path/to/file").kind, "none")
-        self.assertEqual(parse_skill_invocation("/C:/Users/brite/skill.md").kind, "none")
+        self.assertEqual(parse_skill_invocation("/C:/Users/ExampleUser/skill.md").kind, "none")
         self.assertEqual(parse_skill_invocation("/skills/local").kind, "none")
 
 

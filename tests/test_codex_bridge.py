@@ -91,6 +91,36 @@ class TestCodexBridge(unittest.TestCase):
         )
         self.assertEqual(response.usage["total_tokens"], 20)
 
+    def test_required_tool_choice_is_injected_into_codex_system_prompt(self):
+        captured = {}
+
+        def _capture(payload):
+            captured.update(payload)
+            return {"text": "", "thinking": "", "toolCalls": []}
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "browser_navigate",
+                    "description": "Open a URL.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        with patch("core.codex_bridge._run_codex_bridge", side_effect=_capture):
+            complete_codex_response(
+                "openai-codex/gpt-5.4",
+                [{"role": "user", "content": "Open https://example.com"}],
+                tools,
+                "session-required",
+                "required",
+            )
+
+        self.assertIn(
+            "A tool call is required", captured["context"]["systemPrompt"]
+        )
+
     def test_run_codex_bridge_accepts_valid_stdout_even_with_nonzero_exit(self):
         payload = {
             "text": "Before I complete, let's set us up.",
@@ -133,14 +163,29 @@ class TestCodexBridge(unittest.TestCase):
 
     def test_run_codex_bridge_uses_bounded_timeout(self):
         def raise_timeout(*args, **kwargs):
-            self.assertEqual(kwargs["timeout"], 20.0)
+            self.assertEqual(kwargs["timeout"], 300.0)
             raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
 
-        with patch("core.codex_bridge.Path.exists", return_value=True), patch(
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "core.codex_bridge.Path.exists", return_value=True
+        ), patch(
             "core.codex_bridge.subprocess.run", side_effect=raise_timeout
         ):
-            with self.assertRaisesRegex(RuntimeError, "timed out after 20s"):
+            with self.assertRaisesRegex(RuntimeError, "timed out after 300s"):
                 _run_codex_bridge({"model": "gpt-5.4-mini"})
+
+    def test_run_codex_bridge_honors_timeout_override(self):
+        def raise_timeout(*args, **kwargs):
+            self.assertEqual(kwargs["timeout"], 45.0)
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+        with patch.dict("os.environ", {"CODEX_BRIDGE_TIMEOUT": "45"}), patch(
+            "core.codex_bridge.Path.exists", return_value=True
+        ), patch(
+            "core.codex_bridge.subprocess.run", side_effect=raise_timeout
+        ):
+            with self.assertRaisesRegex(RuntimeError, "timed out after 45s"):
+                _run_codex_bridge({"model": "gpt-5.6-terra"})
 
     def test_build_codex_context_preserves_inline_image_blocks(self):
         context = build_codex_context(

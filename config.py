@@ -244,11 +244,11 @@ def load_config(force_reload=False):
     config.ai_harness.fast_disable_tools_for_casual = _load_bool_env(
         "LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL", default=True
     )
-    # One normalized authority controls schema selection. The legacy toggle can
-    # still opt balanced mode into shortlisting; fast mode needs no extra flag.
-    config.tool_shortlist_enabled = (
-        config.ai_harness.mode == "fast"
-        or _load_bool_env("LIMEBOT_ENABLE_TOOL_SHORTLIST", default=False)
+    # Schema shortlisting is independent from the latency profile. LimeBot
+    # exposes the full catalog unless an operator explicitly opts into the
+    # bounded request-specific schema.
+    config.tool_shortlist_enabled = _load_bool_env(
+        "LIMEBOT_ENABLE_TOOL_SHORTLIST", default=False
     )
 
     from core.llm_utils import get_api_key_for_model

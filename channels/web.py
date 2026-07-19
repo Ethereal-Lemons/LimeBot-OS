@@ -112,6 +112,21 @@ _OPENAI_CURATED_MODELS = [
     },
 ]
 _CODEX_FALLBACK_MODELS = [
+    {
+        "id": "openai-codex/gpt-5.6-sol",
+        "name": "GPT-5.6 Sol",
+        "provider": "openai-codex",
+    },
+    {
+        "id": "openai-codex/gpt-5.6-luna",
+        "name": "GPT-5.6 Luna",
+        "provider": "openai-codex",
+    },
+    {
+        "id": "openai-codex/gpt-5.6-terra",
+        "name": "GPT-5.6 Terra",
+        "provider": "openai-codex",
+    },
     {"id": "openai-codex/gpt-5.5", "name": "GPT-5.5", "provider": "openai-codex"},
     {"id": "openai-codex/gpt-5.4", "name": "GPT-5.4", "provider": "openai-codex"},
     {
@@ -250,6 +265,27 @@ def _serialize_attempt_for_app(attempt) -> dict:
     }
 
 
+def _serialize_task_for_app(task) -> dict:
+    """Expose task identity/state without live handles or sensitive inputs."""
+    return {
+        "task_id": task.task_id,
+        "type": task.type,
+        "status": task.status,
+        "channel": task.channel,
+        "session_key": task.session_key,
+        "chat_id": task.chat_id,
+        "summary": str(task.summary or "")[:500],
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "parent_task_id": task.parent_task_id,
+        "attempt": task.attempt,
+        "error": str(task.error or "")[:500],
+        "metadata": _redact_sensitive_data(task.metadata),
+    }
+
+
 def _serialize_artifact_for_app(artifact) -> dict:
     serialized = {
         "artifact_id": artifact.artifact_id,
@@ -322,7 +358,12 @@ def _canonicalize_app_workspace_session_key(value: Any) -> str:
 
 def _app_attempt_terminal_outcome(metadata: dict, msg_type: str) -> tuple[str, str] | None:
     """Return a terminal app-attempt state for final outbound turn messages only."""
-    if msg_type == "cancellation" or metadata.get("is_cancellation"):
+    task_status = str(metadata.get("task_status") or "").strip().lower()
+    if task_status in {"completed", "failed", "cancelled"}:
+        return (task_status, str(metadata.get("error") or "")[:200])
+    if msg_type in {"cancellation", "turn_cancelled", "task_cancelled"} or metadata.get(
+        "is_cancellation"
+    ):
         return ("cancelled", "Cancelled by user.")
     is_final_reply = bool(metadata.get("reply_to")) or msg_type in {
         "terminal_error",
@@ -397,8 +438,19 @@ def _extract_js_object_block(text: str, key: str) -> str:
 
 
 def _load_piai_provider_models(provider: str) -> list[dict[str, str]]:
+    # pi-ai 0.80+ split provider catalogs into dist/providers/*.models.js.
+    # Keep the generated aggregate registry as a fallback for older releases
+    # and for tests that inject a synthetic registry path.
+    provider_registry_path = (
+        _PIAI_MODELS_JS_PATH.parent / "providers" / f"{provider}.models.js"
+    )
+    registry_path = (
+        provider_registry_path
+        if provider_registry_path.exists()
+        else _PIAI_MODELS_JS_PATH
+    )
     try:
-        stat = _PIAI_MODELS_JS_PATH.stat()
+        stat = registry_path.stat()
     except OSError:
         return []
 
@@ -407,12 +459,16 @@ def _load_piai_provider_models(provider: str) -> list[dict[str, str]]:
         return [dict(model) for model in cached[1]]
 
     try:
-        text = _PIAI_MODELS_JS_PATH.read_text(encoding="utf-8")
+        text = registry_path.read_text(encoding="utf-8")
     except OSError as exc:
         logger.warning(f"Failed to read pi-ai model registry: {exc}")
         return []
 
-    block = _extract_js_object_block(text, provider)
+    block = (
+        text
+        if registry_path == provider_registry_path
+        else _extract_js_object_block(text, provider)
+    )
     if not block:
         return []
 
@@ -533,6 +589,7 @@ class WebChannel(BaseChannel):
         self._app_chat_workspaces: dict[str, str] = {}
         self._app_chat_sessions: dict[str, str] = {}
         self._app_workspace_attempts: dict[str, list[str]] = {}
+        self._app_event_sequences: dict[str, int] = {}
         self._boot_id = uuid.uuid4().hex
 
         self.channels = []
@@ -2918,7 +2975,9 @@ class WebChannel(BaseChannel):
             return {"workspace": _serialize_workspace_for_app(workspace)}
 
         @self.app.get("/api/app/workspaces/{workspace_id}/events", dependencies=[Depends(self.verify_app_auth)])
-        async def get_workspace_events(workspace_id: str):
+        async def get_workspace_events(
+            workspace_id: str, after_sequence: int = 0, limit: int = 500
+        ):
             from core.task_tracker import get_task_tracker
             from core.session_manager import EVENTS_DIR
             tracker = get_task_tracker()
@@ -2936,8 +2995,11 @@ class WebChannel(BaseChannel):
             if not events_file.exists():
                 return {"events": []}
             events = []
+            after_sequence = max(0, int(after_sequence or 0))
+            limit = max(1, min(int(limit or 500), 1000))
             try:
                 content_file = await self._read_text(events_file)
+                replay_sequence = 0
                 for line in content_file.splitlines():
                     line = line.strip()
                     if not line:
@@ -2946,6 +3008,7 @@ class WebChannel(BaseChannel):
                         evt = json.loads(line)
                         event_type = evt.get("type")
                         timestamp = evt.get("timestamp") or time.time()
+                        replay_sequence += 1
                         clean_evt = {}
                         for k, v in evt.items():
                             if k not in ("args", "result"):
@@ -2958,14 +3021,37 @@ class WebChannel(BaseChannel):
                                     clean_evt[k] = changeset_for_app(v)
                                 else:
                                     clean_evt[k] = _redact_sensitive_data(v)
-                        events.append({
+                        event = {
                             "type": "workspace_event",
+                            "schema_version": 1,
+                            "event_id": str(
+                                evt.get("event_id")
+                                or f"legacy_{workspace_id}_{replay_sequence}"
+                            ),
+                            "sequence": (
+                                evt.get("sequence")
+                                if isinstance(evt.get("sequence"), int)
+                                else replay_sequence
+                            ),
                             "workspace_id": workspace_id,
                             "session_key": session_key,
+                            "task_id": evt.get("task_id"),
+                            "turn_id": evt.get("turn_id"),
                             "event": event_type,
                             "payload": clean_evt,
                             "timestamp": timestamp,
-                        })
+                        }
+                        if event["sequence"] <= after_sequence:
+                            continue
+                        outcome = _app_attempt_terminal_outcome(
+                            clean_evt, str(event_type or "")
+                        )
+                        event["terminal"] = bool(outcome)
+                        if outcome:
+                            event["status"] = outcome[0]
+                        events.append(event)
+                        if len(events) >= limit:
+                            break
                     except Exception:
                         continue
             except Exception as e:
@@ -3092,19 +3178,31 @@ class WebChannel(BaseChannel):
                     "client_message_id": client_message_id,
                 },
             )
-            await self._broadcast_app_event(
+            queued_event_id = f"evt_{uuid.uuid4().hex[:20]}"
+            queued_event = {
+                "type": "workspace_event",
+                "schema_version": 1,
+                "event_id": queued_event_id,
+                "workspace_id": workspace_id,
+                "session_key": app_session_key,
+                "event": "message_queued",
+                "payload": {
+                    "attempt_id": attempt.attempt_id,
+                    "client_message_id": client_message_id or None,
+                },
+                "timestamp": time.time(),
+            }
+            await self.session_manager.append_event_log(
+                app_session_key,
                 {
-                    "type": "workspace_event",
+                    "type": "message_queued",
+                    "event_id": queued_event_id,
                     "workspace_id": workspace_id,
-                    "session_key": app_session_key,
-                    "event": "message_queued",
-                    "payload": {
-                        "attempt_id": attempt.attempt_id,
-                        "client_message_id": client_message_id or None,
-                    },
-                    "timestamp": time.time(),
-                }
+                    "attempt_id": attempt.attempt_id,
+                    "client_message_id": client_message_id or None,
+                },
             )
+            await self._broadcast_app_event(queued_event)
             return {
                 "status": "queued",
                 "workspace_id": workspace_id,
@@ -3545,19 +3643,26 @@ class WebChannel(BaseChannel):
                     continue
 
                 if msg.get("type") == "confirmation_response":
-                    conf_id = msg.get("confirmation_id")
-                    approved = msg.get("approved", False)
-                    chat_id = msg.get("chat_id", "web-chat")
-                    content = (
-                        f"[CONFIRMATION_APPROVED:{conf_id}]"
-                        if approved
-                        else "User denied the action."
-                    )
-                    await self._handle_message(
-                        sender_id="web-user",
-                        chat_id=chat_id,
-                        content=content,
-                        metadata={"source": "web", "is_confirmation": True},
+                    conf_id = str(msg.get("confirmation_id") or "").strip()
+                    approved = bool(msg.get("approved", False))
+                    session_whitelist = bool(msg.get("session_whitelist", False))
+                    success = False
+                    if conf_id and hasattr(self, "agent"):
+                        success = await self.agent.confirm_tool(
+                            conf_id,
+                            approved,
+                            session_whitelist,
+                            source="web",
+                        )
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "confirmation_result",
+                                "confirmation_id": conf_id,
+                                "approved": approved,
+                                "success": bool(success),
+                            }
+                        )
                     )
                     continue
 
@@ -3685,6 +3790,7 @@ class WebChannel(BaseChannel):
         from core.task_tracker import get_task_tracker
         tracker = get_task_tracker()
         workspaces = await tracker.list_workspaces()
+        tasks = await tracker.list_tasks(limit=200)
         pending_approvals = []
         agent = getattr(self, "agent", None)
         if agent and hasattr(agent, "pending_confirmations"):
@@ -3695,15 +3801,47 @@ class WebChannel(BaseChannel):
             readiness = _serialize_readiness_for_app(agent.get_readiness_status())
         return {
             "workspaces": [_serialize_workspace_for_app(w) for w in workspaces],
+            "tasks": [_serialize_task_for_app(task) for task in tasks],
             "pending_approvals": pending_approvals,
             "runtime": {
                 "readiness": readiness,
             }
         }
 
+    def _decorate_app_event(self, event: dict) -> dict:
+        """Add stable identity and terminal metadata to every app event."""
+        normalized = dict(event or {})
+        workspace_id = str(normalized.get("workspace_id") or "")
+        session_key = str(normalized.get("session_key") or "")
+        sequence_key = workspace_id or session_key or "global"
+        supplied_sequence = normalized.get("sequence")
+        if isinstance(supplied_sequence, int) and supplied_sequence > 0:
+            sequence = supplied_sequence
+            self._app_event_sequences[sequence_key] = max(
+                self._app_event_sequences.get(sequence_key, 0), sequence
+            )
+        else:
+            sequence = self._app_event_sequences.get(sequence_key, 0) + 1
+            self._app_event_sequences[sequence_key] = sequence
+        normalized.setdefault("schema_version", 1)
+        if not normalized.get("event_id"):
+            normalized["event_id"] = f"evt_{uuid.uuid4().hex[:20]}"
+        normalized["sequence"] = sequence
+        payload = normalized.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        outcome = _app_attempt_terminal_outcome(
+            payload, str(normalized.get("event") or "")
+        )
+        normalized["terminal"] = bool(outcome)
+        if outcome:
+            normalized["status"] = outcome[0]
+        normalized.setdefault("timestamp", time.time())
+        return normalized
+
     async def _broadcast_app_event(self, event: dict) -> None:
         if not self.app_connections:
             return
+        event = self._decorate_app_event(event)
         payload = json.dumps(event)
         dead = set()
         for conn in list(self.app_connections):
@@ -3734,8 +3872,12 @@ class WebChannel(BaseChannel):
                     clean_metadata[k] = _redact_sensitive_data(v)
         payload = {
             "type": "workspace_event",
+            "schema_version": 1,
+            "event_id": metadata.get("event_id"),
             "workspace_id": workspace_id,
             "session_key": session_key,
+            "task_id": metadata.get("task_id"),
+            "turn_id": metadata.get("turn_id"),
             "event": msg_type,
             "payload": clean_metadata,
             "timestamp": time.time(),

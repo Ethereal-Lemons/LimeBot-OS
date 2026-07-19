@@ -4,6 +4,8 @@ Skill Registry - Manages loaded skills and injects into LLM context.
 
 import os
 import re
+import shutil
+from importlib import metadata as importlib_metadata
 from typing import Dict, List, Any, Optional
 
 from loguru import logger
@@ -81,11 +83,50 @@ class SkillRegistry:
             logger.info(f"Enabled skills: {enabled_skills}")
             for name in enabled_skills:
                 if name in self.skills:
+                    missing = self._missing_dependencies(self.skills[name])
+                    if missing:
+                        logger.warning(
+                            f"Skill '{name}' disabled because dependencies are missing: "
+                            f"{', '.join(missing)}"
+                        )
+                        self.skills[name]["missing_dependencies"] = missing
+                        continue
                     self.skills[name]["active"] = True
         else:
             logger.warning("No skills enabled (default secure state).")
 
         return self.skills
+
+    @staticmethod
+    def _missing_dependencies(skill: Dict[str, Any]) -> List[str]:
+        dependencies = skill.get("dependencies") or {}
+        if not isinstance(dependencies, dict):
+            return []
+        missing: List[str] = []
+        python_packages = dependencies.get("python") or []
+        if isinstance(python_packages, str):
+            python_packages = [python_packages]
+        for requirement in python_packages:
+            package = re.split(
+                r"(?:==|>=|<=|~=|!=|>|<)", str(requirement).strip(), maxsplit=1
+            )[0]
+            package = package.split("[", 1)[0].strip()
+            if not package:
+                continue
+            try:
+                importlib_metadata.version(package)
+            except importlib_metadata.PackageNotFoundError:
+                missing.append(f"python:{package}")
+
+        binaries = dependencies.get("binaries") or []
+        if isinstance(binaries, str):
+            binaries = [binaries]
+        missing.extend(
+            str(binary)
+            for binary in binaries
+            if str(binary).strip() and shutil.which(str(binary).strip()) is None
+        )
+        return missing
 
     def _load_api_handler(self, skill_name: str, skill: Dict) -> None:
         """Load the api.py handler module for a skill."""
@@ -295,6 +336,27 @@ class SkillRegistry:
 
     def list_active_skill_names(self) -> List[str]:
         return sorted(self._get_active_skills().keys())
+
+    def get_required_tool_names(self, skill_name: Optional[str]) -> List[str]:
+        """Return native tools an active skill requires for its workflow."""
+        if not skill_name:
+            return []
+        skill = self._get_active_skills().get(skill_name)
+        if not skill:
+            return []
+        metadata = skill.get("metadata") or {}
+        required = metadata.get("required_tools", [])
+        if isinstance(required, str):
+            required = [required]
+        if not isinstance(required, list):
+            return []
+        return list(
+            dict.fromkeys(
+                str(name).strip()
+                for name in required
+                if str(name).strip()
+            )
+        )
 
     def resolve_active_skill_name(self, requested_name: str) -> Optional[str]:
         requested = str(requested_name or "").strip()

@@ -19,9 +19,11 @@ test('Node version parsing accepts runtime and plain semver strings', () => {
 test('LimeBot rejects runtimes below the frontend toolchain minimum', () => {
     assert.equal(isSupportedNodeVersion('v18.20.8'), false);
     assert.equal(isSupportedNodeVersion('v20.18.9'), false);
-    assert.equal(isSupportedNodeVersion('v20.19.0'), true);
-    assert.equal(isSupportedNodeVersion('v22.0.0'), true);
-    assert.match(describeSupportedNode(), /20\.19\.0/);
+    assert.equal(isSupportedNodeVersion('v20.19.0'), false);
+    assert.equal(isSupportedNodeVersion('v22.18.0'), false);
+    assert.equal(isSupportedNodeVersion('v22.19.0'), true);
+    assert.equal(isSupportedNodeVersion('v24.0.0'), true);
+    assert.match(describeSupportedNode(), /22\.19\.0/);
 });
 
 test('CLI rejects an old Node runtime before command dispatch', () => {
@@ -38,6 +40,6 @@ test('CLI rejects an old Node runtime before command dispatch', () => {
     });
 
     assert.equal(result.status, 1);
-    assert.match(result.stdout, /requires Node\.js 20\.19\.0 or newer/);
+    assert.match(result.stdout, /requires Node\.js 22\.19\.0 or newer/);
     assert.doesNotMatch(result.stdout, /Commands:/);
 });
