@@ -1,6 +1,6 @@
 ---
 name: browser-harness
-description: Use Browser Harness for direct control of the user's real Chrome via CDP when a task needs robust browser automation, live navigation, scraping, testing, uploads, or site-specific browser workflows. Prefer this skill over the basic browser skill when the task may need editable browser helpers, domain-specific browser skills, or persistent connection to the user's existing logged-in browser.
+description: Always use Browser Harness for web interaction that needs robust automation, downloads, uploads, screenshots, testing, or the user's live Chrome session.
 dependencies:
   python: []
   node: []
@@ -10,65 +10,56 @@ dependencies:
 
 # Browser Harness
 
-Use the installed Browser Harness checkout at:
+Browser Harness controls Chrome directly through CDP. The default upstream checkout is at:
 
-`C:\Users\brite\Developer\browser-harness`
+`$env:USERPROFILE\Developer\browser-harness`
 
-This is the real upstream repo checkout. Do not copy helpers into LimeBot. For task-specific browser work, edit:
+The installed CLI is the normal entry point. The checkout is available for its current
+`SKILL.md`, `install.md`, interaction guides, and source diagnostics.
 
-- `C:\Users\brite\Developer\browser-harness\agent-workspace\agent_helpers.py`
-- `C:\Users\brite\Developer\browser-harness\agent-workspace\domain-skills\`
+## Usage from PowerShell
 
-For setup, reconnect, or browser attach failures, read:
-
-- `C:\Users\brite\Developer\browser-harness\install.md`
-
-For normal usage patterns, read:
-
-- `C:\Users\brite\Developer\browser-harness\SKILL.md`
-
-## Core Commands
-
-Check health:
+Pass Python helpers on standard input; `-c` and `--setup` are not valid commands:
 
 ```powershell
-browser-harness --doctor
-```
-
-Run the interactive attach flow:
-
-```powershell
-browser-harness --setup
-```
-
-Reload the daemon after helper edits:
-
-```powershell
-browser-harness --reload
-```
-
-Run a browser task:
-
-```powershell
-browser-harness -c '
+@'
 new_tab("https://example.com")
 wait_for_load()
 print(page_info())
-'
+'@ | browser-harness
 ```
 
-## Rules
+Helpers are pre-imported. The daemon starts automatically on the first command.
+Use `new_tab(url)` for the first navigation and call `wait_for_load()` afterward.
 
-- First navigation should be `new_tab(url)`, not `goto_url(url)`, unless you intentionally want to reuse the active tab.
-- Prefer Browser Harness when the user wants interaction with their real logged-in browser.
-- If the task becomes domain-specific, search `agent-workspace/domain-skills/` before inventing a new flow.
-- If a useful site-specific pattern is discovered, save it under `agent-workspace/domain-skills/` instead of bloating LimeBot's own skill docs.
-- After editing `agent_helpers.py` or any domain skill, run `browser-harness --reload` before the next task.
+## Health and connection
 
-## Quick Workflow
+```powershell
+browser-harness --doctor
+browser-harness --reload
+browser-harness recordings
+```
 
-1. Run `browser-harness --doctor`.
-2. If not attached, run `browser-harness --setup`.
-3. Read the upstream `SKILL.md` for normal task flow.
-4. Use `browser-harness -c '...'` for the task.
-5. If Browser Harness learned a reusable site mechanic, store it in `agent-workspace/domain-skills/`.
+If local Chrome cannot attach, open `chrome://inspect/#remote-debugging`, ask the user
+to enable **Allow remote debugging for this browser instance**, and wait for the user
+to approve Chrome's popup. Do not claim Browser Harness is unavailable until
+`browser-harness --doctor` or an actual harness command reports the failure.
+
+## Downloads, screenshots, and advanced interaction
+
+Before inventing mechanics, read the relevant upstream guide under:
+
+`$env:USERPROFILE\Developer\browser-harness\interaction-skills\`
+
+Important guides include `downloads.md`, `screenshots.md`, `uploads.md`, `tabs.md`,
+`dialogs.md`, and `print-as-pdf.md`.
+
+For a site-specific flow, inspect the official examples under
+`$env:USERPROFILE\Developer\browser-harness\agent-workspace\domain-skills\`.
+Task-specific helpers belong in Browser Harness's configured agent workspace, not in
+LimeBot core.
+
+## Recording privacy
+
+Recordings are disabled by default. Preserve the user's configured preference. Never
+enable background recordings without explicit consent.

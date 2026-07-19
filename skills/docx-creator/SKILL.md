@@ -1,6 +1,12 @@
 ---
 name: docx-creator
 description: "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files). Triggers include any mention of Word documents, .docx files, reports, memos, letters, templates, tables of contents, headings, page numbers, letterheads, tracked changes, comments, images, or document conversion."
+metadata:
+  required_tools:
+    - read_file
+    - list_dir
+    - run_command
+    - send_media
 ---
 
 # DOCX creation, editing, and analysis
@@ -30,6 +36,8 @@ validate the result after every edit.
 - Use a new output filename unless the user explicitly asks to overwrite the
   source document.
 - Do not claim a document is complete until it has been structurally validated.
+- After validation, call `send_media` with the completed `.docx` path so the
+  user receives the document instead of only seeing a local path.
 - For edits, keep a copy of the original and make the smallest possible change.
 
 ## Dependencies
