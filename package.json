@@ -33,13 +33,13 @@
   ],
   "type": "module",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.19.0"
   },
   "overrides": {
     "esbuild": "^0.28.1"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.74.2"
+    "@earendil-works/pi-ai": "^0.80.10"
   },
   "devDependencies": {
     "esbuild": "^0.28.1"

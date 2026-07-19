@@ -208,7 +208,7 @@ Skills can also be managed from the **Skills** tab in the web dashboard.
 You need:
 
 - Windows 10+, macOS 11+, or Linux (Ubuntu 20.04+)
-- Node.js 20.19 or newer
+- Node.js 22.19 or newer
 - Python 3.11 through 3.14
 - About 1 GB free for core LimeBot; optional browser and channel features need more
 - An API key for at least one supported LLM provider
@@ -320,7 +320,7 @@ npm run doctor
 
 Common cases:
 
-- **Node is rejected before installation:** install Node.js 20.19 or newer,
+- **Node is rejected before installation:** install Node.js 22.19 or newer,
   open a new terminal, and run `node --version` again.
 - **Python is rejected:** install Python 3.11-3.14. On Windows, the `py`
   launcher helps LimeBot find a supported installation.
@@ -494,11 +494,14 @@ LLM_PROXY_URL=http://localhost:8080/v1 # Optional: Route all traffic through a g
 ```
 
 LimeBot defaults to the `fast` AI harness: Auto-RAG gets an 80ms request
-budget, action requests receive a bounded request-specific tool schema, and
-clearly casual turns omit tools. Set `LIMEBOT_AI_HARNESS_MODE=balanced` for the
-compatibility profile, which uses a 200ms Auto-RAG budget and the full tool
-schema. These settings reduce LimeBot-side preparation and schema overhead;
-they do not change the model provider's generation speed.
+budget, and casual turns such as greetings do not receive tools. Explicit
+actions, URLs, paths, and slash commands still do. Set
+`LIMEBOT_AI_HARNESS_MODE=balanced` to use a 200ms Auto-RAG budget instead.
+Request-specific tool shortlisting remains opt-in through
+`LIMEBOT_ENABLE_TOOL_SHORTLIST=true`. Set
+`LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL=false` only when tools are needed on
+every non-empty turn. These settings reduce LimeBot-side preparation and
+prevent accidental actions; they do not change provider generation speed.
 
 > [!TIP]
 > **No manual editing required!** You can modify all environment settings live from the **Config** tab in the web dashboard. Your changes will automatically overwrite the `.env` file and trigger a clean backend restart.
