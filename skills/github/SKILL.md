@@ -79,5 +79,5 @@ python {baseDir}/main.py create-pr LimeBot-OS/web feature-branch main "Add new f
 
 **Invite a Collaborator:**
 ```bash
-python {baseDir}/main.py invite-collaborator LimeBot brite
+python {baseDir}/main.py invite-collaborator LimeBot example-user
 ```
