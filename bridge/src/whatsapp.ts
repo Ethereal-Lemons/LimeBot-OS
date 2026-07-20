@@ -215,8 +215,10 @@ export class WhatsAppClient {
         if (msgId && this.isDuplicateMessage(msgId)) {
           continue;
         }
-        // Allow self-messages for testing (commented out fromMe check)
-        // if (msg.key.fromMe) continue;
+        // Do not feed LimeBot's own outgoing replies back into the agent. Baileys
+        // emits self-sent messages through the same notify stream as inbound
+        // messages; forwarding them creates recursive turns and duplicate replies.
+        if (msg.key.fromMe) continue;
 
         // Skip status updates
         if (msg.key.remoteJid === 'status@broadcast') continue;

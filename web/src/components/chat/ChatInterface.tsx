@@ -1,6 +1,5 @@
 import { useRef, useEffect, useState, memo } from 'react';
-import axios from 'axios';
-import { API_BASE_URL } from "@/lib/api";
+import { api, API_BASE_URL } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -749,7 +748,7 @@ export function ChatInterface({
         const loadSkills = async () => {
             setSkillsLoading(true);
             try {
-                const res = await axios.get(`${API_BASE_URL}/api/skills`);
+                const res = await api.get('/api/skills');
                 if (!cancelled) {
                     setSkills(Array.isArray(res.data?.skills) ? res.data.skills : []);
                 }
@@ -1045,7 +1044,7 @@ export function ChatInterface({
     const handlePowerAction = async (action: 'restart' | 'shutdown') => {
         setPowerLoading(true);
         try {
-            const res = await axios.post(`${API_BASE_URL}/api/control/${action}`);
+            const res = await api.post(`/api/control/${action}`);
             console.log(res.data);
             // Allow some time for the server to react before closing/resetting
             setTimeout(() => {
@@ -1076,19 +1075,21 @@ export function ChatInterface({
 
     const handleToolConfirmSideChannel = async (confId: string, approved: boolean, sessionWhitelist: boolean) => {
         try {
-            const apiKey = localStorage.getItem('limebot_api_key');
-            await axios.post(`${API_BASE_URL}/api/confirm-tool`, {
+            const response = await api.post('/api/confirm-tool', {
                 conf_id: confId,
                 approved,
                 session_whitelist: sessionWhitelist
-            }, {
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(apiKey ? { 'x-api-key': apiKey } : {})
-                }
             });
+            if (response.data?.status !== 'success') {
+                throw new Error(response.data?.message || 'The approval request was not accepted.');
+            }
+            toast.success(approved ? 'Action approved' : 'Action denied');
         } catch (err) {
             console.error("Failed to confirm tool via side-channel:", err);
+            toast.error('Could not update the approval', {
+                description: err instanceof Error ? err.message : 'The server did not accept the decision.',
+            });
+            throw err;
         }
     };
 
@@ -1451,16 +1452,19 @@ export function ChatInterface({
                                 onClick={async () => {
                                     if (!activeChatId) return;
                                     try {
-                                        const apiKey = localStorage.getItem('limebot_api_key');
-                                        await axios.post(`${API_BASE_URL}/api/chat/${activeChatId}/stop`, {}, {
-                                            headers: {
-                                                'Content-Type': 'application/json',
-                                                ...(apiKey ? { 'x-api-key': apiKey } : {})
-                                            }
-                                        });
-                                        // Specific UI feedback handled by state or toast if needed
+                                        const response = await api.post(
+                                            `/api/chat/${encodeURIComponent(activeChatId)}/stop`
+                                        );
+                                        if (response.data?.status === 'ignored') {
+                                            toast.info('No active task was found to stop.');
+                                        } else {
+                                            toast.success('Generation stopped');
+                                        }
                                     } catch (e) {
                                         console.error("Failed to stop generation:", e);
+                                        toast.error('Could not stop generation', {
+                                            description: e instanceof Error ? e.message : 'The server did not accept the stop request.',
+                                        });
                                     }
                                 }}
                                 title="Stop generating"

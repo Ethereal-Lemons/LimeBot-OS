@@ -7,12 +7,15 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 interface ToolTimelineProps {
     executions: ToolExecution[];
     botIdentity?: { name: string; avatar: string | null };
-    onConfirmSideChannel?: (confId: string, approved: boolean, sessionWhitelist: boolean) => void;
+    onConfirmSideChannel?: (confId: string, approved: boolean, sessionWhitelist: boolean) => Promise<void>;
 }
 
 export function ToolTimeline({ executions, botIdentity, onConfirmSideChannel }: ToolTimelineProps) {
     const [expanded, setExpanded] = useState(false);
     const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
+    const [confirmationConfId, setConfirmationConfId] = useState<string | null>(null);
+    const [confirmationStatus, setConfirmationStatus] = useState<'approved' | 'denied' | null>(null);
+    const [confirmationSubmitting, setConfirmationSubmitting] = useState(false);
 
     const hasRunning = executions.some((e) => e.status === "running");
     const hasError = executions.some((e) => e.status === "error");
@@ -49,6 +52,29 @@ export function ToolTimeline({ executions, botIdentity, onConfirmSideChannel }: 
             null
         );
     }, [executions, selectedToolId, runningExecution, newestExecution]);
+
+    useEffect(() => {
+        const nextConfId = selectedExecution?.conf_id || null;
+        if (nextConfId !== confirmationConfId) {
+            setConfirmationConfId(nextConfId);
+            setConfirmationStatus(null);
+            setConfirmationSubmitting(false);
+        }
+    }, [selectedExecution?.conf_id, confirmationConfId]);
+
+    const resolveConfirmation = async (approved: boolean, sessionWhitelist: boolean) => {
+        const confId = selectedExecution?.conf_id;
+        if (!confId || !onConfirmSideChannel || confirmationSubmitting || confirmationStatus) return;
+        setConfirmationSubmitting(true);
+        try {
+            await onConfirmSideChannel(confId, approved, sessionWhitelist);
+            setConfirmationStatus(approved ? 'approved' : 'denied');
+        } catch {
+            setConfirmationStatus(null);
+        } finally {
+            setConfirmationSubmitting(false);
+        }
+    };
 
     const getSummary = (exec: ToolExecution) => {
         const args = exec.args || {};
@@ -225,37 +251,51 @@ export function ToolTimeline({ executions, botIdentity, onConfirmSideChannel }: 
                                     </>
                                 )}
 
-                                {(selectedExecution.status === 'waiting_confirmation' || selectedExecution.status === 'pending_confirmation') && selectedExecution.conf_id && onConfirmSideChannel && (
+                                {(selectedExecution.status === 'waiting_confirmation' || selectedExecution.status === 'pending_confirmation') && selectedExecution.conf_id && onConfirmSideChannel && !confirmationStatus && (
                                     <div className="flex gap-2 mt-3 pt-2 border-t border-primary/30">
                                         <button
+                                            type="button"
+                                            disabled={confirmationSubmitting}
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                onConfirmSideChannel(selectedExecution.conf_id!, true, false);
+                                                void resolveConfirmation(true, false);
                                             }}
-                                            className="bg-primary/20 hover:bg-primary/30 text-primary px-3 py-1 rounded text-xs font-semibold"
+                                            className="bg-primary/20 hover:bg-primary/30 text-primary px-3 py-1 rounded text-xs font-semibold disabled:cursor-wait disabled:opacity-60"
                                         >
                                             Allow Once
                                         </button>
                                         <button
+                                            type="button"
+                                            disabled={confirmationSubmitting}
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                onConfirmSideChannel(selectedExecution.conf_id!, true, true);
+                                                void resolveConfirmation(true, true);
                                             }}
-                                            className="bg-secondary hover:bg-secondary/80 text-secondary-foreground px-3 py-1 rounded text-xs font-semibold"
+                                            className="bg-secondary hover:bg-secondary/80 text-secondary-foreground px-3 py-1 rounded text-xs font-semibold disabled:cursor-wait disabled:opacity-60"
                                             title="Allow all executions of this tool for the rest of this session"
                                         >
                                             Allow Session
                                         </button>
                                         <div className="flex-1" />
                                         <button
+                                            type="button"
+                                            disabled={confirmationSubmitting}
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                onConfirmSideChannel(selectedExecution.conf_id!, false, false);
+                                                void resolveConfirmation(false, false);
                                             }}
-                                            className="bg-destructive/20 hover:bg-destructive/30 text-destructive px-3 py-1 rounded text-xs font-semibold"
+                                            className="bg-destructive/20 hover:bg-destructive/30 text-destructive px-3 py-1 rounded text-xs font-semibold disabled:cursor-wait disabled:opacity-60"
                                         >
                                             Deny
                                         </button>
+                                    </div>
+                                )}
+                                {confirmationStatus && (
+                                    <div className={cn(
+                                        "mt-3 text-xs font-semibold",
+                                        confirmationStatus === "approved" ? "text-primary" : "text-destructive"
+                                    )}>
+                                        {confirmationStatus === "approved" ? "Approval sent" : "Denied"}
                                     </div>
                                 )}
                             </div>

@@ -88,23 +88,31 @@ class TestApprovalPolicyDecisions(unittest.TestCase):
         self.assertTrue(autonomous["allowed"])
         self.assertTrue(internal["allowed"])
 
-    def test_whatsapp_legacy_behavior_is_explicit(self):
-        # State-changing tools over the legacy WhatsApp path must now go through
-        # confirmation (mirrored to the web dashboard) instead of auto-approving.
+    def test_whatsapp_uses_fast_autonomous_policy_for_sensitive_tools(self):
+        # WhatsApp is intentionally fast: contact allow-listing and hard tool
+        # safety checks remain active, but no interactive approval is required.
         for tool in ("run_command", "write_file", "delete_file"):
             decision = make_loop()._get_tool_approval_decision(
                 "whatsapp_one", tool, is_whatsapp=True
             )
-            self.assertFalse(decision["allowed"], tool)
-            self.assertTrue(decision["requires_confirmation"], tool)
-            self.assertEqual(decision["reason"], "manual_required", tool)
+            self.assertTrue(decision["allowed"], tool)
+            self.assertFalse(decision["requires_confirmation"], tool)
+            self.assertEqual(decision["reason"], "channel_whatsapp_autonomous", tool)
 
-        # Read-only tools remain allowed on the legacy path.
+        # The same policy applies to every sensitive tool, including cron removal.
+        cron = make_loop()._get_tool_approval_decision(
+            "whatsapp_one", "cron_remove", is_whatsapp=True
+        )
+        self.assertTrue(cron["allowed"])
+        self.assertFalse(cron["requires_confirmation"])
+        self.assertEqual(cron["reason"], "channel_whatsapp_autonomous")
+
+        # Read-only tools remain allowed as before.
         read_only = make_loop()._get_tool_approval_decision(
             "whatsapp_one", "read_file", is_whatsapp=True
         )
         self.assertTrue(read_only["allowed"])
-        self.assertEqual(read_only["reason"], "channel_whatsapp_legacy")
+        self.assertEqual(read_only["reason"], "channel_whatsapp_autonomous")
 
     def test_audit_preview_never_contains_commands_or_file_content(self):
         safe = AgentLoop._approval_audit_preview(

@@ -47,14 +47,15 @@ interface ToolCardProps {
     execution: ToolExecution;
     onConfirm?: (toolCallId: string, approved: boolean) => void;
     onConfirmSession?: (toolCallId: string) => void;
-    onConfirmSideChannel?: (confId: string, approved: boolean, sessionWhitelist: boolean) => void;
+    onConfirmSideChannel?: (confId: string, approved: boolean, sessionWhitelist: boolean) => Promise<void>;
 }
 
 
 
 export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSideChannel }: ToolCardProps) {
     const [isExpanded, setIsExpanded] = useState(false);
-    const [confirmationStatus] = useState<'pending' | 'approved' | 'denied' | null>(null);
+    const [confirmationStatus, setConfirmationStatus] = useState<'pending' | 'approved' | 'denied' | null>(null);
+    const [confirmationSubmitting, setConfirmationSubmitting] = useState(false);
 
     // Auto-expand when logs arrive
     useEffect(() => {
@@ -65,6 +66,11 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
             setIsExpanded(true);
         }
     }, [execution.logs, execution.status, isExpanded]);
+
+    useEffect(() => {
+        setConfirmationStatus(null);
+        setConfirmationSubmitting(false);
+    }, [execution.conf_id, execution.tool_call_id]);
 
     // Check if the action is blocked by backend
     const isBlocked = execution.status === 'waiting_confirmation' || execution.result?.includes("ACTION BLOCKED: Confirmation Required");
@@ -87,6 +93,25 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
     // 1. Backend signaled waiting_confirmation status (New Way)
     // 2. Completed but blocked (Old Way - for compatibility)
     const needsConfirmation = isBlocked;
+
+    const resolveConfirmation = async (approved: boolean, sessionWhitelist: boolean) => {
+        if (confirmationSubmitting || confirmationStatus !== null) return;
+        setConfirmationSubmitting(true);
+        try {
+            if (execution.conf_id && onConfirmSideChannel) {
+                await onConfirmSideChannel(execution.conf_id, approved, sessionWhitelist);
+            } else if (approved && sessionWhitelist) {
+                onConfirmSession?.(execution.tool_call_id);
+            } else {
+                onConfirm?.(execution.tool_call_id, approved);
+            }
+            setConfirmationStatus(approved ? 'approved' : 'denied');
+        } catch {
+            setConfirmationStatus(null);
+        } finally {
+            setConfirmationSubmitting(false);
+        }
+    };
 
 
 
@@ -259,43 +284,37 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                 {needsConfirmation && confirmationStatus === null && (
                     <div className="flex gap-2 p-2 pt-2 border-t border-primary/30 bg-primary/5">
                         <button
+                            type="button"
+                            disabled={confirmationSubmitting}
                             onClick={(e) => {
                                 e.stopPropagation();
-                                if (execution.conf_id && onConfirmSideChannel) {
-                                    onConfirmSideChannel(execution.conf_id, true, false);
-                                } else {
-                                    onConfirm?.(execution.tool_call_id, true);
-                                }
+                                void resolveConfirmation(true, false);
                             }}
-                            className="bg-primary/20 hover:bg-primary/30 text-primary px-3 py-1 rounded text-xs font-semibold"
+                            className="bg-primary/20 hover:bg-primary/30 text-primary px-3 py-1 rounded text-xs font-semibold disabled:cursor-wait disabled:opacity-60"
                         >
                             Allow Once
                         </button>
                         <button
+                            type="button"
+                            disabled={confirmationSubmitting}
                             onClick={(e) => {
                                 e.stopPropagation();
-                                if (execution.conf_id && onConfirmSideChannel) {
-                                    onConfirmSideChannel(execution.conf_id, true, true);
-                                } else {
-                                    onConfirmSession?.(execution.tool_call_id);
-                                }
+                                void resolveConfirmation(true, true);
                             }}
-                            className="bg-secondary hover:bg-secondary/80 text-secondary-foreground px-3 py-1 rounded text-xs font-semibold"
+                            className="bg-secondary hover:bg-secondary/80 text-secondary-foreground px-3 py-1 rounded text-xs font-semibold disabled:cursor-wait disabled:opacity-60"
                             title="Allow all executions of this tool for the rest of this session"
                         >
                             Allow Session
                         </button>
                         <div className="flex-1" />
                         <button
+                            type="button"
+                            disabled={confirmationSubmitting}
                             onClick={(e) => {
                                 e.stopPropagation();
-                                if (execution.conf_id && onConfirmSideChannel) {
-                                    onConfirmSideChannel(execution.conf_id, false, false);
-                                } else {
-                                    onConfirm?.(execution.tool_call_id, false);
-                                }
+                                void resolveConfirmation(false, false);
                             }}
-                            className="bg-destructive/20 hover:bg-destructive/30 text-destructive px-3 py-1 rounded text-xs font-semibold"
+                            className="bg-destructive/20 hover:bg-destructive/30 text-destructive px-3 py-1 rounded text-xs font-semibold disabled:cursor-wait disabled:opacity-60"
                         >
                             Deny
                         </button>
