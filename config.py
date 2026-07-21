@@ -189,6 +189,18 @@ def load_config(force_reload=False):
         config.max_iterations = 30
 
     try:
+        config.tool_recovery_max_attempts = int(
+            os.getenv("TOOL_RECOVERY_MAX_ATTEMPTS", "3")
+        )
+    except ValueError:
+        logger.warning(
+            "Invalid TOOL_RECOVERY_MAX_ATTEMPTS in .env, defaulting to 3."
+        )
+        config.tool_recovery_max_attempts = 3
+    if config.tool_recovery_max_attempts < 1:
+        config.tool_recovery_max_attempts = 3
+
+    try:
         config.command_timeout = float(os.getenv("COMMAND_TIMEOUT", "0"))
     except ValueError:
         logger.warning("Invalid COMMAND_TIMEOUT in .env, defaulting to 0.")

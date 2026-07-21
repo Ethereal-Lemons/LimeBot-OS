@@ -78,6 +78,7 @@ from core.prompt_modes import (
     build_ponytail_prompt_addition,
     normalize_ponytail_mode,
 )
+from core.redaction import redact_sensitive_text, redact_sensitive_value
 from core.provider_circuit_breaker import (
     ProviderCircuitBreaker,
     ProviderCircuitOpenError,
@@ -1995,7 +1996,7 @@ class AgentLoop:
 
     @staticmethod
     def _tool_debug_preview(text: Any, limit: int = 400) -> str:
-        raw = str(text or "")
+        raw = redact_sensitive_text(text or "")
         raw = raw.replace("\r", "\\r").replace("\n", "\\n")
         if len(raw) <= limit:
             return raw
@@ -3181,7 +3182,10 @@ class AgentLoop:
                         fn, args = self._normalize_tool_alias(
                             fn, args, sub_session_key
                         )
-                        logger.info(f"[SUB-AGENT:{sub_session_key}] {fn}({args})")
+                        logger.info(
+                            f"[SUB-AGENT:{sub_session_key}] "
+                            f"{fn}({redact_sensitive_text(args)})"
+                        )
                         if (allowed_tools is not None and fn not in allowed_tools) or (
                             fn in disallowed_tools
                         ):
@@ -3913,7 +3917,8 @@ class AgentLoop:
 
         except Exception as e:
             logger.exception(
-                f"Browser tool execution failed: {function_name} args={args}"
+                "Browser tool execution failed: "
+                f"{function_name} args={redact_sensitive_text(args)}"
             )
             return f"Error executing browser tool: {e}"
 
@@ -4456,7 +4461,7 @@ class AgentLoop:
                 f"{function_name}:{normalized}".encode("utf-8", "replace")
             ).hexdigest()[:16]
         diagnostic_limit = 800
-        diagnostic = truncate_tool_result(text, diagnostic_limit)
+        diagnostic = truncate_tool_result(redact_sensitive_text(text), diagnostic_limit)
         split = diagnostic.split("\n... [truncated diagnostic] ...\n", 1)
         return ToolOutcome(
             tool=function_name,
@@ -4513,7 +4518,36 @@ class AgentLoop:
             "verification command; otherwise report a blocker. Do not blindly retry a "
             "mutation. "
             f"Repair attempt {attempt}/{budget}. Tool: {outcome.tool}. "
-            f"Exit code: {outcome.exit_code!r}. Diagnostic tail: {outcome.diagnostic_tail}"
+            f"Exit code: {outcome.exit_code!r}. Diagnostic tail: "
+            f"{redact_sensitive_text(outcome.diagnostic_tail)}"
+        )
+
+    def _tool_recovery_message(
+        self,
+        outcome: ToolOutcome,
+        attempt: int,
+        budget: int,
+        *,
+        repeated: bool = False,
+    ) -> str:
+        repeated_note = (
+            " The same failure fingerprint appeared before; choose a materially "
+            "different diagnostic or route."
+            if repeated
+            else ""
+        )
+        return (
+            "A tool operation failed while pursuing the user's original goal. "
+            "Continue toward that goal instead of finalizing a blocker. Classify "
+            "the failure (local/client, server, authentication, permission, or "
+            "policy), inspect the evidence, and try a different safe route or "
+            "diagnostic. Do not disable security controls and do not repeat the "
+            "identical failing call unless new evidence justifies it. Only report "
+            "the goal as blocked after the blocker is independently confirmed and "
+            "reasonable safe alternatives are exhausted."
+            f"{repeated_note} Recovery attempt {attempt}/{budget}. "
+            f"Tool: {outcome.tool}. Diagnostic tail: "
+            f"{redact_sensitive_text(outcome.diagnostic_tail)}"
         )
 
     def _has_successful_mutation_since_previous_verifier_failure(
@@ -4548,13 +4582,104 @@ class AgentLoop:
         if not recent:
             return "The coding step limit was reached before verification could run."
         details = "; ".join(
-            f"{entry.get('name', 'tool')}: {str(entry.get('content', ''))[-220:]}"
+            f"{entry.get('name', 'tool')}: "
+            f"{redact_sensitive_text(str(entry.get('content', ''))[-220:])}"
             for entry in recent
         )
         return (
             "The coding step limit was reached. I ran: " + details +
             ". Remaining work: inspect the last diagnostic and run the narrowed verification."
         )
+
+    async def _queue_tool_recovery(
+        self,
+        session_key: str,
+        msg: Optional[InboundMessage],
+        fingerprints: Set[str],
+        attempts: int,
+        *,
+        coding_turn: bool = False,
+        allowed_tools: Optional[Set[str]] = None,
+        turn_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> Tuple[int, Optional[str]]:
+        """Queue one model-directed recovery step, or return a concrete blocker."""
+        failures = [
+            outcome
+            for outcome in getattr(self, "_last_tool_outcomes", [])
+            if not outcome.success
+            and (allowed_tools is None or outcome.tool in allowed_tools)
+        ]
+        if not failures:
+            return attempts, None
+        failure = failures[-1]
+        budget = max(
+            1,
+            int(
+                getattr(
+                    self.config,
+                    "tool_recovery_max_attempts",
+                    getattr(self.config, "coding_repair_max_attempts", 3),
+                )
+                or 3
+            ),
+        )
+        repeated = failure.failure_fingerprint in fingerprints
+        attempts += 1
+        fingerprints.add(failure.failure_fingerprint)
+        if attempts > budget:
+            blocked = (
+                f"Tool recovery budget ({budget}) is exhausted. The original goal "
+                "remains incomplete. Last diagnostic: "
+                f"{redact_sensitive_text(failure.diagnostic_tail)}"
+            )
+            if coding_turn:
+                await self._emit_coding_phase(
+                    "blocked", session_key, msg, turn_id=turn_id,
+                    message_id=message_id, outcome=failure
+                )
+            else:
+                self._log_session_event(
+                    session_key,
+                    {
+                        "type": "tool_recovery_blocked",
+                        "tool": failure.tool,
+                        "failure_fingerprint": failure.failure_fingerprint,
+                        "diagnostic": redact_sensitive_text(failure.diagnostic_tail),
+                    },
+                )
+            return attempts, blocked
+        recovery_message = (
+            self._coding_recovery_message(failure, attempts, budget)
+            if coding_turn
+            else self._tool_recovery_message(
+                failure, attempts, budget, repeated=repeated
+            )
+        )
+        self.history[session_key].append(
+            {
+                "role": "system",
+                "content": recovery_message,
+            }
+        )
+        self._mark_dirty(session_key)
+        if coding_turn:
+            await self._emit_coding_phase(
+                "repair", session_key, msg, turn_id=turn_id,
+                message_id=message_id, outcome=failure
+            )
+        else:
+            self._log_session_event(
+                session_key,
+                {
+                    "type": "tool_recovery_queued",
+                    "tool": failure.tool,
+                    "attempt": attempts,
+                    "budget": budget,
+                    "repeated_failure": repeated,
+                },
+            )
+        return attempts, None
 
     async def _queue_coding_recovery(
         self,
@@ -4566,52 +4691,17 @@ class AgentLoop:
         turn_id: Optional[str] = None,
         message_id: Optional[str] = None,
     ) -> Tuple[int, Optional[str]]:
-        """Queue one model-directed repair step, or return a concrete blocker."""
-        failures = [
-            outcome
-            for outcome in getattr(self, "_last_tool_outcomes", [])
-            if not outcome.success and outcome.tool == "run_command"
-        ]
-        if not failures:
-            return attempts, None
-        failure = failures[-1]
-        budget = max(1, int(getattr(self.config, "coding_repair_max_attempts", 3) or 3))
-        mutation_succeeded = any(
-            outcome.success and outcome.tool in _MUTATION_TOOL_NAMES
-            for outcome in getattr(self, "_last_tool_outcomes", [])
-        ) or self._has_successful_mutation_since_previous_verifier_failure(session_key)
-        if failure.failure_fingerprint in fingerprints and not mutation_succeeded:
-            blocked = (
-                "Coding verification remains blocked by the same failure. "
-                f"Last diagnostic: {failure.diagnostic_tail}. "
-                "No further mutation was retried automatically."
-            )
-            await self._emit_coding_phase(
-                "blocked", session_key, msg, turn_id=turn_id, message_id=message_id, outcome=failure
-            )
-            return attempts, blocked
-        attempts += 1
-        fingerprints.add(failure.failure_fingerprint)
-        if attempts > budget:
-            blocked = (
-                f"Coding repair budget ({budget}) is exhausted. Last diagnostic: "
-                f"{failure.diagnostic_tail}. Inspect the failure before another edit."
-            )
-            await self._emit_coding_phase(
-                "blocked", session_key, msg, turn_id=turn_id, message_id=message_id, outcome=failure
-            )
-            return attempts, blocked
-        self.history[session_key].append(
-            {
-                "role": "system",
-                "content": self._coding_recovery_message(failure, attempts, budget),
-            }
+        """Compatibility wrapper for coding-specific callers and tests."""
+        return await self._queue_tool_recovery(
+            session_key,
+            msg,
+            fingerprints,
+            attempts,
+            coding_turn=True,
+            allowed_tools={"run_command"},
+            turn_id=turn_id,
+            message_id=message_id,
         )
-        self._mark_dirty(session_key)
-        await self._emit_coding_phase(
-            "repair", session_key, msg, turn_id=turn_id, message_id=message_id, outcome=failure
-        )
-        return attempts, None
 
     def _build_tool_fallback_reply(self, session_key: str, max_items: int = 2) -> str:
         tool_rows: List[Tuple[str, str]] = []
@@ -4638,6 +4728,7 @@ class AgentLoop:
             )
             if len(first_line) > 180:
                 first_line = first_line[:180] + "..."
+            first_line = redact_sensitive_text(first_line)
             failed_rows.append((name, first_line))
 
         if failed_rows:
@@ -4973,8 +5064,8 @@ class AgentLoop:
                     "type": "tool_execution",
                     "status": "planned",
                     "tool": function_name,
-                    "args": function_args,
-                    "preview": preview,
+                    "args": redact_sensitive_value(function_args),
+                    "preview": redact_sensitive_value(preview),
                     "tool_call_id": tc_id,
                     "turn_id": turn_id,
                     "message_id": message_id,
@@ -5045,7 +5136,9 @@ class AgentLoop:
                         message_id=message_id,
                     )
 
-                logger.info(f"Executing: {function_name}({function_args})")
+                logger.info(
+                    f"Executing: {function_name}({redact_sensitive_text(function_args)})"
+                )
 
                 is_internal = False
                 is_whatsapp = (
@@ -5228,7 +5321,7 @@ class AgentLoop:
                     "type": "tool_execution",
                     "status": "running",
                     "tool": function_name,
-                    "args": function_args,
+                    "args": redact_sensitive_value(function_args),
                     "tool_call_id": tc_id,
                     "turn_id": turn_id,
                     "message_id": message_id,
@@ -5245,7 +5338,7 @@ class AgentLoop:
                         "args": (
                             {"redacted": True}
                             if function_name in _SENSITIVE_TOOLS
-                            else function_args
+                            else redact_sensitive_value(function_args)
                         ),
                     },
                 )
@@ -5348,8 +5441,10 @@ class AgentLoop:
                         "type": "tool_execution",
                         "tool": fail_name,
                         "status": "error",
-                        "args": fail_args,
-                        "result": f"Execution failed or was cancelled: {type(outcome).__name__}",
+                        "args": redact_sensitive_value(fail_args),
+                        "result": redact_sensitive_text(
+                            f"Execution failed or was cancelled: {type(outcome).__name__}"
+                        ),
                         "tool_call_id": fail_tc_id,
                         "turn_id": turn_id,
                         "message_id": message_id,
@@ -5357,6 +5452,21 @@ class AgentLoop:
                     await self._publish_both(msg, fail_name, err_meta)
                 except Exception:
                     pass
+                failure_result = (
+                    f"Error executing {fail_name}: {type(outcome).__name__}"
+                )
+                self._last_tool_outcomes.append(
+                    self._build_tool_outcome(fail_name, failure_result)
+                )
+                self.history[session_key].append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": fail_tc_id,
+                        "name": fail_name,
+                        "content": failure_result,
+                    }
+                )
+                self._mark_dirty(session_key)
                 continue
 
             tc_id, function_name, function_args, result, is_blocked, is_internal = (
@@ -5400,8 +5510,10 @@ class AgentLoop:
                         "type": "tool_execution",
                         "tool": function_name,
                         "status": tool_status,
-                        "args": function_args,
-                        "result": str(result)[:TOOL_BROADCAST_MAX_CHARS],
+                        "args": redact_sensitive_value(function_args),
+                        "result": redact_sensitive_text(result)[
+                            :TOOL_BROADCAST_MAX_CHARS
+                        ],
                         "tool_call_id": tc_id,
                         "turn_id": turn_id,
                         "message_id": message_id,
@@ -6447,6 +6559,8 @@ class AgentLoop:
         tool_batch_duration_s = 0.0
         tool_batch_count = 0
         tool_batch_blocked = False
+        unresolved_tool_failure = False
+        unresolved_failure_detail = ""
 
         def make_output_queued_recorder(
             iteration_kind: str, iteration: int
@@ -7281,6 +7395,9 @@ class AgentLoop:
                     repair_attempts = 0
                     repair_fingerprints: Set[str] = set()
                     recovery_blocked: Optional[str] = None
+                    recovery_required = False
+                    unresolved_tool_failure = False
+                    unresolved_failure_detail = ""
 
                     if tool_calls:
                         if coding_turn:
@@ -7348,20 +7465,29 @@ class AgentLoop:
                         tool_batch_count += 1
                         tool_batch_blocked = bool(is_blocked)
 
-                        if coding_turn and not is_blocked:
-                            repair_attempts, recovery_blocked = await self._queue_coding_recovery(
+                        batch_failures = [
+                            outcome
+                            for outcome in getattr(self, "_last_tool_outcomes", [])
+                            if not outcome.success
+                        ]
+                        unresolved_tool_failure = bool(batch_failures)
+                        if batch_failures:
+                            unresolved_failure_detail = batch_failures[-1].diagnostic_tail
+                            repair_attempts, recovery_blocked = await self._queue_tool_recovery(
                                 session_key,
                                 msg,
                                 repair_fingerprints,
                                 repair_attempts,
+                                coding_turn=coding_turn,
                                 turn_id=turn_id,
                                 message_id=assistant_message_id,
                             )
+                            recovery_required = recovery_blocked is None
 
                         if recovery_blocked:
                             raw_reply = recovery_blocked
                             force_direct_reply = True
-                        if not is_blocked and not recovery_blocked:
+                        if not recovery_blocked:
                             max_iterations = getattr(self.config, "max_iterations", 30)
                             iteration = 0
                             artifact_requested = self._artifact_delivery_requested(content)
@@ -7495,6 +7621,11 @@ class AgentLoop:
                                     include_tools=not force_tool_image_reply,
                                     tool_context_text=content,
                                     tool_definitions_override=post_tool_definitions,
+                                    tool_choice=(
+                                        "required"
+                                        if recovery_required and not force_tool_image_reply
+                                        else "auto"
+                                    ),
                                     turn_id=turn_id,
                                     message_id=assistant_message_id,
                                 )
@@ -7594,27 +7725,39 @@ class AgentLoop:
                                 tool_batch_count += 1
                                 tool_batch_blocked = bool(nxt_blocked)
 
-                                if coding_turn and not nxt_blocked:
-                                    repair_attempts, recovery_blocked = await self._queue_coding_recovery(
+                                batch_failures = [
+                                    outcome
+                                    for outcome in getattr(self, "_last_tool_outcomes", [])
+                                    if not outcome.success
+                                ]
+                                unresolved_tool_failure = bool(batch_failures)
+                                if batch_failures:
+                                    unresolved_failure_detail = batch_failures[-1].diagnostic_tail
+                                    repair_attempts, recovery_blocked = await self._queue_tool_recovery(
                                         session_key,
                                         msg,
                                         repair_fingerprints,
                                         repair_attempts,
+                                        coding_turn=coding_turn,
                                         turn_id=turn_id,
                                         message_id=assistant_message_id,
                                     )
-                                    if recovery_blocked:
-                                        raw_reply = recovery_blocked
-                                        force_direct_reply = True
-                                        break
+                                    recovery_required = recovery_blocked is None
+                                else:
+                                    recovery_required = False
+                                    unresolved_failure_detail = ""
+                                if recovery_blocked:
+                                    raw_reply = recovery_blocked
+                                    force_direct_reply = True
+                                    break
 
                                 if iteration % _INTERIM_SAVE_EVERY == 0:
                                     await self._flush_history(session_key)
 
                                 if nxt_blocked:
-                                    logger.info("🛑 Tool blocked — stopping loop.")
-                                    raw_reply = accumulated_content
-                                    break
+                                    logger.info(
+                                        "Tool policy blocked a step; recovery remains active."
+                                    )
                             if tool_batch_count:
                                 try:
                                     self.metrics.record_stage_timing(
@@ -7629,7 +7772,9 @@ class AgentLoop:
                                 except Exception:
                                     pass
                         else:
-                            logger.info("🛑 Tool blocked — skipping tool loop.")
+                            logger.info(
+                                "Tool recovery stopped after the configured budget."
+                            )
                     else:
                         raw_reply = full_content
 
@@ -7735,6 +7880,9 @@ class AgentLoop:
                             turn_id=turn_id,
                             message_id=assistant_message_id,
                         )
+                        if unresolved_tool_failure:
+                            meta["task_status"] = "failed"
+                            meta["is_error"] = True
 
                         suppress_web_final_reply = (
                             self._should_suppress_web_final_reply(
@@ -7944,6 +8092,16 @@ class AgentLoop:
                             _msg_task_id,
                             status="cancelled",
                             error="Inbound turn cancelled.",
+                        )
+                    elif unresolved_tool_failure:
+                        await _tracker.update_task(
+                            _msg_task_id,
+                            status="failed",
+                            error=(
+                                "Tool recovery exhausted or ended with an unresolved "
+                                "failure: "
+                                + redact_sensitive_text(unresolved_failure_detail)[:500]
+                            ),
                         )
                     else:
                         await _tracker.complete_task(_msg_task_id)

@@ -17,6 +17,8 @@ import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.redaction import redact_sensitive_text
+
 
 # Tools that always require explicit user approval unless whitelisted.
 SENSITIVE_TOOLS = frozenset(
@@ -195,6 +197,7 @@ class ConfirmationManager:
     def build_command_preview(self, function_args: dict) -> Dict[str, Any]:
         """Preview dict for a ``run_command`` confirmation."""
         command = str(function_args.get("command", "") or "")
+        display_command = redact_sensitive_text(command)
         cwd = str(function_args.get("cwd", ".") or ".")
         lowered = command.lower()
         risk_flags: List[str] = []
@@ -266,13 +269,13 @@ class ConfirmationManager:
                 risk_flags.append(flag)
 
         affected_paths = self.extract_command_paths(command)
-        summary = f"Run command in {cwd}: {command or '(empty command)'}"
+        summary = f"Run command in {cwd}: {display_command or '(empty command)'}"
         if risk_flags:
             summary += f" [{', '.join(risk_flags)}]"
 
         return {
             "kind": "run_command",
-            "command": command,
+            "command": display_command,
             "cwd": cwd,
             "summary": summary,
             "risk_flags": risk_flags,
@@ -328,7 +331,11 @@ class ConfirmationManager:
             fields.append(
                 {
                     "name": "Command",
-                    "value": f"```bash\n{self._truncate_preview(function_args.get('command', ''), 800)}\n```",
+                    "value": (
+                        "```bash\n"
+                        f"{self._truncate_preview(redact_sensitive_text(function_args.get('command', '')), 800)}\n"
+                        "```"
+                    ),
                     "inline": False,
                 }
             )

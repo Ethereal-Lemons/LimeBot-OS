@@ -25,6 +25,7 @@ from datetime import datetime
 from core.tool_defs import build_tool_definitions
 from core.vectors import get_vector_service
 from core.paths import PERSONA_DIR
+from core.redaction import redact_sensitive_text
 
 _SENSITIVE_NAMES = frozenset(
     {
@@ -390,6 +391,7 @@ class Toolbox:
 
     async def send_progress(self, message: str):
         """Broadcast tool progress if an agent/bus is available."""
+        message = redact_sensitive_text(message)
         if self.agent and hasattr(self.agent, "send_tool_progress"):
             from core.context import tool_context
 
@@ -1583,7 +1585,8 @@ class Toolbox:
                     if idle >= STALL_TIMEOUT:
                         stall_detected = True
                         logger.warning(
-                            f"Stall detected ({STALL_TIMEOUT}s no output): {command}"
+                            f"Stall detected ({STALL_TIMEOUT}s no output): "
+                            f"{redact_sensitive_text(command)}"
                         )
                         await self.send_progress(
                             f"⚠️ Command stalled — no output for {STALL_TIMEOUT}s. "
@@ -1634,13 +1637,19 @@ class Toolbox:
                     timeout=timeout_val,
                 )
             except asyncio.TimeoutError:
-                logger.warning(f"Command timed out after {timeout_val}s: {command}")
+                logger.warning(
+                    f"Command timed out after {timeout_val}s: "
+                    f"{redact_sensitive_text(command)}"
+                )
                 await _force_kill(process)
                 full_output.append(
                     f"[TIMEOUT] Command was terminated after {timeout_val} seconds."
                 )
             except asyncio.CancelledError:
-                logger.warning(f"Command execution cancelled by user: {command}")
+                logger.warning(
+                    "Command execution cancelled by user: "
+                    f"{redact_sensitive_text(command)}"
+                )
                 await _force_kill(process)
                 raise
 

@@ -107,6 +107,7 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
                 self._warmed = True
 
         agent = _TestAgentLoop(bus=MessageBus())
+        agent.config.tool_recovery_max_attempts = 3
         agent.history["web_test"] = []
         failure = agent._build_tool_outcome("run_command", "failed assertion\nExit Code: 1")
         agent._last_tool_outcomes = [failure]
@@ -116,10 +117,45 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, 1)
         self.assertIsNone(blocked)
         agent._last_tool_outcomes = [failure]
+        attempts, blocked = await agent._queue_coding_recovery(
+            "web_test", None, {failure.failure_fingerprint}, attempts
+        )
+        self.assertEqual(attempts, 2)
+        self.assertIsNone(blocked)
+        agent._last_tool_outcomes = [failure]
+        attempts, blocked = await agent._queue_coding_recovery(
+            "web_test", None, {failure.failure_fingerprint}, attempts
+        )
+        self.assertEqual(attempts, 3)
+        self.assertIsNone(blocked)
+        agent._last_tool_outcomes = [failure]
         _, blocked = await agent._queue_coding_recovery(
             "web_test", None, {failure.failure_fingerprint}, attempts
         )
-        self.assertIn("same failure", blocked)
+        self.assertIn("recovery budget", blocked.lower())
+
+    async def test_non_coding_failure_queues_safe_alternative_recovery(self):
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+        agent = _TestAgentLoop(bus=MessageBus())
+        agent.config.tool_recovery_max_attempts = 2
+        agent.history["web_test"] = []
+        failure = agent._build_tool_outcome(
+            "browser_navigate", "Error: certificate verification failed"
+        )
+        agent._last_tool_outcomes = [failure]
+        attempts, blocked = await agent._queue_tool_recovery(
+            "web_test", None, set(), 0, coding_turn=False
+        )
+        self.assertEqual(attempts, 1)
+        self.assertIsNone(blocked)
+        self.assertIn("different safe route or diagnostic", agent.history["web_test"][-1]["content"])
 
     async def test_repeated_failure_after_successful_edit_allows_repair(self):
         from core.bus import MessageBus
@@ -161,12 +197,14 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 self._consume_calls = 0
+                self.tool_choices = []
 
             async def _init_skills_and_tools(self) -> None:
                 self._tool_definitions = []
                 self._warmed = True
 
             async def _llm_call_with_retry(self, *args, **kwargs):
+                self.tool_choices.append(kwargs.get("tool_choice"))
                 return object()
 
             async def _consume_stream(self, *args, **kwargs):
@@ -224,3 +262,4 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertTrue(replies, "Expected a user-visible fallback reply.")
         self.assertIn("failed", replies[-1].content.lower())
+        self.assertIn("required", agent.tool_choices)

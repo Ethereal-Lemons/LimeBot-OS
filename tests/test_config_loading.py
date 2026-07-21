@@ -128,6 +128,17 @@ class TestConfigLoading(unittest.TestCase):
         self.assertTrue(loaded.ai_harness.fast_disable_tools_for_casual)
         self.assertFalse(loaded.tool_shortlist_enabled)
 
+    def test_tool_recovery_attempts_are_bounded_and_configurable(self):
+        loaded = self._load_config_with_env(
+            {"TOOL_RECOVERY_MAX_ATTEMPTS": "5"}
+        )
+        self.assertEqual(loaded.tool_recovery_max_attempts, 5)
+
+        loaded = self._load_config_with_env(
+            {"TOOL_RECOVERY_MAX_ATTEMPTS": "0"}
+        )
+        self.assertEqual(loaded.tool_recovery_max_attempts, 3)
+
     def test_video_whisper_is_explicitly_opt_in(self):
         disabled = self._load_config_with_env({"VIDEO_WHISPER_ENABLED": "false"})
         self.assertFalse(disabled.video.whisper_enabled)

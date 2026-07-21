@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from core.redaction import redact_sensitive_text
+
 METRICS_FILE = Path("persona/sessions/metrics.jsonl")
 _METRICS_QUEUE_SIZE = 2048
 
@@ -89,14 +91,14 @@ class MetricsCollector:
             metrics = self._get_session(session_key)
             metrics.errors += 1
             self._global_errors += 1
-        self._log_event({"type": "error", "session": session_key, "error_type": error_type, "detail": detail[:500], "ts": time.time()})
+        self._log_event({"type": "error", "session": session_key, "error_type": error_type, "detail": redact_sensitive_text(detail)[:500], "ts": time.time()})
 
     def record_anomaly(self, session_key: str, anomaly_type: str, detail: str = "", count: int = 1):
         with self._lock:
             metrics = self._get_session(session_key)
             metrics.anomalies[anomaly_type] = metrics.anomalies.get(anomaly_type, 0) + count
             self._global_anomalies[anomaly_type] = self._global_anomalies.get(anomaly_type, 0) + count
-        self._log_event({"type": "anomaly", "session": session_key, "anomaly_type": anomaly_type, "detail": detail[:500], "count": count, "ts": time.time()})
+        self._log_event({"type": "anomaly", "session": session_key, "anomaly_type": anomaly_type, "detail": redact_sensitive_text(detail)[:500], "count": count, "ts": time.time()})
 
     def record_stage_timing(self, session_key: str, stage: str, duration_s: float, metadata: Optional[dict] = None):
         event = {"type": "stage_timing", "session": session_key, "stage": str(stage or "").strip() or "unknown", "duration_s": round(float(duration_s), 3), "ts": time.time()}
