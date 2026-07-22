@@ -10,6 +10,7 @@
     "dev": "tsc && node dist/index.js"
   },
   "dependencies": {
+    "@hapi/boom": "^9.1.4",
     "@whiskeysockets/baileys": "^7.0.0-rc13",
     "pino": "^9.0.0",
     "qrcode-terminal": "^0.12.0",
