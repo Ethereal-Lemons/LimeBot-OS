@@ -24,7 +24,7 @@ from datetime import datetime
 
 from core.tool_defs import build_tool_definitions
 from core.vectors import get_vector_service
-from core.paths import PERSONA_DIR
+from core.paths import LONG_TERM_MEMORY_FILE, MEMORY_DIR, PERSONA_DIR
 from core.redaction import redact_sensitive_text
 
 _SENSITIVE_NAMES = frozenset(
@@ -1708,23 +1708,114 @@ class Toolbox:
             return f"Error executing command: {e}"
 
     async def memory_search(self, query: str) -> str:
-        """Search vector memory with relevance scores."""
+        """Search durable memory, using vectors when available and Markdown otherwise."""
         if not self.vector_service:
             return "Error: Vector service not available."
         try:
             results = await self.vector_service.search(query, limit=5) or []
             if not results:
-                return "No semantic matches found."
+                return "No matching memory found in MEMORY.md or the Markdown journals."
 
-            res = ["Found relevant memories:"]
+            mode = getattr(self.vector_service, "_last_search_mode", None)
+            if mode == "vector":
+                res = ["Found relevant memories (semantic vector search):"]
+            else:
+                res = ["Found relevant memories (Markdown fallback):"]
             for r in results:
                 text = r.get("text", "No content")
-                score = r.get("score") or r.get("_distance", 0)
-                path = r.get("path", "Unknown source")
+                score = r.get("score")
+                if score is None:
+                    score = r.get("_distance", 0)
+                path = r.get("path") or r.get("source") or "Unknown source"
                 res.append(f"- {text}\n  (Source: {path}, Score: {score})")
             return "\n\n".join(res)
         except Exception as e:
             return f"Error searching memory: {e}"
+
+    async def memory_save(self, content: str, scope: str = "journal") -> str:
+        """Persist an explicit user-requested memory in the Markdown source of truth."""
+        entry = str(content or "").strip()
+        if not entry:
+            return "Error: memory content cannot be empty."
+        if len(entry) > 4_000:
+            return "Error: memory content is too long (maximum 4000 characters)."
+
+        normalized_scope = str(scope or "journal").strip().lower()
+        if normalized_scope not in {"journal", "long_term"}:
+            return "Error: scope must be 'journal' or 'long_term'."
+
+        now = datetime.now()
+        try:
+            def atomic_write_text(target: Path, payload: str) -> None:
+                temporary = target.with_name(
+                    f".{target.name}.{uuid.uuid4().hex}.tmp"
+                )
+                try:
+                    temporary.write_text(payload, encoding="utf-8")
+                    os.replace(temporary, target)
+                finally:
+                    if temporary.exists():
+                        temporary.unlink(missing_ok=True)
+
+            if normalized_scope == "journal":
+                await asyncio.to_thread(MEMORY_DIR.mkdir, parents=True, exist_ok=True)
+                memory_file = MEMORY_DIR / f"{now:%Y-%m-%d}.md"
+                line = f"- **[{now:%H:%M}]** {entry}"
+
+                def append_if_new() -> bool:
+                    existing = (
+                        memory_file.read_text(encoding="utf-8")
+                        if memory_file.exists()
+                        else ""
+                    )
+                    if line in existing:
+                        return False
+                    prefix = "" if not existing or existing.endswith("\n") else "\n"
+                    atomic_write_text(memory_file, f"{existing}{prefix}{line}\n")
+                    return True
+
+                written = await asyncio.to_thread(append_if_new)
+                category = "journal"
+                display_path = f"memory/{memory_file.name}"
+            else:
+                await asyncio.to_thread(
+                    LONG_TERM_MEMORY_FILE.parent.mkdir,
+                    parents=True,
+                    exist_ok=True,
+                )
+                memory_file = LONG_TERM_MEMORY_FILE
+                bullet = f"- {entry}"
+
+                def append_long_term_if_new() -> bool:
+                    existing = (
+                        memory_file.read_text(encoding="utf-8").rstrip()
+                        if memory_file.exists()
+                        else "# Long-Term Memory"
+                    )
+                    if bullet in existing:
+                        return False
+                    separator = "\n" if existing.endswith("\n") else "\n\n"
+                    atomic_write_text(memory_file, f"{existing}{separator}{bullet}\n")
+                    return True
+
+                written = await asyncio.to_thread(append_long_term_if_new)
+                category = "long_term"
+                display_path = "MEMORY.md"
+
+            if written and self.vector_service:
+                try:
+                    asyncio.create_task(
+                        self.vector_service.add_entry(entry, category=category)
+                    )
+                except RuntimeError:
+                    # The Markdown write is durable even when no event loop is
+                    # available to schedule optional vector indexing.
+                    pass
+            status = "saved" if written else "already present"
+            return f"Memory {status} in {display_path}."
+        except Exception as e:
+            logger.error(f"Error saving memory: {e}")
+            return f"Error saving memory: {e}"
 
     async def spawn_agent(
         self,
@@ -3216,6 +3307,8 @@ class Toolbox:
             # Reload skills in registry if agent is present
             if self.agent and hasattr(self.agent, "skill_registry"):
                 await asyncio.to_thread(self.agent.skill_registry.discover_and_load)
+                if hasattr(self.agent, "_refresh_tool_definitions"):
+                    self.agent._refresh_tool_definitions()
 
             return f"Success: Created skill '{name}' in 'skills/{name}'. You can now add logic to 'skills/{name}/api.py'."
         except Exception as e:

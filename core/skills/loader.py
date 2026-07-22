@@ -41,6 +41,10 @@ class SkillLoader:
         Returns:
             Dictionary of skill_name -> skill_data
         """
+        # Re-discovery is a snapshot, not an append-only operation. Clearing
+        # stale entries prevents deleted/renamed skills from remaining visible
+        # to capability routing after a reload.
+        self.skills = {}
         for skill_dir in self.skill_dirs:
             dir_path = Path(skill_dir)
             if not dir_path.exists():

@@ -20,6 +20,29 @@ from typing import Any, Dict, Iterable, List, Optional
 
 BASE_TOOLS = [
     {
+        "name": "capability_search",
+        "description": (
+            "Inspect LimeBot's installed capabilities before claiming an integration, "
+            "skill, tool, MCP connection, or specialist is unavailable. Returns a compact "
+            "inventory with matching names, required tools, and operational state. This "
+            "read-only lookup is always available, including on short follow-up turns."
+        ),
+        "params": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Capability or task to resolve, for example 'Jira ticket GDHD-1199' "
+                    "or 'web research'. Leave empty to list the compact inventory."
+                ),
+            },
+            "include_disabled": {
+                "type": "boolean",
+                "description": "Include discovered but disabled or dependency-missing capabilities (defaults to true).",
+            },
+        },
+        "required": ["query"],
+    },
+    {
         "name": "read_file",
         "description": "Read a known file path. Use this after you already know the exact file to inspect. Prefer search_files first if you do not know where the file is. Supports line ranges and bounded reads, including .docx and .pdf text extraction. Example: read_file(path='core/loop.py', start_line=1, end_line=80).",
         "params": {
@@ -218,6 +241,27 @@ BASE_TOOLS = [
             }
         },
         "required": ["query"],
+    },
+    {
+        "name": "memory_save",
+        "description": (
+            "Persist a fact or event the user explicitly asks LimeBot to remember. "
+            "This writes the Markdown source of truth and works without embeddings. "
+            "Use scope='journal' for an append-only dated event (default), or "
+            "scope='long_term' for a durable preference, identity fact, project, or relationship."
+        ),
+        "params": {
+            "content": {
+                "type": "string",
+                "description": "The concise fact or event to remember.",
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["journal", "long_term"],
+                "description": "Where to persist it. Defaults to 'journal'.",
+            },
+        },
+        "required": ["content"],
     },
     {
         "name": "spawn_agent",
@@ -748,6 +792,7 @@ SEARCH_TOOLS = [
 
 
 _TOOL_FAMILIES = {
+    "capability_search": "capability",
     "read_file": "filesystem",
     "write_file": "filesystem",
     "create_spreadsheet": "spreadsheet",
@@ -758,6 +803,7 @@ _TOOL_FAMILIES = {
     "create_skill": "filesystem",
     "run_command": "command",
     "memory_search": "memory",
+    "memory_save": "memory",
     "generate_image": "media",
     "send_discord_message": "discord",
     "send_discord_embed": "discord",
@@ -793,6 +839,25 @@ _TOOL_FAMILIES = {
 }
 
 _FAMILY_HINTS = {
+    "capability": {
+        "capability",
+        "capabilities",
+        "integration",
+        "integrations",
+        "skill",
+        "skills",
+        "tool",
+        "tools",
+        "jira",
+        "mcp",
+        "connected",
+        "available",
+        "disponible",
+        "integracion",
+        "integración",
+        "conexion",
+        "conexión",
+    },
     "filesystem": {
         "file",
         "files",
@@ -984,6 +1049,7 @@ _FAMILY_HINTS = {
 }
 
 _MANDATORY_FAMILY_TOOLS = {
+    "capability": {"capability_search"},
     "filesystem": {"search_files", "read_file", "list_dir"},
     "command": {"run_command"},
     "browser": {
@@ -995,7 +1061,7 @@ _MANDATORY_FAMILY_TOOLS = {
     },
     "search": {"web_search"},
     "scheduler": {"cron_add", "cron_list", "cron_remove"},
-    "memory": {"memory_search"},
+    "memory": {"memory_search", "memory_save"},
     "agent": {"spawn_agent", "get_task_output", "wait_tasks", "kill_task"},
     "media": {"send_media"},
     "discord": {"send_discord_message", "send_discord_embed", "list_discord_channels"},
@@ -1005,6 +1071,11 @@ _MANDATORY_FAMILY_TOOLS = {
 }
 
 _TOOL_HINTS = {
+    "capability_search": {
+        "capability", "capabilities", "integration", "integrations", "skill", "skills",
+        "tool", "tools", "jira", "mcp", "available", "connected", "resolve", "lookup",
+        "disponible", "integracion", "integración", "conexion", "conexión",
+    },
     "read_file": {"read", "open", "show", "file", "contents", "content"},
     "write_file": {"write", "edit", "save", "create", "overwrite", "file"},
     "create_spreadsheet": {
@@ -1019,6 +1090,7 @@ _TOOL_HINTS = {
     "search_files": {"search", "find", "grep", "rg", "ripgrep", "match", "locate"},
     "run_command": {"run", "command", "terminal", "shell", "script", "git", "pytest", "npm", "python"},
     "memory_search": {"memory", "remember", "recall", "history", "journal"},
+    "memory_save": {"memory", "remember", "save", "journal", "fact", "preference"},
     "generate_image": {"image", "images", "picture", "photo", "draw", "render", "generate", "art"},
     "send_discord_message": {"discord", "dm", "direct", "message", "send", "user", "channel"},
     "send_discord_embed": {"discord", "embed", "structured", "send", "channel", "dm"},
@@ -1143,6 +1215,11 @@ def shortlist_tool_definitions(
     }
 
     mandatory = set(explicitly_required)
+    # A skill that is already carrying required tools is an active capability
+    # context. Keep the recovery lookup beside that context even when the
+    # current follow-up is only an acknowledgement and contains no task noun.
+    if explicitly_required and "capability_search" in available_names:
+        mandatory.add("capability_search")
     for family in selected_families:
         mandatory.update(_MANDATORY_FAMILY_TOOLS.get(family, set()))
     if "browser" in selected_families and tokens & artifact_tokens:

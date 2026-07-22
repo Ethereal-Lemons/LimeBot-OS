@@ -140,11 +140,11 @@ export function Sidebar({
 
                 const enabled = memoryRes.data?.enabled;
                 const mode = memoryRes.data?.mode || (enabled ? "vector" : "grep_fallback");
-                if (enabled === false) {
-                    setMemoryLabel("Offline");
+                if (mode === "grep_fallback") {
+                    setMemoryLabel("Markdown Fallback");
                     setMemoryTone("text-amber-500");
-                } else if (mode === "grep_fallback") {
-                    setMemoryLabel("Grep Fallback");
+                } else if (enabled === false) {
+                    setMemoryLabel("Offline");
                     setMemoryTone("text-amber-500");
                 } else {
                     setMemoryLabel("Vector Online");

@@ -122,7 +122,7 @@ CODING_PHASES = frozenset(
 )
 _READ_ONLY_TOOL_NAMES = frozenset(
     {
-        "read_file", "list_dir", "search_files", "memory_search", "web_search",
+        "capability_search", "read_file", "list_dir", "search_files", "memory_search", "web_search",
         "image_search", "deep_research", "browser_extract", "browser_get_page_text",
         "browser_snapshot", "browser_list_media", "google_search",
     }
@@ -382,6 +382,7 @@ class AgentLoop:
             "search_files": self.toolbox.search_files,
             "run_command": self.toolbox.run_command,
             "memory_search": self.toolbox.memory_search,
+            "memory_save": self.toolbox.memory_save,
             "send_media": self.toolbox.send_media,
             "send_voice": self.toolbox.send_voice,
             "generate_image": self.toolbox.generate_image,
@@ -425,6 +426,12 @@ class AgentLoop:
 
         self._stable_prompt_cache: Dict[str, Tuple[str, float]] = {}
         self._STABLE_PROMPT_TTL = 30.0
+        # Per-session task capability context.  The latest substantive request
+        # remains available when the next utterance is only an acknowledgement
+        # or shorthand follow-up ("yes, that one", "sí la tienes", etc.).
+        self._session_capability_state: Dict[str, Dict[str, Any]] = {}
+        self._capability_snapshot_revision = 0
+        self._mcp_snapshot_signature: Tuple[Any, ...] = ()
         self._history_flush_interval = 5.0
         self._last_history_flush: Dict[str, float] = {}
         self._image_input_fallback_sessions: Set[str] = set()
@@ -576,26 +583,244 @@ class AgentLoop:
     def _refresh_tool_definitions(self) -> None:
         """Rebuild and cache tool definitions. Call only when skills change."""
         self._tool_definitions = self.toolbox.get_tool_definitions()
+        self._stable_prompt_cache.clear()
+        if hasattr(self, "tool_cache"):
+            self.tool_cache.clear()
+        self._capability_snapshot_revision = int(
+            getattr(getattr(self, "skill_registry", None), "capability_revision", 0)
+            or 0
+        )
+        self._mcp_snapshot_signature = self._get_mcp_snapshot_signature()
 
         logger.debug(
             f"Tool definitions refreshed ({len(self._tool_definitions)} tools)."
         )
 
+    @staticmethod
+    def _get_mcp_snapshot_signature() -> Tuple[Any, ...]:
+        try:
+            from core.mcp_client import get_mcp_manager
+
+            manager = get_mcp_manager()
+            tool_names = tuple(
+                sorted(
+                    str(tool.get("function", {}).get("name") or "")
+                    for tool in (manager.get_tools() or [])
+                    if isinstance(tool, dict)
+                )
+            )
+            status = tuple(sorted((manager.get_status() or {}).items()))
+            return tool_names, status
+        except Exception:
+            return ()
+
     def _get_tool_definitions(self) -> List[Dict]:
-        if self._tool_definitions is None:
+        skill_revision = int(
+            getattr(getattr(self, "skill_registry", None), "capability_revision", 0)
+            or 0
+        )
+        mcp_signature = self._get_mcp_snapshot_signature()
+        snapshot_revision = int(
+            getattr(self, "_capability_snapshot_revision", 0) or 0
+        )
+        if (
+            self._tool_definitions is None
+            or (
+                snapshot_revision > 0
+                and skill_revision != snapshot_revision
+            )
+            or (
+                snapshot_revision > 0
+                and mcp_signature != getattr(self, "_mcp_snapshot_signature", ())
+            )
+        ):
             self._refresh_tool_definitions()
         return self._tool_definitions
 
+    @staticmethod
+    def _is_capability_followup(text: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(text or "").strip().lower())
+        if not lowered:
+            return True
+        return bool(
+            re.search(
+                r"\b(?:yes|yeah|yep|ok|okay|sure|continue|go ahead|do it|that one|"
+                r"same|proceed|sí|si|claro|dale|esa|ese|esa misma|la tienes|"
+                r"adelante|hazlo|continúa|continua)\b",
+                lowered,
+            )
+        )
+
+    def _get_capability_turn_context(
+        self, session_key: Optional[str], user_text: str
+    ) -> Dict[str, Any]:
+        """Resolve sticky skill names and the text used for relevance routing."""
+        key = str(session_key or "").strip()
+        registry = getattr(self, "skill_registry", None)
+        if registry is None or not hasattr(registry, "get_relevant_skill_names"):
+            return {
+                "routing_text": str(user_text or ""),
+                "skill_names": [],
+                "last_substantive_message": "",
+                "revision": 0,
+            }
+
+        prior = dict(getattr(self, "_session_capability_state", {}).get(key) or {})
+        revision = int(getattr(registry, "capability_revision", 0) or 0)
+        if prior.get("revision") != revision:
+            prior = {}
+        current = str(user_text or "").strip()
+        current_names = registry.get_relevant_skill_names(current, max_skills=3)
+        previous_names = list(prior.get("skill_names") or [])
+        previous_message = str(prior.get("last_substantive_message") or "").strip()
+        preserve = bool(previous_names) and (
+            self._is_capability_followup(current) or not current_names
+        )
+        routing_text = current
+        if preserve and previous_message:
+            routing_text = f"{current}\n{previous_message}".strip()
+        selected_names = registry.get_relevant_skill_names(
+            routing_text,
+            max_skills=3,
+            sticky_skill_names=previous_names if preserve else None,
+        )
+        substantive = bool(current) and not self._is_capability_followup(current)
+        last_substantive = current if substantive else previous_message
+        state = {
+            "skill_names": selected_names,
+            "last_substantive_message": last_substantive,
+            "revision": revision,
+        }
+        if key:
+            getattr(self, "_session_capability_state", {})[key] = state
+        return {"routing_text": routing_text, **state}
+
+    def _capability_catalog_prompt(self) -> str:
+        registry = getattr(self, "skill_registry", None)
+        catalog: list[Dict[str, Any]] = []
+        if registry is not None and hasattr(registry, "get_capability_catalog"):
+            try:
+                catalog.extend(registry.get_capability_catalog(include_inactive=True))
+            except Exception:
+                pass
+        try:
+            for tool in self._get_tool_definitions():
+                function = tool.get("function") if isinstance(tool, dict) else {}
+                if not isinstance(function, dict):
+                    continue
+                name = str(function.get("name") or "").strip()
+                if not name:
+                    continue
+                description = redact_sensitive_text(
+                    re.sub(r"\s+", " ", str(function.get("description") or "")).strip()
+                )[:140]
+                state = "ready"
+                kind = "mcp_tool" if name.startswith("mcp_") else "native_tool"
+                if name.startswith("mcp_"):
+                    try:
+                        from core.mcp_client import get_mcp_manager
+
+                        server = name.split("_", 2)[1]
+                        state = str(
+                            get_mcp_manager().get_status().get(server, "Offline")
+                        ).lower()
+                    except Exception:
+                        state = "unknown"
+                catalog.append(
+                    {
+                        "name": name,
+                        "type": kind,
+                        "description": description,
+                        "state": state,
+                    }
+                )
+        except Exception:
+            pass
+        try:
+            from core.mcp_client import get_mcp_manager
+
+            catalog.extend(
+                {
+                    "name": str(name),
+                    "type": "mcp_server",
+                    "description": "Configured MCP server",
+                    "state": str(state).lower(),
+                }
+                for name, state in sorted(
+                    (get_mcp_manager().get_status() or {}).items()
+                )
+            )
+        except Exception:
+            pass
+        try:
+            descriptions = self.subagent_registry.get_agent_descriptions()
+            catalog.extend(
+                {
+                    "name": str(name),
+                    "type": "subagent",
+                    "description": redact_sensitive_text(
+                        re.sub(r"\s+", " ", str(description or "")).strip()
+                    )[:140],
+                    "state": "ready",
+                }
+                for name, description in sorted((descriptions or {}).items())
+            )
+        except Exception:
+            pass
+        if not catalog:
+            return "\n--- CAPABILITY INVENTORY ---\nNo capabilities are currently discovered. Use `capability_search` before claiming an integration is unavailable.\n"
+        lines = [
+            "\n--- CAPABILITY INVENTORY ---",
+            "Compact discovery snapshot (not full manuals). `ready` means a native tool is registered or a skill is enabled with declared dependencies present; it does not prove external credentials are connected.",
+        ]
+        for item in catalog[:32]:
+            name = str(item.get("name") or "")
+            kind = str(item.get("type") or "capability")
+            state = str(item.get("state") or "unknown")
+            desc = str(item.get("description") or "").strip()
+            required = ", ".join(item.get("required_tools") or [])
+            suffix = f"; tools: {required}" if required else ""
+            lines.append(f"- `{name}` ({kind}) [{state}]: {desc}{suffix}")
+        if len(catalog) > 32:
+            lines.append(f"- ... {len(catalog) - 32} more; use `capability_search` to resolve by name/task.")
+        lines.append(
+            "Before saying a requested capability is missing, call `capability_search` with the user's exact task or integration name."
+        )
+        return "\n".join(lines) + "\n"
+
     def _get_tool_definitions_for_turn(
-        self, user_text: str = "", forced_skill_name: Optional[str] = None
+        self,
+        user_text: str = "",
+        forced_skill_name: Optional[str] = None,
+        session_key: Optional[str] = None,
     ) -> List[Dict]:
         all_tools = self._get_tool_definitions()
         skill_registry = getattr(self, "skill_registry", None)
-        required_tool_names = (
-            skill_registry.get_required_tool_names(forced_skill_name)
-            if skill_registry is not None
-            else []
-        )
+        capability_context = self._get_capability_turn_context(session_key, user_text)
+        selected_skill_names = list(capability_context.get("skill_names") or [])
+        if forced_skill_name and forced_skill_name not in selected_skill_names:
+            selected_skill_names.insert(0, forced_skill_name)
+        if skill_registry is not None:
+            if hasattr(skill_registry, "get_required_tool_names_for_skills"):
+                required_tool_names = skill_registry.get_required_tool_names_for_skills(
+                    selected_skill_names
+                )
+            else:
+                required_tool_names = []
+                for name in selected_skill_names:
+                    required_tool_names.extend(
+                        skill_registry.get_required_tool_names(name)
+                    )
+                required_tool_names = list(dict.fromkeys(required_tool_names))
+        else:
+            required_tool_names = []
+        if selected_skill_names and any(
+            str(tool.get("function", {}).get("name") or "") == "capability_search"
+            for tool in all_tools
+            if isinstance(tool, dict)
+        ):
+            if "capability_search" not in required_tool_names:
+                required_tool_names.append("capability_search")
         if self._tool_shortlist_enabled():
             selected = shortlist_tool_definitions(
                 all_tools,
@@ -618,6 +843,7 @@ class AgentLoop:
             selected_tool_count=len(selected_names),
             selected_tools=selected_names,
             forced_skill=forced_skill_name,
+            matched_skills=selected_skill_names,
             required_skill_tools=required_tool_names,
         )
         return selected
@@ -1646,17 +1872,27 @@ class AgentLoop:
         current_message: str = "",
         forced_skill_name: Optional[str] = None,
         ponytail_mode: str = "off",
+        session_key: Optional[str] = None,
     ) -> str:
         """Stable (cached) + volatile (per-message: memory + RAG + timestamp)."""
         stable = await self._get_stable_prompt(sender_id, channel, chat_id, sender_name)
+        capability_context = self._get_capability_turn_context(
+            session_key, current_message
+        )
+        routing_text = capability_context.get("routing_text") or current_message
         if forced_skill_name:
             skills_docs = self.skill_registry.get_forced_prompt_addition(
                 forced_skill_name
             )
         else:
             skills_docs = self.skill_registry.get_relevant_prompt_additions(
-                current_message
+                routing_text
             )
+        capability_docs = (
+            self._capability_catalog_prompt()
+            if prompt_module.is_setup_complete()
+            else ""
+        )
         subagent_docs = self.subagent_registry.get_prompt_additions(current_message)
         ponytail_docs = build_ponytail_prompt_addition(ponytail_mode)
         include_private_memory = prompt_module.should_load_private_context(
@@ -1669,6 +1905,7 @@ class AgentLoop:
         )
         return (
             stable
+            + capability_docs
             + (skills_docs + "\n" if skills_docs else "")
             + (subagent_docs + "\n" if subagent_docs else "")
             + (ponytail_docs + "\n" if ponytail_docs else "")
@@ -1887,9 +2124,34 @@ class AgentLoop:
             return True
         return any(lowered.startswith(prefix) for prefix in _CASUAL_PHRASE_PREFIXES)
 
-    def _should_include_tools_for_turn(self, content: str) -> bool:
+    def _should_include_tools_for_turn(
+        self, content: str, session_key: Optional[str] = None
+    ) -> bool:
         if not self._should_include_tools(content):
             return False
+        active_capability_state = getattr(self, "_session_capability_state", {}).get(
+            str(session_key or ""), {}
+        )
+        lowered = str(content or "").strip().lower()
+        explicit_followup = bool(
+            re.search(
+                r"\b(?:yes|yeah|yep|ok|okay|sure|continue|go ahead|do it|that one|"
+                r"same|proceed|sí|si|claro|dale|esa|ese|la tienes|adelante|"
+                r"hazlo|continúa|continua)\b",
+                lowered,
+            )
+        )
+        if active_capability_state.get("skill_names") and (
+            explicit_followup
+            or (
+                len(lowered) > 10
+                and self._is_capability_followup(content)
+                and not self._is_fast_casual_turn(content)
+            )
+        ):
+            # A terse acknowledgement still belongs to the active task. Keep
+            # schemas (including capability_search) available for verification.
+            return True
         if not self._is_fast_ai_harness_enabled():
             return True
         ai_harness = getattr(getattr(self, "config", None), "ai_harness", None)
@@ -1910,6 +2172,14 @@ class AgentLoop:
             str(tool.get("function", {}).get("name", ""))
             for tool in tool_definitions
         }
+        if "capability_search" in tool_names and re.search(
+            r"\b(?:capability|capabilities|integration|integrations|mcp|"
+            r"connected|connection|unavailable|available|credentials?|credenciales?|"
+            r"conectad[oa]s?|conexi[oó]n|disponible)\b",
+            str(content or ""),
+            re.IGNORECASE,
+        ):
+            return True
         has_external_tool = bool(
             tool_names
             & {
@@ -4278,6 +4548,201 @@ class AgentLoop:
                 outputs.append(output)
         return "\n\n".join(outputs)
 
+    @staticmethod
+    def _capability_match_score(query: str, name: str, description: str = "") -> int:
+        tokens = {
+            token
+            for token in re.findall(r"[a-z0-9_/-]+", str(query or "").lower())
+            if len(token) >= 2
+        }
+        if not tokens:
+            return 1
+        haystack = {
+            token
+            for token in re.findall(
+                r"[a-z0-9_/-]+", f"{name} {description}".lower()
+            )
+            if len(token) >= 2
+        }
+        score = len(tokens & haystack)
+        if str(name or "").lower() in str(query or "").lower():
+            score += 50
+        return score
+
+    def _resolve_capabilities(
+        self,
+        query: str = "",
+        include_disabled: bool = True,
+        session_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build a redacted capability resolution snapshot for tools and API."""
+        registry = getattr(self, "skill_registry", None)
+        skill_rows: list[Dict[str, Any]] = []
+        matched_skills: list[str] = []
+        required_tools: list[str] = []
+        revision = int(getattr(registry, "capability_revision", 0) or 0)
+        if registry is not None:
+            try:
+                skill_rows = registry.search_capabilities(
+                    query, include_inactive=include_disabled, limit=12
+                )
+            except Exception as exc:
+                logger.debug(f"Capability skill search failed: {exc}")
+            context = self._get_capability_turn_context(session_key, query)
+            matched_skills = list(context.get("skill_names") or [])
+            if hasattr(registry, "get_required_tool_names_for_skills"):
+                required_tools = registry.get_required_tool_names_for_skills(
+                    matched_skills
+                )
+
+        all_tools = list(self._get_tool_definitions())
+        tool_rows: list[Dict[str, Any]] = []
+        for tool in all_tools:
+            function = tool.get("function") if isinstance(tool, dict) else {}
+            if not isinstance(function, dict):
+                continue
+            name = str(function.get("name") or "").strip()
+            if not name:
+                continue
+            description = redact_sensitive_text(
+                re.sub(r"\s+", " ", str(function.get("description") or "")).strip()
+            )[:180]
+            score = self._capability_match_score(query, name, description)
+            if str(query or "").strip() and score <= 0:
+                continue
+            if name.startswith("mcp_"):
+                parts = name.split("_", 2)
+                server = parts[1] if len(parts) > 1 else "unknown"
+                try:
+                    from core.mcp_client import get_mcp_manager
+
+                    connection_state = get_mcp_manager().get_status().get(
+                        server, "Offline"
+                    )
+                except Exception:
+                    connection_state = "unknown"
+                state = str(connection_state).lower()
+                tool_type = "mcp_tool"
+            else:
+                state = "ready"
+                tool_type = "native_tool"
+            tool_rows.append(
+                {
+                    "name": name,
+                    "type": tool_type,
+                    "description": description,
+                    "state": state,
+                    "match_score": score,
+                }
+            )
+
+        # Keep configured MCP servers visible even when they currently expose
+        # no cached tools (for example during a reconnect or failed handshake).
+        try:
+            from core.mcp_client import get_mcp_manager
+
+            mcp_status = get_mcp_manager().get_status()
+            for server, connection_state in sorted((mcp_status or {}).items()):
+                score = self._capability_match_score(query, str(server), "MCP server")
+                if str(query or "").strip() and score <= 0:
+                    continue
+                tool_rows.append(
+                    {
+                        "name": str(server),
+                        "type": "mcp_server",
+                        "description": "Configured MCP server",
+                        "state": str(connection_state).lower(),
+                        "match_score": score,
+                    }
+                )
+        except Exception:
+            pass
+
+        subagent_rows: list[Dict[str, Any]] = []
+        subagent_registry = getattr(self, "subagent_registry", None)
+        if subagent_registry is not None:
+            try:
+                descriptions = subagent_registry.get_agent_descriptions()
+            except Exception:
+                descriptions = {}
+            for name, description in sorted((descriptions or {}).items()):
+                score = self._capability_match_score(query, name, description)
+                if str(query or "").strip() and score <= 0:
+                    continue
+                subagent_rows.append(
+                    {
+                        "name": str(name),
+                        "type": "subagent",
+                        "description": redact_sensitive_text(
+                            re.sub(r"\s+", " ", str(description or "")).strip()
+                        )[:180],
+                        "state": "ready",
+                        "match_score": score,
+                    }
+                )
+
+        rows = skill_rows + tool_rows + subagent_rows
+        rows.sort(
+            key=lambda item: (
+                -int(item.get("match_score", 0) or 0),
+                str(item.get("type") or ""),
+                str(item.get("name") or ""),
+            )
+        )
+        selected_tools = self._get_tool_definitions_for_turn(
+            query, session_key=session_key
+        )
+        selected_tool_names = self._tool_definition_names(selected_tools)
+        ready_matches = [
+            row
+            for row in rows
+            if row.get("state") in {"ready", "online", "registered"}
+        ]
+        if ready_matches:
+            overall_state = "ready"
+            reason = "At least one registered, enabled, or connected capability matched the request."
+        elif skill_rows:
+            overall_state = str(skill_rows[0].get("state") or "unavailable")
+            reason = "A discovered capability matched, but it is not currently operational."
+        elif rows:
+            overall_state = str(rows[0].get("state") or "unavailable")
+            reason = "A capability matched, but it is not currently operational."
+        else:
+            overall_state = "unavailable"
+            reason = "No discovered capability matched this query; use the exact integration name or inspect the inventory."
+        return {
+            "query": str(query or ""),
+            "revision": revision,
+            "state": overall_state,
+            "reason": reason,
+            "matched_skills": matched_skills,
+            "required_tools": required_tools,
+            "selected_tools": selected_tool_names,
+            "capabilities": rows[:30],
+        }
+
+    async def _execute_capability_search(
+        self, function_args: Dict[str, Any], session_key: str
+    ) -> str:
+        query = str(function_args.get("query") or "").strip()[:1_000]
+        include_disabled = bool(function_args.get("include_disabled", True))
+        result = self._resolve_capabilities(
+            query,
+            include_disabled=include_disabled,
+            session_key=session_key,
+        )
+        return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+
+    def resolve_capabilities(
+        self, text: str = "", session_key: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Public read-only resolver used by the dashboard diagnostic endpoint."""
+        return self._resolve_capabilities(
+            str(text or "")[:1_000],
+            include_disabled=True,
+            session_key=str(session_key or "").strip()[:180] or None,
+        )
+
     async def _execute_tool(
         self, function_name: str, function_args: dict, session_key: str
     ) -> Any:
@@ -4295,35 +4760,25 @@ class AgentLoop:
             if echo_match:
                 entry = echo_match.group(1).strip()
                 if len(entry) > 10:
-                    from datetime import datetime
-
-                    memory_dir = Path("persona/memory")
-                    memory_dir.mkdir(parents=True, exist_ok=True)
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    mem_file = memory_dir / f"{today}.md"
-                    log_line = f"\n- **[{datetime.now().strftime('%H:%M')}]** {entry}"
                     try:
-                        with open(mem_file, "a", encoding="utf-8") as f:
-                            f.write(log_line)
-
-                        if self.vector_service:
-                            try:
-                                asyncio.create_task(
-                                    self.vector_service.add_entry(
-                                        entry, category="journal"
-                                    )
-                                )
-                            except Exception:
-                                pass  # embeddings unsupported — grep fallback
-                        logger.info(f"📝 Redirected echo→log_memory: {entry[:80]}")
-                        return f"Memory saved: {entry}"
+                        # Keep the legacy echo compatibility path on the same
+                        # Markdown-first writer as the native memory_save tool.
+                        # This also honors LIMEBOT_STATE_DIR and queues optional
+                        # vector indexing without making it a prerequisite.
+                        result = await self.toolbox.memory_save(entry, scope="journal")
+                        logger.info(f"Redirected echo to log_memory: {entry[:80]}")
+                        return result
                     except Exception as e:
-                        logger.error(f"Error in echo→log_memory redirect: {e}")
+                        logger.error(f"Error in echo-to-log_memory redirect: {e}")
 
         try:
             if function_name == "spawn_agent":
                 result = await self.toolbox.spawn_agent(
                     session_key=session_key, **function_args
+                )
+            elif function_name == "capability_search":
+                result = await self._execute_capability_search(
+                    function_args, session_key
                 )
             elif function_name in {"get_task_output", "wait_tasks", "kill_task"}:
                 result = await self._execute_background_task_tool(
@@ -4360,6 +4815,7 @@ class AgentLoop:
                     result = f"Error: Unknown tool '{function_name}'"
 
             is_read_only = function_name in _BROWSER_CACHEABLE or function_name in {
+                "capability_search",
                 "read_file",
                 "list_dir",
                 "search_files",
@@ -5582,6 +6038,7 @@ class AgentLoop:
             "search_files": "query",
             "run_command": "command",
             "memory_search": "query",
+            "memory_save": "content",
             "generate_image": "prompt",
             "google_search": "query",
             "browser_navigate": "url",
@@ -5634,6 +6091,7 @@ class AgentLoop:
                 "search_files": ["query", "path"],
                 "run_command": ["command"],
                 "memory_search": ["query"],
+                "memory_save": ["content", "scope"],
                 "google_search": ["query"],
                 "browser_navigate": ["url"],
                 "spawn_agent": ["task"],
@@ -5868,7 +6326,7 @@ class AgentLoop:
 
             bare_call_pattern = re.compile(
                 r"\b(?:list_dir|read_file|write_file|delete_file|search_files|"
-                r"run_command|memory_search|google_search|browser_navigate|"
+                r"run_command|memory_search|memory_save|google_search|browser_navigate|"
                 r"spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|cron_remove|save_memory|log_memory|ls|dir|cat|"
                 r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|"
                 r"powershell|cmd)\s*\([^)]*\)"
@@ -5930,7 +6388,7 @@ class AgentLoop:
         marker_positions = []
         legacy_tag_pattern = (
             r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|"
-            r"memory_search|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|"
+            r"memory_search|memory_save|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|"
             r"save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|"
             r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>"
         )
@@ -6002,7 +6460,7 @@ class AgentLoop:
             cleaned,
         )
         cleaned = re.sub(
-            legacy_tag_pattern + r".*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+            legacy_tag_pattern + r".*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|memory_save|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
             "",
             cleaned,
             flags=re.DOTALL | re.IGNORECASE,
@@ -6441,7 +6899,7 @@ class AgentLoop:
                     clean_content,
                 ).strip()
                 clean_content = re.sub(
-                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
+                    r"<(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|memory_save|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|memory_save|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
                     "",
                     clean_content,
                     flags=re.DOTALL | re.IGNORECASE,
@@ -7087,6 +7545,7 @@ class AgentLoop:
                         current_message=content,
                         forced_skill_name=forced_skill_name,
                         ponytail_mode=ponytail_mode,
+                        session_key=session_key,
                     )
                     prompt_stage_metadata = {
                         "has_recalled_context": bool(recalled_context)
@@ -7276,7 +7735,12 @@ class AgentLoop:
 
                     plan_mode = self._is_read_only_plan_request(content, msg)
                     include_tools = bool(
-                        (forced_skill_name or self._should_include_tools_for_turn(content))
+                        (
+                            forced_skill_name
+                            or self._should_include_tools_for_turn(
+                                content, session_key=session_key
+                            )
+                        )
                         and not plan_mode
                     )
                     self._log_tool_debug(
@@ -7289,7 +7753,9 @@ class AgentLoop:
                     if include_tools:
                         tool_schema_started = time.perf_counter()
                         initial_tool_definitions = self._get_tool_definitions_for_turn(
-                            content, forced_skill_name=forced_skill_name
+                            content,
+                            forced_skill_name=forced_skill_name,
+                            session_key=session_key,
                         )
                         self._record_stage_timing(
                             session_key,

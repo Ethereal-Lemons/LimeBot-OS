@@ -43,6 +43,11 @@ class SkillRegistry:
         self.skills: Dict[str, Dict[str, Any]] = {}
         self._api_handlers: Dict[str, Any] = {}
         self._skill_prompt_cache: Dict[str, str] = {}
+        # Monotonic revision used by prompt/tool snapshots.  A capability
+        # inventory is only useful when consumers can tell whether their
+        # cached view is stale after a reload or enable/disable operation.
+        self._capability_revision = 0
+        self._configured_skill_names: set[str] = set()
 
     def discover_and_load(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -52,7 +57,9 @@ class SkillRegistry:
             Dictionary of loaded skills
         """
         logger.info("Loading skills...")
+        self._capability_revision += 1
         self.skills = self.loader.discover_skills()
+        self._api_handlers.clear()
         self._skill_prompt_cache.clear()
         if hasattr(self, "_cached_prompt_additions"):
             delattr(self, "_cached_prompt_additions")
@@ -76,6 +83,10 @@ class SkillRegistry:
 
                 enabled_skills = skills_cfg.get("enabled", [])
 
+        self._configured_skill_names = {
+            str(name).strip() for name in enabled_skills if str(name).strip()
+        }
+
         for name in self.skills:
             self.skills[name]["active"] = False
 
@@ -96,6 +107,11 @@ class SkillRegistry:
             logger.warning("No skills enabled (default secure state).")
 
         return self.skills
+
+    @property
+    def capability_revision(self) -> int:
+        """Return the revision of the discovered skill capability snapshot."""
+        return self._capability_revision
 
     @staticmethod
     def _missing_dependencies(skill: Dict[str, Any]) -> List[str]:
@@ -358,6 +374,214 @@ class SkillRegistry:
             )
         )
 
+    def get_required_tool_names_for_skills(
+        self, skill_names: Optional[List[str]] = None
+    ) -> List[str]:
+        """Return the ordered union of required tools for several skills.
+
+        Automatic relevance routing used to guarantee required tools only for
+        slash-invoked skills.  Keeping this union operation in the registry
+        lets every caller apply the same rule to explicit and sticky matches.
+        """
+        names = skill_names or []
+        required: list[str] = []
+        for name in names:
+            for tool_name in self.get_required_tool_names(name):
+                if tool_name not in required:
+                    required.append(tool_name)
+        return required
+
+    def get_relevant_skill_names(
+        self,
+        user_text: str,
+        max_skills: int = 3,
+        sticky_skill_names: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Resolve active skills for a turn without rendering their manuals.
+
+        ``user_text`` may contain the current utterance plus the previous
+        substantive request.  ``sticky_skill_names`` is deliberately additive
+        so a terse follow-up such as "yes, that one" cannot erase the active
+        task's capability context.
+        """
+        active_skills = self._get_active_skills()
+        if not active_skills:
+            return []
+
+        text = (user_text or "").strip()
+        sticky = [name for name in (sticky_skill_names or []) if name in active_skills]
+        if not text:
+            return sticky[:max_skills]
+
+        if self._looks_like_skill_inventory_request(text):
+            return sorted(active_skills)[:max_skills]
+
+        tokens = self._tokenize(text)
+        lowered = text.lower()
+        normalized_lowered = self._normalized_name(lowered)
+        scored: list[tuple[int, str]] = []
+
+        for name, skill in active_skills.items():
+            aliases = self._skill_aliases(name, skill)
+            keywords = self._skill_keywords(name, skill)
+            alias_overlap = len(tokens & aliases)
+            keyword_overlap = len(tokens & keywords)
+            score = keyword_overlap + alias_overlap * 6
+
+            if self._normalized_name(name) in normalized_lowered:
+                score += 50
+            if "http" in lowered or "www." in lowered:
+                if name in {"browser", "scrapling", "download_image"}:
+                    score += 3
+            if alias_overlap > 0:
+                score += 2
+            if score > 0:
+                scored.append((score, name))
+
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        selected: list[str] = []
+        for name in sticky:
+            if name not in selected:
+                selected.append(name)
+        for _, name in scored:
+            if name not in selected:
+                selected.append(name)
+            if len(selected) >= max_skills:
+                break
+        return selected[:max_skills]
+
+    @staticmethod
+    def _capability_description(skill: Dict[str, Any]) -> str:
+        description = re.sub(r"\s+", " ", str(skill.get("description") or "")).strip()
+        return description[:180] + ("..." if len(description) > 180 else "")
+
+    def _missing_configuration(self, skill: Dict[str, Any]) -> List[str]:
+        """Check only explicitly declared credential/configuration keys.
+
+        Skills vary widely, so the registry never guesses that a name such as
+        ``jira`` implies a particular secret.  A skill can opt into this
+        lifecycle check with ``metadata.required_env`` or
+        ``metadata.required_config``; values themselves are never returned.
+        """
+        metadata = skill.get("metadata") or {}
+        required_env = metadata.get("required_env") or metadata.get(
+            "required_credentials"
+        ) or []
+        required_config = metadata.get("required_config") or []
+        if isinstance(required_env, str):
+            required_env = [required_env]
+        if isinstance(required_config, str):
+            required_config = [required_config]
+
+        entries: Dict[str, Any] = {}
+        if hasattr(self.config, "skills"):
+            entries = getattr(self.config.skills, "entries", {}) or {}
+        elif isinstance(self.config, dict):
+            entries = (self.config.get("skills") or {}).get("entries", {}) or {}
+        skill_entries = entries.get(str(skill.get("name") or ""), {})
+        if not isinstance(skill_entries, dict):
+            skill_entries = {}
+
+        missing: List[str] = []
+        for key in required_env:
+            env_name = str(key).strip()
+            if not env_name:
+                continue
+            configured = str(os.environ.get(env_name) or "").strip()
+            if not configured:
+                # The web/config UI may keep a skill credential in its entry
+                # map and inject it into the process only at execution time.
+                configured = str(
+                    skill_entries.get(env_name)
+                    or skill_entries.get("apiKey")
+                    or ""
+                ).strip()
+            if not configured:
+                missing.append(env_name)
+        for key in required_config:
+            config_name = str(key).strip()
+            if config_name and not str(skill_entries.get(config_name) or "").strip():
+                missing.append(f"config:{config_name}")
+        return list(dict.fromkeys(missing))
+
+    def get_capability_catalog(self, include_inactive: bool = True) -> List[Dict[str, Any]]:
+        """Return a compact, non-secret inventory of discovered skills.
+
+        The catalog intentionally reports lifecycle facts separately.  A
+        discovered skill is not necessarily enabled, dependency-ready, or
+        connected to its external service.
+        """
+        catalog: list[Dict[str, Any]] = []
+        for name, skill in sorted(self.skills.items()):
+            active = bool(skill.get("active", False))
+            missing = [str(item) for item in (skill.get("missing_dependencies") or [])]
+            missing_configuration = self._missing_configuration(skill)
+            configured = not missing_configuration
+            if missing:
+                state = "dependencies_missing"
+            elif active and missing_configuration:
+                state = "configuration_missing"
+            elif active:
+                state = "ready"
+            elif configured:
+                state = "disabled"
+            else:
+                state = "discovered"
+            if not include_inactive and not active:
+                continue
+            catalog.append(
+                {
+                    "name": name,
+                    "type": "skill",
+                    "description": self._capability_description(skill),
+                    "aliases": self._metadata_aliases(skill)[:8],
+                    "required_tools": self.get_required_tool_names(name),
+                    "state": state,
+                    "operational_state": state,
+                    "discovered": True,
+                    "enabled": active,
+                    "dependencies_ready": not missing,
+                    "configured": configured,
+                    "configuration_missing": missing_configuration[:8],
+                    "connected": None,
+                    "verified": False,
+                    "missing_dependencies": missing[:8],
+                }
+            )
+        return catalog
+
+    def search_capabilities(
+        self, query: str, include_inactive: bool = True, limit: int = 8
+    ) -> List[Dict[str, Any]]:
+        """Search the skill inventory using names, aliases, docs, and keywords."""
+        catalog = self.get_capability_catalog(include_inactive=include_inactive)
+        text = (query or "").strip()
+        if not text:
+            return catalog[: max(1, min(int(limit), 50))]
+
+        tokens = self._tokenize(text)
+        lowered = text.lower()
+        scored: list[tuple[int, Dict[str, Any]]] = []
+        for item in catalog:
+            haystack = self._tokenize(
+                " ".join(
+                    [
+                        str(item.get("name") or ""),
+                        str(item.get("description") or ""),
+                        " ".join(str(alias) for alias in item.get("aliases") or []),
+                    ]
+                )
+            )
+            score = len(tokens & haystack)
+            if str(item.get("name") or "").lower() in lowered:
+                score += 50
+            if score:
+                result = dict(item)
+                result["match_score"] = score
+                scored.append((score, result))
+        scored.sort(key=lambda row: (-row[0], str(row[1].get("name") or "")))
+        return [item for _, item in scored[: max(1, min(int(limit), 50))]]
+
     def resolve_active_skill_name(self, requested_name: str) -> Optional[str]:
         requested = str(requested_name or "").strip()
         if not requested:
@@ -430,34 +654,12 @@ class SkillRegistry:
             self._skill_prompt_cache[cache_key] = additions
             return additions
 
-        tokens = self._tokenize(text)
-        lowered = text.lower()
-        normalized_lowered = self._normalized_name(lowered)
-        scored: list[tuple[int, str, Dict[str, Any]]] = []
-
-        for name, skill in active_skills.items():
-            aliases = self._skill_aliases(name, skill)
-            keywords = self._skill_keywords(name, skill)
-            alias_overlap = len(tokens & aliases)
-            keyword_overlap = len(tokens & keywords)
-            score = keyword_overlap + alias_overlap * 6
-
-            explicit_name = self._normalized_name(name) in normalized_lowered
-            if explicit_name:
-                score += 50
-
-            if "http" in lowered or "www." in lowered:
-                if name in {"browser", "scrapling", "download_image"}:
-                    score += 3
-
-            if alias_overlap > 0:
-                score += 2
-
-            if score > 0:
-                scored.append((score, name, skill))
-
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        selected = {name: skill for _, name, skill in scored[:max_skills]}
+        selected_names = self.get_relevant_skill_names(text, max_skills=max_skills)
+        selected = {
+            name: active_skills[name]
+            for name in selected_names
+            if name in active_skills
+        }
         additions = self._format_prompt_additions(selected)
         self._skill_prompt_cache[cache_key] = additions
         return additions
@@ -506,8 +708,19 @@ class SkillRegistry:
         if self.loader.reload_skill(skill_name):
             skill = self.loader.skills.get(skill_name)
             if skill:
+                previous = self.skills.get(skill_name) or {}
+                skill["active"] = bool(previous.get("active", False))
+                if skill.get("active"):
+                    missing = self._missing_dependencies(skill)
+                    if missing:
+                        skill["active"] = False
+                        skill["missing_dependencies"] = missing
                 self.skills[skill_name] = skill
                 if skill.get("has_api"):
                     self._load_api_handler(skill_name, skill)
+                self._capability_revision += 1
+                self._skill_prompt_cache.clear()
+                if hasattr(self, "_cached_prompt_additions"):
+                    delattr(self, "_cached_prompt_additions")
                 return True
         return False

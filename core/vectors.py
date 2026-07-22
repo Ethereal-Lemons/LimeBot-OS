@@ -3,6 +3,7 @@ import hashlib
 import os
 import re
 import time as _time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from config import load_config
+from core.paths import LONG_TERM_MEMORY_FILE, MEMORY_DIR
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,10 @@ class VectorService:
         self._emb_cache: Dict[str, Any] = {}
         self._EMB_CACHE_TTL = 300.0
         self._EMB_CACHE_MAX = 256
+        # Markdown is the durable source of truth.  The vector index is only
+        # an optional acceleration layer, so keep track of which search path
+        # produced the latest result for diagnostics and user-facing tools.
+        self._last_search_mode = "markdown"
 
         Path(db_path).parent.mkdir(exist_ok=True, parents=True)
 
@@ -397,6 +403,8 @@ class VectorService:
             "semantic_enabled": self.has_semantic_candidate(),
             "failed_candidates": sorted(self._failed_candidate_models.keys()),
             "fallback": "grep",
+            "fallback_source": "markdown",
+            "last_search_mode": self._last_search_mode,
         }
 
     @staticmethod
@@ -596,13 +604,16 @@ class VectorService:
         """Search for similar text entries. Falls back to keyword search if needed."""
         if not self.has_semantic_candidate():
             logger.info("Semantic search unavailable, using keyword fallback.")
+            self._last_search_mode = "markdown"
             return await self.search_grep(query, limit)
 
         semantic_results = await self.search_semantic(query, limit)
         if semantic_results:
+            self._last_search_mode = "vector"
             return semantic_results
 
         logger.info("Semantic search missed or failed, using keyword fallback.")
+        self._last_search_mode = "markdown"
         return await self.search_grep(query, limit)
 
     @property
@@ -640,52 +651,170 @@ class VectorService:
     _grep_cache: Dict[str, Any] = {}
     _GREP_CACHE_TTL = 30.0
 
+    @staticmethod
+    def _normalize_markdown_text(value: Any) -> str:
+        """Normalize text so lexical recall works across accents and casing."""
+        normalized = unicodedata.normalize("NFKD", str(value or ""))
+        without_marks = "".join(
+            character for character in normalized if not unicodedata.combining(character)
+        )
+        return without_marks.casefold()
+
+    @classmethod
+    def _markdown_tokens(cls, value: Any) -> List[str]:
+        return re.findall(r"[a-z0-9]+", cls._normalize_markdown_text(value))
+
+    @staticmethod
+    def _markdown_source_paths() -> List[Path]:
+        """Return durable memory files, honoring ``LIMEBOT_STATE_DIR``."""
+        paths: List[Path] = []
+        if LONG_TERM_MEMORY_FILE.exists() and LONG_TERM_MEMORY_FILE.is_file():
+            paths.append(LONG_TERM_MEMORY_FILE)
+        if MEMORY_DIR.exists() and MEMORY_DIR.is_dir():
+            paths.extend(sorted(MEMORY_DIR.glob("*.md"), reverse=True))
+
+        # A malformed state directory or a test monkeypatch can make the two
+        # paths overlap.  Preserve order while avoiding duplicate scans.
+        unique: List[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            try:
+                key = str(path.resolve())
+            except Exception:
+                key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(path)
+        return unique
+
+    @staticmethod
+    def _markdown_file_signature(paths: List[Path]) -> tuple:
+        signature = []
+        for path in paths:
+            try:
+                stat = path.stat()
+                signature.append(
+                    (str(path), stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+                )
+            except OSError:
+                signature.append((str(path), None, None))
+        return tuple(signature)
+
+    @staticmethod
+    def _markdown_source_label(path: Path) -> str:
+        if path == LONG_TERM_MEMORY_FILE:
+            return "MEMORY.md"
+        return f"memory/{path.name}"
+
     async def search_grep(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """
-        Fallback search using keyword/grep scan of memory files.
-        Useful when embeddings are unavailable or for exact matches.
+        Fallback search over the Markdown source of truth.
+
+        This is intentionally line-oriented: daily journals and ``MEMORY.md``
+        remain readable/editable without a vector database, while exact names,
+        ticket IDs, and accented text still get useful lexical recall.
         """
-        cache_key = f"{query.lower().strip()}:{limit}"
+        self._last_search_mode = "markdown"
+        try:
+            normalized_limit = max(0, min(int(limit), 100))
+        except (TypeError, ValueError):
+            normalized_limit = 5
+
+        if normalized_limit == 0:
+            return []
+
+        source_paths = self._markdown_source_paths()
+        source_signature = self._markdown_file_signature(source_paths)
+        normalized_query = self._normalize_markdown_text(query).strip()
+        cache_key = (normalized_query, normalized_limit, source_signature)
         cached = self._grep_cache.get(cache_key)
         if cached and (_time.monotonic() - cached["ts"]) < self._GREP_CACHE_TTL:
             return cached["results"]
 
-        keywords = [keyword.lower() for keyword in query.split() if len(keyword) > 3]
+        # Keep short identifiers and numbers (for example ``GDHD-1199``), but
+        # omit common connective words that would otherwise match every line.
+        stopwords = {
+            "a",
+            "al",
+            "and",
+            "about",
+            "are",
+            "as",
+            "at",
+            "con",
+            "de",
+            "del",
+            "el",
+            "en",
+            "es",
+            "for",
+            "from",
+            "has",
+            "have",
+            "how",
+            "in",
+            "is",
+            "la",
+            "las",
+            "los",
+            "of",
+            "on",
+            "or",
+            "para",
+            "que",
+            "the",
+            "this",
+            "that",
+            "to",
+            "una",
+            "uno",
+            "with",
+            "y",
+        }
+        keywords = [
+            token
+            for token in self._markdown_tokens(normalized_query)
+            if len(token) > 1 and token not in stopwords
+        ]
         if not keywords:
             return []
 
         def _scan_files() -> List[Dict[str, Any]]:
-            results = []
+            results: List[Dict[str, Any]] = []
+            normalized_phrase = normalized_query
 
-            memory_dir = Path("persona/memory")
-            if not memory_dir.exists():
-                memory_dir = Path(__file__).parent.parent / "persona" / "memory"
-
-            if not memory_dir.exists():
-                return []
-
-            for file_path in memory_dir.glob("*.md"):
+            for file_path in source_paths:
                 try:
                     content = file_path.read_text(encoding="utf-8")
                 except Exception:
                     continue
 
                 for line in content.splitlines():
-                    line_lower = line.lower()
-                    score = sum(1 for keyword in keywords if keyword in line_lower)
+                    text = line.strip()
+                    if not text:
+                        continue
 
-                    if score > 0:
+                    normalized_line = self._normalize_markdown_text(text)
+                    line_tokens = set(self._markdown_tokens(normalized_line))
+                    matched = sum(1 for keyword in keywords if keyword in line_tokens)
+                    if normalized_phrase and normalized_phrase in normalized_line:
+                        matched += 1
+
+                    if matched > 0:
+                        source = self._markdown_source_label(file_path)
                         results.append(
                             {
-                                "text": line.strip(),
-                                "score": score,
-                                "source": file_path.name,
+                                "text": text,
+                                "score": matched,
+                                "source": source,
+                                "path": source,
                                 "timestamp": file_path.stem,
                             }
                         )
 
             results.sort(key=lambda item: item["score"], reverse=True)
-            return results[:limit]
+            return results[:normalized_limit]
 
         try:
             final = await asyncio.to_thread(_scan_files)
@@ -693,6 +822,76 @@ class VectorService:
             return final
         except Exception as e:
             logger.error(f"Grep search failed: {e}")
+            return []
+
+    async def get_markdown_entries(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """List durable Markdown memories for the explorer when vectors are empty/offline."""
+        self._last_search_mode = "markdown"
+        try:
+            normalized_limit = max(0, min(int(limit), 2_000))
+        except (TypeError, ValueError):
+            normalized_limit = 500
+        if normalized_limit == 0:
+            return []
+
+        source_paths = self._markdown_source_paths()
+
+        def _read_entries() -> List[Dict[str, Any]]:
+            entries: List[Dict[str, Any]] = []
+            seen_files: set[str] = set()
+            for file_path in source_paths:
+                try:
+                    resolved = str(file_path.resolve())
+                except Exception:
+                    resolved = str(file_path)
+                if resolved in seen_files:
+                    continue
+                seen_files.add(resolved)
+
+                try:
+                    content = file_path.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+
+                source = self._markdown_source_label(file_path)
+                for line_no, raw_line in enumerate(content.splitlines(), start=1):
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if line.startswith(
+                        "(This file will be automatically populated as you learn about yourself."
+                    ):
+                        # Shipped starter-template prose is not a memory.
+                        continue
+                    line = line.lstrip("- ").strip()
+                    if len(line) < 3:
+                        continue
+
+                    entry_id = hashlib.sha1(
+                        f"{source}:{line_no}:{line}".encode("utf-8")
+                    ).hexdigest()[:16]
+                    entries.append(
+                        {
+                            "id": entry_id,
+                            "text": line,
+                            "category": (
+                                "Long-term" if source == "MEMORY.md" else "Journal"
+                            ),
+                            "timestamp": (
+                                None if source == "MEMORY.md" else file_path.stem
+                            ),
+                            "path": source,
+                            "source": source,
+                        }
+                    )
+                    if len(entries) >= normalized_limit:
+                        return entries
+            return entries
+
+        try:
+            return await asyncio.to_thread(_read_entries)
+        except Exception as e:
+            logger.error(f"Markdown memory listing failed: {e}")
             return []
 
 

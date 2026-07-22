@@ -2104,55 +2104,21 @@ class WebChannel(BaseChannel):
             from core.vectors import get_vector_service
 
             vector_service = get_vector_service()
-            if not vector_service.is_enabled:
-                # Fallback mode: expose line-level memories from persona journals
-                # so users can still inspect long-term context without vectors.
-                from pathlib import Path
-                import hashlib
-
+            async def _markdown_fallback(reason: str):
+                notice = (
+                    "Vector index is empty; showing Markdown memory files."
+                    if reason == "vector_index_empty"
+                    else "Using Markdown memory files as the fallback."
+                )
                 try:
-                    memory_dir = Path("persona/memory")
-                    if not memory_dir.exists():
-                        memory_dir = Path(__file__).parent.parent / "persona" / "memory"
-
-                    fallback_memories = []
-                    if memory_dir.exists():
-                        for file_path in sorted(memory_dir.glob("*.md"), reverse=True):
-                            try:
-                                content = await self._read_text(file_path)
-                            except Exception:
-                                continue
-
-                            for line_no, raw_line in enumerate(
-                                content.splitlines(), start=1
-                            ):
-                                line = raw_line.strip()
-                                if not line or line.startswith("#"):
-                                    continue
-                                line = line.lstrip("- ").strip()
-                                if len(line) < 3:
-                                    continue
-
-                                mem_id = hashlib.sha1(
-                                    f"{file_path.name}:{line_no}:{line}".encode("utf-8")
-                                ).hexdigest()[:16]
-                                fallback_memories.append(
-                                    {
-                                        "id": mem_id,
-                                        "text": line,
-                                        "category": "Journal",
-                                        "timestamp": file_path.stem,
-                                        "path": file_path.name,
-                                        "source": file_path.name,
-                                    }
-                                )
-
+                    memories = await vector_service.get_markdown_entries(limit=500)
                     return {
                         "enabled": False,
                         "mode": "grep_fallback",
                         "read_only": True,
-                        "notice": "Using grep as fallback.",
-                        "memories": fallback_memories[:500],
+                        "notice": notice,
+                        "reason": reason,
+                        "memories": memories,
                     }
                 except Exception as e:
                     logger.error(f"Error reading fallback memory: {e}")
@@ -2160,13 +2126,22 @@ class WebChannel(BaseChannel):
                         "enabled": False,
                         "mode": "grep_fallback",
                         "read_only": True,
-                        "notice": "Using grep as fallback.",
+                        "notice": notice,
+                        "reason": reason,
                         "error": str(e),
                         "memories": [],
                     }
 
+            if not vector_service.is_enabled:
+                return await _markdown_fallback("semantic_embeddings_unavailable")
+
             try:
                 memories = await vector_service.get_all(limit=100)
+                if not memories:
+                    # A configured embedding provider does not imply that the
+                    # LanceDB table has entries.  Keep the explorer useful
+                    # while the Markdown source remains the durable record.
+                    return await _markdown_fallback("vector_index_empty")
                 return {
                     "enabled": True,
                     "mode": "vector",
@@ -2175,13 +2150,7 @@ class WebChannel(BaseChannel):
                 }
             except Exception as e:
                 logger.error(f"Error reading memory: {e}")
-                return {
-                    "enabled": True,
-                    "mode": "vector",
-                    "read_only": False,
-                    "error": str(e),
-                    "memories": [],
-                }
+                return await _markdown_fallback("vector_index_error")
 
         @self.app.get("/api/memory/debug", dependencies=[Depends(self.verify_auth)])
         async def get_memory_debug(session_key: Optional[str] = None, limit: int = 20):
@@ -2218,6 +2187,22 @@ class WebChannel(BaseChannel):
             from core.skill_installer import SkillInstaller
 
             return SkillInstaller().list_skills()
+
+        @self.app.get(
+            "/api/capabilities/resolve",
+            dependencies=[Depends(self.verify_auth)],
+        )
+        async def resolve_capabilities(
+            text: str = "", session_key: Optional[str] = None
+        ):
+            """Explain how a task resolves against the live capability snapshot."""
+            agent = getattr(self, "agent", None)
+            if not agent or not hasattr(agent, "resolve_capabilities"):
+                raise HTTPException(status_code=503, detail="Agent not initialized")
+            return agent.resolve_capabilities(
+                text=str(text or ""),
+                session_key=str(session_key or "").strip() or None,
+            )
 
         def _get_subagent_registry():
             from core.subagents import SubagentRegistry

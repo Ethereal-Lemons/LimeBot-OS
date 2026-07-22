@@ -40,7 +40,7 @@ The heart of the system. Manages:
 
 - **Session history** per `session_key` (`channel_chatid`) with dirty-flag persistence
 - **Stable prompt cache** — the rarely-changing part of the system prompt (soul + identity + user context) is cached for 30 seconds per `(sender_id, channel)` pair. Only the volatile suffix (memory, RAG results, timestamp) is rebuilt each message.
-- **Auto-RAG** — before every LLM call, runs semantic vector search (falls back to grep if embeddings are unavailable). Injects matching memories into the prompt automatically.
+- **Auto-RAG** — before every LLM call, runs semantic vector search (falls back to the Markdown memory source if embeddings are unavailable). Injects matching memories into the prompt automatically.
 - **Tool execution loop** — after each LLM response, if tool calls are returned, executes them in parallel and loops back to the LLM (up to 30 iterations). Sensitive tools require user confirmation.
 - **Sub-agent delegation** — `spawn_agent` creates an isolated session that runs its own tool loop, can use named specialist profiles, and reports back to the parent session.
 - **Capability readiness gate** — skill, subagent, MCP, and tool discovery run through explicit startup phases. User turns wait for required skills/tools before prompt or schema construction; optional MCP failures produce `degraded` readiness rather than blocking chat. Embedding and LLM warmups are not part of the required gate.
@@ -110,8 +110,8 @@ Called after every LLM response. Strips recognized tags, executes side effects, 
 | `<save_user>...</save_user>` | Validates (injection check + 20 char min) and atomically writes `persona/users/{sender_id}.md`. |
 | `<save_mood>...</save_mood>` | Writes `MOOD.md` if `validate_mood` callable is provided. |
 | `<save_relationship>...</save_relationship>` | Writes `RELATIONSHIPS.md` if `validate_relationship` is provided and `ENABLE_DYNAMIC_PERSONALITY=true`. |
-| `<log_memory>...</log_memory>` | Appends a timestamped entry to today's daily journal. Queues a vector embedding in the background. |
-| `<save_memory>...</save_memory>` | Overwrites `MEMORY.md` (long-term essence). Queues vector embedding. |
+| `<log_memory>...</log_memory>` | Appends a timestamped entry to today's daily journal. Queues a vector embedding in the background. The native `memory_save` tool is preferred for explicit user requests. |
+| `<save_memory>...</save_memory>` | Overwrites `MEMORY.md` (long-term essence). Queues vector embedding. The native `memory_save` tool is preferred for explicit user requests. |
 | `<discord_send>...</discord_send>` | Publishes a message to the specified Discord `channel_id`. Always routes to the `discord` channel regardless of originating context. |
 | `<discord_embed>...</discord_embed>` | Publishes a rich embed to the specified Discord `channel_id`. |
 
@@ -133,6 +133,7 @@ Sandboxed OS interface. All methods check `_is_path_allowed()` before touching t
 
 | Tool | Requires confirmation | Description |
 |------|-----------------------|-------------|
+| `capability_search(query, include_disabled)` | No | Resolve native tools, skills, MCP servers/tools, and subagents against a redacted capability snapshot; use before claiming an integration is unavailable |
 | `read_file(path)` | No | Read file contents (20k char limit) |
 | `write_file(path, content)` | **Yes** | Create or overwrite a file |
 | `create_spreadsheet(path, sheets, title)` | **Yes** | Create a styled, formula-capable `.xlsx` workbook without an ad-hoc script |
@@ -140,7 +141,8 @@ Sandboxed OS interface. All methods check `_is_path_allowed()` before touching t
 | `list_dir(path)` | No | List directory contents |
 | `run_command(command)` | **Yes** | Execute shell command in project root |
 | `calculate(expression)` | No | Safely evaluate bounded arithmetic for prices, totals, percentages, and conversions |
-| `memory_search(query)` | No | Semantic search across vector memory |
+| `memory_search(query)` | No | Search durable Markdown memory, using vectors when available |
+| `memory_save(content, scope)` | No | Persist an explicit fact/event to the Markdown journal or long-term memory |
 | `web_search(query, count, kind)` | No | Hybrid live web/news search via the provider chain (see below) |
 | `image_search(query, count)` | No | Image search returning image URLs + source pages |
 | `deep_research(query, depth)` | No | Multi-source research: searches, reads top pages, returns a cited synthesis |
@@ -185,6 +187,7 @@ tree. Skill docs must invoke their own entrypoint, for example
 
 | Tool | Limit |
 |------|-------|
+| `capability_search` | 4,000 chars |
 | `read_file` | 8,000 chars |
 | `browser_extract` | 5,000 chars |
 | `browser_get_page_text` | 5,000 chars |
@@ -218,7 +221,7 @@ LanceDB-backed semantic memory with automatic provider detection.
 2. Auto-detected provider-compatible default from `config.llm.model` when that embedding provider is actually available
 3. Gemini fallback when `GEMINI_API_KEY` or `GOOGLE_API_KEY` is available
 4. Local Ollama fallback when `LLM_EMBEDDING_ALLOW_LOCAL_FALLBACK=true`
-5. Grep-only lexical recall when no semantic embedding candidate is available
+5. Markdown lexical recall when no semantic embedding candidate is available
 
 | Chat model provider | Embedding model used |
 |---------------------|---------------------|
@@ -229,9 +232,11 @@ LanceDB-backed semantic memory with automatic provider detection.
 | `ollama` / `local` | `ollama/nomic-embed-text` |
 | `deepseek`, `anthropic`, `xai` | Falls back to `gemini/gemini-embedding-001` when a Gemini/Google key exists |
 
-Embedding credentials are separate from chat-model credentials and may be billed separately by the provider. If no semantic candidate works, LimeBot falls back to grep recall instead of treating memory as broken. Local Ollama embeddings avoid provider billing but use local compute.
+Embedding credentials are separate from chat-model credentials and may be billed separately by the provider. If no semantic candidate works, LimeBot searches the Markdown source of truth instead of treating memory as broken. Local Ollama embeddings avoid provider billing but use local compute.
 
-**`search_grep(query, limit)`** — keyword scan of all `persona/memory/*.md` files. Results are scored by keyword hit count. Results are cached with a 30-second TTL.
+**`memory_save(content, scope)`** — explicit memory writes append to the Markdown source of truth (`scope=journal` by default, or `scope=long_term`). Vector indexing is queued afterward when embeddings are available; a failed or missing embedding provider never prevents the Markdown write.
+
+**`search_grep(query, limit)`** — keyword scan of `persona/MEMORY.md` plus all `persona/memory/*.md` files (or the equivalent `LIMEBOT_STATE_DIR` paths). Results are scored by keyword hit count, tolerate accents/case differences, and are cached with a 30-second TTL that invalidates when a source file changes.
 
 ---
 
@@ -330,6 +335,7 @@ FastAPI application serving:
   rich Markdown render after completion. Final message identity and content are
   unchanged.
 - `GET /api/live` reports process liveness without authentication-sensitive configuration. Authenticated `GET /api/ready` reports redacted capability phases and returns HTTP 503 until required skills/tools are loaded; `degraded` is HTTP 200.
+- `GET /api/capabilities/resolve?text=...` returns a redacted capability snapshot with matched skills, required tools, selected schemas, and a ready/degraded/unavailable reason.
 
 ### Browser Companion Extension (`extension/`)
 - Manifest V3 browser companion for page help, selected text handoff, live task status, and tool approvals
@@ -409,10 +415,10 @@ Only registered enabled skill names and their configured aliases can be invoked 
 |------|---------|---------------|
 | `persona/SOUL.md` | Core values, personality, behavioral boundaries | Agent via `<save_soul>` tag |
 | `persona/IDENTITY.md` | Name, emoji, avatar, style, catchphrases | Agent via `<save_identity>` or web dashboard |
-| `persona/MEMORY.md` | Long-term distilled memory essence | Reflection engine via `<save_memory>` |
+| `persona/MEMORY.md` | Long-term distilled memory essence | Reflection engine via `<save_memory>` or explicit `memory_save(scope="long_term")` |
 | `persona/MOOD.md` | Current emotional state | Agent via `<save_mood>` |
 | `persona/RELATIONSHIPS.md` | Cross-user relationship registry | Agent via `<save_relationship>` |
-| `persona/memory/YYYY-MM-DD.md` | Daily episodic journal | Agent via `<log_memory>` |
+| `persona/memory/YYYY-MM-DD.md` | Daily episodic journal | Agent via `<log_memory>` or explicit `memory_save(scope="journal")` |
 | `persona/users/{sender_id}.md` | Per-user profile (affinity, facts, in-jokes) | Agent via `<save_user>` |
 
 **Backup policy:** Every soul/identity write creates a timestamped `.bak` file (`SOUL.md.1234567890.bak`). The 3 most recent backups are kept; older ones are automatically deleted.
@@ -554,7 +560,7 @@ npm link
 - **Tool result cache** — read-only tools (`read_file`, `list_dir`, `memory_search`, browser extractors) cache their results to avoid redundant calls within a session
 - **Dirty-flag history** — history is only written to disk when it actually changed; a `_history_dirty` flag per session prevents unnecessary I/O
 - **Per-tool result limits** — each tool has its own character limit instead of one global cap, preserving context window budget proportionally
-- **Grep cache** — `search_grep` results are cached for 30 seconds to avoid scanning all memory files on every message
+- **Grep cache** — `search_grep` results are cached for 30 seconds to avoid scanning all Markdown memory files on every message; file signatures invalidate stale entries immediately after a write
 - **History summarization** — when the session exceeds the token budget, the LLM summarizes older turns before they're evicted; the summary is inserted back into history as a system message
 - **Dependency profiles** — normal startup installs only `requirements.txt` plus root/web npm. Browser, memory, documents, MCP, and video are explicit optional Python manifests; WhatsApp and extension are optional Node workspace profiles. `requirements-dev.txt` includes all Python profiles and test tooling.
 - **Dependency fingerprints** — state schema 2 records core profiles and successful optional features. Old broad-install state forces one core refresh. Independent core npm/Python lanes run concurrently, then write `data/dependency-state.json` once after both settle; failed lanes are never current.
