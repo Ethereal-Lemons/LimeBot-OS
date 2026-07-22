@@ -196,6 +196,7 @@ async def process_tags(
         log_entry = f"\n- **[{datetime.now().strftime('%H:%M')}]** {entry}"
 
         try:
+            MEMORY_DIR.mkdir(exist_ok=True, parents=True)
             with open(memory_file, "a", encoding="utf-8") as f:
                 f.write(log_entry)
 
@@ -215,6 +216,7 @@ async def process_tags(
             break
         content = save_mem_match.group(1).strip()
         try:
+            LONG_TERM_MEMORY_FILE.parent.mkdir(exist_ok=True, parents=True)
             existing_content = ""
             if LONG_TERM_MEMORY_FILE.exists():
                 existing_content = LONG_TERM_MEMORY_FILE.read_text(

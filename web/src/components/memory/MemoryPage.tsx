@@ -139,7 +139,7 @@ export function MemoryPage({ onNavigate }: MemoryPageProps) {
                     </CardHeader>
                     <CardContent className="text-sm text-muted-foreground text-center space-y-4">
                         <p className="text-yellow-400 font-semibold">
-                            {notice || "Using grep as fallback."}
+                            {notice || "Using Markdown memory files as the fallback."}
                         </p>
                         <p>
                             To unlock advanced Long-Term Memory capabilities, LimeBot requires an active <strong>Embedding Model</strong>.
@@ -175,7 +175,7 @@ export function MemoryPage({ onNavigate }: MemoryPageProps) {
                             </h2>
                             <p className="text-muted-foreground text-sm">
                                 {usingFallback
-                                    ? "Using grep as fallback. Memory Explorer is read-only while vectors are offline."
+                                    ? "Using Markdown memory files as the fallback. Memory Explorer is read-only while vector entries are unavailable or not indexed yet."
                                     : "View and manage facts the bot has learned about you or your environment."}
                             </p>
                         </div>
@@ -227,8 +227,8 @@ export function MemoryPage({ onNavigate }: MemoryPageProps) {
                         <div className="flex items-start gap-2">
                             <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
                             <div>
-                                <p className="font-semibold">{notice || "Using grep as fallback."}</p>
-                                <p className="text-yellow-500/80">Vector memory is offline, so this view is currently read-only.</p>
+                                <p className="font-semibold">{notice || "Using Markdown memory files as the fallback."}</p>
+                                <p className="text-yellow-500/80">Vector entries are unavailable or not indexed yet, so this view is currently read-only.</p>
                             </div>
                         </div>
                         <Button variant="outline" size="sm" onClick={() => onNavigate?.('config')} className="shrink-0 border-yellow-500/30 bg-transparent hover:bg-yellow-500/10">
@@ -246,7 +246,7 @@ export function MemoryPage({ onNavigate }: MemoryPageProps) {
                 ) : memories.length === 0 ? (
                     <div className="p-12 text-center text-muted-foreground border rounded-lg border-dashed">
                         <Brain className="w-12 h-12 mx-auto mb-4 opacity-20" />
-                        <p>{usingFallback ? "No grep fallback memories found yet." : "No memories have been stored yet."}</p>
+                        <p>{usingFallback ? "No Markdown fallback memories found yet." : "No memories have been stored yet."}</p>
                         <p className="text-xs mt-2 opacity-50">
                             {usingFallback ? "Try chatting more so journal entries can be recalled." : "Tell the bot something important to remember!"}
                         </p>

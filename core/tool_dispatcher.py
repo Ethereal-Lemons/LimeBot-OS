@@ -18,6 +18,7 @@ from typing import Any, Dict, Tuple
 # ── Module-level constants (re-exported so loop.py can import them) ───────
 
 TOOL_RESULT_LIMITS: Dict[str, int] = {
+    "capability_search": 4_000,
     "read_file": 8_000,
     "search_files": 5_000,
     "memory_search": 3_000,
@@ -68,7 +69,7 @@ TAG_COMPAT_TOOLS = frozenset({
 TOOL_INTENT_RE = re.compile(
     r"\b("
     # Exact tool names
-    r"read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|"
+    r"capability_search|read_file|write_file|delete_file|list_dir|search_files|run_command|memory_search|memory_save|"
     r"cron_add|cron_list|cron_remove|spawn_agent|generate_image|send_media|send_voice|analyze_video|"
     # Search tool names
     r"web_search|image_search|deep_research|"

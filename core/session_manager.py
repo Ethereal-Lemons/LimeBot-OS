@@ -20,7 +20,7 @@ SKILLS_DIRS = get_skill_dirs()
 _STRUCTURAL_RESIDUE_RE = re.compile(r"^[`{}\[\],:;\s]+$")
 _LEGACY_XML_TOOL_TAG_NAMES = (
     "read_file|write_file|delete_file|list_dir|search_files|run_command|"
-    "memory_search|google_search|browser_navigate|spawn_agent|"
+    "memory_search|memory_save|google_search|browser_navigate|spawn_agent|"
     "save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|"
     "grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd|tool_code"
 )
