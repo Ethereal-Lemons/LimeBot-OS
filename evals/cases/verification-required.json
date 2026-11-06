@@ -1,0 +1,27 @@
+{
+  "id": "verification-required",
+  "prompt": "Create the requested synthetic summary file and verify it before you finish.",
+  "replay": [
+    {
+      "tool_calls": [
+        {
+          "name": "write_file",
+          "arguments": { "path": "workspace/summary.txt", "content": "Synthetic summary complete.\n" }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        { "name": "verify_files", "arguments": { "paths": ["workspace/summary.txt"] } }
+      ]
+    },
+    { "content": "The summary file is complete and verified." }
+  ],
+  "approvals": ["write_file"],
+  "expectations": {
+    "status": "completed",
+    "verification": "passed",
+    "required_tools": ["write_file", "verify_files"],
+    "file_checks": [{ "id": "summary_created", "path": "workspace/summary.txt", "equals": "Synthetic summary complete.\n" }]
+  }
+}

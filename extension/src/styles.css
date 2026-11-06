@@ -252,6 +252,36 @@ button:disabled {
   margin-top: -4px;
 }
 
+.agent-select-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.agent-select {
+  max-width: 150px;
+  padding: 7px 26px 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.agent-select:disabled {
+  opacity: 0.65;
+}
+
+.agent-select option {
+  background: #141914;
+  color: var(--text);
+}
+
 .status-pill {
   padding: 8px 12px;
   border-radius: 999px;
@@ -410,6 +440,11 @@ button:disabled {
 .message-card p {
   margin: 8px 0 0;
   white-space: pre-wrap;
+}
+
+.approval-card .approval-agent {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .approval-actions {

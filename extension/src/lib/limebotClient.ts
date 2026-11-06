@@ -66,7 +66,7 @@ export function useLimeBotClient(settings: LimeBotExtensionSettings) {
     setCelebratingUntil(null);
     setLastError(null);
     setLastErrorAt(null);
-  }, [settings.sessionId]);
+  }, [settings.sessionId, settings.profileId]);
 
   useEffect(() => {
     let mounted = true;
@@ -267,6 +267,7 @@ export function useLimeBotClient(settings: LimeBotExtensionSettings) {
         content,
         chat_id: settings.sessionId,
         sender_id: "web-user",
+        metadata: { profile_id: settings.profileId || "default" },
       })
     );
 
@@ -276,7 +277,7 @@ export function useLimeBotClient(settings: LimeBotExtensionSettings) {
     ]);
     setIsTyping(true);
     return true;
-  }, [settings.sessionId]);
+  }, [settings.sessionId, settings.profileId]);
 
   useEffect(() => {
     if (!queuedActions.length || queueBusyRef.current) {

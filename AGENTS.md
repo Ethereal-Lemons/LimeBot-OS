@@ -25,8 +25,9 @@ Channel (Discord / WhatsApp / Web / Telegram) or CronManager
    AgentLoop._process_message()
      ├─ Auto-RAG (vector search + grep)
      ├─ Stable prompt cache (30s TTL)
-     ├─ LLM call (LiteLLM / acompletion)
-     ├─ Stream consumption + tool call extraction
+     ├─ LLM call, retries, and provider failover (`core/llm_call_service.py`)
+     ├─ `core.stream_consumer.consume_stream` (stream events and output)
+     ├─ `core.tool_call_parser` (serialized tool-call recovery)
      ├─ Tool execution loop (up to 30 iterations)
      ├─ Tag processing (save_soul, log_memory, etc.)
      └─ OutboundMessage → bounded per-channel worker → Channel.send()
@@ -40,9 +41,10 @@ Channel (Discord / WhatsApp / Web / Telegram) or CronManager
 
 The heart of the system. Manages:
 
-- **Session history** per `session_key` (`channel_chatid`) with dirty-flag persistence
+- **Session history** per `session_key` (`channel_chatid`), with mutations and
+  dirty-flag persistence owned by `TurnHistoryService`
 - **Stable prompt cache** — the rarely-changing part of the system prompt (soul + identity + user context) is cached for 30 seconds per `(sender_id, channel)` pair. Only the volatile suffix (memory, RAG results, timestamp) is rebuilt each message.
-- **Auto-RAG** — before every LLM call, runs semantic vector search (falls back to the Markdown memory source if embeddings are unavailable). Injects matching memories into the prompt automatically.
+- **Auto-RAG** — `core/turn_preparation_service.py` runs bounded semantic vector search (then Markdown grep fallback) concurrently with history loading and injects matching memories into the prompt automatically.
 - **Tool execution loop** — after each LLM response, if tool calls are returned, executes them in parallel and loops back to the LLM (up to 30 iterations). Sensitive tools require user confirmation.
 - **Durable task runs** — state-changing and coding requests receive a persistent task-run identity, acceptance criteria, checkpoints, continuation slices, and crash-resume metadata. A turn can return a progress update while the same task continues from its checkpoint.
 - **Operator invariants** (`core/operator_invariants.py`) — the loop, not the prompt, gates terminal success for durable / coding / file-mutating / isolated-subagent task runs. Casual small talk is exempt and the fast harness still strips tools on greetings.
@@ -54,12 +56,33 @@ The heart of the system. Manages:
 - **Capability readiness gate** — skill, subagent, MCP, and tool discovery run through explicit startup phases. User turns wait for required skills/tools before prompt or schema construction; optional MCP failures produce `degraded` readiness rather than blocking chat. Embedding and LLM warmups are not part of the required gate.
 - **Per-session dedup** — identical consecutive messages within 2 seconds are silently dropped, keyed per session (not globally).
 - **History summarization** — when token count exceeds limit, older messages are summarized by the LLM and squashed; large tool outputs from old turns are truncated in-place.
+- **Stream consumption** — `core/stream_consumer.py` aggregates provider chunks, streams web output, records usage and timing, and hands tool syntax to the parser. `AgentLoop._consume_stream` remains a compatibility wrapper that supplies the active bus and callbacks.
+- **Text-carried tool calls** — when a provider puts a tool call in assistant
+  text instead of its structured field, `core/tool_call_parser.py` recovers the
+  supported wire formats and removes their syntax from the user-visible reply.
+- **Provider failover** — retry timing, circuit-breaker decisions, fallback
+  routing, and user-visible provider notices live in `core/llm_call_service.py`.
+  `AgentLoop._llm_call_with_retry` keeps the established call boundary and
+  injects the active provider, tool, image, logging, and channel callbacks.
 
 **Key configuration knobs (set via `self.config`):**
 - `config.llm.model` — active chat model
 - `config.llm.enable_dynamic_personality` — enables mood, affinity, and proactive jobs
 - `config.autonomous_mode` — bypasses confirmation gate for sensitive tools
 - `config.whitelist.allowed_paths` — roots for filesystem access
+
+### `core/tool_recovery_service.py` — Recovery Coordination and Visibility
+
+Owns recovery tool-catalog rebuilding, exact tool contracts, retry instructions,
+the corrective-failure budget, recovery event sequencing, coding step-cap
+fallbacks, and user-visible tool-failure text. `ToolRecoveryRequest` and
+`ToolRecoveryResult` define the queue boundary, including whether recovery was
+queued. The service decides from current outcomes whether to queue another
+model step. `AgentLoop` keeps compatibility methods and supplies current
+outcomes, history append, dirty marking, and progress/session-event callbacks;
+it applies the returned block/queue status to the turn. `core/recovery_controller.py`
+remains the source of truth for evidence generations, no-progress gates, and
+recovery state.
 
 ### `core/task_runs.py` — Durable Task Runs
 
@@ -80,6 +103,116 @@ source blockers remain hard stops. `verification_state` is evidence for recovery
 `core/operator_invariants.py` is what refuses terminal success without proof.
 
 ---
+
+### `core/tool_outcomes.py` — Typed tool results
+
+Defines the frozen `ToolOutcome` evidence used by recovery and task runs. It
+recognizes tool errors and command exit codes, derives task phases, classifies
+failures, and stores only bounded redacted diagnostic excerpts. Recovery reads
+these outcomes; it does not own terminal-success policy.
+
+### `core/tool_runtime.py` — Per-call tool runtime
+
+Owns one tool call from profile authorization and host preflight through
+dispatch, profile-scoped cache lookup/invalidation, and error conversion.
+`ToolExecutionContext` is frozen and carries the session key, user text,
+attachments, and active profile explicitly. `AgentLoop` composes the runtime
+with its browser, search, background-task, and tag handlers. Approval
+authorization and UI coordination use `ToolApprovalFlowService`; per-call
+event publication uses `ToolBatchEventService`; execution and recovery
+integration remain coordinated by `AgentLoop`. Retry safety and cacheability
+are separate: mutable browser page state is not cached.
+
+### `core/capability_service.py` — Capability routing and inventory
+
+Owns sticky per-session skill routing, turn-specific tool selection, compact
+capability prompt construction, and the redacted capability resolver used by
+chat and the dashboard API. It receives explicit callbacks for registries,
+tool definitions, session state, attachments, and debug events. `AgentLoop`
+keeps its existing methods as compatibility wrappers.
+
+### `core/browser_search_service.py` — Browser and host-owned search
+
+Owns typed browser command execution and host-search orchestration. Its private
+`BrowserSearchToolAdapter` translates the existing tool names and argument
+objects into typed requests. `ToolRuntime` retains profile authorization,
+capability preflight, routing, and caching. The service receives the
+session-scoped browser manager, progress callback, and chat-image attachment
+callback; `core.web_search.py` retains engine selection, parsing, retries, and
+response formatting. Explicit source URLs keep normal browser, search, and media
+tools available so the agent can choose how to inspect or deliver the content.
+
+### `core/tool_call_parser.py` — Text-carried tool-call recovery
+
+Provides pure functions to recover supported provider-native tool-call text
+formats and remove tool syntax from assistant prose. It handles the legacy JSON,
+XML, Kimi, Python-like, and provider envelope forms. Stream consumption calls
+the parser; parsing does not depend on `AgentLoop` or mutable turn state.
+
+### `core/stream_consumer.py` — Provider stream consumption
+
+Owns streamed chunk aggregation, web chunk/thinking/activity publication,
+duplicate-prefix handling, rate-limit notices, usage updates, timing, and
+structured or text-carried tool-call collection. The pure text syntax logic
+lives in `core/tool_call_parser.py`. `AgentLoop._consume_stream` remains a
+compatibility wrapper and injects the active bus, metrics, session manager, and
+trace/debug callbacks.
+
+### `core/llm_call_service.py` — Provider retry and failover
+
+Owns the LLM request retry loop, provider circuit-breaker updates, authentication
+and transient-error failover, Qwen endpoint retries, image-input fallback, and
+user-visible provider progress messages. `ProviderErrorTypes` carries the
+active provider exception classes so `AgentLoop` compatibility patches and
+provider-specific error handling stay aligned.
+
+### `core/tool_batch_executor.py` — Tool-call ordering
+
+Runs adjacent read-only tool calls concurrently while preserving their result
+order. Every mutation or shell call flushes pending reads and runs as a barrier,
+so write-then-verify causality stays intact. After execution it consumes results
+in model-call order, so event publication and history writes cannot race across
+calls. `AgentLoop` supplies the per-call execution and result callbacks, invokes
+`ToolApprovalFlowService`, and coordinates the surrounding turn. It delegates
+history mutation/persistence to `TurnHistoryService` and event payloads plus
+tool-start/finish audit events to `ToolBatchEventService`.
+
+### `core/tool_batch_events.py` — Tool-call event lifecycle
+
+Owns planned, running, result, and exception event payloads plus per-session
+tool-started/tool-finished audit records. It preserves sensitive-argument
+redaction, result truncation, turn/message attribution, WhatsApp progress text,
+and best-effort delivery for terminal UI events. `AgentLoop` supplies its
+existing parsing, preview, delivery, and audit callbacks.
+
+### `core/confirmation.py` — Confirmation state
+
+Builds sensitive-tool previews and embeds, owns pending confirmation records
+and per-session approval whitelists, and handles approval resolution, session
+release, and waiter cleanup. `AgentLoop` exposes dict-shaped compatibility
+properties for channels and integrates the approval result with the batch flow.
+
+### `core/tool_approval_flow.py` — Tool approval coordination
+
+Owns the per-call approval flow: policy decisions, unattended denials,
+auto-allow audit events, confirmation previews and embeds, pending request
+publication to the originating channel and web dashboard, and wait outcomes
+for approval, denial, timeout, and cancellation. `AgentLoop` supplies the
+policy, manager, profile, event, and delivery callbacks and keeps its existing
+batch entry point and result shape.
+
+### `core/approval_policy.py` — Tool approval decisions
+
+Resolves the effective global/profile approval policy, unattended allowlists,
+channel exceptions, and session whitelist keys for one tool call. It is
+stateless and receives the current config and session whitelist from
+`AgentLoop`; pending state is owned by `ConfirmationManager`.
+
+### `core/discord_tool_service.py` — Discord tools
+
+Owns message/DM delivery, embed validation and delivery, and live guild text
+channel listing. It publishes through LimeBot's existing outbound bus; the
+`Toolbox` wrappers keep the registered tool names and argument schemas stable.
 
 ### `core/prompt.py` — Prompt Builder
 
@@ -109,6 +242,149 @@ Builds the system prompt from persona files. Two-part architecture:
 
 The web first-run wizard completes through `POST /api/setup/complete`. The backend atomically writes configuration, performs a real minimal LLM request, and schedules exactly one restart only after validation succeeds. The browser stores only a restart token, boot ID, model ID, and timestamp in `sessionStorage`, so it can resume after a refresh without persisting provider credentials there. It waits for a new backend boot ID instead of assuming a fixed restart duration. Once `APP_API_KEY` exists, API authentication is active even while the persona interview is still incomplete.
 
+### `core/prompt_coordinator.py` — Prompt Assembly
+
+Owns stable-prompt reads and the 30-second `(sender_id, channel)` cache, then
+assembles per-message capability, skill, subagent, ponytail, and volatile memory
+context. Persona updates invalidate one sender's entries; model and tool
+definition changes clear the cache. `AgentLoop` keeps its prompt methods as
+compatibility wrappers and supplies capability routing/catalog callbacks.
+
+### `core/turn_preparation_service.py` — Pre-inference context
+
+Runs bounded Auto-RAG and persisted-history loading concurrently before prompt
+creation. It records recall and load timings, handles skipped, timed-out, and
+failed retrievals, and returns recalled context plus restored history in a
+small result value. `AgentLoop` supplies vector, session, activity, and trace
+callbacks.
+
+### `core/conversation_image_service.py` — Conversation image context
+
+Owns image-input deduplication, short-lived image references per session,
+image-safe history markers, image eviction before persistence, and retry
+fallback for text-only models. `AgentLoop` keeps the existing image helpers as
+compatibility wrappers and supplies history, metrics, and rendering callbacks.
+
+### Agent profiles — Persistent conversational roster
+
+- `core/profiles.py` stores validated profile metadata atomically in
+  `data/profiles.json`. The `default` profile preserves the legacy persona and
+  session locations; named profiles use `persona/profiles/{profile_id}/` and
+  profile-prefixed session keys so history stays separate.
+- `core/profile_context.py` binds profile ID, model, and persona paths to the
+  current asyncio task. Concurrent turns do not mutate the shared
+  `AgentLoop.model`.
+- `core/paths.py`, `core/vectors.py`, `core/prompt.py`, `core/tag_parser.py`,
+  `core/reflection.py`, and `core/tools.py` use the active profile's persona
+  and Markdown memory. Named profiles cannot read one another's persona or
+  memory, or access the legacy default persona through file/search tools.
+- `core/profile_api.py` exposes authenticated create, update, archive, restore,
+  and persona routes under `/api/profiles`. Channel adapters remain on
+  `default`; web chat and the browser companion send an explicit profile ID.
+- Profile tool allowlists only restrict LimeBot's registered tools. Profile
+  path rules are intersected with global allowed paths, and a profile cannot
+  weaken the global approval mode. Named profiles have no shell or sub-agent
+  access by default; they require explicit tool opt-in, and any profile path
+  restriction disables those shared-workspace tools. This is an application
+  policy boundary, not OS-level isolation for shell commands.
+- Profile IDs accompany session metadata, task and scheduled-job context,
+  approval requests, and tool events. Archiving keeps profile data and history
+  for later restoration; the built-in `default` profile cannot be archived.
+
+### `core/inbound_turn_lifecycle.py` — Managed inbound turn lifecycle
+
+Owns dispatch and execution lifecycle for one inbound message: profile
+preflight, task-run follow-up matching, durable-job claiming, tracker/registry
+registration, cancellation, durable-job heartbeats, cron completion, and
+active-task cleanup. `AgentLoop._dispatch_message()` and
+`_run_managed_message()` remain compatibility wrappers; the registry, task
+tracker, job queue, and scheduler remain the authoritative stores.
+
+### `core/memory_tool_service.py` — Memory tool domain
+
+Implements Markdown-backed memory search and save behind an explicit storage
+boundary. `Toolbox` supplies the active profile's Markdown paths and vector
+service; Markdown remains the source of truth if vector indexing is unavailable.
+
+### Tool-domain services
+
+- `core/command_validation.py` owns deterministic command-policy validation.
+  `Toolbox.validate_command()` supplies the active workspace, project root, and
+  unsafe-command setting.
+- `core/command_execution_service.py` owns validated process startup, streamed
+  output, stall/timeout handling, process-tree cancellation, and skill
+  dependency diagnostics. `Toolbox` supplies validation, sanitized environment,
+  workspace, progress, and browser-launch callbacks.
+- `core/file_search_service.py` owns bounded directory listing, filename/content
+  search, pagination/sorting, ripgrep integration, and the Python fallback.
+  `Toolbox` supplies active path resolution, allowlist checks, and display paths.
+- `core/file_read_service.py` owns bounded text reads, line slicing, hashing
+  metadata, and DOCX/PDF extraction. `Toolbox` supplies active path policy,
+  workspace resolution, and raw-file hashing.
+- `core/file_mutation_service.py` owns bounded writes, hash-guarded edits,
+  deletion, file verification, and optional diagnostics. `Toolbox` supplies path
+  policy, persona restrictions, workspace resolution, atomic replacement,
+  sanitized environment, and compatibility wrappers.
+- `core/subagent_workspace_service.py` owns subagent launch, isolated-copy
+  retention, explicit changeset application, and clone cleanup. `Toolbox` supplies
+  the active agent/registry, workspace root, and guarded file-operation callbacks.
+- `core/calculator.py` contains the bounded, side-effect-free arithmetic
+  evaluator used by `Toolbox.calculate()`.
+- `core/cron_tool_service.py` owns profile-aware scheduler operations used by
+  the cron tools. `Toolbox` keeps compatibility wrappers for existing callers.
+- `core/discord_tool_service.py` owns Discord message/embed delivery and live
+  channel listing; the `Toolbox` methods preserve the registered tool surface.
+- `core/skill_tool_service.py` owns skill inspection, transactional edits via
+  `SkillEditor`, and skill creation. Skills created in an isolated workspace
+  remain there and do not change global enablement.
+- `core/spreadsheet_tool_service.py` owns worksheet validation, XLSX styling,
+  and atomic workbook creation. `Toolbox` supplies the existing path-policy
+  callbacks and preserves the registered tool surface.
+- `core/voice_tool_service.py` owns on-demand voice synthesis and publication
+  through the current chat bus; automatic voice delivery remains in the loop.
+- `core/safe_http_fetch.py` owns public-address checks, redirect-hop validation,
+  response-size limits, and download type detection for URL downloads and
+  readable pages.
+- `core/url_tool_service.py` owns safe URL downloads and readable-page
+  extraction, including bounded fetches, text cleanup, truncation, and download
+  persistence. `Toolbox` supplies its allowed download directory, progress,
+  display-path, and safe-fetcher callbacks.
+- `core/image_provider_service.py` owns image backend selection and provider
+  request/response handling for Codex, Gemini, OpenAI, and LiteLLM.
+- `core/image_generation_service.py` owns prompt/reference workflow, provider
+  fallback, and local image saving. `Toolbox` supplies provider wrappers and
+  output policy; generated previews are published by `MediaDeliveryService`.
+- `core/image_reference_service.py` collects explicit or attached reference
+  images, checks shareability, enforces format and size limits, and loads the
+  bytes passed to image providers. `Toolbox` supplies its path-policy callback.
+- `core/media_delivery_service.py` owns current-chat file publication,
+  generated-image previews, and per-turn duplicate suppression. `Toolbox`
+  supplies path-policy and safe-fetch callbacks.
+- `core/capability_service.py` owns sticky per-session skill routing,
+  turn-specific tool selection, capability prompt assembly, and the redacted
+  capability inventory. `AgentLoop` preserves its existing public and prompt
+  callbacks as compatibility wrappers.
+- `core/video/` owns the optional bounded video-analysis pipeline; `Toolbox`
+  exposes it through the registered tool wrapper. Path policy lives in
+  `core/tool_path_policy.py` behind `Toolbox` compatibility wrappers.
+
+### Task-run services
+
+- `core/task_run_policy.py` owns the pure acceptance decision that combines
+  verification evidence with operator invariants.
+- `core/task_run_continuation.py` owns checkpoint persistence and the durable
+  queue/MessageBus handoff for a continuation slice. The task-run store,
+  durable job queue, and bus remain the state authorities.
+
+### `core/task_eval.py` — Offline task evaluation
+
+Runs synthetic replay scenarios against two source snapshots in separate
+temporary copies. Reports contain normalized outcomes, assertion codes, tool
+counts, and rounded timings, not raw prompts, replies, fixtures, or persona
+text. The allowlisted worker is a trusted-code runner, not an OS sandbox for
+malicious source snapshots. Use `python scripts/evaluate_tasks.py compare`
+for a local baseline/candidate comparison; see `evals/README.md`.
+
 ---
 
 ### `core/subagents.py` — Subagent Registry
@@ -122,6 +398,14 @@ Discovers, loads, and describes named subagent profiles from built-ins and writa
 - **Project shadowing** — project-defined subagents can override built-in ones with the same name
 
 This registry is what makes `spawn_agent` more than a generic worker launcher: the model now gets explicit guidance about when a specialist is a strong fit.
+
+### `core/subagent_runner.py` — Subagent execution
+
+Owns a delegated subagent's isolated workspace lifecycle, profile prompt,
+multi-turn LLM/tool loop, bounded workspace diff report, parent notification,
+and cleanup. `AgentLoop.run_subagent` remains the compatibility entry point and
+injects the current model, session manager, tool callbacks, message bus, and
+persona paths.
 
 ---
 
@@ -145,16 +429,25 @@ Called after every LLM response. Strips recognized tags, executes side effects, 
 
 ---
 
+### `core/tool_path_policy.py` — Tool Path Policy
+
+Owns active-workspace path remapping, global and profile allowlists, protected
+persona namespaces, and outbound file-sharing checks. Each policy decision uses
+a snapshot of the active roots and profile context. `Toolbox` retains its
+existing path methods as compatibility wrappers.
+
 ### `core/tools.py` — Toolbox
 
-Sandboxed OS interface. All methods check `_is_path_allowed()` before touching the filesystem.
+Sandboxed OS interface. Filesystem methods check `_is_path_allowed()` before
+touching the filesystem; that compatibility method delegates to
+`core/tool_path_policy.py`.
 
 **Path security rules:**
 - Only paths under `ALLOWED_PATHS` (+ project root) are accessible
 - Hard-blocked filenames: `.env`, `limebot.json`, `config.py`, `secrets.py`, `package-lock.json`
 - Hard-blocked extensions: `.pem`, `.key`, `.p12`, `.pfx`
 - `.env*` prefix is blocked by pattern regardless of rest of filename
-- Host capability gate (`core/tool_capability.py`, via `preflight_tool_call`) refuses `read_file` on jpeg/png/gif/webp, `browser_navigate` to image URLs, and Instagram photo-download `browser_navigate`/`run_command` curl before execute. Chat-attached images are injected into vision and are not offered as filesystem reads. Public Instagram carousels are fetched from `/p/{shortcode}/embed/captioned/` (`core/instagram.py`) and delivered with `send_media`; a Playwright launch failure is a one-line Error and does not skip that send.
+- Host capability gate (`core/tool_capability.py`, via `preflight_tool_call`) refuses `read_file` on jpeg/png/gif/webp and `browser_navigate` to image URLs before execute. Chat-attached images are injected into vision and are not offered as filesystem reads. When a user supplies a source URL, the agent retains the normal browser, search, and media tools.
 
 **Available tools:**
 
@@ -215,6 +508,11 @@ long-running and belongs behind `limebot start`. One-shot commands use
 tree. Skill docs must invoke their own entrypoint, for example
 `python {baseDir}/main.py user-info` for the GitHub skill.
 
+`run_command` strips secret-suffixed environment variables from child
+processes. The exact built-in `python skills/discord/main.py` invocation may
+receive `APP_API_KEY` in its child environment so it can authenticate requests
+to `/api/skill`; arbitrary commands and isolated workspaces never receive it.
+
 When `spawn_agent` uses copy isolation, file tools and `run_command` are rooted
 in a temporary clone outside the live project. Parent-directory escapes and
 absolute live-project paths are rejected. Changed clones are retained with a
@@ -249,7 +547,7 @@ are deleted. Clean clones are removed immediately.
 **Remote media delivery** — `send_media` accepts a remote http(s) URL, downloads it to `temp/downloads/` through an SSRF-guarded fetch (`fetch_url_to_temp`: only public IPs, http(s) only, per-hop redirect validation, 15MB cap), then delivers it. On the web channel it emits the standard `metadata.image` + `attachments` envelope; on Discord/WhatsApp it sends the file. Web photo-send turns do not register `send_media`; the host attach path uses the same envelope internally.
 
 **Voice delivery** — there are two independent paths:
-- **On demand** via the `send_voice(text, channel)` tool. The model calls it when the user asks for a voice message; it synthesizes with `ElevenLabsTTS.synthesize_to_file()` and publishes an mp3 as a `type:"file"` message (Discord/WhatsApp, `cleanup_file:True`) or a `voice_url` message (web). This works regardless of the auto-TTS channel toggles.
+- **On demand** via the `send_voice(text, channel)` tool. `core/voice_tool_service.py` synthesizes with `ElevenLabsTTS.synthesize_to_file()` and publishes an mp3 as a `type:"file"` message (Discord/WhatsApp, `cleanup_file:True`) or a `voice_url` message (web). This works regardless of the auto-TTS channel toggles.
 - **Automatic** via `core/loop.py`'s delivery block, gated by the Voice tab config (`enabled`, `channels`, `send_text_with_audio`). `_resolve_voice_delivery()` decides `audio_only` / `audio_and_text` (Discord/WhatsApp) / `web_url` (web) / `text`. Default `channels` is `["web"]`, so chat channels stay text-only until opted in.
 
 ---
@@ -321,6 +619,14 @@ Tracks session metadata (model, token usage, injected files, timestamps) and cha
 - History serialized separately per session key
 - In-memory dict is the authoritative state; disk is written on flush
 - `update_session()` does **not** reload from disk (avoids blocking I/O and read-modify-write races under concurrent sessions)
+
+### `core/turn_history_service.py` — Turn-history writes
+
+Owns per-session history append/replacement, dirty tracking, and debounced
+flushes to `SessionManager`. It persists safe copies of message content so
+large image payloads are not written to disk while live history stays usable
+for the model. `AgentLoop` keeps its existing history mapping and uses
+compatibility wrappers for writes and flushes.
 
 ---
 

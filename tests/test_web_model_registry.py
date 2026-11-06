@@ -47,7 +47,7 @@ class TestWebModelRegistry(unittest.TestCase):
         config = SimpleNamespace(
             whitelist=SimpleNamespace(api_key=None, allowed_paths=[]),
             web=SimpleNamespace(port=8000, allowed_origins=[]),
-            llm=SimpleNamespace(model="openai/gpt-5.6-sol", base_url=None),
+            llm=SimpleNamespace(model="openai/gpt-6.1-sol", base_url=None),
         )
         channel = WebChannel(config=config, bus=MessageBus())
 
@@ -64,11 +64,35 @@ class TestWebModelRegistry(unittest.TestCase):
         self.assertEqual(
             [model["id"] for model in openai_models],
             [
+                "openai/gpt-6-astra",
+                "openai/gpt-6.1-sol",
+                "openai/gpt-6.1-terra",
+                "openai/gpt-6-luna",
                 "openai/gpt-5.6-sol",
                 "openai/gpt-5.6-terra",
                 "openai/gpt-5.6-luna",
                 "openai/gpt-5.5",
                 "openai/gpt-5.4",
+            ],
+        )
+        anthropic_models = [
+            model
+            for model in response.json()["models"]
+            if model["provider"] == "anthropic"
+        ]
+        self.assertEqual(
+            [model["id"] for model in anthropic_models[:10]],
+            [
+                "anthropic/claude-opus-5",
+                "anthropic/claude-sonnet-5",
+                "anthropic/claude-fable-5",
+                "anthropic/claude-opus-4-8",
+                "anthropic/claude-sonnet-4-6",
+                "anthropic/claude-opus-4-7",
+                "anthropic/claude-opus-4-6",
+                "anthropic/claude-haiku-4-5-20251001",
+                "anthropic/claude-sonnet-4-5-20250929",
+                "anthropic/claude-opus-4-5-20251101",
             ],
         )
 

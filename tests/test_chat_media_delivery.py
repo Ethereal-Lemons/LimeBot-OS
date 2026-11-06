@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 ROSE_REQUEST = (
@@ -252,6 +252,7 @@ class TestHostOwnedPhotoAttach(unittest.IsolatedAsyncioTestCase):
 
         from core.bus import MessageBus
         from core.context import tool_context
+        from core.browser_search_service import BrowserSearchService
         from core.loop import AgentLoop
         from core.tools import Toolbox
         from core.web_search import ImageResult, SearchResponse
@@ -270,6 +271,11 @@ class TestHostOwnedPhotoAttach(unittest.IsolatedAsyncioTestCase):
         )
         loop = AgentLoop.__new__(AgentLoop)
         loop.toolbox = toolbox
+        loop.browser_search_service = BrowserSearchService(
+            manager_provider=AsyncMock(),
+            report_progress=AsyncMock(),
+            attach_chat_image=toolbox.attach_chat_image,
+        )
 
         tmp_dir = Path("temp")
         tmp_dir.mkdir(exist_ok=True)
@@ -300,7 +306,9 @@ class TestHostOwnedPhotoAttach(unittest.IsolatedAsyncioTestCase):
             }
         )
         try:
-            await loop._maybe_host_attach_search_image(response, "rose blackpink")
+            await loop.browser_search_service._maybe_attach_search_image(
+                response, "rose blackpink", ROSE_REQUEST
+            )
         finally:
             tool_context.reset(token)
             tmp_file.unlink(missing_ok=True)
@@ -321,6 +329,7 @@ class TestHostOwnedPhotoAttach(unittest.IsolatedAsyncioTestCase):
 
         from core.bus import MessageBus
         from core.context import tool_context
+        from core.browser_search_service import BrowserSearchService
         from core.loop import AgentLoop
         from core.tools import Toolbox
         from core.web_search import ImageResult, SearchResponse
@@ -339,6 +348,11 @@ class TestHostOwnedPhotoAttach(unittest.IsolatedAsyncioTestCase):
         )
         loop = AgentLoop.__new__(AgentLoop)
         loop.toolbox = toolbox
+        loop.browser_search_service = BrowserSearchService(
+            manager_provider=AsyncMock(),
+            report_progress=AsyncMock(),
+            attach_chat_image=toolbox.attach_chat_image,
+        )
 
         tmp_dir = Path("temp")
         tmp_dir.mkdir(exist_ok=True)
@@ -369,7 +383,9 @@ class TestHostOwnedPhotoAttach(unittest.IsolatedAsyncioTestCase):
             }
         )
         try:
-            await loop._maybe_host_attach_search_image(response, "Jennie ELLE Korea")
+            await loop.browser_search_service._maybe_attach_search_image(
+                response, "Jennie ELLE Korea", JENNIE_ELLE_REQUEST
+            )
         finally:
             tool_context.reset(token)
             tmp_file.unlink(missing_ok=True)

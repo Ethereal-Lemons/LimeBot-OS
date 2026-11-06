@@ -1,0 +1,20 @@
+{
+  "id": "local-research",
+  "prompt": "Find the city named in the synthetic brief and answer in one sentence.",
+  "fixtures": [
+    { "path": "workspace/brief.txt", "content": "The test city is Quito.\n" }
+  ],
+  "replay": [
+    {
+      "tool_calls": [
+        { "name": "read_file", "arguments": { "path": "workspace/brief.txt" } }
+      ]
+    },
+    { "content": "The test city is Quito." }
+  ],
+  "expectations": {
+    "status": "completed",
+    "required_tools": ["read_file"],
+    "reply_checks": [{ "id": "city_present", "contains": "Quito" }]
+  }
+}

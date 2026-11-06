@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import type { LucideIcon } from "lucide-react";
 import axios from "axios";
 import { API_BASE_URL } from "@/lib/api";
 import {
@@ -53,40 +54,43 @@ interface McpConfig {
     mcpServers: Record<string, McpServerConfig>;
 }
 
-interface JsonFieldProps {
-    label: string;
-    icon: any;
-    value: any;
-    onChange: (val: any) => void;
-    placeholder?: string;
-    isArray?: boolean;
+function isStringArray(value: unknown): value is string[] {
+    return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-function JsonField({ label, icon: Icon, value, onChange, placeholder, isArray }: JsonFieldProps) {
-    const [localValue, setLocalValue] = useState(JSON.stringify(value, null, 2));
-    const [isValid, setIsValid] = useState(true);
+function isStringRecord(value: unknown): value is Record<string, string> {
+    return typeof value === "object"
+        && value !== null
+        && !Array.isArray(value)
+        && Object.values(value).every((item) => typeof item === "string");
+}
 
-    useEffect(() => {
-        // Sync with external value if it changes independently (e.g. on load or save)
-        const currentString = JSON.stringify(value, null, 2);
-        if (currentString !== localValue && isValid) {
-            setLocalValue(currentString);
-        }
-    }, [value]);
+interface JsonFieldProps {
+    label: string;
+    icon: LucideIcon;
+    value: string[] | Record<string, string>;
+    validate: (value: unknown) => value is string[] | Record<string, string>;
+    onChange: (val: string[] | Record<string, string>) => void;
+    placeholder?: string;
+}
+
+function JsonField({ label, icon: Icon, value, validate, onChange, placeholder }: JsonFieldProps) {
+    const [draft, setDraft] = useState<string | null>(null);
+    const [isValid, setIsValid] = useState(true);
+    const localValue = draft ?? JSON.stringify(value, null, 2);
 
     const handleChange = (val: string) => {
-        setLocalValue(val);
+        setDraft(val);
         try {
-            const parsed = JSON.parse(val);
-            const typeMatch = isArray ? Array.isArray(parsed) : (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed));
-
-            if (typeMatch) {
+            const parsed: unknown = JSON.parse(val);
+            if (validate(parsed)) {
                 setIsValid(true);
+                setDraft(null);
                 onChange(parsed);
             } else {
                 setIsValid(false);
             }
-        } catch (e) {
+        } catch {
             setIsValid(false);
         }
     };
@@ -398,8 +402,10 @@ export function McpPage() {
                                                         label="Arguments (JSON Array)"
                                                         icon={Settings2}
                                                         value={cfg.args}
-                                                        isArray
-                                                        onChange={(val) => updateServer(name, { args: val })}
+                                                        validate={isStringArray}
+                                                        onChange={(val) => {
+                                                            if (isStringArray(val)) updateServer(name, { args: val });
+                                                        }}
                                                         placeholder='["--some-arg", "value"]'
                                                     />
                                                 </TabsContent>
@@ -409,7 +415,10 @@ export function McpPage() {
                                                         label="Environment Variables (JSON)"
                                                         icon={Globe}
                                                         value={cfg.env}
-                                                        onChange={(val) => updateServer(name, { env: val })}
+                                                        validate={isStringRecord}
+                                                        onChange={(val) => {
+                                                            if (isStringRecord(val)) updateServer(name, { env: val });
+                                                        }}
                                                         placeholder='{"API_KEY": "..."}'
                                                     />
                                                 </TabsContent>

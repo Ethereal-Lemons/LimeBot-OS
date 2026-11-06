@@ -1,22 +1,24 @@
 """
 core/confirmation.py
 ────────────────────
-Confirmation / approval-flow logic, extracted from AgentLoop.
+Confirmation and approval-flow logic, extracted from AgentLoop.
 
-Provides rich previews for file writes, file deletes, and shell
-commands, plus the embed-field builder used by Discord and the web
-dashboard when a sensitive tool requires user approval.
+Provides sensitive-tool previews, the embed-field builder used by Discord and
+the web dashboard, and the pending approval registry shared with channels.
 """
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import hashlib
 import json
 import re
 import shlex
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+
+from loguru import logger
 
 from core.redaction import redact_sensitive_text
 from core.file_edits import EditValidationError, apply_text_edits, unified_text_diff
@@ -45,16 +47,128 @@ DENY_WORDS = frozenset({"no", "cancel", "deny", "stop", "reject", "n", "abort", 
 
 
 class ConfirmationManager:
-    """Builds confirmation previews and embed fields for sensitive tool calls.
+    """Owns pending approval state and previews for sensitive tool calls.
 
     Holds a reference to the parent AgentLoop's *toolbox* (for path helpers)
-    and *truncate_preview* / *safe_json_load* utilities.
+    and *truncate_preview* / *safe_json_load* utilities. Public state maps stay
+    dict-shaped for channel compatibility, while all state transitions live
+    here.
     """
 
-    def __init__(self, toolbox, truncate_fn, safe_json_load_fn) -> None:
+    def __init__(
+        self,
+        toolbox,
+        truncate_fn,
+        safe_json_load_fn,
+        *,
+        pending_confirmations: Optional[Dict[str, Dict[str, Any]]] = None,
+        session_whitelists: Optional[Dict[str, Set[str]]] = None,
+    ) -> None:
         self.toolbox = toolbox
         self._truncate_preview = truncate_fn
         self._safe_json_load = safe_json_load_fn
+        self.pending_confirmations = (
+            pending_confirmations if pending_confirmations is not None else {}
+        )
+        self.session_whitelists = (
+            session_whitelists if session_whitelists is not None else {}
+        )
+
+    def register_pending(
+        self, conf_id: str, details: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Create the pending state and its one-shot resolution signal."""
+        pending = {**details, "event": asyncio.Event(), "approved": False}
+        self.pending_confirmations[conf_id] = pending
+        return pending
+
+    def for_session(self, session_key: str) -> List[Tuple[str, Dict[str, Any]]]:
+        """Return the live approvals waiting for one conversation."""
+        return [
+            (conf_id, pending)
+            for conf_id, pending in self.pending_confirmations.items()
+            if pending.get("session_key") == session_key
+        ]
+
+    def release_for_sessions(
+        self, session_keys: Iterable[str]
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        """Deny and wake pending approvals belonging to cancelled sessions."""
+        related = set(session_keys)
+        released: List[Tuple[str, Dict[str, Any]]] = []
+        for conf_id, pending in list(self.pending_confirmations.items()):
+            if pending.get("session_key") not in related:
+                continue
+            pending["approved"] = False
+            event = pending.get("event")
+            if event:
+                event.set()
+            released.append((conf_id, pending))
+        return released
+
+    def resolve(
+        self,
+        conf_id: str,
+        approved: bool,
+        *,
+        session_whitelist: bool = False,
+        source: str = "api",
+        log_event: Callable[[str, Dict[str, Any]], None],
+    ) -> bool:
+        """Resolve one request, audit it, apply any session grant, then wake it."""
+        pending = self.pending_confirmations.get(conf_id)
+        if pending is None:
+            logger.warning(f"⚠️ Confirmation {conf_id} not found or expired.")
+            return False
+
+        source = str(source or "api").strip().lower()
+        if source not in {
+            "api",
+            "app",
+            "web",
+            "discord",
+            "extension",
+            "whatsapp",
+        }:
+            source = "api"
+        profile = str(pending.get("policy_profile") or "manual")
+        effective_whitelist = bool(
+            approved and session_whitelist and profile in {"manual", "session"}
+        )
+        log_event(
+            pending.get("session_key", "unknown"),
+            {
+                "type": "approval_decided",
+                "conf_id": conf_id,
+                "approved": approved,
+                "tool": pending.get("tool"),
+                "session_whitelist": effective_whitelist,
+                "policy_profile": profile,
+                "decision_reason": "user_approved" if approved else "user_denied",
+                "client_source": source,
+                "profile_id": pending.get("profile_id", "default"),
+                "profile_name": pending.get("profile_name"),
+            },
+        )
+
+        pending["approved"] = approved
+        if effective_whitelist:
+            session_key = pending["session_key"]
+            whitelist_key = pending.get("whitelist_key") or pending["tool"]
+            self.session_whitelists.setdefault(session_key, set()).add(whitelist_key)
+            logger.info(f"🔓 Added {whitelist_key} to whitelist for {session_key}")
+        pending["event"].set()
+        logger.info(f"✅ Tool {conf_id} {'approved' if approved else 'denied'}")
+        return True
+
+    async def wait_for_resolution(self, conf_id: str, timeout: float = 300) -> bool:
+        """Wait for a decision and always remove the finished request."""
+        pending = self.pending_confirmations[conf_id]
+        try:
+            await asyncio.wait_for(pending["event"].wait(), timeout=timeout)
+            return bool(pending["approved"])
+        finally:
+            self.pending_confirmations.pop(conf_id, None)
 
     # ── Individual previews ───────────────────────────────────────────────
 

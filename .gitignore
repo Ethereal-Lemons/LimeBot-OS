@@ -96,6 +96,7 @@ server_diagnostics/
 
 data/vectors/
 data/*.sqlite
+data/evaluations/
 temp/
 limebot.json
 

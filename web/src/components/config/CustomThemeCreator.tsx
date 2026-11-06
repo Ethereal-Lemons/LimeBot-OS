@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Plus, Trash2, Save } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,13 +59,42 @@ export interface CustomTheme {
     createdAt: number;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+    return isRecord(value) && Object.values(value).every((item) => typeof item === "string");
+}
+
+function isCustomTheme(value: unknown): value is CustomTheme {
+    return isRecord(value)
+        && typeof value.id === "string"
+        && typeof value.name === "string"
+        && isStringRecord(value.variables)
+        && typeof value.bgImage === "string"
+        && typeof value.createdAt === "number";
+}
+
+function loadCustomThemes(): CustomTheme[] {
+    try {
+        const saved = localStorage.getItem('limebot-custom-themes');
+        if (!saved) return [];
+        const parsed: unknown = JSON.parse(saved);
+        return Array.isArray(parsed) ? parsed.filter(isCustomTheme) : [];
+    } catch (error: unknown) {
+        console.error("Failed to parse custom themes", error);
+        return [];
+    }
+}
+
 interface CustomThemeCreatorProps {
     onThemeSelect: (themeId: string) => void;
     currentThemeId: string;
 }
 
 export function CustomThemeCreator({ onThemeSelect, currentThemeId }: CustomThemeCreatorProps) {
-    const [themes, setThemes] = useState<CustomTheme[]>([]);
+    const [themes, setThemes] = useState<CustomTheme[]>(loadCustomThemes);
     const [isCreating, setIsCreating] = useState(false);
 
     // Editor State
@@ -86,18 +115,6 @@ export function CustomThemeCreator({ onThemeSelect, currentThemeId }: CustomThem
     const [gradientStart, setGradientStart] = useState('#2e1065'); // violet-950
     const [gradientEnd, setGradientEnd] = useState('#4c1d95'); // violet-900
     const [gradientDir, setGradientDir] = useState('135deg');
-
-    // Load themes from localStorage
-    useEffect(() => {
-        const saved = localStorage.getItem('limebot-custom-themes');
-        if (saved) {
-            try {
-                setThemes(JSON.parse(saved));
-            } catch (e) {
-                console.error("Failed to parse custom themes", e);
-            }
-        }
-    }, []);
 
     const saveThemes = (newThemes: CustomTheme[]) => {
         setThemes(newThemes);

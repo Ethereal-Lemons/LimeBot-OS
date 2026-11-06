@@ -164,8 +164,12 @@ class TestCapabilityRouting(unittest.TestCase):
 
     def test_capability_search_is_not_a_model_tool(self):
         from core.cache import ToolCache
-        from core.loop import AgentLoop
         from core.tool_defs import build_tool_definitions
+        from core.tool_runtime import (
+            ToolExecutionContext,
+            ToolRuntime,
+            ToolRuntimeHooks,
+        )
 
         names = {
             tool["function"]["name"]
@@ -173,21 +177,29 @@ class TestCapabilityRouting(unittest.TestCase):
         }
         self.assertNotIn("capability_search", names)
 
-        agent = object.__new__(AgentLoop)
-        agent.skill_registry = None
-        agent._session_capability_state = {}
-        agent.config = SimpleNamespace(tool_shortlist_enabled=True)
-        agent._get_tool_definitions = lambda: build_tool_definitions(enabled_skills=[])
-        agent._log_tool_debug = lambda *args, **kwargs: None
-        agent.tool_cache = ToolCache()
+        async def _unused(*args, **kwargs):
+            return ""
+
+        runtime = ToolRuntime(
+            toolbox=SimpleNamespace(),
+            tool_registry={},
+            tool_cache=ToolCache(),
+            metrics=SimpleNamespace(record_anomaly=lambda *args, **kwargs: None),
+            hooks=ToolRuntimeHooks(
+                background_task=_unused,
+                search=_unused,
+                browser=_unused,
+                tag_compat=_unused,
+            ),
+        )
 
         import asyncio
 
         raw = asyncio.run(
-            agent._execute_tool(
+            runtime.execute(
                 "capability_search",
                 {"query": "Jira ticket", "include_disabled": True},
-                "web:test",
+                ToolExecutionContext(session_key="web:test"),
             )
         )
         self.assertTrue(str(raw).startswith("Error:"))

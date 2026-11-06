@@ -447,7 +447,10 @@ class CronManager:
             summary=f"Cron job: {job['payload'][:80]}",
             channel=job.get("context", {}).get("channel", "unknown"),
             chat_id=job.get("context", {}).get("chat_id", "unknown"),
-            metadata={"job_id": job_id},
+            metadata={
+                "job_id": job_id,
+                "profile_id": job.get("context", {}).get("profile_id", "default"),
+            },
         )
         await tracker.update_task(_task_id, status="running")
 
@@ -472,6 +475,7 @@ class CronManager:
             "is_scheduler": True,
             "original_job_id": job["id"],
             "scheduled_trigger": scheduled_trigger,
+            "profile_id": str(context.get("profile_id") or "default"),
             "reply_to": context.get("sender_id", "unknown"),
             "unattended": True,
             "durable": True,

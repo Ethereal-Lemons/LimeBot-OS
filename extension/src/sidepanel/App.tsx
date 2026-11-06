@@ -14,17 +14,81 @@ import {
   MAX_SELECTION_CHARS,
   MAX_VISIBLE_TEXT_CHARS,
 } from "@/lib/pageContext";
-import { loadSettings, enqueuePendingAction, resetSessionId, saveSettings, type LimeBotExtensionSettings } from "@/lib/storage";
+import { loadSettings, enqueuePendingAction, resetSessionId, saveSettings, selectAgentProfile, type LimeBotExtensionSettings } from "@/lib/storage";
+
+type AgentProfileOption = {
+  profile_id: string;
+  display_name: string;
+};
 
 export function App() {
   const [settings, setSettings] = useState<LimeBotExtensionSettings | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const [panelBusyAction, setPanelBusyAction] = useState<string | null>(null);
+  const [agentProfiles, setAgentProfiles] = useState<AgentProfileOption[]>([
+    { profile_id: "default", display_name: "LimeBot" },
+  ]);
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadSettings().then(setSettings);
   }, []);
+
+  useEffect(() => {
+    if (!settings) return;
+
+    let cancelled = false;
+    const loadProfiles = async () => {
+      if (!cancelled) setProfilesLoading(true);
+      try {
+        const response = await fetch(
+          `${settings.apiBaseUrl.replace(/\/+$/, "")}/api/profiles`,
+          { headers: settings.apiKey ? { "X-API-Key": settings.apiKey } : undefined }
+        );
+        if (!response.ok) {
+          throw new Error(`Agent list request failed (${response.status}).`);
+        }
+        const data = (await response.json()) as { profiles?: unknown };
+        const profiles = Array.isArray(data.profiles)
+          ? data.profiles
+              .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+              .filter((item) => item.archived !== true && typeof item.profile_id === "string")
+              .map((item) => ({
+                profile_id: String(item.profile_id),
+                display_name: typeof item.display_name === "string" ? item.display_name : String(item.profile_id),
+              }))
+          : [];
+        const availableProfiles = profiles.length
+          ? profiles
+          : [{ profile_id: "default", display_name: "LimeBot" }];
+        if (cancelled) return;
+        setAgentProfiles(availableProfiles);
+        setProfileLoadError(null);
+        if (!availableProfiles.some((profile) => profile.profile_id === settings.profileId)) {
+          const fallback = await selectAgentProfile("default");
+          if (!cancelled) setSettings(fallback);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setAgentProfiles([{ profile_id: "default", display_name: "LimeBot" }]);
+        setProfileLoadError("Could not load agents. Check the companion connection and API key.");
+        if (settings.profileId !== "default") {
+          const fallback = await selectAgentProfile("default");
+          if (!cancelled) setSettings(fallback);
+        }
+        console.error("Failed to load agent profiles for the extension companion", error);
+      } finally {
+        if (!cancelled) setProfilesLoading(false);
+      }
+    };
+
+    void loadProfiles();
+    return () => {
+      cancelled = true;
+    };
+  }, [settings?.apiBaseUrl, settings?.apiKey, settings?.profileId]);
 
   const client = useLimeBotClient(
     settings ?? {
@@ -33,6 +97,8 @@ export function App() {
       dashboardUrl: "http://localhost:5173",
       apiKey: "",
       sessionId: "extension-loading",
+      profileId: "default",
+      profileSessions: { default: "extension-loading" },
       showStatusBubble: true,
     }
   );
@@ -68,6 +134,15 @@ export function App() {
       const stored = await resetSessionId();
       setSettings(stored);
       setSettingsMessage("Started a fresh companion session.");
+    } finally {
+      setPanelBusyAction(null);
+    }
+  }
+
+  async function handleProfileChange(profileId: string) {
+    setPanelBusyAction("profile");
+    try {
+      setSettings(await selectAgentProfile(profileId));
     } finally {
       setPanelBusyAction(null);
     }
@@ -161,7 +236,27 @@ export function App() {
 
       <section className="status-strip">
         <div className={`status-pill status-${client.status}`}>{client.statusText}</div>
+        <label className="agent-select-wrap">
+          <span>Agent</span>
+          <select
+            aria-label="Active agent"
+            className="agent-select"
+            value={settings.profileId}
+            disabled={profilesLoading || agentProfiles.length < 2 || Boolean(panelBusyAction)}
+            onChange={(event) => void handleProfileChange(event.target.value)}
+          >
+            {agentProfiles.map((profile) => (
+              <option key={profile.profile_id} value={profile.profile_id}>
+                {profile.display_name}
+              </option>
+            ))}
+          </select>
+        </label>
       </section>
+
+      {settings.apiKey && profileLoadError ? (
+        <section className="card warning-card"><p>{profileLoadError}</p></section>
+      ) : null}
 
       <section className="button-grid panel-actions">
         <button
@@ -249,6 +344,11 @@ export function App() {
                   <strong>{execution.tool}</strong>
                   <span>{execution.status.replace(/_/g, " ")}</span>
                 </div>
+                {(execution.profile_name || execution.profile_id) ? (
+                  <p className="approval-agent">
+                    Agent: {execution.profile_name || execution.profile_id}
+                  </p>
+                ) : null}
                 {execution.preview?.summary ? <p>{execution.preview.summary}</p> : null}
                 {execution.result ? <p>{execution.result}</p> : null}
                 <label className="toggle-row compact-toggle">

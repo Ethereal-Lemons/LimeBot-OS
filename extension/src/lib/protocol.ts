@@ -28,6 +28,8 @@ export type ToolPreview = {
 
 export type ToolExecution = {
   tool: string;
+  profile_id?: string;
+  profile_name?: string;
   status: ToolExecutionStatus;
   args: unknown;
   toolCallId: string;
@@ -57,6 +59,8 @@ type MessageTarget = {
 
 export type ToolExecutionPayload = {
   tool: string;
+  profile_id?: string;
+  profile_name?: string;
   status: ToolExecutionStatus;
   args: unknown;
   tool_call_id: string;
@@ -250,6 +254,8 @@ export function stopAssistantStreaming(messages: ConversationMessage[], target: 
 export function upsertToolExecution(executions: ToolExecution[], payload: ToolExecutionPayload) {
   const nextItem: ToolExecution = {
     tool: payload.tool,
+    profile_id: payload.profile_id,
+    profile_name: payload.profile_name,
     status: payload.status,
     args: payload.args,
     toolCallId: payload.tool_call_id,

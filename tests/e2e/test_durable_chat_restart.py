@@ -1,4 +1,4 @@
-"""Companion/web chat inbound survives kill -9 via the durable queue."""
+"""Companion/web chat inbound survives a forced worker restart."""
 
 from __future__ import annotations
 
@@ -42,8 +42,9 @@ class TestDurableChatRestartE2E(unittest.TestCase):
                 "LIMEBOT_E2E_READY_FILE": str(state / "ready"),
                 "LIMEBOT_TEST_LLM_MODE": "echo",
                 "LIMEBOT_TEST_LLM_SLEEP": sleep,
-                "LIMEBOT_TEST_LLM_REPLY": "Companion chat resumed after SIGKILL.",
+                "LIMEBOT_TEST_LLM_REPLY": "Companion chat resumed after a process restart.",
                 "LLM_MODEL": "openai/gpt-test",
+                "LLM_EMBEDDING_MODEL": "disabled",
                 "OPENAI_API_KEY": "sk-test-e2e",
                 "ENABLE_DISCORD": "false",
                 "ENABLE_WHATSAPP": "false",
@@ -59,25 +60,53 @@ class TestDurableChatRestartE2E(unittest.TestCase):
         ready = state / "ready"
         if ready.exists():
             ready.unlink()
+        log_file = (state / f"harness-{time.time_ns()}.log").open("w+b")
         proc = subprocess.Popen(
             [sys.executable, str(HARNESS)],
             cwd=str(ROOT),
             env=self._env(state, sleep=sleep),
-            stdout=subprocess.PIPE,
+            stdout=log_file,
             stderr=subprocess.STDOUT,
         )
+        proc._limebot_harness_log = log_file
         deadline = time.time() + 20
         while time.time() < deadline:
             if ready.exists():
                 return proc
             if proc.poll() is not None:
-                output = proc.stdout.read().decode("utf-8", errors="replace") if proc.stdout else ""
+                output = self._read_harness_log(proc)
+                self._close_harness_log(proc)
                 self.fail(f"harness exited early ({proc.returncode}): {output}")
             time.sleep(0.1)
         proc.kill()
-        self.fail("harness did not write ready file")
+        proc.wait(timeout=5)
+        output = self._read_harness_log(proc)
+        self._close_harness_log(proc)
+        self.fail(f"harness did not write ready file: {output}")
 
-    def _wait_status(self, db: Path, job_id: str, status: str, timeout: float = 20.0):
+    @staticmethod
+    def _read_harness_log(process: subprocess.Popen) -> str:
+        log_file = getattr(process, "_limebot_harness_log", None)
+        if log_file is None or log_file.closed:
+            return ""
+        log_file.flush()
+        log_file.seek(0)
+        return log_file.read().decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _close_harness_log(process: subprocess.Popen) -> None:
+        log_file = getattr(process, "_limebot_harness_log", None)
+        if log_file is not None and not log_file.closed:
+            log_file.close()
+
+    def _wait_status(
+        self,
+        db: Path,
+        job_id: str,
+        status: str,
+        timeout: float = 20.0,
+        process: subprocess.Popen | None = None,
+    ):
         deadline = time.time() + timeout
         last = None
         while time.time() < deadline:
@@ -87,9 +116,22 @@ class TestDurableChatRestartE2E(unittest.TestCase):
             if last == status:
                 return job
             time.sleep(0.1)
-        self.fail(f"job {job_id} did not reach {status}; last={last}")
+        process_output = ""
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
+            process_output = self._read_harness_log(process)
+            self._close_harness_log(process)
+        self.fail(
+            f"job {job_id} did not reach {status}; last={last}. "
+            f"Harness output: {process_output}"
+        )
 
-    def test_companion_chat_survives_sigkill(self):
+    def test_companion_chat_survives_worker_kill(self):
         with TemporaryDirectory() as tmp:
             state = Path(tmp)
             self._prepare_state(state)
@@ -108,17 +150,20 @@ class TestDurableChatRestartE2E(unittest.TestCase):
 
             first = self._start(state, sleep="20")
             try:
-                self._wait_status(db, job_id, "running", timeout=15)
-                os.kill(first.pid, signal.SIGKILL)
+                self._wait_status(db, job_id, "running", timeout=15, process=first)
+                first.kill()
                 first.wait(timeout=5)
+                self._close_harness_log(first)
             finally:
                 if first.poll() is None:
-                    os.kill(first.pid, signal.SIGKILL)
+                    first.kill()
                     first.wait(timeout=5)
 
             second = self._start(state, sleep="0")
             try:
-                finished = self._wait_status(db, job_id, SUCCEEDED, timeout=20)
+                finished = self._wait_status(
+                    db, job_id, SUCCEEDED, timeout=20, process=second
+                )
                 self.assertEqual(finished.status, SUCCEEDED)
                 replay = finished.to_message()
                 self.assertEqual(replay.metadata.get("workspace_id"), "deadbeef1234")
@@ -130,3 +175,4 @@ class TestDurableChatRestartE2E(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     second.kill()
                     second.wait(timeout=3)
+                self._close_harness_log(second)

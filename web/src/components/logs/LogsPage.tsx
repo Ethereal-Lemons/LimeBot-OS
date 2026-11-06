@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { API_BASE_URL } from "@/lib/api";
+import { getApiErrorStatus } from "@/lib/api-error";
 import {
     Terminal,
     RefreshCw,
@@ -185,9 +186,9 @@ export function LogsPage() {
 
             setLastRefreshAt(new Date());
             setLoading(false);
-        } catch (err: any) {
-            if (err.response?.status !== 401) {
-                console.error("Failed to fetch logs:", err);
+        } catch (error: unknown) {
+            if (getApiErrorStatus(error) !== 401) {
+                console.error("Failed to fetch logs:", error);
             }
             setLoading(false);
         } finally {

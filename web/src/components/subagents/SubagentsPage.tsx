@@ -3,6 +3,7 @@ import axios from "axios";
 import { Bot, Pencil, Plus, Search, Sparkles, Trash2 } from "lucide-react";
 
 import { API_BASE_URL } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/api-error";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -129,9 +130,9 @@ export function SubagentsPage() {
       setSubagents(res.data.subagents || []);
       setLocationOptions(res.data.location_options || []);
       setError(null);
-    } catch (err: any) {
-      console.error("Failed to load subagents:", err);
-      setError(err?.response?.data?.detail || "Failed to load subagents.");
+    } catch (error: unknown) {
+      console.error("Failed to load subagents:", error);
+      setError(getApiErrorMessage(error, "Failed to load subagents."));
     } finally {
       setLoading(false);
     }
@@ -195,9 +196,9 @@ export function SubagentsPage() {
       setLocationOptions(res.data.location_options || []);
       setDialogOpen(false);
       setForm(EMPTY_FORM);
-    } catch (err: any) {
-      console.error("Failed to save subagent:", err);
-      setError(err?.response?.data?.detail || "Failed to save subagent.");
+    } catch (error: unknown) {
+      console.error("Failed to save subagent:", error);
+      setError(getApiErrorMessage(error, "Failed to save subagent."));
     } finally {
       setSaving(false);
     }
@@ -216,9 +217,9 @@ export function SubagentsPage() {
       setSubagents(res.data.subagents || []);
       setLocationOptions(res.data.location_options || []);
       setError(null);
-    } catch (err: any) {
-      console.error("Failed to delete subagent:", err);
-      setError(err?.response?.data?.detail || "Failed to delete subagent.");
+    } catch (error: unknown) {
+      console.error("Failed to delete subagent:", error);
+      setError(getApiErrorMessage(error, "Failed to delete subagent."));
     }
   };
 

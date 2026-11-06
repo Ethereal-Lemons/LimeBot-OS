@@ -421,6 +421,75 @@ class TestWebConfig(unittest.TestCase):
             f"{sorted(unsupported_keys)}",
         )
 
+    def test_skill_api_requires_key_when_authentication_is_configured(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel()
+        channel.config.whitelist.api_key = "configured-key"
+        channel._skill_api = SimpleNamespace(
+            handle_request=AsyncMock(return_value={"status": "ok"})
+        )
+        client = TestClient(channel.app)
+
+        unauthorized = client.post(
+            "/api/skill/discord/list", json={"probe": True}
+        )
+        authorized = client.post(
+            "/api/skill/discord/list",
+            headers={"X-API-Key": "configured-key"},
+            json={"probe": True},
+        )
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(authorized.status_code, 200)
+        self.assertEqual(authorized.json(), {"status": "ok"})
+        channel._skill_api.handle_request.assert_awaited_once_with(
+            skill_name="discord", action="list", data={"probe": True}
+        )
+
+    def test_setup_complete_requires_existing_key_when_configured(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_web_channel(
+            model="ollama/llama3", base_url="http://127.0.0.1:11434/v1"
+        )
+        channel.config.whitelist.api_key = "existing-key"
+        channel._persist_config_values = AsyncMock(return_value=channel.config)
+        channel._probe_setup_llm = AsyncMock(return_value=17)
+        client = TestClient(channel.app)
+
+        unauthorized = client.post(
+            "/api/setup/complete",
+            json={"env": {"LLM_MODEL": "ollama/llama3"}},
+        )
+        self.assertEqual(unauthorized.status_code, 401)
+        channel._persist_config_values.assert_not_awaited()
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "channels.web._SETUP_STATE_PATH", Path(tmpdir) / "setup-state.json"
+        ), patch("channels.web._schedule_restart"), patch("config.reload_config"):
+            authorized = client.post(
+                "/api/setup/complete",
+                headers={"X-API-Key": "existing-key"},
+                json={
+                    "env": {
+                        "LLM_MODEL": "ollama/llama3",
+                        "APP_API_KEY": "rotated-key",
+                    }
+                },
+            )
+
+        self.assertEqual(authorized.status_code, 200)
+        self.assertEqual(authorized.json()["status"], "restarting")
+        channel._persist_config_values.assert_awaited_once()
+        channel._probe_setup_llm.assert_awaited_once()
+
     def test_setup_complete_does_not_restart_when_llm_validation_fails(self):
         try:
             from fastapi.testclient import TestClient

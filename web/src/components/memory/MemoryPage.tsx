@@ -23,12 +23,21 @@ import { toast } from "sonner";
 
 type SortOrder = "newest" | "oldest";
 
+interface MemoryEntry {
+    id: string;
+    text: string;
+    category?: string;
+    path?: string;
+    timestamp?: string | number;
+    source?: string;
+}
+
 interface MemoryPageProps {
     onNavigate?: (view: string) => void;
 }
 
 export function MemoryPage({ onNavigate }: MemoryPageProps) {
-    const [memories, setMemories] = useState<any[]>([]);
+    const [memories, setMemories] = useState<MemoryEntry[]>([]);
     const [enabled, setEnabled] = useState<boolean | null>(null);
     const [mode, setMode] = useState<"vector" | "grep_fallback">("vector");
     const [readOnly, setReadOnly] = useState(false);
@@ -290,13 +299,13 @@ export function MemoryPage({ onNavigate }: MemoryPageProps) {
                                         <ReactMarkdown
                                             remarkPlugins={[remarkGfm]}
                                             components={{
-                                                p: ({ node, ...props }) => <p {...props} className="mb-2 last:mb-0" />,
-                                                h1: ({ node, ...props }) => <h1 className="text-sm font-bold mt-2 mb-1" {...props} />,
-                                                h2: ({ node, ...props }) => <h2 className="text-xs font-bold mt-1.5 mb-1 opacity-90" {...props} />,
-                                                h3: ({ node, ...props }) => <h3 className="text-xs font-bold mt-1 mb-0.5 opacity-80" {...props} />,
-                                                ul: ({ node, ...props }) => <ul className="list-disc ml-4 mb-2" {...props} />,
-                                                ol: ({ node, ...props }) => <ol className="list-decimal ml-4 mb-2" {...props} />,
-                                                li: ({ node, ...props }) => <li className="mb-1" {...props} />,
+                                                 p: ({ node, ...props }) => { void node; return <p {...props} className="mb-2 last:mb-0" />; },
+                                                 h1: ({ node, ...props }) => { void node; return <h1 className="text-sm font-bold mt-2 mb-1" {...props} />; },
+                                                 h2: ({ node, ...props }) => { void node; return <h2 className="text-xs font-bold mt-1.5 mb-1 opacity-90" {...props} />; },
+                                                 h3: ({ node, ...props }) => { void node; return <h3 className="text-xs font-bold mt-1 mb-0.5 opacity-80" {...props} />; },
+                                                 ul: ({ node, ...props }) => { void node; return <ul className="list-disc ml-4 mb-2" {...props} />; },
+                                                 ol: ({ node, ...props }) => { void node; return <ol className="list-decimal ml-4 mb-2" {...props} />; },
+                                                 li: ({ node, ...props }) => { void node; return <li className="mb-1" {...props} />; },
                                             }}
                                         >
                                             {m.text}

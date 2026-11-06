@@ -152,14 +152,16 @@ class TestHostRefuseBeforeExecute(unittest.IsolatedAsyncioTestCase):
         self.assertIn("hello genuine read", str(result))
 
     async def test_genuine_page_navigate_still_reaches_browser_tool(self):
+        from core.browser_search_service import Navigate
+
         agent = self._agent()
         called = []
 
-        async def _fake_browser(function_name, args, session_key):
-            called.append((function_name, dict(args), session_key))
+        async def _fake_browser(command, *, session_key, source_tool_name):
+            called.append((source_tool_name, command, session_key))
             return "opened https://example.com"
 
-        agent._execute_browser_tool = _fake_browser
+        agent.browser_search_service.execute_browser = _fake_browser
         result = await agent._execute_tool(
             "browser_navigate",
             {"url": "https://example.com/downloads/"},
@@ -170,7 +172,7 @@ class TestHostRefuseBeforeExecute(unittest.IsolatedAsyncioTestCase):
             [
                 (
                     "browser_navigate",
-                    {"url": "https://example.com/downloads/"},
+                    Navigate("https://example.com/downloads/"),
                     "web:page",
                 )
             ],

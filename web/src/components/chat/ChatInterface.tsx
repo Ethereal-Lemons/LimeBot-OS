@@ -23,13 +23,16 @@ import { toast } from "sonner";
 import type { ChatAttachment, ChatChangeSet, TurnStatus } from "@/lib/chat-state";
 import { renderableAttachmentsForMessage } from "@/lib/chat-media";
 import { readinessLabel, type AgentReadiness } from "@/lib/agent-readiness";
+import type { AgentProfile } from "@/lib/agent-profiles";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 
 import { ToolTimeline } from './ToolTimeline';
 import { ChangeSetCard } from './ChangeSetCard';
 import { AttachmentPreview } from './AttachmentPreview';
 import { MarkdownMessage } from './MarkdownMessage';
-import { parseSubagentReport, SubagentReportCard } from './SubagentReportCard';
+import { SubagentReportCard } from './SubagentReportCard';
+import { parseSubagentReport } from './subagent-report';
 import { SystemUpdateCard } from './SystemUpdateCard';
 
 interface Message {
@@ -84,6 +87,9 @@ interface ChatInterfaceProps {
     onReconnect: () => void;
     onNewChat?: () => void;
     activeChatId: string;
+    profileId: string;
+    profiles: AgentProfile[];
+    onProfileChange: (profileId: string) => void;
     activityText?: string | null;
     agentReadiness: AgentReadiness;
     onRetryReadiness: () => void;
@@ -619,6 +625,9 @@ export function ChatInterface({
     onEditMessage,
     onNewChat,
     activeChatId,
+    profileId,
+    profiles,
+    onProfileChange,
     activityText,
     agentReadiness,
     onRetryReadiness,
@@ -647,6 +656,7 @@ export function ChatInterface({
     const prevMessageCountRef = useRef(messages.length);
     const ponytailActive = ponytailMode === 'full';
     const sendMetadata: Record<string, unknown> = {};
+    sendMetadata.profile_id = profileId;
     if (ponytailActive) {
         sendMetadata.ponytail_mode = ponytailMode;
     }
@@ -1147,6 +1157,24 @@ export function ChatInterface({
                 </div>
 
                 <div className="flex items-center gap-2">
+                    {profiles.length > 1 && (
+                        <Select
+                            value={profileId}
+                            onValueChange={onProfileChange}
+                            disabled={isTyping}
+                        >
+                            <SelectTrigger className="h-8 w-[150px] border-border/70 bg-card/70 text-xs sm:w-[190px]">
+                                <SelectValue placeholder="Choose agent" />
+                            </SelectTrigger>
+                            <SelectContent align="end">
+                                {profiles.map((profile) => (
+                                    <SelectItem key={profile.profile_id} value={profile.profile_id}>
+                                        {profile.display_name}{profile.profile_id === "default" ? " · Default" : ""}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    )}
                     {onNewChat && (
                         <Button
                             variant="outline"
@@ -1490,7 +1518,7 @@ export function ChatInterface({
                                     if (!activeChatId) return;
                                     try {
                                         const response = await api.post(
-                                            `/api/chat/${encodeURIComponent(activeChatId)}/stop`
+                                            `/api/chat/${encodeURIComponent(activeChatId)}/stop?profile_id=${encodeURIComponent(profileId)}`
                                         );
                                         if (response.data?.status === 'ignored') {
                                             toast.info('No active task was found to stop.');

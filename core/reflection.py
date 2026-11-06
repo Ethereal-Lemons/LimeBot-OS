@@ -11,7 +11,20 @@ from core.events import InboundMessage
 from core.llm_client import ChatRequest, LimeLLMClient
 
 
-from core.paths import MEMORY_DIR, LONG_TERM_MEMORY_FILE
+from core.paths import MEMORY_DIR, LONG_TERM_MEMORY_FILE, PersonaPaths, get_persona_paths
+from core.profile_context import get_current_profile_id
+
+
+class _LegacyReflectionPaths(PersonaPaths):
+    """Preserve default reflection path overrides used by existing callers/tests."""
+
+    @property
+    def memory(self):
+        return MEMORY_DIR
+
+    @property
+    def long_term_memory(self):
+        return LONG_TERM_MEMORY_FILE
 
 
 def _load_config():
@@ -25,9 +38,17 @@ class ReflectiveService:
     Handles background distillation of memories and journals.
     """
 
-    def __init__(self, bus: Any, model: str = "gpt-4o"):
+    def __init__(
+        self,
+        bus: Any,
+        model: str = "gpt-4o",
+        persona_paths: Optional[PersonaPaths] = None,
+    ):
         self.bus = bus
         self.model = model
+        self.persona_paths = persona_paths or _LegacyReflectionPaths(
+            root=get_persona_paths("default").root
+        )
         self.llm_client = LimeLLMClient()
         self._running = False
 
@@ -53,9 +74,10 @@ class ReflectiveService:
         """
         try:
             cfg = _load_config()
+            paths = self.persona_paths
 
             today_str = datetime.now().strftime("%Y-%m-%d")
-            journal_file = MEMORY_DIR / f"{today_str}.md"
+            journal_file = paths.memory / f"{today_str}.md"
 
             if not journal_file.exists():
                 logger.info("Reflection skipped: no journal file for today.")
@@ -66,8 +88,8 @@ class ReflectiveService:
                 logger.info("Reflection skipped: journal is empty.")
                 return "No logs for today."
             long_term_memory = (
-                LONG_TERM_MEMORY_FILE.read_text(encoding="utf-8")
-                if LONG_TERM_MEMORY_FILE.exists()
+                paths.long_term_memory.read_text(encoding="utf-8")
+                if paths.long_term_memory.exists()
                 else "# Long Term Memory\n"
             )
 
@@ -108,20 +130,43 @@ class ReflectiveService:
 
 
 _reflection_service: Optional[ReflectiveService] = None
+_profile_reflection_services: dict[str, ReflectiveService] = {}
 
 
-def get_reflection_service(bus=None, model="gpt-4o") -> ReflectiveService:
-
+def get_reflection_service(
+    bus=None, model="gpt-4o", *, profile_id: Optional[str] = None
+) -> ReflectiveService:
     global _reflection_service
-    if _reflection_service is None:
-        _reflection_service = ReflectiveService(bus, model)
+    normalized_profile_id = str(
+        profile_id or get_current_profile_id() or "default"
+    ).strip().lower()
+    if normalized_profile_id == "default":
+        service = _reflection_service
     else:
-        if model and _reflection_service.model != model:
-            logger.info(
-                f"ReflectiveService: updating model {_reflection_service.model!r} → {model!r}"
-            )
-            _reflection_service.model = model
+        service = _profile_reflection_services.get(normalized_profile_id)
 
-        if bus is not None and _reflection_service.bus is not bus:
-            _reflection_service.bus = bus
-    return _reflection_service
+    if service is None:
+        service = ReflectiveService(
+            bus,
+            model,
+            persona_paths=(
+                get_persona_paths(normalized_profile_id)
+                if normalized_profile_id != "default"
+                else None
+            ),
+        )
+        if normalized_profile_id == "default":
+            _reflection_service = service
+        else:
+            _profile_reflection_services[normalized_profile_id] = service
+    else:
+        if model and service.model != model:
+            logger.info(
+                f"ReflectiveService ({normalized_profile_id}): updating model "
+                f"{service.model!r} → {model!r}"
+            )
+            service.model = model
+
+        if bus is not None and service.bus is not bus:
+            service.bus = bus
+    return service

@@ -1,0 +1,25 @@
+{
+  "id": "capability-selection",
+  "prompt": "Inspect the supplied workspace and identify the available local note.",
+  "fixtures": [
+    { "path": "workspace/available.txt", "content": "A synthetic local note is available.\n" }
+  ],
+  "replay": [
+    {
+      "tool_calls": [
+        { "name": "list_dir", "arguments": { "path": "workspace" } }
+      ]
+    },
+    {
+      "tool_calls": [
+        { "name": "read_file", "arguments": { "path": "workspace/available.txt" } }
+      ]
+    },
+    { "content": "The available local note is available.txt." }
+  ],
+  "expectations": {
+    "status": "completed",
+    "required_tools": ["list_dir", "read_file"],
+    "reply_checks": [{ "id": "note_identified", "contains": "available.txt" }]
+  }
+}

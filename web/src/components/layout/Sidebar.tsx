@@ -18,12 +18,14 @@ import {
     List,
     Globe,
     Volume2,
+    type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BotVisual } from "@/components/pet/BotVisual";
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { API_BASE_URL } from "@/lib/api";
+import { getApiErrorStatus } from "@/lib/api-error";
 import {
     Select,
     SelectContent,
@@ -42,6 +44,27 @@ interface SidebarProps {
         autonomousMode: boolean;
         pendingApprovals: number;
     };
+}
+
+interface SelectionOption {
+    value: string;
+    label: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseSelectionOptions(value: unknown): SelectionOption[] | null {
+    if (!Array.isArray(value)) return null;
+    const options = value.flatMap((item): SelectionOption[] => {
+        if (!isRecord(item) || typeof item.value !== "string") return [];
+        return [{
+            value: item.value,
+            label: typeof item.label === "string" ? item.label : item.value,
+        }];
+    });
+    return options.length ? options : null;
 }
 
 export function Sidebar({
@@ -69,16 +92,11 @@ export function Sidebar({
         setSubagentSelection(value);
         setSavingSubagentSelection(true);
         try {
-            const res = await axios.put(`${API_BASE_URL}/api/subagents/settings`, {
+            const res = await axios.put<{ default_selection?: string; selection_options?: unknown }>(`${API_BASE_URL}/api/subagents/settings`, {
                 default_selection: value,
             });
             setSubagentSelection(res.data?.default_selection || value);
-            const options = Array.isArray(res.data?.selection_options)
-                ? res.data.selection_options.map((option: any) => ({
-                    value: String(option.value),
-                    label: String(option.label || option.value),
-                }))
-                : null;
+            const options = parseSelectionOptions(res.data?.selection_options);
             if (options && options.length > 0) {
                 setSubagentOptions(options);
             }
@@ -102,6 +120,7 @@ export function Sidebar({
     ];
 
     const agentItems = [
+        { id: 'profiles', icon: Users, label: "Agents" },
         { id: 'skills', icon: Zap, label: "Skills" },
         { id: 'subagents', icon: Bot, label: "Subagents" },
         { id: 'browsers', icon: Globe, label: "Browser Sessions" },
@@ -121,21 +140,17 @@ export function Sidebar({
         const refreshRuntimeDetails = async () => {
             try {
                 const [configRes, memoryRes, subagentRes] = await Promise.all([
-                    axios.get(`${API_BASE_URL}/api/config`),
-                    axios.get(`${API_BASE_URL}/api/memory`),
-                    axios.get(`${API_BASE_URL}/api/subagents`),
+                    axios.get<{ env?: { LLM_MODEL?: string } }>(`${API_BASE_URL}/api/config`),
+                    axios.get<{ enabled?: boolean; mode?: string }>(`${API_BASE_URL}/api/memory`),
+                    axios.get<{ default_selection?: string; selection_options?: unknown }>(`${API_BASE_URL}/api/subagents`),
                 ]);
 
                 if (!isMounted) return;
 
                 setActiveModel(configRes.data?.env?.LLM_MODEL || "Unknown");
                 setSubagentSelection(subagentRes.data?.default_selection || "auto");
-                const options = Array.isArray(subagentRes.data?.selection_options)
-                    ? subagentRes.data.selection_options.map((option: any) => ({
-                        value: String(option.value),
-                        label: String(option.label || option.value),
-                    }))
-                    : [{ value: "auto", label: "Auto" }];
+                const options = parseSelectionOptions(subagentRes.data?.selection_options)
+                    || [{ value: "auto", label: "Auto" }];
                 setSubagentOptions(options);
 
                 const enabled = memoryRes.data?.enabled;
@@ -150,8 +165,9 @@ export function Sidebar({
                     setMemoryLabel("Vector Online");
                     setMemoryTone("text-primary");
                 }
-            } catch (error: any) {
-                if (error?.response?.status !== 401 && error?.response?.status !== 403) {
+            } catch (error: unknown) {
+                const status = getApiErrorStatus(error);
+                if (status !== 401 && status !== 403) {
                     console.error("Failed to load runtime details:", error);
                 }
                 if (!isMounted) return;
@@ -291,7 +307,7 @@ function StatusTile({
     value,
     valueClassName,
 }: {
-    icon: any;
+    icon: LucideIcon;
     label: string;
     value: string;
     valueClassName?: string;
@@ -309,7 +325,7 @@ function StatusTile({
     );
 }
 
-function NavItem({ icon: Icon, label, active, onClick }: { icon: any, label: string, active?: boolean, onClick?: () => void }) {
+function NavItem({ icon: Icon, label, active, onClick }: { icon: LucideIcon, label: string, active?: boolean, onClick?: () => void }) {
     return (
         <button
             onClick={onClick}

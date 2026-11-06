@@ -632,9 +632,10 @@ BASE_TOOLS = [
     {
         "name": "send_media",
         "description": (
-            "Deliver a local file into Discord or WhatsApp (spreadsheets, documents, audio). "
+            "Deliver a local file into the current web, Discord, or WhatsApp chat. "
             "Accepts a local file path OR a remote http(s) URL (downloaded first, SSRF-guarded). "
-            "Do not use this for web chat photos — call web_search(kind=\"images\") and the host attaches the image. "
+            "Use this when you have a specific file or URL to deliver. For open-ended photo searches in a web chat, "
+            "web_search(kind=\"images\") can find a photo and the host attaches its result. "
             "Use it once per artifact; never resend the same path to narrate progress."
         ),
         "params": {
@@ -1343,8 +1344,6 @@ def shortlist_tool_definitions(
 ) -> List[Dict[str, Any]]:
     """Return a coherent subset of tools for the current user turn."""
     from core.tool_capability import filter_tools_for_image_attachments
-    from core.tool_capability import filter_tools_for_instagram_photo_send
-
     text = (user_text or "").strip()
     exclusive = exclusive_tools_for_turn(text, channel=channel)
     if exclusive is not None:
@@ -1356,7 +1355,7 @@ def shortlist_tool_definitions(
         selected = filter_tools_for_image_attachments(
             filtered or tool_defs, text, attachments
         )
-        return filter_tools_for_instagram_photo_send(selected, text)
+        return selected
 
     if not text or len(tool_defs) <= max_tools:
         return tool_defs
@@ -1533,11 +1532,8 @@ def shortlist_tool_definitions(
     shortlisted = [
         tool for tool in tool_defs if tool.get("function", {}).get("name") in selected_set
     ]
-    return filter_tools_for_instagram_photo_send(
-        filter_tools_for_image_attachments(
-            shortlisted or tool_defs, text, attachments
-        ),
-        text,
+    return filter_tools_for_image_attachments(
+        shortlisted or tool_defs, text, attachments
     )
 
 

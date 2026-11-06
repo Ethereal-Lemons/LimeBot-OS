@@ -6,7 +6,7 @@ export interface ConfigSecretInfo {
 
 export type ConfigSecretsMap = Record<string, ConfigSecretInfo>;
 
-export interface ConfigApiResponse<TEnv = Record<string, any>> {
+export interface ConfigApiResponse<TEnv = Record<string, unknown>> {
     env?: TEnv;
     secrets?: ConfigSecretsMap;
 }

@@ -76,7 +76,7 @@ class TestWebMessageEditing(unittest.TestCase):
                 SESSION_FILE=session_file,
             ):
                 manager = session_manager_module.SessionManager()
-                session_key = "web_chat-edit"
+                session_key = "profile__writer__web_chat-edit"
                 history = [
                     {"role": "system", "content": "system"},
                     {"role": "user", "content": "first"},
@@ -100,14 +100,19 @@ class TestWebMessageEditing(unittest.TestCase):
                 agent = FakeEditAgent({session_key: list(history)})
                 channel.set_agent(agent)
 
-                response = TestClient(channel.app).post(
-                    "/api/chat/chat-edit/messages/usr-2/edit",
-                    json={
-                        "content": "second, but better",
-                        "user_turn_index": 1,
-                        "metadata": {"skill_name": "discord", "ponytail_mode": "full"},
-                    },
-                )
+                with TestClient(channel.app) as client:
+                    response = client.post(
+                        "/api/chat/chat-edit/messages/usr-2/edit",
+                        json={
+                            "content": "second, but better",
+                            "user_turn_index": 1,
+                            "metadata": {
+                                "skill_name": "discord",
+                                "ponytail_mode": "full",
+                                "profile_id": "writer",
+                            },
+                        },
+                    )
 
                 inbound = channel.bus.inbound.get_nowait()
                 persisted_history = asyncio.run(manager.load_history(session_key))
@@ -148,5 +153,26 @@ class TestWebMessageEditing(unittest.TestCase):
         self.assertEqual(inbound.metadata["edited_from_message_id"], "usr-2")
         self.assertEqual(inbound.metadata["skill_name"], "discord")
         self.assertEqual(inbound.metadata["ponytail_mode"], "full")
+        self.assertEqual(inbound.metadata["profile_id"], "writer")
         self.assertEqual(event_rows[-1]["type"], "message_edited")
         self.assertEqual(event_rows[-1]["replaced_message_id"], "usr-2")
+
+    def test_stop_route_targets_the_selected_profile_session(self):
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            raise unittest.SkipTest("Missing web test dependencies.")
+
+        channel = self._make_channel(SimpleNamespace())
+        agent = FakeEditAgent({})
+        channel.set_agent(agent)
+
+        with TestClient(channel.app) as client:
+            response = client.post(
+                "/api/chat/chat-stop/stop?profile_id=writer"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        agent.cancel_session.assert_awaited_once_with(
+            "profile__writer__web_chat-stop"
+        )

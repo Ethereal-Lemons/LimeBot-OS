@@ -1,8 +1,38 @@
 import sys
+import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
+
+
+def test_command_environment_shares_app_key_only_with_builtin_discord_skill():
+    from core.bus import MessageBus
+    from core.tools import Toolbox
+
+    toolbox = Toolbox(
+        allowed_paths=[str(Path.cwd())],
+        bus=MessageBus(),
+        config=SimpleNamespace(whitelist=SimpleNamespace(api_key="configured-key")),
+    )
+
+    with patch.dict(
+        os.environ,
+        {"APP_API_KEY": "ambient-key", "OPENAI_API_KEY": "provider-key"},
+        clear=False,
+    ):
+        skill_env = toolbox._command_environment(
+            f'"{sys.executable}" skills/discord/main.py list'
+        )
+        arbitrary_env = toolbox._command_environment(
+            f'"{sys.executable}" -c "print(1)"'
+        )
+
+    assert skill_env["APP_API_KEY"] == "configured-key"
+    assert "OPENAI_API_KEY" not in skill_env
+    assert "APP_API_KEY" not in arbitrary_env
+    assert "OPENAI_API_KEY" not in arbitrary_env
 
 
 @pytest.mark.asyncio

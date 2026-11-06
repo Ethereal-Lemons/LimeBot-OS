@@ -1,0 +1,30 @@
+{
+  "id": "recovery-inspection",
+  "prompt": "Read the synthetic status file. If the first lookup fails, inspect the workspace and recover.",
+  "fixtures": [
+    { "path": "workspace/status.txt", "content": "status: ready\n" }
+  ],
+  "replay": [
+    {
+      "tool_calls": [
+        { "name": "read_file", "arguments": { "path": "workspace/missing.txt" } }
+      ]
+    },
+    {
+      "tool_calls": [
+        { "name": "list_dir", "arguments": { "path": "workspace" } }
+      ]
+    },
+    {
+      "tool_calls": [
+        { "name": "read_file", "arguments": { "path": "workspace/status.txt" } }
+      ]
+    },
+    { "content": "The status is ready." }
+  ],
+  "expectations": {
+    "status": "completed",
+    "required_tools": ["read_file", "list_dir"],
+    "reply_checks": [{ "id": "status_recovered", "contains": "ready" }]
+  }
+}

@@ -4,6 +4,8 @@ export type LimeBotExtensionSettings = {
   dashboardUrl: string;
   apiKey: string;
   sessionId: string;
+  profileId: string;
+  profileSessions: Record<string, string>;
   showStatusBubble: boolean;
 };
 
@@ -87,13 +89,33 @@ function normalizePendingAction(value: unknown): PendingAction | null {
 
 export function normalizeSettings(value: unknown): LimeBotExtensionSettings {
   const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const rawProfileId = normalizeText(raw.profileId).toLowerCase();
+  const profileId = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(rawProfileId)
+    ? rawProfileId
+    : "default";
+  const profileSessions: Record<string, string> = {};
+  if (raw.profileSessions && typeof raw.profileSessions === "object") {
+    for (const [key, sessionId] of Object.entries(raw.profileSessions)) {
+      if (
+        /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(key) &&
+        typeof sessionId === "string" &&
+        sessionId.trim()
+      ) {
+        profileSessions[key] = sessionId.trim();
+      }
+    }
+  }
+  const sessionId = normalizeText(raw.sessionId) || createSessionId();
+  profileSessions[profileId] = profileSessions[profileId] || sessionId;
 
   return {
     apiBaseUrl: normalizeUrl(raw.apiBaseUrl, DEFAULT_API_BASE_URL),
     wsBaseUrl: normalizeUrl(raw.wsBaseUrl, DEFAULT_WS_BASE_URL),
     dashboardUrl: normalizeUrl(raw.dashboardUrl, DEFAULT_DASHBOARD_URL),
     apiKey: normalizeText(raw.apiKey),
-    sessionId: normalizeText(raw.sessionId) || createSessionId(),
+    sessionId: profileSessions[profileId],
+    profileId,
+    profileSessions,
     showStatusBubble: raw.showStatusBubble !== false,
   };
 }
@@ -111,7 +133,27 @@ export async function saveSettings(nextPartial: Partial<LimeBotExtensionSettings
 }
 
 export async function resetSessionId() {
-  return saveSettings({ sessionId: createSessionId() });
+  const current = await loadSettings();
+  const sessionId = createSessionId();
+  return saveSettings({
+    sessionId,
+    profileSessions: { ...current.profileSessions, [current.profileId]: sessionId },
+  });
+}
+
+export async function selectAgentProfile(profileId: string) {
+  const normalizedId = normalizeText(profileId).toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(normalizedId)) {
+    throw new Error("Invalid agent profile ID.");
+  }
+  const current = await loadSettings();
+  const profileSessions = {
+    ...current.profileSessions,
+    [current.profileId]: current.sessionId,
+  };
+  const sessionId = profileSessions[normalizedId] || createSessionId();
+  profileSessions[normalizedId] = sessionId;
+  return saveSettings({ profileId: normalizedId, sessionId, profileSessions });
 }
 
 export async function loadPendingActions() {

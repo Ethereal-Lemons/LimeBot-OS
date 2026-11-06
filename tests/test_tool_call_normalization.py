@@ -1,4 +1,5 @@
 import unittest
+from core.tool_call_parser import extract_tool_calls, sanitize_tool_call_content
 
 
 class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
@@ -114,7 +115,7 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
         self.assertIn("truncated diagnostic", tool_message["content"])
 
     async def test_extract_tool_from_content_infers_browser_navigate_from_url_dict(self):
-        tool_calls = self.agent._extract_tool_from_content(
+        tool_calls = extract_tool_calls(
             '{"url":"https://open.spotify.com/track/5SudOD9R1Of6CsJVWZy6CQ"}'
         )
 
@@ -126,7 +127,7 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_extract_tool_from_content_maps_shell_cmd_array_to_list_dir(self):
-        tool_calls = self.agent._extract_tool_from_content(
+        tool_calls = extract_tool_calls(
             '{"cmd":["bash","-lc","ls -R"]}'
         )
 
@@ -138,7 +139,7 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_extract_tool_from_content_recovers_legacy_xml_tool_tag(self):
-        tool_calls = self.agent._extract_tool_from_content(
+        tool_calls = extract_tool_calls(
             "<run_command>echo hello</run_command>"
         )
 
@@ -150,7 +151,7 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_extract_tool_from_content_recovers_legacy_xml_attr_tool_tag(self):
-        tool_calls = self.agent._extract_tool_from_content('<list_dir path=".">')
+        tool_calls = extract_tool_calls('<list_dir path=".">')
 
         self.assertEqual(len(tool_calls), 1)
         self.assertEqual(tool_calls[0]["function"]["name"], "list_dir")
@@ -160,7 +161,7 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_extract_tool_from_content_recovers_pipe_tool_tag(self):
-        tool_calls = self.agent._extract_tool_from_content(
+        tool_calls = extract_tool_calls(
             '<|list_dir|>{"path": "."}<|/list_dir|>'
         )
 
@@ -172,7 +173,7 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_extract_tool_from_content_recovers_bare_tool_call_snippet(self):
-        tool_calls = self.agent._extract_tool_from_content(
+        tool_calls = extract_tool_calls(
             'We should first list current directory. Use list_dir(".").'
         )
 
@@ -184,7 +185,7 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_extract_tool_from_content_recovers_tool_code_wrapper(self):
-        tool_calls = self.agent._extract_tool_from_content(
+        tool_calls = extract_tool_calls(
             '<tool_code>list_dir("C:/tmp")</tool_code>'
         )
 
@@ -196,7 +197,7 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_extract_tool_from_content_recovers_provider_to_envelope(self):
-        tool_calls = self.agent._extract_tool_from_content(
+        tool_calls = extract_tool_calls(
             'Voy a editarlo. to=functions.run_command code: '
             '{"command":"python fix_docx.py"}'
         )
@@ -210,7 +211,7 @@ class TestToolCallNormalization(unittest.IsolatedAsyncioTestCase):
 
     async def test_sanitize_tool_call_content_drops_implicit_browser_url_dict(self):
         self.assertEqual(
-            self.agent._sanitize_tool_call_content(
+            sanitize_tool_call_content(
                 '{"url":"https://open.spotify.com/track/5SudOD9R1Of6CsJVWZy6CQ"}'
             ),
             "",

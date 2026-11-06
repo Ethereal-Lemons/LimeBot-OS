@@ -48,12 +48,22 @@ interface DiscordUiConfig {
             suffix?: string;
             max_length?: number;
         };
-        guilds?: Record<string, any>;
-        channels?: Record<string, any>;
+        guilds?: Record<string, StyleOverride>;
+        channels?: Record<string, StyleOverride>;
     };
     embed_theme?: { default?: string; guilds?: Record<string, string> };
     nickname_templates?: { default?: string; guilds?: Record<string, string> };
     avatar_overrides?: { global?: string };
+}
+
+interface StyleOverride {
+    tone?: string;
+    verbosity?: string;
+    emoji_usage?: string;
+    signature?: string;
+    prefix?: string;
+    suffix?: string;
+    max_length?: number;
 }
 
 interface TelegramStatus {
@@ -112,7 +122,7 @@ interface TelegramVoiceDraft {
 
 type SecretDrafts = Record<string, string>;
 
-const createStyleOverrideRow = (target = "", source?: any): StyleOverrideRow => ({
+const createStyleOverrideRow = (target = "", source?: StyleOverride): StyleOverrideRow => ({
     id: `${target || "row"}-${Math.random().toString(36).slice(2, 8)}`,
     target,
     tone: source?.tone || "friendly",
@@ -129,11 +139,11 @@ const createValueOverrideRow = (target = "", value = ""): ValueOverrideRow => ({
     value,
 });
 
-const objectToStyleRows = (source?: Record<string, any>): StyleOverrideRow[] =>
+const objectToStyleRows = (source?: Record<string, StyleOverride>): StyleOverrideRow[] =>
     Object.entries(source || {}).map(([target, value]) => createStyleOverrideRow(target, value));
 
 const styleRowsToObject = (rows: StyleOverrideRow[]) =>
-    rows.reduce<Record<string, any>>((acc, row) => {
+    rows.reduce<Record<string, StyleOverride>>((acc, row) => {
         const target = row.target.trim();
         if (!target) return acc;
         acc[target] = {
@@ -237,15 +247,7 @@ export function ChannelsPage() {
     const [showTelegramAdvanced, setShowTelegramAdvanced] = useState(false);
     const [showWhatsAppContacts, setShowWhatsAppContacts] = useState(false);
 
-    useEffect(() => {
-        fetchConfig();
-        fetchDiscordConfig();
-        fetchTelegramStatus();
-        fetchPersonaDraft();
-    }, []);
-
     const fetchConfig = () => {
-        setLoading(true);
         axios.get<ConfigApiResponse<ConfigState>>(`${API_BASE_URL}/api/config`)
             .then(res => {
                 if (res.data.env) {
@@ -327,6 +329,13 @@ export function ChannelsPage() {
             });
     };
 
+    useEffect(() => {
+        fetchConfig();
+        fetchDiscordConfig();
+        fetchTelegramStatus();
+        fetchPersonaDraft();
+    }, []);
+
     const handleSave = () => {
         setSaving(true);
         setStatus(null);
@@ -403,7 +412,10 @@ export function ChannelsPage() {
         setClearedSecrets(prev => prev.includes(key) ? prev : [...prev, key]);
     };
 
-    const updateDiscordField = (key: keyof DiscordUiConfig, value: any) => {
+    const updateDiscordField = <Key extends keyof DiscordUiConfig>(
+        key: Key,
+        value: DiscordUiConfig[Key],
+    ) => {
         setDiscordConfig(prev => ({ ...prev, [key]: value }));
     };
 
@@ -451,8 +463,9 @@ export function ChannelsPage() {
                     setDiscordStatus({ type: 'error', message: "Failed to save Discord personalization." });
                     setDiscordSaving(false);
                 });
-        } catch (e: any) {
-            setDiscordStatus({ type: 'error', message: e.message || "Failed to save Discord personalization." });
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : "Failed to save Discord personalization.";
+            setDiscordStatus({ type: 'error', message });
             setDiscordSaving(false);
         }
     };

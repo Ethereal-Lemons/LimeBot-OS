@@ -10,7 +10,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-import { API_BASE_URL } from "@/lib/api";
+import { API_BASE_URL, api } from "@/lib/api";
+import { getStoredProfileId, storeProfileId, type AgentProfile } from "@/lib/agent-profiles";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ChatInterface } from "@/components/chat/ChatInterface";
 import { AuthKeyModal } from "@/components/auth/AuthKeyModal";
@@ -66,6 +67,11 @@ const SkillsPage = lazy(() =>
 const SubagentsPage = lazy(() =>
   import("@/components/subagents/SubagentsPage").then((module) => ({
     default: module.SubagentsPage,
+  }))
+);
+const ProfilesPage = lazy(() =>
+  import("@/components/profiles/ProfilesPage").then((module) => ({
+    default: module.ProfilesPage,
   }))
 );
 const AppearancePage = lazy(() =>
@@ -125,6 +131,7 @@ const VIEW_META: Record<string, { title: string; description: string }> = {
   cron: { title: "Cron Jobs", description: "Scheduled automations and recurring tasks." },
   skills: { title: "Skills", description: "Installed capabilities and tool bundles." },
   subagents: { title: "Subagents", description: "Specialized helper profiles Claude-style, kept lightweight." },
+  profiles: { title: "Agents", description: "Manage conversational agents, persona, model, and access policy." },
   browsers: { title: "Browser Sessions", description: "Active headless browsers and session modes." },
   mcp: { title: "MCP", description: "External Model Context Protocol servers." },
   voice: { title: "ElevenLabs Voice", description: "List custom voices, customize TTS parameters, and test audio previews." },
@@ -151,6 +158,8 @@ function App() {
   const [personaSetupPending, setPersonaSetupPending] = useState(false);
   const [agentReadiness, setAgentReadiness] = useState<AgentReadiness>(INITIAL_AGENT_READINESS);
   const [readinessPollNonce, setReadinessPollNonce] = useState(0);
+  const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState(getStoredProfileId);
   const setupKickoffSessionRef = useRef<string | null>(null);
 
   const { botIdentity, setBotIdentity, refreshIdentity, lastExplicitFetch } = useIdentity();
@@ -174,6 +183,43 @@ function App() {
     onActivity: (text) => setActivity({ text }),
     onActivityClear: () => setActivity(null),
   });
+
+  useEffect(() => {
+    let mounted = true;
+    api.get("/api/profiles").then((response) => {
+      if (!mounted) return;
+      const profiles = Array.isArray(response.data?.profiles)
+        ? response.data.profiles as AgentProfile[]
+        : [];
+      setAgentProfiles(profiles);
+      const storedId = getStoredProfileId();
+      if (profiles.some((profile) => profile.profile_id === storedId && !profile.archived)) {
+        setActiveProfileId(storedId);
+      } else {
+        setActiveProfileId("default");
+        storeProfileId("default");
+      }
+    }).catch(() => {
+      // Chat remains usable on the default profile while setup/auth is pending.
+    });
+    return () => { mounted = false; };
+  }, []);
+
+  const handleProfileChange = (profileId: string) => {
+    if (isTyping || profileId === activeProfileId) return;
+    setActiveProfileId(profileId);
+    storeProfileId(profileId);
+    handleNewChat();
+  };
+
+  const handleProfilesChanged = (profiles: AgentProfile[]) => {
+    setAgentProfiles(profiles);
+    if (!profiles.some((profile) => profile.profile_id === activeProfileId && !profile.archived)) {
+      setActiveProfileId("default");
+      storeProfileId("default");
+      handleNewChat();
+    }
+  };
 
   const pendingApprovals = messages.filter(
     (message) =>
@@ -438,6 +484,8 @@ function App() {
             <SkillsPage />
           ) : currentView === 'subagents' ? (
             <SubagentsPage />
+          ) : currentView === 'profiles' ? (
+            <ProfilesPage onProfilesChanged={handleProfilesChanged} />
           ) : currentView === 'browsers' ? (
             <BrowserSessionsPanel />
           ) : currentView === 'persona' ? (
@@ -462,6 +510,9 @@ function App() {
               turnStatuses={turnStatuses}
               botIdentity={botIdentity}
               activeChatId={sessionId}
+              profileId={activeProfileId}
+              profiles={agentProfiles.filter((profile) => !profile.archived)}
+              onProfileChange={handleProfileChange}
               activityText={activity?.text || null}
               agentReadiness={agentReadiness}
               onInputChange={setInputValue}

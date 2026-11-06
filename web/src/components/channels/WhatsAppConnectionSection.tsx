@@ -16,8 +16,18 @@ import {
 } from "@/components/ui/alert-dialog";
 import { WhatsAppIcon } from "./ChannelIcons";
 
+type WhatsAppConnectionStatus = "disabled" | "disconnected" | "connecting" | "connected" | "scanning";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isWhatsAppConnectionStatus(value: unknown): value is WhatsAppConnectionStatus {
+    return value === "disabled" || value === "disconnected" || value === "connecting" || value === "connected" || value === "scanning";
+}
+
 export function WhatsAppConnectionSection() {
-    const [status, setStatus] = useState<"disabled" | "disconnected" | "connecting" | "connected" | "scanning">("disconnected");
+    const [status, setStatus] = useState<WhatsAppConnectionStatus>("disconnected");
     const [resetting, setResetting] = useState(false);
     const [qrCode, setQrCode] = useState<string | null>(null);
     const [alertDialog, setAlertDialog] = useState({
@@ -31,13 +41,15 @@ export function WhatsAppConnectionSection() {
     };
 
     useEffect(() => {
-        const applyStatus = (data: any) => {
-            const nextStatus = data?.status;
-            if (["disabled", "disconnected", "connecting", "connected", "scanning"].includes(nextStatus)) {
+        const applyStatus = (payload: unknown) => {
+            if (!isRecord(payload)) return;
+            const nextStatus = payload.status;
+            if (isWhatsAppConnectionStatus(nextStatus)) {
                 setStatus(nextStatus);
             }
-            if (data?.qr) {
-                setQrCode(data.qr);
+            const qr = payload.qr;
+            if (typeof qr === "string" && qr) {
+                setQrCode(qr);
                 setStatus("scanning");
             } else if (nextStatus === "connected" || nextStatus === "disconnected") {
                 setQrCode(null);
@@ -48,8 +60,8 @@ export function WhatsAppConnectionSection() {
             try {
                 const response = await api.get("/api/whatsapp/status");
                 applyStatus(response.data);
-            } catch (error: any) {
-                if (error?.response?.status !== 401) {
+            } catch (error: unknown) {
+                if (!axios.isAxiosError<unknown>(error) || error.response?.status !== 401) {
                     console.error("Failed to load WhatsApp status", error);
                 }
             }
@@ -120,7 +132,7 @@ export function WhatsAppConnectionSection() {
             } else {
                 showAlert("Reset Failed", data.message || "Failed to reset WhatsApp session.");
             }
-        } catch (e) {
+        } catch {
             showAlert("Error", "An unexpected error occurred while resetting the session.");
         }
         setResetting(false);

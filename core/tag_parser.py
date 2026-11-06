@@ -8,13 +8,13 @@ Handles: <save_soul>, <save_identity>, <save_user>, <log_memory>,
 import re
 import asyncio
 from datetime import datetime
-from pathlib import Path  # noqa: used in save_user
-
+from typing import Optional
 from loguru import logger
 
 
 from core.events import OutboundMessage
-from core.paths import PERSONA_DIR, USERS_DIR, MEMORY_DIR, LONG_TERM_MEMORY_FILE
+from core.paths import PersonaPaths
+from core.profile_context import get_current_persona_paths
 
 
 _ANY_TAG = r"save_soul|save_identity|save_mood|save_relationship|save_user|log_memory|save_memory|discord_send|discord_embed"
@@ -57,6 +57,7 @@ async def process_tags(
     bus=None,
     msg=None,
     config=None,
+    persona_paths: Optional[PersonaPaths] = None,
 ) -> TagResult:
     """
     Parse XML-style tags from an LLM reply, execute side effects,
@@ -75,6 +76,7 @@ async def process_tags(
         TagResult with cleaned reply and update flags.
     """
     reply = raw_reply or ""
+    paths = persona_paths or get_current_persona_paths()
     soul_updated = False
     identity_updated = False
     mood_updated = False
@@ -170,7 +172,7 @@ async def process_tags(
                 if not safe_sender_id:
                     safe_sender_id = "unknown"
 
-                user_file = USERS_DIR / f"{safe_sender_id}.md"
+                user_file = paths.users / f"{safe_sender_id}.md"
                 user_file.parent.mkdir(exist_ok=True, parents=True)
                 tmp = user_file.with_suffix(".tmp")
                 tmp.write_text(content, encoding="utf-8")
@@ -192,11 +194,11 @@ async def process_tags(
             break
         entry = mem_match.group(1).strip()
         today_str = datetime.now().strftime("%Y-%m-%d")
-        memory_file = MEMORY_DIR / f"{today_str}.md"
+        memory_file = paths.memory / f"{today_str}.md"
         log_entry = f"\n- **[{datetime.now().strftime('%H:%M')}]** {entry}"
 
         try:
-            MEMORY_DIR.mkdir(exist_ok=True, parents=True)
+            paths.memory.mkdir(exist_ok=True, parents=True)
             with open(memory_file, "a", encoding="utf-8") as f:
                 f.write(log_entry)
 
@@ -216,16 +218,17 @@ async def process_tags(
             break
         content = save_mem_match.group(1).strip()
         try:
-            LONG_TERM_MEMORY_FILE.parent.mkdir(exist_ok=True, parents=True)
+            long_term_memory_file = paths.long_term_memory
+            long_term_memory_file.parent.mkdir(exist_ok=True, parents=True)
             existing_content = ""
-            if LONG_TERM_MEMORY_FILE.exists():
-                existing_content = LONG_TERM_MEMORY_FILE.read_text(
+            if long_term_memory_file.exists():
+                existing_content = long_term_memory_file.read_text(
                     encoding="utf-8"
                 ).strip()
 
-            tmp_file = LONG_TERM_MEMORY_FILE.with_suffix(".md.tmp")
+            tmp_file = long_term_memory_file.with_suffix(".md.tmp")
             tmp_file.write_text(content, encoding="utf-8")
-            tmp_file.replace(LONG_TERM_MEMORY_FILE)
+            tmp_file.replace(long_term_memory_file)
 
             if vector_service is not None:
                 is_template = (

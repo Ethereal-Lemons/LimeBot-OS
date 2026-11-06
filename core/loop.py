@@ -7,12 +7,10 @@ import json
 import mimetypes
 import os
 import re
-import shlex
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from core.confirmation import (
@@ -21,17 +19,52 @@ from core.confirmation import (
     APPROVE_WORDS,
     DENY_WORDS,
 )
-from core.rag_engine import RagEngine, AUTORAG_MIN_SCORE
+from core.rag_engine import RagEngine
 from core.tool_dispatcher import (
     normalize_tool_alias,
-    preflight_tool_call,
     TOOL_RESULT_LIMITS,
     DEFAULT_TOOL_RESULT_LIMIT,
     BROWSER_CACHEABLE,
     TAG_COMPAT_TOOLS,
-    TOOL_NAME_ALIASES,
+    SEARCH_TOOL_NAMES,
     truncate_tool_result,
+    READ_ONLY_TOOL_NAMES as _READ_ONLY_TOOL_NAMES,
+    MUTATION_TOOL_NAMES as _MUTATION_TOOL_NAMES,
 )
+from core.tool_outcomes import (
+    ToolOutcome,
+    build_tool_outcome,
+    tool_phase,
+)
+from core.tool_batch_executor import ToolBatchExecutor
+from core.tool_batch_events import ToolBatchEventContext, ToolBatchEventService
+from core.turn_history_service import TurnHistoryService
+from core.turn_preparation_service import TurnPreparationService
+from core.conversation_image_service import ConversationImageService
+from core.tool_runtime import (
+    ToolExecutionContext,
+    ToolRuntime,
+    ToolRuntimeHooks,
+    tool_cache_scope_args,
+)
+from core.browser_search_service import (
+    BrowserSearchService,
+    BrowserSearchToolAdapter,
+)
+from core.tool_call_parser import (
+    extract_tool_calls,
+    sanitize_tool_call_content,
+    trim_leading_structural_lines,
+)
+from core.capability_service import CapabilityService
+from core.stream_consumer import (
+    _GHOST_TAG_NAMES,
+    _GHOST_TAG_RE,
+    consume_stream,
+)
+from core.llm_call_service import ProviderErrorTypes, llm_call_with_retry
+from core.subagent_runner import run_subagent
+
 
 try:
     from litellm import (
@@ -80,10 +113,15 @@ from core.operator_invariants import (
     evaluate_operator_invariants,
     format_invariant_next_action,
     format_subagent_failure_block,
-    has_verification_evidence,
-    turn_had_file_mutations,
 )
-from core.recovery_controller import RecoveryState, classify_failure
+from core.approval_policy import ToolApprovalPolicy
+from core.tool_approval_flow import ToolApprovalFlowService, ToolApprovalRequest
+from core.recovery_controller import RecoveryState
+from core.tool_recovery_service import (
+    ToolRecoveryRequest,
+    ToolRecoveryResult,
+    ToolRecoveryService,
+)
 from core.task_runs import (
     ACTIVE_STATES as TASK_RUN_ACTIVE_STATES,
     BLOCKED as TASK_RUN_BLOCKED,
@@ -92,13 +130,28 @@ from core.task_runs import (
     PLANNING as TASK_RUN_PLANNING,
     REPAIRING as TASK_RUN_REPAIRING,
     RETRYING as TASK_RUN_RETRYING,
-    VERIFYING as TASK_RUN_VERIFYING,
     get_task_run_store,
-    is_coding_goal,
 )
+from core.task_run_continuation import TaskRunContinuationService
+from core.task_run_completion import (
+    TaskRunCompletionRequest,
+    TaskRunCompletionService,
+)
+from core.task_run_policy import acceptance_satisfied
+from core.workspace_review_service import WorkspaceReviewService
+from core.inbound_turn_lifecycle import InboundTurnLifecycle
 from core.turn_state import TurnState, normalize_turn_status
-from core.unattended import evaluate_unattended_tool, is_unattended_turn
+from core.unattended import is_unattended_turn
 from core import prompt as prompt_module
+from core.prompt_coordinator import PromptCoordinator
+from core.profile_context import (
+    ProfileCoordinator,
+    get_current_model,
+    get_current_persona_paths,
+    get_current_profile_context,
+    get_current_profile_id,
+)
+from core.profiles import ProfileError, get_profile_registry, profile_allows_tool
 from core.metrics import MetricsCollector
 from core.prompt_modes import (
     build_ponytail_prompt_addition,
@@ -115,15 +168,11 @@ from core.session_manager import SessionManager
 from core.skills import SkillRegistry
 from core.subagents import SubagentRegistry, normalize_subagent_tool_name
 from core.tag_parser import process_tags
-from core.media_intent import exclusive_tools_for_turn
 from core.tool_capability import (
-    filter_tools_for_image_attachments,
-    filter_tools_for_instagram_photo_send,
     strip_image_urls,
 )
-from core.tool_defs import shortlist_tool_definitions
 from core.tools import Toolbox
-from core.vectors import get_vector_service
+from core.vectors import get_profile_vector_service, get_vector_service
 
 
 TOOL_BROADCAST_MAX_CHARS = 500
@@ -142,7 +191,6 @@ _HISTORY_INTERRUPTED_TOOL_MESSAGE = (
 # Tool result limits and browser cacheability are now in core/tool_dispatcher.py
 # and imported at the top of this file as TOOL_RESULT_LIMITS, DEFAULT_TOOL_RESULT_LIMIT,
 # BROWSER_CACHEABLE, TAG_COMPAT_TOOLS.
-# AUTORAG_MIN_SCORE is imported from core/rag_engine.py.
 # SENSITIVE_TOOLS, APPROVE_WORDS, DENY_WORDS come from core/confirmation.py.
 
 _INTERIM_SAVE_EVERY = 5
@@ -152,23 +200,6 @@ _CURRENT_TASK_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar
 
 CODING_PHASES = frozenset(
     {"inspect", "plan", "apply", "verify", "repair", "complete", "blocked"}
-)
-_READ_ONLY_TOOL_NAMES = frozenset(
-    {
-        "read_file", "list_dir", "search_files", "verify_files", "diagnose_files", "memory_search", "web_search",
-        "browser_extract", "inspect_skill",
-    }
-)
-_MUTATION_TOOL_NAMES = frozenset(
-    {
-        "edit_file",
-        "write_file",
-        "create_spreadsheet",
-        "delete_file",
-        "create_skill",
-        "edit_skill",
-        "apply_workspace_changeset",
-    }
 )
 _RESEARCH_TOOL_NAMES = frozenset(
     {
@@ -190,24 +221,6 @@ _CODING_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
-
-@dataclass(frozen=True)
-class ToolOutcome:
-    """Bounded, redaction-safe outcome retained for coding recovery."""
-
-    tool: str
-    success: bool
-    exit_code: Optional[int]
-    timed_out: bool
-    stalled: bool
-    retry_safe: bool
-    failure_fingerprint: str
-    diagnostic_head: str
-    diagnostic_tail: str
-    verification_status: Optional[str] = None
-    verification_detail: str = ""
-    failure_category: str = "unknown"
-    progress: bool = False
 
 _CASUAL_WORDS = frozenset(
     {
@@ -293,33 +306,6 @@ _EXPLICIT_TOOL_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Some providers occasionally serialize a native tool call into assistant text
-# instead of the structured tool-call field.  Recover the exact visible form
-# emitted by those providers and keep it out of the user-facing response.
-_VISIBLE_PROVIDER_TOOL_CALL_PREFIX_RE = re.compile(
-    r"(?:^|\s)to\s*=\s*functions\.(?P<name>[A-Za-z_][\w]*)"
-    r"(?:\s+code)?\s*:\s*",
-    re.IGNORECASE,
-)
-
-_GHOST_TAG_RE = re.compile(
-    r"</?(?:save_user|save_soul|save_identity|save_memory"
-    r"|log_memory|save_mood|save_relationship"
-    r"|save_memory|discord_send|discord_embed)>",
-    re.IGNORECASE,
-)
-
-_GHOST_TAG_NAMES = (
-    "save_user",
-    "save_soul",
-    "save_identity",
-    "save_memory",
-    "log_memory",
-    "save_mood",
-    "save_relationship",
-    "discord_send",
-    "discord_embed",
-)
 
 # Backward-compat aliases for code that still uses the underscore-prefixed names
 _TOOL_RESULT_LIMITS = TOOL_RESULT_LIMITS
@@ -333,23 +319,49 @@ _AGENT_READINESS_TIMEOUT_S = 20.0
 _LLM_WARMUP_MAX_TOKENS = 16
 
 # Host-owned search. Legacy names still execute as web_search internally.
-_SEARCH_TOOLS = frozenset(
-    {
-        "web_search",
-        "image_search",
-        "google_search",
-        "deep_research",
-        "imagesearch",
-        "search_images",
-        "research",
-    }
-)
+_SEARCH_TOOLS = SEARCH_TOOL_NAMES
 
-from core.paths import PERSONA_DIR, USERS_DIR, MEMORY_DIR, SOUL_FILE, IDENTITY_FILE
+from core.paths import PERSONA_DIR, USERS_DIR, MEMORY_DIR
 
 
 class AgentLoop:
     """Agent loop supporting interactive persona setup and user context."""
+
+    @property
+    def model(self) -> str:
+        return str(get_current_model(getattr(self, "_model", "")) or "")
+
+    @model.setter
+    def model(self, value: str) -> None:
+        self._model = str(value or "")
+
+    @property
+    def pending_confirmations(self) -> Dict[str, Dict[str, Any]]:
+        manager = getattr(self, "confirm", None)
+        if manager is not None:
+            return manager.pending_confirmations
+        return getattr(self, "_pending_confirmations", {})
+
+    @pending_confirmations.setter
+    def pending_confirmations(self, value: Dict[str, Dict[str, Any]]) -> None:
+        self._pending_confirmations = value
+        manager = getattr(self, "confirm", None)
+        if manager is not None:
+            manager.pending_confirmations = value
+
+    @property
+    def session_whitelists(self) -> Dict[str, Set[str]]:
+        manager = getattr(self, "confirm", None)
+        if manager is not None:
+            return manager.session_whitelists
+        return getattr(self, "_session_whitelists", {})
+
+    @session_whitelists.setter
+    def session_whitelists(self, value: Dict[str, Set[str]]) -> None:
+        self._session_whitelists = value
+        manager = getattr(self, "confirm", None)
+        if manager is not None:
+            manager.session_whitelists = value
 
     def __init__(
         self,
@@ -357,6 +369,7 @@ class AgentLoop:
         model: str = "gpt-3.5-turbo",
         scheduler: Any = None,
         session_manager: Optional[SessionManager] = None,
+        llm_client: Optional[LimeLLMClient] = None,
     ):
         self.bus = bus
         self.model = model
@@ -368,13 +381,13 @@ class AgentLoop:
 
         self.history: Dict[str, List[Dict]] = {}
         self.session_locks: Dict[str, asyncio.Lock] = {}
-        self.session_whitelists: Dict[str, Set[str]] = {}
+        self._session_whitelists: Dict[str, Set[str]] = {}
 
         self.session_manager = session_manager or SessionManager()
         self.metrics = MetricsCollector()
-        self.llm_client = LimeLLMClient()
+        self.llm_client = llm_client or LimeLLMClient()
         self.tool_cache = ToolCache()
-        self.pending_confirmations: Dict[str, Dict[str, Any]] = {}
+        self._pending_confirmations: Dict[str, Dict[str, Any]] = {}
         self.active_tasks: Dict[str, asyncio.Task] = {}
         # One registry owns every live turn and background job.  The legacy
         # maps below remain as compatibility indexes for channel adapters, but
@@ -404,6 +417,11 @@ class AgentLoop:
         self.config = cfg
         if cfg.llm.model:
             self.model = cfg.llm.model
+        self.profile_registry = get_profile_registry(cfg)
+        self.profile_coordinator = ProfileCoordinator(
+            self.profile_registry,
+            default_model=lambda: getattr(self, "_model", ""),
+        )
         self.primary_model = self.model
         self.fallback_models = list(getattr(cfg.llm, "fallback_models", []) or [])
         self.provider_circuit_breaker = ProviderCircuitBreaker()
@@ -416,6 +434,19 @@ class AgentLoop:
         self.toolbox.set_agent(self)
         if self.scheduler:
             self.toolbox.set_scheduler(self.scheduler)
+
+        self.browser_search_service = BrowserSearchService(
+            manager_provider=lambda session_key: get_browser_manager(
+                session_key=session_key, config=self.config
+            ),
+            report_progress=lambda message: self.toolbox.send_progress(message),
+            attach_chat_image=lambda image_url, caption: self.toolbox.attach_chat_image(
+                image_url, caption
+            ),
+        )
+        self.browser_search_adapter = BrowserSearchToolAdapter(
+            self.browser_search_service
+        )
 
         self.vector_service = get_vector_service(cfg)
 
@@ -453,12 +484,23 @@ class AgentLoop:
         self.skill_registry = SkillRegistry(skill_dirs=[str(path) for path in get_skill_dirs()], config=cfg)
         self.subagent_registry = SubagentRegistry()
         self.toolbox.set_subagent_registry(self.subagent_registry)
+        self.prompt_coordinator = PromptCoordinator(
+            config=self.config,
+            model=lambda: self.model,
+            allowed_paths=lambda: self.toolbox.allowed_paths,
+            skill_registry=self.skill_registry,
+            subagent_registry=self.subagent_registry,
+            get_capability_turn_context=self._get_capability_turn_context,
+            capability_catalog_prompt=self._capability_catalog_prompt,
+        )
 
         # ── Sub-module managers ──────────────────────────────────────────
         self.confirm = ConfirmationManager(
             toolbox=self.toolbox,
             truncate_fn=self._truncate_preview,
             safe_json_load_fn=self._safe_json_load,
+            pending_confirmations=self._pending_confirmations,
+            session_whitelists=self._session_whitelists,
         )
         self.rag = RagEngine(
             truncate_fn=self._truncate_preview,
@@ -478,8 +520,6 @@ class AgentLoop:
             self._initialize_capabilities()
         )
 
-        self._stable_prompt_cache: Dict[str, Tuple[str, float]] = {}
-        self._STABLE_PROMPT_TTL = 30.0
         # Per-session task capability context.  The latest substantive request
         # remains available when the next utterance is only an acknowledgement
         # or shorthand follow-up ("yes, that one", "sí la tienes", etc.).
@@ -494,7 +534,21 @@ class AgentLoop:
             str, Tuple[float, List[Dict[str, Any]]]
         ] = {}
         self._turn_attachments: Dict[str, List[Dict[str, Any]]] = {}
-        self._workspace_changesets: Dict[str, Tuple[str, str]] = {}
+        self.tool_runtime = ToolRuntime(
+            toolbox=self.toolbox,
+            tool_registry=self._tool_registry,
+            tool_cache=self.tool_cache,
+            metrics=self.metrics,
+            hooks=ToolRuntimeHooks(
+                background_task=lambda *args: self._execute_background_task_tool(
+                    *args
+                ),
+                search=self.browser_search_adapter.search_tool,
+                browser=self.browser_search_adapter.browser_tool,
+                tag_compat=lambda *args: self._execute_tag_compat_tool(*args),
+            ),
+        )
+        self.tool_batch_executor = ToolBatchExecutor()
 
     def _set_readiness_phase(self, phase: str) -> None:
         self._readiness_phase = phase
@@ -638,7 +692,7 @@ class AgentLoop:
     def _refresh_tool_definitions(self) -> None:
         """Rebuild and cache tool definitions. Call only when skills change."""
         self._tool_definitions = self.toolbox.get_tool_definitions()
-        self._stable_prompt_cache.clear()
+        self._get_prompt_coordinator().clear_cache()
         if hasattr(self, "tool_cache"):
             self.tool_cache.clear()
         self._capability_snapshot_revision = int(
@@ -692,153 +746,47 @@ class AgentLoop:
             self._refresh_tool_definitions()
         return self._tool_definitions
 
+    def _get_capability_service(self) -> CapabilityService:
+        service = getattr(self, "capability_service", None)
+        if service is None:
+            service = CapabilityService(
+                get_skill_registry=lambda: getattr(self, "skill_registry", None),
+                get_subagent_registry=lambda: getattr(self, "subagent_registry", None),
+                get_session_state=lambda: getattr(
+                    self, "_session_capability_state", {}
+                ),
+                get_tool_definitions=lambda: self._get_tool_definitions(),
+                get_turn_attachments=lambda session_key: list(
+                    getattr(self, "_turn_attachments", {}).get(session_key) or []
+                ),
+                tool_shortlist_enabled=lambda: self._tool_shortlist_enabled(),
+                tool_definition_names=lambda tools: self._tool_definition_names(tools),
+                log_tool_debug=lambda *args, **kwargs: self._log_tool_debug(
+                    *args, **kwargs
+                ),
+                get_capability_turn_context=lambda *args, **kwargs: self._get_capability_turn_context(
+                    *args, **kwargs
+                ),
+                get_tool_definitions_for_turn=lambda *args, **kwargs: self._get_tool_definitions_for_turn(
+                    *args, **kwargs
+                ),
+            )
+            self.capability_service = service
+        return service
+
     @staticmethod
     def _is_capability_followup(text: str) -> bool:
-        lowered = re.sub(r"\s+", " ", str(text or "").strip().lower())
-        if not lowered:
-            return True
-        return bool(
-            re.search(
-                r"\b(?:yes|yeah|yep|ok|okay|sure|continue|go ahead|do it|that one|"
-                r"same|proceed|sí|si|claro|dale|esa|ese|esa misma|la tienes|"
-                r"adelante|hazlo|continúa|continua)\b",
-                lowered,
-            )
-        )
+        return CapabilityService.is_capability_followup(text)
 
     def _get_capability_turn_context(
         self, session_key: Optional[str], user_text: str
     ) -> Dict[str, Any]:
-        """Resolve sticky skill names and the text used for relevance routing."""
-        key = str(session_key or "").strip()
-        registry = getattr(self, "skill_registry", None)
-        if registry is None or not hasattr(registry, "get_relevant_skill_names"):
-            return {
-                "routing_text": str(user_text or ""),
-                "skill_names": [],
-                "last_substantive_message": "",
-                "revision": 0,
-            }
-
-        prior = dict(getattr(self, "_session_capability_state", {}).get(key) or {})
-        revision = int(getattr(registry, "capability_revision", 0) or 0)
-        if prior.get("revision") != revision:
-            prior = {}
-        current = str(user_text or "").strip()
-        current_names = registry.get_relevant_skill_names(current, max_skills=3)
-        previous_names = list(prior.get("skill_names") or [])
-        previous_message = str(prior.get("last_substantive_message") or "").strip()
-        preserve = bool(previous_names) and (
-            self._is_capability_followup(current) or not current_names
+        return self._get_capability_service().get_capability_turn_context(
+            session_key, user_text
         )
-        routing_text = current
-        if preserve and previous_message:
-            routing_text = f"{current}\n{previous_message}".strip()
-        selected_names = registry.get_relevant_skill_names(
-            routing_text,
-            max_skills=3,
-            sticky_skill_names=previous_names if preserve else None,
-        )
-        substantive = bool(current) and not self._is_capability_followup(current)
-        last_substantive = current if substantive else previous_message
-        state = {
-            "skill_names": selected_names,
-            "last_substantive_message": last_substantive,
-            "revision": revision,
-        }
-        if key:
-            getattr(self, "_session_capability_state", {})[key] = state
-        return {"routing_text": routing_text, **state}
 
     def _capability_catalog_prompt(self) -> str:
-        registry = getattr(self, "skill_registry", None)
-        catalog: list[Dict[str, Any]] = []
-        if registry is not None and hasattr(registry, "get_capability_catalog"):
-            try:
-                catalog.extend(registry.get_capability_catalog(include_inactive=True))
-            except Exception:
-                pass
-        try:
-            for tool in self._get_tool_definitions():
-                function = tool.get("function") if isinstance(tool, dict) else {}
-                if not isinstance(function, dict):
-                    continue
-                name = str(function.get("name") or "").strip()
-                if not name:
-                    continue
-                description = redact_sensitive_text(
-                    re.sub(r"\s+", " ", str(function.get("description") or "")).strip()
-                )[:140]
-                state = "ready"
-                kind = "mcp_tool" if name.startswith("mcp_") else "native_tool"
-                if name.startswith("mcp_"):
-                    try:
-                        from core.mcp_client import get_mcp_manager
-
-                        server = name.split("_", 2)[1]
-                        state = str(
-                            get_mcp_manager().get_status().get(server, "Offline")
-                        ).lower()
-                    except Exception:
-                        state = "unknown"
-                catalog.append(
-                    {
-                        "name": name,
-                        "type": kind,
-                        "description": description,
-                        "state": state,
-                    }
-                )
-        except Exception:
-            pass
-        try:
-            from core.mcp_client import get_mcp_manager
-
-            catalog.extend(
-                {
-                    "name": str(name),
-                    "type": "mcp_server",
-                    "description": "Configured MCP server",
-                    "state": str(state).lower(),
-                }
-                for name, state in sorted(
-                    (get_mcp_manager().get_status() or {}).items()
-                )
-            )
-        except Exception:
-            pass
-        try:
-            descriptions = self.subagent_registry.get_agent_descriptions()
-            catalog.extend(
-                {
-                    "name": str(name),
-                    "type": "subagent",
-                    "description": redact_sensitive_text(
-                        re.sub(r"\s+", " ", str(description or "")).strip()
-                    )[:140],
-                    "state": "ready",
-                }
-                for name, description in sorted((descriptions or {}).items())
-            )
-        except Exception:
-            pass
-        if not catalog:
-            return ""
-        lines = [
-            "\n--- CAPABILITY INVENTORY ---",
-            "Compact discovery snapshot (not full manuals). `ready` means a native tool is registered or a skill is enabled with declared dependencies present; it does not prove external credentials are connected.",
-        ]
-        for item in catalog[:32]:
-            name = str(item.get("name") or "")
-            kind = str(item.get("type") or "capability")
-            state = str(item.get("state") or "unknown")
-            desc = str(item.get("description") or "").strip()
-            required = ", ".join(item.get("required_tools") or [])
-            suffix = f"; tools: {required}" if required else ""
-            lines.append(f"- `{name}` ({kind}) [{state}]: {desc}{suffix}")
-        if len(catalog) > 32:
-            lines.append(f"- ... {len(catalog) - 32} more capabilities.")
-        return "\n".join(lines) + "\n"
+        return self._get_capability_service().capability_catalog_prompt()
 
     def _get_tool_definitions_for_turn(
         self,
@@ -847,74 +795,12 @@ class AgentLoop:
         session_key: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict]:
-        all_tools = self._get_tool_definitions()
-        skill_registry = getattr(self, "skill_registry", None)
-        capability_context = self._get_capability_turn_context(session_key, user_text)
-        selected_skill_names = list(capability_context.get("skill_names") or [])
-        if forced_skill_name and forced_skill_name not in selected_skill_names:
-            selected_skill_names.insert(0, forced_skill_name)
-        if skill_registry is not None:
-            if hasattr(skill_registry, "get_required_tool_names_for_skills"):
-                required_tool_names = skill_registry.get_required_tool_names_for_skills(
-                    selected_skill_names
-                )
-            else:
-                required_tool_names = []
-                for name in selected_skill_names:
-                    required_tool_names.extend(
-                        skill_registry.get_required_tool_names(name)
-                    )
-                required_tool_names = list(dict.fromkeys(required_tool_names))
-        else:
-            required_tool_names = []
-        channel = ""
-        if ":" in str(session_key or ""):
-            channel = str(session_key).split(":", 1)[0]
-        if attachments is None and session_key:
-            attachments = list(
-                getattr(self, "_turn_attachments", {}).get(session_key) or []
-            )
-        exclusive = exclusive_tools_for_turn(user_text, channel=channel)
-        if exclusive is not None:
-            selected = [
-                tool
-            for tool in all_tools
-                if str(tool.get("function", {}).get("name") or "") in exclusive
-            ]
-            strategy = "intent_exclusive"
-        elif self._tool_shortlist_enabled():
-            selected = shortlist_tool_definitions(
-                all_tools,
-                user_text,
-                required_tool_names=required_tool_names,
-                channel=channel,
-                attachments=attachments,
-            )
-            strategy = "shortlist"
-        else:
-            selected = list(all_tools)
-            strategy = "full_schema_default"
-
-        selected = filter_tools_for_image_attachments(
-            selected, user_text, attachments
+        return self._get_capability_service().get_tool_definitions_for_turn(
+            user_text,
+            forced_skill_name=forced_skill_name,
+            session_key=session_key,
+            attachments=attachments,
         )
-        selected = filter_tools_for_instagram_photo_send(selected, user_text)
-
-        all_names = self._tool_definition_names(all_tools)
-        selected_names = self._tool_definition_names(selected)
-        self._log_tool_debug(
-            "tool_schema_selection",
-            strategy=strategy,
-            user_text=user_text,
-            total_tool_count=len(all_names),
-            total_tools=all_names,
-            selected_tool_count=len(selected_names),
-            selected_tools=selected_names,
-            forced_skill=forced_skill_name,
-            matched_skills=selected_skill_names,
-            required_skill_tools=required_tool_names,
-        )
-        return selected
 
     def _filter_tool_definitions_for_subagent(
         self,
@@ -1025,8 +911,48 @@ class AgentLoop:
         self.model = model
         self.primary_model = model
         self._provider = self._resolve_provider()
-        self._stable_prompt_cache.clear()
+        self._get_prompt_coordinator().clear_cache()
         self._image_input_fallback_sessions.clear()
+
+    def _get_current_vector_service(self):
+        profile_context = get_current_profile_context()
+        if profile_context is not None and profile_context.profile_id != "default":
+            return get_profile_vector_service(
+                self.config, profile_id=profile_context.profile_id
+            )
+        return self.vector_service
+
+    def _get_turn_preparation_service(self) -> TurnPreparationService:
+        service = getattr(self, "turn_preparation_service", None)
+        if service is None:
+            service = TurnPreparationService(
+                config=self.config,
+                casual_words=_CASUAL_WORDS,
+                get_vector_service=lambda: self._get_current_vector_service(),
+                history_is_loaded=lambda session_key: session_key
+                in getattr(self, "history", {}),
+                load_history=lambda session_key: self.session_manager.load_history(
+                    session_key
+                ),
+                publish_activity=lambda *args, **kwargs: self._publish_activity(
+                    *args, **kwargs
+                ),
+                build_rag_result_trace=lambda result: self._build_rag_result_trace(
+                    result
+                ),
+                record_rag_trace=lambda session_key, result: self._record_rag_trace(
+                    session_key, result
+                ),
+                record_stage_timing=lambda *args, **kwargs: self._record_stage_timing(
+                    *args, **kwargs
+                ),
+            )
+            self.turn_preparation_service = service
+        return service
+
+    @staticmethod
+    def _tool_cache_scope_args(function_args: dict) -> dict:
+        return tool_cache_scope_args(function_args, get_current_profile_id())
 
     def get_llm_runtime_status(self) -> Dict[str, Any]:
         return {
@@ -1528,16 +1454,30 @@ class AgentLoop:
             logger.error(f"[TTS] Voice synthesis failed: {e}")
             return None
 
+    def _get_conversation_image_service(self) -> ConversationImageService:
+        service = getattr(self, "conversation_image_service", None)
+        if service is None:
+            service = ConversationImageService(
+                recent_attachments=lambda: getattr(
+                    self, "_recent_image_attachments", {}
+                ),
+                histories=lambda: getattr(self, "history", {}),
+                mark_dirty=lambda session_key: self._mark_dirty(session_key),
+                record_anomaly=lambda *args, **kwargs: self.metrics.record_anomaly(
+                    *args, **kwargs
+                ),
+                current_model=lambda: str(getattr(self, "model", "")),
+                render_text_only=lambda content: self._render_text_only_message_content(
+                    content
+                ),
+                recent_reference_ttl_seconds=_RECENT_IMAGE_REFERENCE_TTL_S,
+            )
+            self.conversation_image_service = service
+        return service
+
     @staticmethod
     def _messages_have_image_inputs(messages: List[Dict[str, Any]]) -> bool:
-        for message in messages:
-            content = message.get("content") if isinstance(message, dict) else None
-            if not isinstance(content, list):
-                continue
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "image_url":
-                    return True
-        return False
+        return ConversationImageService.messages_have_image_inputs(messages)
 
     @staticmethod
     def _collect_image_inputs(
@@ -1545,113 +1485,35 @@ class AgentLoop:
         metadata_images: Any = None,
         legacy_image: str = "",
     ) -> List[str]:
-        """Prefer inline image data without adding its CDN URL a second time."""
-        image_inputs: List[str] = []
-        represented_urls: set[str] = set()
-
-        for attachment in attachments:
-            if attachment.get("kind") != "image":
-                continue
-            remote_url = str(attachment.get("url") or "").strip()
-            preferred = str(
-                attachment.get("data_url") or remote_url or ""
-            ).strip()
-            if preferred and preferred not in image_inputs:
-                image_inputs.append(preferred)
-            if remote_url:
-                represented_urls.add(remote_url)
-
-        extra_images = (
-            [metadata_images]
-            if isinstance(metadata_images, str)
-            else list(metadata_images or [])
+        return ConversationImageService.collect_image_inputs(
+            attachments, metadata_images, legacy_image
         )
-        for candidate in [*extra_images, legacy_image]:
-            value = str(candidate or "").strip()
-            if value and value not in represented_urls and value not in image_inputs:
-                image_inputs.append(value)
-
-        return image_inputs
 
     def _remember_image_attachments(
         self, session_key: str, attachments: List[Dict[str, Any]]
     ) -> None:
-        images = [
-            dict(attachment)
-            for attachment in attachments
-            if attachment.get("kind") == "image"
-            and str(attachment.get("path") or "").strip()
-        ][:4]
-        if images:
-            self._recent_image_attachments[session_key] = (time.time(), images)
+        self._get_conversation_image_service().remember_image_attachments(
+            session_key, attachments
+        )
 
     def _get_recent_image_attachments(
         self, session_key: str
     ) -> List[Dict[str, Any]]:
-        remembered = self._recent_image_attachments.get(session_key)
-        if not remembered:
-            return []
-        remembered_at, attachments = remembered
-        if time.time() - remembered_at > _RECENT_IMAGE_REFERENCE_TTL_S:
-            self._recent_image_attachments.pop(session_key, None)
-            return []
-        usable = [
-            dict(attachment)
-            for attachment in attachments
-            if str(attachment.get("path") or "").strip()
-            and Path(str(attachment.get("path"))).is_file()
-        ]
-        if not usable:
-            self._recent_image_attachments.pop(session_key, None)
-        return usable
+        return self._get_conversation_image_service().get_recent_image_attachments(
+            session_key
+        )
 
     @staticmethod
     def _message_refers_to_recent_image(content: str) -> bool:
-        return bool(
-            re.search(
-                r"\b(?:image|photo|picture|attachment|reference|same|this|that|"
-                r"imagen|foto|adjunt[oa]|referencia|misma|esta|esa|"
-                r"generate\s+it|make\s+it|generala|gen[eé]rala|creala|cr[eé]ala|hazla)\b",
-                str(content or ""),
-                re.IGNORECASE,
-            )
-        )
+        return ConversationImageService.message_refers_to_recent_image(content)
 
     @staticmethod
     def _image_safe_history_content(content: Any) -> Any:
-        """Replace image bytes and expiring URLs with a durable small marker."""
-        if not isinstance(content, list):
-            return content
-        text_parts = [
-            str(item.get("text") or "").strip()
-            for item in content
-            if isinstance(item, dict) and item.get("type") == "text"
-        ]
-        image_count = sum(
-            1
-            for item in content
-            if isinstance(item, dict) and item.get("type") == "image_url"
-        )
-        if not image_count:
-            return content
-        marker = (
-            "[Image attachment processed]"
-            if image_count == 1
-            else f"[{image_count} image attachments processed]"
-        )
-        return " ".join([part for part in text_parts if part] + [marker]).strip()
+        return ConversationImageService.image_safe_history_content(content)
 
     @classmethod
     def _history_summary_payload(cls, messages: List[Dict[str, Any]]) -> str:
-        """Serialize history for summarization without embedding image payloads."""
-        safe_messages = []
-        for message in messages:
-            safe_message = dict(message)
-            safe_message["content"] = cls._image_safe_history_content(
-                message.get("content")
-            )
-            safe_messages.append(safe_message)
-        return json.dumps(safe_messages, ensure_ascii=False, default=str)
+        return ConversationImageService.history_summary_payload(messages)
 
     @staticmethod
     def _tool_call_id(tool_call: Any) -> str:
@@ -1773,20 +1635,13 @@ class AgentLoop:
         history = self.history.get(session_key, [])
         normalized, changed = self._normalize_tool_history_messages(history)
         if changed:
-            self.history[session_key] = normalized
-            self._mark_dirty(session_key)
+            self._history_replace(session_key, normalized, mark_dirty=True)
         return self.history.get(session_key, normalized)
 
     def _evict_history_image_inputs(self, session_key: str) -> None:
-        changed = False
-        for message in self.history.get(session_key, []):
-            original_content = message.get("content")
-            safe_content = self._image_safe_history_content(original_content)
-            if safe_content is not original_content:
-                message["content"] = safe_content
-                changed = True
-        if changed:
-            self._mark_dirty(session_key)
+        self._get_conversation_image_service().evict_history_image_inputs(
+            session_key
+        )
 
     def _truncate_history_fallback(
         self, conv: List[Dict[str, Any]], target_tokens: int
@@ -1822,103 +1677,51 @@ class AgentLoop:
     def _downgrade_image_messages_for_text_model(
         self, messages: List[Dict[str, Any]], session_key: str
     ) -> bool:
-        changed = False
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            if not any(
-                isinstance(item, dict) and item.get("type") == "image_url"
-                for item in content
-            ):
-                continue
-            message["content"] = self._render_text_only_message_content(content)
-            changed = True
-
-        if changed:
-            self.metrics.record_anomaly(
-                session_key,
-                "image_input_downgraded_for_text_model",
-                detail=self.model,
-            )
-        return changed
+        return self._get_conversation_image_service().downgrade_image_messages_for_text_model(
+            messages, session_key
+        )
 
     def _should_retry_without_images(
         self, error: Exception, messages: List[Dict[str, Any]]
     ) -> bool:
-        if not self._messages_have_image_inputs(messages):
-            return False
-        error_text = str(error).lower()
-        return any(
-            phrase in error_text
-            for phrase in (
-                "not a multimodal model",
-                "does not support vision",
-                "does not support image",
-                "doesn't support vision",
-                "doesn't support image",
-            )
+        return self._get_conversation_image_service().should_retry_without_images(
+            error, messages
         )
 
     async def _get_stable_prompt(
         self, sender_id: str, channel: str, chat_id: str, sender_name: str = ""
     ) -> str:
-        """
-        Return the rarely-changing part of the system prompt, cached per
-        (sender_id, channel) for _STABLE_PROMPT_TTL seconds.
-        """
-        key = f"{sender_id}:{channel}"
-        cached = self._stable_prompt_cache.get(key)
-        now = time.monotonic()
-
-        if cached and now < cached[1]:
-            return cached[0]
-
-        try:
-            soul = (
-                await asyncio.to_thread(SOUL_FILE.read_text, encoding="utf-8")
-                if SOUL_FILE.exists()
-                else ""
-            )
-            identity_raw = (
-                await asyncio.to_thread(IDENTITY_FILE.read_text, encoding="utf-8")
-                if IDENTITY_FILE.exists()
-                else ""
-            )
-        except Exception as e:
-            logger.warning(f"Error reading persona files: {e}")
-            soul = identity_raw = ""
-
-        if not prompt_module.is_setup_complete(
-            soul_content=soul, identity_content=identity_raw
-        ):
-            return prompt_module.get_setup_prompt(
-                soul_content=soul, identity_content=identity_raw
-            )
-
-        stable = prompt_module.build_stable_system_prompt(
-            sender_id=sender_id,
-            channel=channel,
-            chat_id=chat_id,
-            model=self.model,
-            allowed_paths=self.toolbox.allowed_paths,
-            skill_registry=self.skill_registry,
-            config=self.config,
-            soul=soul,
-            identity_raw=identity_raw,
-            sender_name=sender_name,
+        """Compatibility boundary for callers that request the stable prompt."""
+        return await self._get_prompt_coordinator().get_stable_prompt(
+            sender_id, channel, chat_id, sender_name
         )
-        self._stable_prompt_cache[key] = (stable, now + self._STABLE_PROMPT_TTL)
-        return stable
 
     def _invalidate_stable_prompt(self, sender_id: str) -> None:
         """Drop cached prompts for this sender. Call after soul/identity updates."""
-        for key in [
-            k for k in self._stable_prompt_cache if k.startswith(f"{sender_id}:")
-        ]:
-            del self._stable_prompt_cache[key]
+        self._get_prompt_coordinator().invalidate(sender_id)
+
+    def _get_prompt_coordinator(self) -> PromptCoordinator:
+        coordinator = getattr(self, "prompt_coordinator", None)
+        if coordinator is None:
+            coordinator = PromptCoordinator(
+                config=getattr(self, "config", None),
+                model=lambda: str(getattr(self, "model", "")),
+                allowed_paths=lambda: getattr(
+                    getattr(self, "toolbox", None), "allowed_paths", []
+                ),
+                skill_registry=getattr(self, "skill_registry", None),
+                subagent_registry=getattr(self, "subagent_registry", None),
+                get_capability_turn_context=getattr(
+                    self,
+                    "_get_capability_turn_context",
+                    lambda _session_key, message: {"routing_text": message},
+                ),
+                capability_catalog_prompt=getattr(
+                    self, "_capability_catalog_prompt", lambda: ""
+                ),
+            )
+            self.prompt_coordinator = coordinator
+        return coordinator
 
     def _log_session_event(self, session_key: str, event: dict) -> None:
         try:
@@ -1926,6 +1729,13 @@ class AgentLoop:
             task_id = _CURRENT_TASK_ID.get()
             if task_id:
                 payload.setdefault("task_id", task_id)
+            profile_context = get_current_profile_context()
+            payload.setdefault(
+                "profile_id",
+                profile_context.profile_id if profile_context else get_current_profile_id(),
+            )
+            if profile_context is not None:
+                payload.setdefault("profile_name", profile_context.profile.display_name)
             asyncio.create_task(
                 self.session_manager.append_event_log(session_key, payload)
             )
@@ -1945,58 +1755,18 @@ class AgentLoop:
         session_key: Optional[str] = None,
     ) -> str:
         """Stable (cached) + volatile (per-message: memory + RAG + timestamp)."""
-        stable = await self._get_stable_prompt(sender_id, channel, chat_id, sender_name)
-        capability_context = self._get_capability_turn_context(
-            session_key, current_message
-        )
-        routing_text = capability_context.get("routing_text") or current_message
-        from core.media_intent import is_chat_media_delivery, is_image_generation_request
-
-        media_delivery_turn = is_chat_media_delivery(
-            routing_text
-        ) and not is_image_generation_request(routing_text)
-        if forced_skill_name:
-            skills_docs = self.skill_registry.get_forced_prompt_addition(
-                forced_skill_name
-            )
-        elif media_delivery_turn:
-            # Host-owned web_search(kind="images") is the whole job. Skill manuals
-            # (especially download_image) compete with that path.
-            skills_docs = ""
-        else:
-            skills_docs = self.skill_registry.get_relevant_prompt_additions(
-                routing_text
-            )
-        capability_docs = (
-            ""
-            if media_delivery_turn
-            else (
-                self._capability_catalog_prompt()
-                if prompt_module.is_setup_complete()
-                else ""
-            )
-        )
-        subagent_docs = (
-            ""
-            if media_delivery_turn
-            else self.subagent_registry.get_prompt_additions(current_message)
-        )
-        ponytail_docs = build_ponytail_prompt_addition(ponytail_mode)
-        include_private_memory = prompt_module.should_load_private_context(
-            sender_id, channel, self.config
-        )
-        volatile = prompt_module.get_volatile_prompt_suffix(
-            recalled_context,
-            include_private_memory=include_private_memory,
+        return await self._get_prompt_coordinator().build_full_prompt(
+            sender_id=sender_id,
+            channel=channel,
+            chat_id=chat_id,
+            recalled_context=recalled_context,
+            sender_name=sender_name,
             current_message=current_message,
-        )
-        return (
-            stable
-            + capability_docs
-            + (skills_docs + "\n" if skills_docs else "")
-            + (subagent_docs + "\n" if subagent_docs else "")
-            + (ponytail_docs + "\n" if ponytail_docs else "")
-            + volatile
+            forced_skill_name=forced_skill_name,
+            ponytail_mode=ponytail_mode,
+            session_key=session_key,
+            # Preserve the wrapper as an interception point for adapters/tests.
+            stable_prompt_getter=self._get_stable_prompt,
         )
 
     def _resolve_skill_invocation(
@@ -2084,6 +1854,13 @@ class AgentLoop:
         resolved_task_id = task_id or _CURRENT_TASK_ID.get()
         if resolved_task_id:
             payload.setdefault("task_id", resolved_task_id)
+        profile_context = get_current_profile_context()
+        payload.setdefault(
+            "profile_id",
+            profile_context.profile_id if profile_context else get_current_profile_id(),
+        )
+        if profile_context is not None:
+            payload.setdefault("profile_name", profile_context.profile.display_name)
         payload.setdefault("event_id", f"evt_{uuid.uuid4().hex[:20]}")
         return payload
 
@@ -2518,33 +2295,10 @@ class AgentLoop:
     def _session_whitelist_key(
         function_name: str, function_args: Optional[dict] = None
     ) -> str:
-        """Session-whitelist key for a tool call.
-
-        For ``run_command`` the key is scoped to the invoked binary
-        (``run_command::<binary>``) so that "always allow this session" only
-        unblocks the same program instead of every future shell command.
-        Falls back to the full command string when parsing fails, and to the
-        bare tool name for every other tool.
-        """
-        if function_name in {"run_command", "run_steps"} and isinstance(
-            function_args, dict
-        ):
-            command = str(function_args.get("command") or "").strip()
-            if function_name == "run_steps":
-                commands = function_args.get("commands") or []
-                if isinstance(commands, list) and commands:
-                    command = str(commands[0] or "").strip()
-            if not command:
-                return function_name
-            binary = command
-            try:
-                parts = shlex.split(command)
-                if parts:
-                    binary = parts[0]
-            except Exception:
-                binary = command
-            return f"{function_name}::{binary}"
-        return function_name
+        """Compatibility wrapper for the session approval-key rule."""
+        return ToolApprovalPolicy.session_whitelist_key(
+            function_name, function_args
+        )
 
     def _get_tool_approval_decision(
         self,
@@ -2555,58 +2309,17 @@ class AgentLoop:
         function_args: Optional[dict] = None,
         msg: Optional[InboundMessage] = None,
     ) -> Dict[str, Any]:
-        profile = str(
-            getattr(self.config, "approval_policy_profile", "manual") or "manual"
-        ).strip().lower()
-        if profile not in {"manual", "session", "autonomous", "review"}:
-            profile = "manual"
-
-        if is_whatsapp:
-            # WhatsApp is an explicitly fast channel. Contact allow-listing and
-            # the toolbox's hard safety checks still apply, but the interactive
-            # approval UI is not available in the conversation, so sensitive
-            # tools execute without a confirmation round-trip.
-            return {
-                "allowed": True,
-                "requires_confirmation": False,
-                "reason": "channel_whatsapp_autonomous",
-                "policy_profile": profile,
-            }
-        if is_unattended_turn(msg):
-            decision = evaluate_unattended_tool(
-                function_name, function_args, getattr(self, "config", None)
-            )
-            decision["policy_profile"] = profile
-            return decision
-        if is_internal:
-            return {
-                "allowed": True,
-                "requires_confirmation": False,
-                "reason": "internal",
-                "policy_profile": profile,
-            }
-        if profile == "autonomous":
-            return {
-                "allowed": True,
-                "requires_confirmation": False,
-                "reason": "policy_autonomous",
-                "policy_profile": profile,
-            }
-        if profile != "review" and self._session_whitelist_key(
-            function_name, function_args
-        ) in self.session_whitelists.get(session_key, set()):
-            return {
-                "allowed": True,
-                "requires_confirmation": False,
-                "reason": "session_whitelist",
-                "policy_profile": profile,
-            }
-        return {
-            "allowed": False,
-            "requires_confirmation": True,
-            "reason": "manual_required",
-            "policy_profile": profile,
-        }
+        """Compatibility wrapper for the extracted approval-policy service."""
+        return ToolApprovalPolicy.decide(
+            session_key,
+            function_name,
+            config=getattr(self, "config", None),
+            session_whitelists=getattr(self, "session_whitelists", None),
+            is_internal=is_internal,
+            is_whatsapp=is_whatsapp,
+            function_args=function_args,
+            msg=msg,
+        )
 
     @staticmethod
     def _approval_audit_preview(preview: Dict[str, Any]) -> Dict[str, Any]:
@@ -2633,6 +2346,47 @@ class AgentLoop:
         """Build the embed fields list for a tool confirmation prompt."""
         return self.confirm.build_embed(
             function_name, function_args, session_key, preview
+        )
+
+    def _tool_approval_flow_service(self) -> ToolApprovalFlowService:
+        """Bind the approval lifecycle to current policy, manager, and delivery ports."""
+        return ToolApprovalFlowService(
+            confirmation=self.confirm,
+            decide=self._get_tool_approval_decision,
+            get_profile_context=get_current_profile_context,
+            get_profile_id=get_current_profile_id,
+            session_whitelist_key=self._session_whitelist_key,
+            log_session_event=self._log_session_event,
+            approval_audit_preview=self._approval_audit_preview,
+            display_tool_args=self._display_tool_args,
+            with_trace_metadata=self._with_trace_metadata,
+            publish=self._publish,
+            publish_web_mirror=self._publish_web_approval,
+        )
+
+    def _tool_batch_event_service(self) -> ToolBatchEventService:
+        """Bind tool-batch lifecycle events to this loop's delivery and history ports."""
+        return ToolBatchEventService(
+            publish_both=self._publish_both,
+            parse_tool_call=self._parse_tool_call,
+            build_preview=self._build_confirmation_preview,
+            display_args=self._display_tool_args,
+            log_session_event=self._log_session_event,
+            sensitive_tools=_SENSITIVE_TOOLS,
+            broadcast_max_chars=TOOL_BROADCAST_MAX_CHARS,
+        )
+
+    async def _publish_web_approval(
+        self, msg: InboundMessage, metadata: Dict[str, Any]
+    ) -> None:
+        """Mirror a non-web approval card to the web companion."""
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="web",
+                chat_id=msg.chat_id or "system",
+                content="",
+                metadata=metadata,
+            )
         )
 
     def _display_tool_args(
@@ -2894,133 +2648,30 @@ class AgentLoop:
                 except Exception:
                     pass
 
-    async def _dispatch_message(self, msg: InboundMessage) -> asyncio.Task:
-        """Register an inbound turn before scheduling its coroutine.
-
-        The old dispatch path created an untracked asyncio task.  If shutdown
-        or the user's stop action raced before ``_process_message`` assigned
-        ``active_tasks[session_key]``, that turn could continue forever from the
-        UI's point of view.  Durable and live identities are now allocated at
-        the dispatch boundary.
-        """
+    def _inbound_turn_lifecycle(self) -> InboundTurnLifecycle:
         from core.task_tracker import get_task_tracker
 
-        metadata = dict(msg.metadata or {})
-        if not metadata.get("task_run_id"):
-            followup_words = re.compile(
-                r"\b(continue|again|retry|re-?try|fix|correct|use|proceed|"
-                r"do it|try that|corrige|arregla|intenta|continua|de nuevo|hazlo)\b",
-                re.IGNORECASE,
-            )
-            task_run_store = getattr(self, "task_runs", None)
-            active_runs = (
-                task_run_store.list_runs(
-                    statuses=TASK_RUN_ACTIVE_STATES, limit=100
-                )
-                if task_run_store is not None
-                else []
-            )
-            matching = [
-                run
-                for run in active_runs
-                if str((run.metadata or {}).get("session_key") or "")
-                == msg.session_key
-            ]
-            if matching and (
-                bool(metadata.get("reply_to_task_run"))
-                or bool(followup_words.search(msg.content or ""))
-            ):
-                metadata["task_run_id"] = matching[0].run_id
-                metadata["task_run_followup"] = True
-                msg.metadata = metadata
-                durable_id = str(
-                    (matching[0].metadata or {}).get("durable_job_id") or ""
-                ).strip()
-                queue = getattr(self, "job_queue", None)
-                if durable_id and queue is not None:
-                    queue.update_payload_metadata(
-                        durable_id,
-                        {
-                            "task_run_id": matching[0].run_id,
-                            "task_run_followup": True,
-                        },
-                    )
-
-        durable_job_id = (
-            msg.metadata.get("durable_job_id")
-            if isinstance(msg.metadata, dict)
-            else None
+        return InboundTurnLifecycle(
+            tracker=get_task_tracker(),
+            registry=self._get_task_registry(),
+            task_runs=getattr(self, "task_runs", None),
+            profile_coordinator=getattr(self, "profile_coordinator", None),
+            job_queue=getattr(self, "job_queue", None),
+            scheduler=getattr(self, "scheduler", None),
+            bus=getattr(self, "bus", None),
+            active_tasks=self.active_tasks,
+            queue_worker_id=getattr(self, "_queue_worker_id", "agent"),
+            process_message=self._process_message,
+            trace_metadata=self._with_trace_metadata,
         )
-        if durable_job_id:
-            queue = getattr(self, "job_queue", None)
-            if queue is not None:
-                claimed = queue.claim(
-                    str(durable_job_id), getattr(self, "_queue_worker_id", "agent")
-                )
-                if claimed is None:
-                    current = queue.get(str(durable_job_id))
-                    queued_for_later = bool(
-                        current is not None
-                        and current.status == "queued"
-                        and current.next_retry_at is not None
-                        and float(current.next_retry_at) > time.time()
-                    )
-                    if current is None or current.status != "queued" or queued_for_later:
-                        logger.info(
-                            "Skipping inbound duplicate for durable job %s (%s)",
-                            durable_job_id,
-                            current.status if current else "missing",
-                        )
-                        async def _noop():
-                            return None
 
-                        return asyncio.create_task(_noop())
-
-        task_id = uuid.uuid4().hex[:12]
-        tracker = get_task_tracker()
-        await tracker.create_task(
-            task_type="inbound_message",
-            summary=f"{msg.channel}: {(msg.content or '')[:80]}",
-            channel=msg.channel,
-            session_key=msg.session_key,
-            chat_id=msg.chat_id,
-            metadata={
-                "runtime": True,
-                "sender_id": msg.sender_id,
-                "workspace_id": msg.metadata.get("workspace_id")
-                if isinstance(msg.metadata, dict)
-                else "",
-                "client_message_id": msg.metadata.get("client_message_id")
-                if isinstance(msg.metadata, dict)
-                else "",
-            },
-            task_id=task_id,
+    async def _dispatch_message(self, msg: InboundMessage) -> asyncio.Task:
+        """Register an inbound turn through its lifecycle coordinator."""
+        return await self._inbound_turn_lifecycle().dispatch(
+            msg,
+            run_managed_message=self._run_managed_message,
+            persist_task_terminal=self._persist_managed_task_terminal,
         )
-        start_gate = asyncio.Event()
-        handle = asyncio.create_task(
-            self._run_managed_message(msg, task_id, start_gate),
-            name=f"limebot-turn-{task_id}",
-        )
-        try:
-            await self._get_task_registry().register(
-                task_id,
-                handle,
-                kind="inbound_message",
-                session_key=msg.session_key,
-                metadata={"channel": msg.channel, "chat_id": msg.chat_id},
-                on_terminal=self._persist_managed_task_terminal,
-            )
-        except BaseException:
-            handle.cancel()
-            await asyncio.gather(handle, return_exceptions=True)
-            raise
-        finally:
-            start_gate.set()
-        # Keep this index for existing channel adapters; the registry is the
-        # authoritative source and also retains queued turns before this map is
-        # populated by the inner processing path.
-        self.active_tasks[msg.session_key] = handle
-        return handle
 
     async def _run_managed_message(
         self,
@@ -3028,137 +2679,7 @@ class AgentLoop:
         task_id: str,
         start_gate: Optional[asyncio.Event] = None,
     ) -> None:
-        from core.task_tracker import TaskStatus, get_task_tracker
-
-        tracker = get_task_tracker()
-        registry = self._get_task_registry()
-        if start_gate is not None:
-            await start_gate.wait()
-        await registry.mark_running(task_id)
-        heartbeat_task = None
-        durable_job_id = (
-            msg.metadata.get("durable_job_id")
-            if isinstance(msg.metadata, dict)
-            else None
-        )
-        queue = getattr(self, "job_queue", None)
-        if durable_job_id and queue is not None:
-
-            async def _heartbeat():
-                while True:
-                    await asyncio.sleep(15)
-                    queue.heartbeat(
-                        str(durable_job_id),
-                        getattr(self, "_queue_worker_id", "agent"),
-                    )
-
-            heartbeat_task = asyncio.create_task(_heartbeat())
-        try:
-            await self._process_message(msg, _task_id=task_id)
-        except asyncio.CancelledError:
-            # The inner processor may not have started far enough to create its
-            # normal finalization record, so the wrapper closes that gap.
-            with_cancel_error = "Inbound turn cancelled."
-            tracked = await tracker.get_task(task_id)
-            if tracked is not None and tracked.status not in {
-                TaskStatus.COMPLETED.value,
-                TaskStatus.FAILED.value,
-                TaskStatus.CANCELLED.value,
-            }:
-                await tracker.update_task(
-                    task_id,
-                    status=TaskStatus.CANCELLED.value,
-                    error=with_cancel_error,
-                )
-            raise
-        except Exception as exc:
-            logger.exception("Unhandled managed inbound turn error: %s", exc)
-            tracked = await tracker.get_task(task_id)
-            if tracked is not None and tracked.status not in {
-                TaskStatus.COMPLETED.value,
-                TaskStatus.FAILED.value,
-                TaskStatus.CANCELLED.value,
-            }:
-                await tracker.update_task(
-                    task_id,
-                    status=TaskStatus.FAILED.value,
-                    error=str(exc)[:500],
-                )
-        finally:
-            tracked = await tracker.get_task(task_id)
-            status = (
-                tracked.status
-                if tracked is not None
-                else TaskStatus.COMPLETED.value
-            )
-            if status not in {
-                TaskStatus.COMPLETED.value,
-                TaskStatus.FAILED.value,
-                TaskStatus.CANCELLED.value,
-                TaskStatus.RETRYING.value,
-                TaskStatus.WAITING.value,
-            }:
-                current = asyncio.current_task()
-                status = (
-                    TaskStatus.CANCELLED.value
-                    if current
-                    and getattr(current, "cancelling", lambda: 0)()
-                    else TaskStatus.COMPLETED.value
-                )
-                await tracker.update_task(task_id, status=status)
-            registry_status = status
-            if registry_status not in {
-                TaskStatus.COMPLETED.value,
-                TaskStatus.FAILED.value,
-                TaskStatus.CANCELLED.value,
-            }:
-                registry_status = TaskStatus.COMPLETED.value
-            await registry.finalize(
-                task_id,
-                registry_status,
-                error=(tracked.error if tracked is not None else None),
-            )
-            if heartbeat_task is not None:
-                heartbeat_task.cancel()
-                await asyncio.gather(heartbeat_task, return_exceptions=True)
-            continuation_scheduled = bool(
-                isinstance(getattr(msg, "metadata", None), dict)
-                and msg.metadata.get("task_run_continuation_scheduled")
-            )
-            if durable_job_id and queue is not None and not continuation_scheduled:
-                error_text = tracked.error if tracked is not None else None
-                if status == TaskStatus.COMPLETED.value:
-                    finished = queue.finish(str(durable_job_id), SUCCEEDED)
-                elif status == TaskStatus.CANCELLED.value:
-                    finished = queue.finish(str(durable_job_id), "cancelled")
-                else:
-                    finished = queue.fail_or_retry(
-                        str(durable_job_id), error_text or "Agent turn failed."
-                    )
-                cron_job_id = (
-                    msg.metadata.get("original_job_id")
-                    if isinstance(msg.metadata, dict)
-                    else None
-                )
-                scheduler = getattr(self, "scheduler", None)
-                if cron_job_id and scheduler is not None and hasattr(
-                    scheduler, "mark_run_finished"
-                ):
-                    cron_status = "ok"
-                    if finished is not None and finished.status == FAILED:
-                        cron_status = "error"
-                    elif status != TaskStatus.COMPLETED.value:
-                        cron_status = "error"
-                    await scheduler.mark_run_finished(
-                        str(cron_job_id),
-                        status=cron_status,
-                        error=error_text,
-                        tracker_task_id=msg.metadata.get("tracker_task_id")
-                        if isinstance(msg.metadata, dict)
-                        else None,
-                    )
-            if self.active_tasks.get(msg.session_key) is asyncio.current_task():
-                self.active_tasks.pop(msg.session_key, None)
+        await self._inbound_turn_lifecycle().run(msg, task_id, start_gate)
 
     async def run(self) -> None:
         self._running = True
@@ -3544,13 +3065,7 @@ class AgentLoop:
                 logger.info(f"Cancelled background subagent task {task_id}")
                 cancelled_any = True
 
-        for conf_id, conf in list(self.pending_confirmations.items()):
-            if conf.get("session_key") not in related_sessions:
-                continue
-            conf["approved"] = False
-            event = conf.get("event")
-            if event:
-                event.set()
+        for conf_id, conf in self.confirm.release_for_sessions(related_sessions):
             logger.info(
                 f"🛑 Released pending confirmation {conf_id} for {conf.get('session_key')}"
             )
@@ -3593,72 +3108,68 @@ class AgentLoop:
         session_whitelist: bool = False,
         source: str = "api",
     ) -> bool:
-        if conf_id in self.pending_confirmations:
-            conf = self.pending_confirmations[conf_id]
-            source = str(source or "api").strip().lower()
-            if source not in {
-                "api",
-                "app",
-                "web",
-                "discord",
-                "extension",
-                "whatsapp",
-            }:
-                source = "api"
-            profile = str(conf.get("policy_profile") or "manual")
-            effective_whitelist = bool(
-                approved
-                and session_whitelist
-                and profile in {"manual", "session"}
+        return self.confirm.resolve(
+            conf_id,
+            approved,
+            session_whitelist=session_whitelist,
+            source=source,
+            log_event=self._log_session_event,
+        )
+
+    def _turn_history_service(self) -> TurnHistoryService:
+        service = getattr(self, "turn_history_service", None)
+        if service is None:
+            service = TurnHistoryService(
+                histories=self.history,
+                dirty=self._history_dirty,
+                last_flush=self._last_history_flush,
+                save_history=lambda session_key, entries: self.session_manager.save_history(
+                    session_key, entries
+                ),
+                safe_content=lambda content: self._image_safe_history_content(
+                    content
+                ),
+                flush_interval=lambda: self._history_flush_interval,
             )
-            self._log_session_event(
-                conf.get("session_key", "unknown"),
-                {
-                    "type": "approval_decided",
-                    "conf_id": conf_id,
-                    "approved": approved,
-                    "tool": conf.get("tool"),
-                    "session_whitelist": effective_whitelist,
-                    "policy_profile": profile,
-                    "decision_reason": "user_approved" if approved else "user_denied",
-                    "client_source": source,
-                },
-            )
-            conf["approved"] = approved
-            if effective_whitelist:
-                sk = conf["session_key"]
-                whitelist_key = conf.get("whitelist_key") or conf["tool"]
-                self.session_whitelists.setdefault(sk, set()).add(whitelist_key)
-                logger.info(f"🔓 Added {whitelist_key} to whitelist for {sk}")
-            conf["event"].set()
-            logger.info(f"✅ Tool {conf_id} {'approved' if approved else 'denied'}")
-            return True
-        logger.warning(f"⚠️ Confirmation {conf_id} not found or expired.")
-        return False
+            self.turn_history_service = service
+        return service
+
+    def _history_append(
+        self,
+        session_key: str,
+        entry: Dict[str, Any],
+        *,
+        mark_dirty: bool = True,
+    ) -> None:
+        self._turn_history_service().append(
+            session_key, entry, mark_dirty=mark_dirty
+        )
+
+    def _history_replace(
+        self,
+        session_key: str,
+        entries: List[Dict[str, Any]],
+        *,
+        mark_dirty: bool = False,
+    ) -> None:
+        self._turn_history_service().set_history(
+            session_key, entries, mark_dirty=mark_dirty
+        )
+
+    def _history_replace_entry(
+        self,
+        session_key: str,
+        index: int,
+        entry: Dict[str, Any],
+    ) -> None:
+        self._turn_history_service().replace_entry(session_key, index, entry)
 
     def _mark_dirty(self, session_key: str) -> None:
-        self._history_dirty[session_key] = True
+        self._turn_history_service().mark_dirty(session_key)
 
     async def _flush_history(self, session_key: str, force: bool = False) -> None:
         """Persist history only if it changed since the last flush."""
-        if not (self._history_dirty.get(session_key) and session_key in self.history):
-            return
-
-        now = time.monotonic()
-        last = self._last_history_flush.get(session_key, 0.0)
-        if not force and (now - last) < self._history_flush_interval:
-            return
-
-        persistable_history = []
-        for message in self.history[session_key]:
-            persisted_message = dict(message)
-            persisted_message["content"] = self._image_safe_history_content(
-                message.get("content")
-            )
-            persistable_history.append(persisted_message)
-        await self.session_manager.save_history(session_key, persistable_history)
-        self._history_dirty[session_key] = False
-        self._last_history_flush[session_key] = now
+        await self._turn_history_service().flush(session_key, force=force)
 
     async def run_subagent(
         self,
@@ -3669,354 +3180,55 @@ class AgentLoop:
         isolated_workspace: Any = None,
         isolation_mode: str = "none",
     ) -> str:
-        workspace_token = None
-        retain_workspace = False
-        try:
-            if isolated_workspace is not None:
-                workspace_token = isolated_workspace.activate()
-            logger.info(f"[SUB-AGENT] {sub_session_key} ← {parent_session_key}: {task}")
+        persona_paths = get_current_persona_paths()
+        return await run_subagent(
+            parent_session_key=parent_session_key,
+            sub_session_key=sub_session_key,
+            task=task,
+            agent_name=agent_name,
+            isolated_workspace=isolated_workspace,
+            isolation_mode=isolation_mode,
+            subagent_registry=self.subagent_registry,
+            get_model=lambda: self.model,
+            session_manager=self.session_manager,
+            filter_tool_definitions=self._filter_tool_definitions_for_subagent,
+            call_llm=self._llm_call_with_retry,
+            normalize_tool_call=self._normalize_tool_alias,
+            execute_tool=self._execute_tool,
+            clean_final_result=self._clean_subagent_final_result,
+            bus=self.bus,
+            soul_file=persona_paths.soul,
+            identity_file=persona_paths.identity,
+            report_diff_max_chars=_SUBAGENT_REPORT_DIFF_MAX_CHARS,
+        )
 
-            subagent_profile = self.subagent_registry.get_subagent(agent_name)
-            if agent_name and not subagent_profile:
-                return f"Error: Unknown subagent '{agent_name}'"
+    def _selected_subagent_for_turn(self) -> str:
+        selected = self.subagent_registry.get_default_selection()
+        profile_context = get_current_profile_context()
+        if profile_context is not None and not profile_allows_tool(
+            profile_context.profile, "spawn_agent"
+        ):
+            return "auto"
+        return selected
 
-            subagent_model = (
-                (subagent_profile or {}).get("model") or "inherit"
-            ).strip()
-            subagent_max_turns = (subagent_profile or {}).get("max_turns") or 10
-            allowed_tools = None
-            tool_definitions_override = None
-            disallowed_tools = {
-                normalize_subagent_tool_name(name)
-                for name in ((subagent_profile or {}).get("disallowed_tools") or [])
-                if normalize_subagent_tool_name(name)
-            }
-            if subagent_profile:
-                tool_definitions_override = self._filter_tool_definitions_for_subagent(
-                    subagent_profile.get("tools"),
-                    subagent_profile.get("disallowed_tools"),
-                )
-                if subagent_profile.get("tools") is not None:
-                    allowed_tools = {
-                        tool.get("function", {}).get("name")
-                        for tool in tool_definitions_override
-                        if tool.get("function", {}).get("name")
-                    }
+    @staticmethod
+    def _build_session_injected_files(
+        sender_id: str, attachments: List[Dict[str, Any]]
+    ) -> List[str]:
+        persona_paths = get_current_persona_paths()
+        injected = [
+            "SOUL.md",
+            "IDENTITY.md",
+            f"memory/{datetime.now().strftime('%Y-%m-%d')}.md",
+        ]
+        if (persona_paths.users / f"{sender_id}.md").exists():
+            injected.append(f"users/{sender_id}.md")
+        for attachment in attachments:
+            path = str(attachment.get("path") or "").strip()
+            if path:
+                injected.append(path)
+        return injected
 
-            session_model = (
-                self.model
-                if not subagent_model or subagent_model == "inherit"
-                else subagent_model
-            )
-            await self.session_manager.update_session(
-                session_key=sub_session_key,
-                model=session_model,
-                origin=f"subagent:{parent_session_key}",
-                parent_id=parent_session_key,
-                task=task,
-                subagent_name=agent_name or "",
-            )
-
-            try:
-                soul = SOUL_FILE.read_text(encoding="utf-8")
-                identity = IDENTITY_FILE.read_text(encoding="utf-8")
-            except Exception:
-                soul = "You are a helpful assistant."
-                identity = "Name: LimeBot Sub-Agent"
-
-            profile_lines = []
-            if subagent_profile:
-                description = (subagent_profile.get("description") or "").strip()
-                prompt = (subagent_profile.get("prompt") or "").strip()
-                if description:
-                    profile_lines.append(f"Profile: {description}")
-                if prompt:
-                    profile_lines.append(prompt)
-                if allowed_tools is None:
-                    profile_lines.append("Tool access: inherit the main toolset.")
-                else:
-                    listed_tools = ", ".join(sorted(allowed_tools)) or "none"
-                    profile_lines.append(
-                        f"Tool access: only use these tools: {listed_tools}."
-                    )
-                if disallowed_tools:
-                    profile_lines.append(
-                        "Never use these tools: "
-                        + ", ".join(sorted(disallowed_tools))
-                        + "."
-                    )
-                if subagent_profile.get("background"):
-                    profile_lines.append(
-                        "This profile is intended for background-friendly work when delegated asynchronously."
-                    )
-                if subagent_max_turns:
-                    profile_lines.append(
-                        f"Complete the task within at most {subagent_max_turns} assistant turns."
-                    )
-
-            profile_block = "\n".join(line for line in profile_lines if line).strip()
-            if profile_block:
-                profile_block += "\n"
-
-            workspace_instructions = ""
-            if isolated_workspace is not None:
-                workspace_instructions = (
-                    "Workspace isolation: Relative writes go to a temporary copy of the project "
-                    "and are not merged automatically. You MAY read the same allowed absolute "
-                    "paths the parent can read (project roots, AGENTS.md, persona/, temp/). "
-                    "Do not invent 'permission denied' when those files exist. "
-                    "At the end, report changed files and verification results.\n"
-                )
-
-            sub_system = (
-                f"{soul}\n\n{identity}\n\n"
-                "--- SUB-AGENT INSTRUCTIONS ---\n"
-                + (
-                    f"You are the '{agent_name}' subagent.\n"
-                    if agent_name and subagent_profile
-                    else "You are a generic sub-agent.\n"
-                )
-                + profile_block
-                + workspace_instructions
-                + f"Primary task: {task}\n"
-                + "Work independently, use tools when needed, and return a concise final result.\n" +
-                "DO NOT start a conversation — JUST COMPLETE THE TASK.\n"
-            )
-
-            sub_history: List[Dict] = [
-                {"role": "system", "content": sub_system},
-                {"role": "user", "content": f"Task: {task}"},
-            ]
-            asyncio.create_task(
-                self.session_manager.append_chat_log(
-                    sub_session_key, {"role": "user", "content": task}
-                )
-            )
-
-            iteration = 0
-            final_result = ""
-
-            while iteration < subagent_max_turns:
-                iteration += 1
-                logger.info(f"[SUB-AGENT:{sub_session_key}] iteration {iteration}")
-
-                response = await self._llm_call_with_retry(
-                    messages=sub_history,
-                    session_key=sub_session_key,
-                    msg=None,
-                    stream=False,
-                    tool_context_text=task,
-                    tool_definitions_override=tool_definitions_override,
-                    model_override=subagent_model,
-                )
-
-                if hasattr(response, "usage"):
-                    await self.session_manager.update_session(
-                        session_key=sub_session_key,
-                        model=session_model,
-                        origin=f"subagent:{parent_session_key}",
-                        usage=response.usage,
-                    )
-
-                assistant_msg = response.choices[0].message
-                full_content = assistant_msg.content or ""
-                tool_calls_raw = assistant_msg.tool_calls
-
-                sub_history.append(assistant_msg.model_dump())
-                asyncio.create_task(
-                    self.session_manager.append_chat_log(
-                        sub_session_key, {"role": "assistant", "content": full_content}
-                    )
-                )
-
-                if not tool_calls_raw:
-                    final_result = full_content
-                    break
-
-                for tc in tool_calls_raw:
-                    tc_id = tc.id
-                    fn = tc.function.name
-                    try:
-                        args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-                        fn, args = self._normalize_tool_alias(
-                            fn, args, sub_session_key
-                        )
-                        logger.info(
-                            f"[SUB-AGENT:{sub_session_key}] "
-                            f"{fn}({redact_sensitive_text(args)})"
-                        )
-                        if (allowed_tools is not None and fn not in allowed_tools) or (
-                            fn in disallowed_tools
-                        ):
-                            result = (
-                                f"Error: Tool '{fn}' is not allowed for subagent "
-                                f"'{agent_name}'."
-                            )
-                        else:
-                            result = await self._execute_tool(
-                                fn, args, sub_session_key
-                            )
-                    except Exception as e:
-                        result = f"Error: {e}"
-
-                    sub_history.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc_id,
-                            "name": fn,
-                            "content": str(result),
-                        }
-                    )
-
-            child_failures = collect_subagent_failures(sub_history)
-            if child_failures and not str(final_result or "").strip():
-                final_result = format_subagent_failure_block(child_failures)
-
-            if not str(final_result or "").strip():
-                summary_prompt = (
-                    "Final response only. Do not call any more tools. "
-                    "Do not mention truncation, token limits, tool budgets, or that you are an assistant. "
-                    "Use only the work already completed. "
-                    "If this was a review or verification task, return a concise report with findings or outcome, "
-                    "a short rating if appropriate, and 2-4 concrete suggestions. "
-                    "If anything remains unverified, state that plainly."
-                )
-                sub_history.append({"role": "system", "content": summary_prompt})
-                try:
-                    summary_response = await self._llm_call_with_retry(
-                        messages=sub_history,
-                        session_key=sub_session_key,
-                        msg=None,
-                        stream=False,
-                        include_tools=False,
-                        tool_context_text=task,
-                        model_override=subagent_model,
-                    )
-                    summary_msg = summary_response.choices[0].message
-                    final_result = (
-                        self._clean_subagent_final_result(summary_msg.content or "")
-                        or f"Stopped after reaching max_turns ({subagent_max_turns}) without a final answer."
-                    )
-                    sub_history.append(summary_msg.model_dump())
-                    asyncio.create_task(
-                        self.session_manager.append_chat_log(
-                            sub_session_key,
-                            {"role": "assistant", "content": final_result},
-                        )
-                    )
-                except Exception as summary_error:
-                    logger.warning(
-                        f"[SUB-AGENT:{sub_session_key}] failed to produce final summary after max_turns: {summary_error}"
-                    )
-                    final_result = (
-                        f"Stopped after reaching max_turns ({subagent_max_turns}) without a final answer."
-                    )
-
-            final_result = self._clean_subagent_final_result(final_result)
-            if child_failures:
-                failure_block = format_subagent_failure_block(child_failures)
-                if failure_block and failure_block not in str(final_result or ""):
-                    final_result = (
-                        f"{final_result.rstrip()}\n\n{failure_block}"
-                        if str(final_result or "").strip()
-                        else failure_block
-                    )
-            if not str(final_result or "").strip():
-                final_result = (
-                    format_subagent_failure_block(child_failures)
-                    if child_failures
-                    else "Sub-agent finished without a visible result."
-                )
-
-            report_title = (
-                f"--- SUB-AGENT REPORT ({sub_session_key}) [{agent_name}] ---"
-                if agent_name
-                else f"--- SUB-AGENT REPORT ({sub_session_key}) ---"
-            )
-            report = (
-                f"{report_title}\n"
-                f"Task: {task}\n"
-                f"Result:\n{final_result}\n"
-            )
-
-            workspace_capture = None
-            workspace_report = None
-            if isolated_workspace is not None:
-                try:
-                    workspace_capture = await isolated_workspace.capture()
-                    if workspace_capture.get("status") == "changed":
-                        isolated_workspace.retain()
-                        retain_workspace = True
-                    workspace_report = isolated_workspace.report_metadata(
-                        workspace_capture
-                    )
-                    diff_entries = []
-                    diff_budget = _SUBAGENT_REPORT_DIFF_MAX_CHARS
-                    for changed_file in workspace_capture.get("changed_files", []):
-                        diff = str(changed_file.get("diff") or "")
-                        if not diff or diff_budget <= 0:
-                            continue
-                        clipped_diff = diff[:diff_budget]
-                        diff_entries.append(
-                            {
-                                "path": changed_file.get("path", ""),
-                                "status": changed_file.get("status", "modified"),
-                                "diff": clipped_diff,
-                            }
-                        )
-                        diff_budget -= len(clipped_diff)
-                    if diff_entries:
-                        workspace_report["diff"] = diff_entries
-                    report += (
-                        "Workspace changes (not merged; call apply_workspace_changeset "
-                        f"with workspace_id={isolated_workspace.workspace_id}):\n"
-                        + json.dumps(workspace_report, ensure_ascii=False)
-                        + "\n"
-                    )
-                except Exception as workspace_error:
-                    logger.warning(
-                        f"[SUB-AGENT:{sub_session_key}] failed to capture workspace changes: "
-                        f"{workspace_error}"
-                    )
-
-            parts = parent_session_key.split(":", 1)
-            if len(parts) == 2:
-                report_metadata = {
-                    "is_report": True,
-                    "subagent_id": sub_session_key,
-                    "isolation": isolation_mode,
-                }
-                if workspace_capture is not None:
-                    report_metadata["workspace"] = workspace_capture
-                await self.bus.publish_inbound(
-                    InboundMessage(
-                        channel=parts[0],
-                        sender_id="system",
-                        chat_id=parts[1],
-                        content=report,
-                        metadata=report_metadata,
-                    )
-                )
-            return report
-
-        except Exception as e:
-            logger.error(f"Error in sub-agent '{sub_session_key}': {e}")
-            return f"Error in sub-agent '{sub_session_key}': {e}"
-        finally:
-            if workspace_token is not None:
-                try:
-                    isolated_workspace.deactivate(workspace_token)
-                except Exception as exc:
-                    logger.warning(
-                        f"Could not restore workspace context for sub-agent '{sub_session_key}': {exc}"
-                    )
-            if isolated_workspace is not None and not retain_workspace:
-                try:
-                    await isolated_workspace.cleanup()
-                except Exception as exc:
-                    logger.warning(
-                        f"Could not clean up isolated workspace for sub-agent '{sub_session_key}': {exc}"
-                    )
 
     @staticmethod
     def _should_include_tools(content: str) -> bool:
@@ -4040,437 +3252,45 @@ class AgentLoop:
         model_override: Optional[str] = None,
         tool_choice: Optional[str] = "auto",
     ) -> Any:
-
-        try:
-            max_retries = max(1, int(max_retries or 1))
-        except (TypeError, ValueError):
-            max_retries = 1
-        messages = self._sanitize_messages_for_llm(messages, session_key)
-        if not include_tools:
-            tools = []
-        elif tool_definitions_override is not None:
-            tools = tool_definitions_override
-        else:
-            tools = self._get_tool_definitions_for_turn(
-                tool_context_text, session_key=session_key
-            )
-        if model_override and model_override != "inherit":
-            override_provider = self.llm_client.resolve_provider(
-                model_override,
-                default_base_url=self.config.llm.base_url,
-            )
-            provider_chain = [
-                (
-                    override_provider.source_model,
-                    override_provider.model,
-                    override_provider.base_url,
-                    override_provider.api_key,
-                    override_provider.custom_llm_provider,
-                )
-            ]
-        else:
-            provider_chain = self._resolve_provider_chain()
-        if not provider_chain:
-            raise RuntimeError("No LLM provider is configured")
-
-        breaker = self._get_provider_circuit_breaker()
-
-        def _select_provider(start_index: int):
-            for index in range(start_index, len(provider_chain)):
-                candidate = provider_chain[index]
-                circuit_key, credential_fingerprint = self._provider_circuit_identity(
-                    *candidate
-                )
-                if breaker.allow(
-                    circuit_key,
-                    credential_fingerprint=credential_fingerprint,
-                ):
-                    return index, candidate, circuit_key, credential_fingerprint
-            return None
-
-        selection = _select_provider(0)
-        if selection is None:
-            raise ProviderCircuitOpenError("all configured providers")
-        selected_index, candidate, circuit_key, credential_fingerprint = selection
-        (
-            active_source_model,
-            model,
-            base_url,
-            api_key,
-            custom_llm_provider,
-        ) = candidate
-        self._log_tool_debug(
-            "llm_call_prepare",
+        return await llm_call_with_retry(
+            messages=messages,
             session_key=session_key,
-            model=active_source_model,
+            msg=msg,
+            max_retries=max_retries,
             stream=stream,
             include_tools=include_tools,
-            tool_context=tool_context_text,
-            message_count=len(messages),
-            tool_count=len(tools),
-            tool_names=self._tool_definition_names(tools),
-            last_message=messages[-1].get("content", "") if messages else "",
-            fallback_chain=[item[0] for item in provider_chain],
+            tool_context_text=tool_context_text,
+            turn_id=turn_id,
+            message_id=message_id,
+            tool_definitions_override=tool_definitions_override,
+            model_override=model_override,
             tool_choice=tool_choice,
+            config=self.config,
+            bus=getattr(self, "bus", None),
+            llm_client=self.llm_client,
+            sanitize_messages=self._sanitize_messages_for_llm,
+            get_tool_definitions=self._get_tool_definitions_for_turn,
+            resolve_provider_chain=self._resolve_provider_chain,
+            get_provider_circuit_breaker=self._get_provider_circuit_breaker,
+            provider_circuit_identity=self._provider_circuit_identity,
+            build_provider_config=self._build_provider_config,
+            log_tool_debug=self._log_tool_debug,
+            tool_definition_names=self._tool_definition_names,
+            should_failover_model=self._should_failover_model,
+            should_retry_without_images=self._should_retry_without_images,
+            downgrade_image_messages_for_text_model=self._downgrade_image_messages_for_text_model,
+            disable_image_inputs_for_session=self._disable_image_inputs_for_session,
+            with_trace_metadata=self._with_trace_metadata,
+            get_model=lambda: self.model,
+            error_types=ProviderErrorTypes(
+                authentication=AuthenticationError,
+                rate_limit=RateLimitError,
+                internal_server=InternalServerError,
+                api_connection=APIConnectionError,
+                service_unavailable=ServiceUnavailableError,
+            ),
         )
-        qwen_auth_failover_attempted: Set[str] = set()
-        image_fallback_attempted = False
-        model_failover_announced = False
-        last_provider_error: Optional[Exception] = None
 
-        for attempt in range(max_retries):
-            try:
-                provider = self._build_provider_config(
-                    active_source_model,
-                    model,
-                    base_url,
-                    api_key,
-                    custom_llm_provider,
-                )
-                llm_timeout = float(getattr(self.config, "command_timeout", 300.0) or 0)
-                llm_call = self.llm_client.complete(
-                    provider,
-                    ChatRequest(
-                        messages=messages,
-                        tools=tools or None,
-                        stream=stream,
-                        session_id=session_key,
-                        tool_choice=tool_choice,
-                    ),
-                )
-                if llm_timeout > 0:
-                    response = await asyncio.wait_for(llm_call, timeout=llm_timeout)
-                else:
-                    response = await llm_call
-                breaker.record_success(
-                    circuit_key,
-                    credential_fingerprint=credential_fingerprint,
-                )
-                return response
-            except AuthenticationError as e:
-                last_provider_error = e
-                failed_source_model = active_source_model
-                breaker.record_failure(
-                    circuit_key,
-                    credential_fingerprint=credential_fingerprint,
-                    authentication=True,
-                )
-                self._log_tool_debug(
-                    "llm_call_error",
-                    session_key=session_key,
-                    attempt=attempt + 1,
-                    source_model=active_source_model,
-                    error_type=type(e).__name__,
-                    error=str(e),
-                )
-                selection = _select_provider(selected_index + 1)
-                if selection:
-                    selected_index, candidate, circuit_key, credential_fingerprint = selection
-                    (
-                        active_source_model,
-                        model,
-                        base_url,
-                        api_key,
-                        custom_llm_provider,
-                    ) = candidate
-                    qwen_auth_failover_attempted.clear()
-                    logger.warning(
-                        f"LLM auth failed for '{failed_source_model}'; switching to fallback '{active_source_model}'."
-                    )
-                    if msg and not model_failover_announced:
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                content=f"Switching AI provider to fallback model `{active_source_model}`...",
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                metadata=self._with_trace_metadata(
-                                    {
-                                        "reply_to": msg.sender_id,
-                                        "is_warning": True,
-                                        "event_kind": "turn_progress",
-                                        "terminal": False,
-                                    },
-                                    turn_id=turn_id,
-                                    message_id=message_id,
-                                ),
-                            )
-                        )
-                        model_failover_announced = True
-                    continue
-                # DashScope keys can be region-scoped. If auth fails on one endpoint,
-                # try other official compatible endpoints before failing.
-                current_base = (base_url or "").lower()
-                is_qwen = (active_source_model or "").startswith(
-                    "qwen/"
-                ) or "dashscope" in current_base
-                if is_qwen:
-                    qwen_auth_failover_attempted.add(current_base)
-                    fallback_bases = [
-                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
-                        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                    ]
-                    next_base = next(
-                        (
-                            url
-                            for url in fallback_bases
-                            if url.lower() not in qwen_auth_failover_attempted
-                        ),
-                        None,
-                    )
-                    if next_base:
-                        base_url = next_base
-                        logger.warning(
-                            f"Qwen auth failed; retrying with alternate endpoint: {base_url}"
-                        )
-                        continue
-                raise
-
-            except (
-                RateLimitError,
-                InternalServerError,
-                APIConnectionError,
-                ServiceUnavailableError,
-            ) as e:
-                last_provider_error = e
-                failed_source_model = active_source_model
-                breaker.record_failure(
-                    circuit_key,
-                    credential_fingerprint=credential_fingerprint,
-                )
-                self._log_tool_debug(
-                    "llm_call_error",
-                    session_key=session_key,
-                    attempt=attempt + 1,
-                    source_model=active_source_model,
-                    error_type=type(e).__name__,
-                    error=str(e),
-                )
-                is_500 = isinstance(e, InternalServerError)
-                is_conn = isinstance(e, (APIConnectionError, ServiceUnavailableError))
-                wait_time = (2**attempt) * 5
-                selection = _select_provider(selected_index + 1)
-                if selection:
-                    selected_index, candidate, circuit_key, credential_fingerprint = selection
-                    (
-                        active_source_model,
-                        model,
-                        base_url,
-                        api_key,
-                        custom_llm_provider,
-                    ) = candidate
-                    qwen_auth_failover_attempted.clear()
-                    logger.warning(
-                        f"LLM provider '{failed_source_model}' failed; switching to fallback '{active_source_model}'."
-                    )
-                    if msg and not model_failover_announced:
-                        err_str = str(e).lower()
-                        if (
-                            "rate limit" in err_str
-                            or "rate_limit" in err_str
-                            or "usage_limit" in err_str
-                            or "usage limit" in err_str
-                            or "limit has been reached" in err_str
-                            or "limit_reached" in err_str
-                            or "codex provider returned an error" in err_str
-                            or "no visible response" in err_str
-                            or isinstance(e, RateLimitError)
-                            or "RateLimit" in type(e).__name__
-                        ):
-                            reason = "rate limit or usage limit"
-                        elif is_conn:
-                            reason = "connection error"
-                        elif is_500:
-                            reason = "server error"
-                        else:
-                            reason = "temporary error"
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                content=f"Primary AI model hit a {reason}, switching to fallback model `{active_source_model}`...",
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                metadata=self._with_trace_metadata(
-                                    {
-                                        "reply_to": msg.sender_id,
-                                        "is_warning": True,
-                                        "event_kind": "turn_progress",
-                                        "terminal": False,
-                                    },
-                                    turn_id=turn_id,
-                                    message_id=message_id,
-                                ),
-                            )
-                        )
-                        model_failover_announced = True
-                    continue
-                if is_conn:
-                    error_type = "Connection error"
-                elif is_500:
-                    error_type = "Server error (500)"
-                else:
-                    error_type = "Rate limit"
-                logger.warning(
-                    f"⚠ {error_type} attempt {attempt + 1}/{max_retries}. Waiting {wait_time}s…"
-                )
-
-                if attempt == 0 and msg:
-                    if is_conn:
-                        text = "⏳ Connection lost — retrying when network is back…"
-                    elif is_500:
-                        text = "⏳ AI service unstable — retrying…"
-                    else:
-                        text = "⏳ Rate limit hit — retrying…"
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            content=text,
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            metadata=self._with_trace_metadata(
-                                {
-                                    "reply_to": msg.sender_id,
-                                    "is_warning": True,
-                                    "event_kind": "turn_progress",
-                                    "terminal": False,
-                                },
-                                turn_id=turn_id,
-                                message_id=message_id,
-                            ),
-                        )
-                    )
-
-                # The outer turn controller owns the single terminal error
-                # message. Emitting one here and then raising produced two
-                # visible failures for the same provider outage.
-                if attempt >= max_retries - 1:
-                    raise
-                await asyncio.sleep(wait_time)
-                continue
-            except asyncio.CancelledError:
-                breaker.record_aborted(
-                    circuit_key,
-                    credential_fingerprint=credential_fingerprint,
-                )
-                raise
-            except asyncio.TimeoutError as e:
-                breaker.record_failure(
-                    circuit_key,
-                    credential_fingerprint=credential_fingerprint,
-                )
-                self._log_tool_debug(
-                    "llm_call_error",
-                    session_key=session_key,
-                    attempt=attempt + 1,
-                    source_model=active_source_model,
-                    error_type=type(e).__name__,
-                    error=f"Timed out after {llm_timeout:g}s",
-                )
-                raise TimeoutError(
-                    f"AI provider timed out after {llm_timeout:g}s. Try again or switch models."
-                ) from e
-            except Exception as e:
-                last_provider_error = e
-                failed_source_model = active_source_model
-                auth_like_error = any(
-                    marker in str(e or "").lower()
-                    for marker in ("incorrect api key", "invalid api key", "authentication", "auth failed")
-                )
-                if auth_like_error:
-                    breaker.record_failure(
-                        circuit_key,
-                        credential_fingerprint=credential_fingerprint,
-                        authentication=True,
-                    )
-                elif self._should_failover_model(e):
-                    breaker.record_failure(
-                        circuit_key,
-                        credential_fingerprint=credential_fingerprint,
-                    )
-                self._log_tool_debug(
-                    "llm_call_error",
-                    session_key=session_key,
-                    attempt=attempt + 1,
-                    source_model=active_source_model,
-                    error_type=type(e).__name__,
-                    error=str(e),
-                )
-                failover_worthy = self._should_failover_model(e)
-                selection = (
-                    _select_provider(selected_index + 1)
-                    if failover_worthy
-                    else None
-                )
-                if selection and failover_worthy:
-                    selected_index, candidate, circuit_key, credential_fingerprint = selection
-                    (
-                        active_source_model,
-                        model,
-                        base_url,
-                        api_key,
-                        custom_llm_provider,
-                    ) = candidate
-                    qwen_auth_failover_attempted.clear()
-                    logger.warning(
-                        f"LLM call failed for '{failed_source_model}'; switching to fallback '{active_source_model}'."
-                    )
-                    if msg and not model_failover_announced:
-                        err_msg = str(e).lower()
-                        if (
-                            "rate limit" in err_msg
-                            or "rate_limit" in err_msg
-                            or "usage_limit" in err_msg
-                            or "usage limit" in err_msg
-                            or "limit has been reached" in err_msg
-                            or "limit_reached" in err_msg
-                            or "codex provider returned an error" in err_msg
-                            or "no visible response" in err_msg
-                            or "429" in err_msg
-                        ):
-                            reason_phrase = "rate limit or usage limit being reached"
-                        elif "auth" in err_msg or "api key" in err_msg or "authentication" in err_msg:
-                            reason_phrase = "authentication failure"
-                        else:
-                            reason_phrase = "an error"
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                content=f"Primary AI model failed due to {reason_phrase}, switching to fallback model `{active_source_model}`...",
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                metadata=self._with_trace_metadata(
-                                    {
-                                        "reply_to": msg.sender_id,
-                                        "is_warning": True,
-                                        "event_kind": "turn_progress",
-                                        "terminal": False,
-                                    },
-                                    turn_id=turn_id,
-                                    message_id=message_id,
-                                ),
-                            )
-                        )
-                        model_failover_announced = True
-                    continue
-                if (
-                    not image_fallback_attempted
-                    and self._should_retry_without_images(e, messages)
-                    and self._downgrade_image_messages_for_text_model(
-                        messages, session_key
-                    )
-                ):
-                    image_fallback_attempted = True
-                    self._disable_image_inputs_for_session(session_key)
-                    logger.warning(
-                        f"Model '{self.model}' rejected image input for {session_key}; retrying without multimodal content."
-                    )
-                    continue
-                raise
-
-        # A provider-specific compatibility branch can exhaust the retry loop
-        # via ``continue`` on its final attempt. Never let that silently return
-        # ``None`` to the turn controller; preserve the concrete provider error
-        # so recovery and the terminal event have evidence.
-        if last_provider_error is not None:
-            raise last_provider_error
-        raise RuntimeError("LLM provider call ended without a response")
 
     async def _trim_history(self, session_key: str, max_tokens: int = 12_000) -> None:
         if session_key not in self.history or len(self.history[session_key]) <= 1:
@@ -4508,7 +3328,7 @@ class AgentLoop:
         total_tokens = self._estimate_tokens(conv) + sys_tokens
 
         if total_tokens <= max_tokens:
-            self.history[session_key] = [system_msg] + conv
+            self._history_replace(session_key, [system_msg] + conv)
             self._normalize_history_in_place(session_key)
             return
 
@@ -4526,7 +3346,7 @@ class AgentLoop:
             logger.warning(
                 "Current user turn exceeds the history budget; preserving it for the model."
             )
-            self.history[session_key] = [system_msg] + conv
+            self._history_replace(session_key, [system_msg] + conv)
             self._normalize_history_in_place(session_key)
             self._mark_dirty(session_key)
             return
@@ -4588,221 +3408,9 @@ class AgentLoop:
             target_tokens = max_tokens - sys_tokens
             conv = self._truncate_history_fallback(conv, target_tokens)
 
-        self.history[session_key] = [system_msg] + conv
+        self._history_replace(session_key, [system_msg] + conv)
         self._normalize_history_in_place(session_key)
         self._mark_dirty(session_key)
-
-    async def _run_browser_act(self, browser, args: Dict[str, Any], on_progress=None):
-        action = str(args.get("action") or "snapshot").strip().lower()
-        if action == "snapshot":
-            return await browser.snapshot()
-        if action == "click":
-            return await browser.click(args.get("element_id", ""))
-        if action == "type":
-            return await browser.type_text(
-                args.get("element_id", ""), args.get("text", "")
-            )
-        if action == "scroll":
-            return await browser.scroll(
-                args.get("direction", "down"), args.get("amount", 500)
-            )
-        if action == "wait":
-            return await browser.wait(args.get("ms", 1000))
-        if action == "press":
-            return await browser.press_key(args.get("key", "Enter"))
-        if action == "back":
-            return await browser.go_back()
-        if action == "tabs":
-            return await browser.list_tabs()
-        if action == "switch_tab":
-            return await browser.switch_tab(args.get("index", 0))
-        if action == "download":
-            return await browser.download(
-                args.get("element_id", ""),
-                args.get("filename", ""),
-                args.get("timeout_ms", 30_000),
-                args.get("dest", ""),
-                args.get("url", ""),
-            )
-        return {"success": False, "error": f"Unknown browser_act action '{action}'"}
-
-    async def _run_browser_extract(self, browser, args: Dict[str, Any]):
-        mode = str(args.get("mode") or "text").strip().lower()
-        if mode == "media":
-            return await browser.list_media(on_progress=self.toolbox.send_progress)
-        if mode == "snapshot":
-            return await browser.snapshot()
-        return await browser.extract(
-            args.get("selector", "body"), limit=args.get("limit", 5000)
-        )
-
-    async def _execute_browser_tool(
-        self, function_name: str, args: Dict[str, Any], session_key: str
-    ) -> Any:
-        from core.browser import (
-            BROWSER_INSTALL_HINT,
-            PLAYWRIGHT_AVAILABLE,
-            compact_browser_launch_error,
-            playwright_launch_dead_error,
-        )
-
-        dead = playwright_launch_dead_error()
-        if dead:
-            return dead
-        try:
-            browser = await get_browser_manager(
-                session_key=session_key, config=self.config
-            )
-            on_progress = self.toolbox.send_progress
-
-            dispatch: Dict[str, Any] = {
-                "browser_navigate": lambda: browser.navigate(
-                    args.get("url", ""), on_progress=on_progress
-                ),
-                "browser_act": lambda: self._run_browser_act(
-                    browser, args, on_progress
-                ),
-                "browser_click": lambda: browser.click(args.get("element_id", "")),
-                "browser_download": lambda: browser.download(
-                    args.get("element_id", ""),
-                    args.get("filename", ""),
-                    args.get("timeout_ms", 30_000),
-                    args.get("dest", ""),
-                    args.get("url", ""),
-                ),
-                "browser_type": lambda: browser.type_text(
-                    args.get("element_id", ""), args.get("text", "")
-                ),
-                "browser_snapshot": lambda: browser.snapshot(),
-                "browser_scroll": lambda: browser.scroll(
-                    args.get("direction", "down"), args.get("amount", 500)
-                ),
-                "browser_wait": lambda: browser.wait(args.get("ms", 1000)),
-                "browser_press_key": lambda: browser.press_key(
-                    args.get("key", "Enter")
-                ),
-                "browser_go_back": lambda: browser.go_back(),
-                "browser_tabs": lambda: browser.list_tabs(),
-                "browser_switch_tab": lambda: browser.switch_tab(args.get("index", 0)),
-                "browser_extract": lambda: self._run_browser_extract(browser, args),
-                "browser_extract_large": lambda: browser.extract(
-                    args.get("selector", "body"), limit=100_000
-                ),
-                "browser_get_page_text": lambda: browser.get_page_text(),
-                "browser_list_media": lambda: browser.list_media(
-                    on_progress=on_progress
-                ),
-            }
-
-            handler = dispatch.get(function_name)
-            if handler is None:
-                return f"Error: Unknown browser tool '{function_name}'"
-
-            result = await handler()
-
-            if isinstance(result, dict):
-                if result.get("success"):
-                    parts = []
-                    for key, label in [
-                        ("query", "**Search Query:**"),
-                        ("results_summary", "**Results:**"),
-                        ("title", "**Page:**"),
-                        ("url", "**URL:**"),
-                        ("note", "**Note:**"),
-                        ("warning", "**Warning:**"),
-                        ("message", None),
-                        ("path", "**Saved path:**"),
-                        ("elements", "**Elements:**"),
-                        ("media_summary", None),
-                    ]:
-                        val = result.get(key)
-                        if val:
-                            parts.append(f"{label}\n{val}" if label else val)
-                    if result.get("text"):
-                        parts.append(f"**Content:**\n{result['text'][:2000]}")
-                    return "\n".join(parts) if parts else "Success"
-                return f"Error: {result.get('error', 'Unknown error')}"
-
-            if isinstance(result, list):
-                return "Open Tabs:\n" + "".join(
-                    f"{t['index']}: {t['title']} ({t['url']}) {'[ACTIVE]' if t.get('active') else ''}\n"
-                    for t in result
-                )
-
-            return str(result)
-
-        except Exception as e:
-            from core.browser import BROWSER_INSTALL_HINT, PLAYWRIGHT_AVAILABLE
-
-            compact = compact_browser_launch_error(e)
-            if compact:
-                logger.warning(
-                    "Browser launch failed; returning a one-line error without chrome flags."
-                )
-                return compact
-            if not PLAYWRIGHT_AVAILABLE or BROWSER_INSTALL_HINT in str(e):
-                return f"Error: {BROWSER_INSTALL_HINT}"
-            logger.exception(
-                "Browser tool execution failed: "
-                f"{function_name} args={redact_sensitive_text(args)}"
-            )
-            return f"Error executing browser tool: {e}"
-
-    def _browser_skill_enabled(self) -> bool:
-        try:
-            skills = getattr(getattr(self.config, "skills", None), "enabled", []) or []
-            return "browser" in skills
-        except Exception:
-            return False
-
-    async def _gather_search(
-        self,
-        query: str,
-        count: int,
-        kind: str,
-        session_key: str,
-        on_progress=None,
-    ):
-        """Run host-owned search: fetch HTML, parse, retry engines internally.
-
-        Returns a ``SearchResponse`` on success, or ``None`` with the last error
-        string via the second tuple element.
-        """
-        from core.browser import BROWSER_INSTALL_HINT, PLAYWRIGHT_AVAILABLE
-        from core.web_search import run_host_search
-
-        if not PLAYWRIGHT_AVAILABLE:
-            return None, BROWSER_INSTALL_HINT
-
-        last_err = ""
-        try:
-            if on_progress:
-                label = "images" if kind == "images" else (
-                    "news" if kind == "news" else "the web"
-                )
-                await on_progress(f"🔍 Searching {label} for: {query}")
-            browser = await get_browser_manager(
-                session_key=session_key, config=self.config
-            )
-
-            async def fetch_html(url: str, scroll: bool = False) -> str:
-                return await browser.fetch_page_html(url, scroll=scroll)
-
-            resp = await run_host_search(
-                query, kind=kind, count=count, fetch_html=fetch_html
-            )
-            if resp.ok:
-                return resp, ""
-            last_err = resp.error or "no results"
-            if BROWSER_INSTALL_HINT in last_err:
-                return None, BROWSER_INSTALL_HINT
-        except Exception as e:
-            last_err = str(e)
-            logger.warning(f"Host search failed: {e}")
-            if BROWSER_INSTALL_HINT in last_err:
-                return None, BROWSER_INSTALL_HINT
-
-        return None, last_err
 
     @staticmethod
     def _artifact_delivery_requested(text: str) -> bool:
@@ -4822,223 +3430,6 @@ class AgentLoop:
             if name not in _RESEARCH_TOOL_NAMES:
                 reserved.append(definition)
         return reserved
-
-    async def _execute_search_tool(
-        self, function_name: str, args: Dict[str, Any], session_key: str
-    ) -> str:
-        from core.web_search import (
-            DEFAULT_COUNT,
-            MAX_COUNT,
-            format_search_response,
-        )
-
-        query = str(args.get("query") or "").strip()
-        if not query:
-            return "Error: a search query is required."
-
-        raw_kind = str(args.get("kind") or "web").strip().lower()
-        if function_name in {"image_search", "imagesearch", "search_images"}:
-            kind = "images"
-        elif raw_kind in {"image", "images", "photo", "photos", "pic", "pics"}:
-            kind = "images"
-        elif raw_kind in {"news", "nws"}:
-            kind = "news"
-        else:
-            kind = "web"
-
-        try:
-            count = max(1, min(int(args.get("count") or DEFAULT_COUNT), MAX_COUNT))
-        except (TypeError, ValueError):
-            count = DEFAULT_COUNT
-
-        on_progress = self.toolbox.send_progress
-        response, last_err = await self._gather_search(
-            query, count, kind, session_key, on_progress=on_progress
-        )
-        if response is None:
-            from core.browser import BROWSER_INSTALL_HINT, PLAYWRIGHT_AVAILABLE
-
-            if (not PLAYWRIGHT_AVAILABLE) or (
-                last_err and BROWSER_INSTALL_HINT in last_err
-            ):
-                return f"Error: {BROWSER_INSTALL_HINT}"
-            return (
-                f"Error: web search returned no usable results "
-                f"({last_err or 'empty'}). Answer from what you know and say the "
-                "live lookup was empty. Do not open a search engine in the browser."
-            )
-        await self._maybe_host_attach_search_image(response, query)
-        return format_search_response(response)
-
-    async def _maybe_host_attach_search_image(self, response, query: str) -> None:
-        """On media-delivery turns, the host attaches the best image itself."""
-        from core.context import tool_context
-        from core.media_intent import is_chat_media_delivery, is_image_generation_request
-
-        if getattr(response, "kind", "") != "images" or not getattr(response, "images", None):
-            return
-        ctx = tool_context.get() or {}
-        user_text = str(ctx.get("user_text") or query or "")
-        if not is_chat_media_delivery(user_text) or is_image_generation_request(user_text):
-            return
-        image = response.images[0]
-        caption = str(image.title or query or "").strip()
-        try:
-            result = await self.toolbox.attach_chat_image(image.image_url, caption)
-        except Exception as exc:
-            logger.warning(f"Host image attach failed: {exc}")
-            return
-        if str(result or "").startswith("Error:"):
-            logger.warning(f"Host image attach failed: {result}")
-            return
-        response.attached = True
-
-    async def _maybe_host_deliver_instagram_photos(
-        self,
-        msg,
-        content: str,
-        *,
-        turn_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-    ) -> None:
-        """After an IG photo-send turn, attach sidecar stills via send_media."""
-        from core.context import tool_context
-        from core.media_intent import is_instagram_photo_send
-
-        if msg is None or not is_instagram_photo_send(content or getattr(msg, "content", "")):
-            return
-        if self._turn_already_delivered_media(turn_id):
-            return
-        toolbox = getattr(self, "toolbox", None)
-        deliver = getattr(toolbox, "deliver_instagram_post_photos", None)
-        if not callable(deliver):
-            return
-        token = tool_context.set(
-            {
-                "channel": getattr(msg, "channel", "") or "",
-                "chat_id": getattr(msg, "chat_id", "") or "",
-                "sender_id": getattr(msg, "sender_id", "") or "",
-                "turn_id": turn_id or "",
-                "message_id": message_id or "",
-                "user_text": str(content or getattr(msg, "content", "") or "")[:4000],
-                "attachments": list(
-                    getattr(self, "_turn_attachments", {}).get(
-                        f"{getattr(msg, 'channel', '')}:{getattr(msg, 'chat_id', '')}",
-                        [],
-                    )
-                    or []
-                ),
-            }
-        )
-        try:
-            result = await deliver(str(content or getattr(msg, "content", "") or ""))
-        except Exception as exc:
-            logger.warning(f"Host Instagram photo delivery failed: {exc}")
-            return
-        finally:
-            tool_context.reset(token)
-        if str(result or "").startswith("Error:"):
-            logger.warning(f"Host Instagram photo delivery failed: {result}")
-
-    async def _run_deep_research(
-        self, query: str, args: Dict[str, Any], session_key: str
-    ) -> str:
-        on_progress = self.toolbox.send_progress
-        await on_progress(f"🧪 Deep research: {query}")
-
-        response, last_err = await self._gather_search(
-            query, count=6, kind="web", session_key=session_key, on_progress=on_progress
-        )
-        if response is None or not response.results:
-            # Nothing structured to read; surface any provider answer we did get.
-            if response is not None and response.answer:
-                return response.answer
-            return (
-                f"Error: deep_research could not gather sources for '{query}' "
-                f"({last_err or 'no results'})."
-            )
-
-        MAX_SOURCES = 5
-        MAX_CHARS_PER_SOURCE = 4000
-        sources: List[Dict[str, str]] = []
-        seen: Set[str] = set()
-        for r in response.results:
-            if len(sources) >= MAX_SOURCES:
-                break
-            if not r.url or r.url in seen:
-                continue
-            seen.add(r.url)
-            content = r.content or ""
-            if len(content) < 400:
-                await on_progress(f"📖 Reading: {r.url}")
-                fetched = await self.toolbox.fetch_readable_text(
-                    r.url, max_chars=MAX_CHARS_PER_SOURCE
-                )
-                if fetched and not fetched.startswith("Error:"):
-                    content = fetched
-            sources.append(
-                {
-                    "title": r.title or r.url,
-                    "url": r.url,
-                    "content": (content or r.snippet or "")[:MAX_CHARS_PER_SOURCE],
-                }
-            )
-
-        if not sources:
-            return response.answer or (
-                f"Error: deep_research found results but could not read any source "
-                f"for '{query}'."
-            )
-
-        numbered = "\n\n".join(
-            f"[{i}] {s['title']} — {s['url']}\n{s['content']}"
-            for i, s in enumerate(sources, 1)
-        )
-        synthesis = await self._synthesize_research(
-            query, numbered, response.answer, session_key
-        )
-        sources_md = "\n".join(
-            f"[{i}] {s['title']} — {s['url']}" for i, s in enumerate(sources, 1)
-        )
-        return f"{synthesis}\n\n**Sources:**\n{sources_md}"
-
-    async def _synthesize_research(
-        self, query: str, numbered_sources: str, provider_answer: str, session_key: str
-    ) -> str:
-        system = (
-            "You are a meticulous research assistant. Using ONLY the numbered "
-            "sources provided, write a concise, well-structured answer to the "
-            "user's question. Cite sources inline with bracketed numbers like [1], "
-            "[2] that correspond to the source list. If the sources conflict or are "
-            "insufficient, say so explicitly. Never invent facts, URLs, or citations."
-        )
-        user = f"Question: {query}\n\n"
-        if provider_answer:
-            user += f"Provider summary (for context, still cite sources): {provider_answer}\n\n"
-        user += f"Sources:\n{numbered_sources}"
-
-        try:
-            provider = self.llm_client.resolve_provider(
-                self.model,
-                default_base_url=self.config.llm.base_url,
-            )
-            resp = await self.llm_client.complete(
-                provider,
-                ChatRequest(
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    max_tokens=1000,
-                    session_id=f"{session_key}::deep-research",
-                ),
-            )
-            text = (resp.choices[0].message.content or "").strip()
-            if text:
-                return text
-        except Exception as e:
-            logger.warning(f"deep_research synthesis failed: {e}")
-        return provider_answer or "Research synthesis unavailable; see sources below."
 
     async def _execute_tag_compat_tool(
         self, function_name: str, function_args: Dict[str, Any], session_key: str = "default"
@@ -5080,7 +3471,7 @@ class AgentLoop:
             validate_identity=prompt_module.validate_and_save_identity,
             validate_mood=prompt_module.validate_and_save_mood,
             validate_relationship=prompt_module.validate_and_save_relationships,
-            vector_service=self.vector_service,
+            vector_service=self._get_current_vector_service(),
             bus=self.bus,
             msg=None,
             config=self.config,
@@ -5156,24 +3547,7 @@ class AgentLoop:
 
     @staticmethod
     def _capability_match_score(query: str, name: str, description: str = "") -> int:
-        tokens = {
-            token
-            for token in re.findall(r"[a-z0-9_/-]+", str(query or "").lower())
-            if len(token) >= 2
-        }
-        if not tokens:
-            return 1
-        haystack = {
-            token
-            for token in re.findall(
-                r"[a-z0-9_/-]+", f"{name} {description}".lower()
-            )
-            if len(token) >= 2
-        }
-        score = len(tokens & haystack)
-        if str(name or "").lower() in str(query or "").lower():
-            score += 50
-        return score
+        return CapabilityService.capability_match_score(query, name, description)
 
     def _resolve_capabilities(
         self,
@@ -5181,151 +3555,11 @@ class AgentLoop:
         include_disabled: bool = True,
         session_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Build a redacted capability resolution snapshot for tools and API."""
-        registry = getattr(self, "skill_registry", None)
-        skill_rows: list[Dict[str, Any]] = []
-        matched_skills: list[str] = []
-        required_tools: list[str] = []
-        revision = int(getattr(registry, "capability_revision", 0) or 0)
-        if registry is not None:
-            try:
-                skill_rows = registry.search_capabilities(
-                    query, include_inactive=include_disabled, limit=12
-                )
-            except Exception as exc:
-                logger.debug(f"Capability skill search failed: {exc}")
-            context = self._get_capability_turn_context(session_key, query)
-            matched_skills = list(context.get("skill_names") or [])
-            if hasattr(registry, "get_required_tool_names_for_skills"):
-                required_tools = registry.get_required_tool_names_for_skills(
-                    matched_skills
-                )
-
-        all_tools = list(self._get_tool_definitions())
-        tool_rows: list[Dict[str, Any]] = []
-        for tool in all_tools:
-            function = tool.get("function") if isinstance(tool, dict) else {}
-            if not isinstance(function, dict):
-                continue
-            name = str(function.get("name") or "").strip()
-            if not name:
-                continue
-            description = redact_sensitive_text(
-                re.sub(r"\s+", " ", str(function.get("description") or "")).strip()
-            )[:180]
-            score = self._capability_match_score(query, name, description)
-            if str(query or "").strip() and score <= 0:
-                continue
-            if name.startswith("mcp_"):
-                parts = name.split("_", 2)
-                server = parts[1] if len(parts) > 1 else "unknown"
-                try:
-                    from core.mcp_client import get_mcp_manager
-
-                    connection_state = get_mcp_manager().get_status().get(
-                        server, "Offline"
-                    )
-                except Exception:
-                    connection_state = "unknown"
-                state = str(connection_state).lower()
-                tool_type = "mcp_tool"
-            else:
-                state = "ready"
-                tool_type = "native_tool"
-            tool_rows.append(
-                {
-                    "name": name,
-                    "type": tool_type,
-                    "description": description,
-                    "state": state,
-                    "match_score": score,
-                }
-            )
-
-        # Keep configured MCP servers visible even when they currently expose
-        # no cached tools (for example during a reconnect or failed handshake).
-        try:
-            from core.mcp_client import get_mcp_manager
-
-            mcp_status = get_mcp_manager().get_status()
-            for server, connection_state in sorted((mcp_status or {}).items()):
-                score = self._capability_match_score(query, str(server), "MCP server")
-                if str(query or "").strip() and score <= 0:
-                    continue
-                tool_rows.append(
-                    {
-                        "name": str(server),
-                        "type": "mcp_server",
-                        "description": "Configured MCP server",
-                        "state": str(connection_state).lower(),
-                        "match_score": score,
-                    }
-                )
-        except Exception:
-            pass
-
-        subagent_rows: list[Dict[str, Any]] = []
-        subagent_registry = getattr(self, "subagent_registry", None)
-        if subagent_registry is not None:
-            try:
-                descriptions = subagent_registry.get_agent_descriptions()
-            except Exception:
-                descriptions = {}
-            for name, description in sorted((descriptions or {}).items()):
-                score = self._capability_match_score(query, name, description)
-                if str(query or "").strip() and score <= 0:
-                    continue
-                subagent_rows.append(
-                    {
-                        "name": str(name),
-                        "type": "subagent",
-                        "description": redact_sensitive_text(
-                            re.sub(r"\s+", " ", str(description or "")).strip()
-                        )[:180],
-                        "state": "ready",
-                        "match_score": score,
-                    }
-                )
-
-        rows = skill_rows + tool_rows + subagent_rows
-        rows.sort(
-            key=lambda item: (
-                -int(item.get("match_score", 0) or 0),
-                str(item.get("type") or ""),
-                str(item.get("name") or ""),
-            )
+        return self._get_capability_service().resolve_capabilities(
+            query,
+            include_disabled=include_disabled,
+            session_key=session_key,
         )
-        selected_tools = self._get_tool_definitions_for_turn(
-            query, session_key=session_key
-        )
-        selected_tool_names = self._tool_definition_names(selected_tools)
-        ready_matches = [
-            row
-            for row in rows
-            if row.get("state") in {"ready", "online", "registered"}
-        ]
-        if ready_matches:
-            overall_state = "ready"
-            reason = "At least one registered, enabled, or connected capability matched the request."
-        elif skill_rows:
-            overall_state = str(skill_rows[0].get("state") or "unavailable")
-            reason = "A discovered capability matched, but it is not currently operational."
-        elif rows:
-            overall_state = str(rows[0].get("state") or "unavailable")
-            reason = "A capability matched, but it is not currently operational."
-        else:
-            overall_state = "unavailable"
-            reason = "No discovered capability matched this query; use the exact integration name or inspect the inventory."
-        return {
-            "query": str(query or ""),
-            "revision": revision,
-            "state": overall_state,
-            "reason": reason,
-            "matched_skills": matched_skills,
-            "required_tools": required_tools,
-            "selected_tools": selected_tool_names,
-            "capabilities": rows[:30],
-        }
 
     async def _execute_capability_search(
         self, function_args: Dict[str, Any], session_key: str
@@ -5352,117 +3586,19 @@ class AgentLoop:
     async def _execute_tool(
         self, function_name: str, function_args: dict, session_key: str
     ) -> Any:
-        ctx = tool_context.get() or {}
-        refusal = preflight_tool_call(
-            function_name,
-            function_args,
-            attachments=ctx.get("attachments")
-            or getattr(self, "_turn_attachments", {}).get(session_key),
-            user_text=str(ctx.get("user_text") or ""),
+        request_context = tool_context.get() or {}
+        attachments = request_context.get("attachments") or getattr(
+            self, "_turn_attachments", {}
+        ).get(session_key)
+        context = ToolExecutionContext(
+            session_key=session_key,
+            user_text=str(request_context.get("user_text") or ""),
+            attachments=attachments,
+            profile=get_current_profile_context(),
         )
-        if refusal:
-            return refusal
-
-        cached = self.tool_cache.get(function_name, function_args)
-        if cached:
-            logger.debug(f"⚡ Cache hit: {function_name}")
-            return cached
-
-        # ── Intercept echo-as-memory ─────────────────────────────────
-
-        if function_name == "run_command":
-            cmd = function_args.get("command", "")
-            echo_match = re.match(r'^echo\s+["\'](.+?)["\']\s*$', cmd, re.DOTALL)
-            if echo_match:
-                entry = echo_match.group(1).strip()
-                if len(entry) > 10:
-                    try:
-                        # Keep the legacy echo compatibility path on the same
-                        # Markdown-first writer as the native memory_save tool.
-                        # This also honors LIMEBOT_STATE_DIR and queues optional
-                        # vector indexing without making it a prerequisite.
-                        result = await self.toolbox.memory_save(entry, scope="journal")
-                        logger.info(f"Redirected echo to log_memory: {entry[:80]}")
-                        return result
-                    except Exception as e:
-                        logger.error(f"Error in echo-to-log_memory redirect: {e}")
-
-        try:
-            if function_name == "spawn_agent":
-                result = await self.toolbox.spawn_agent(
-                    session_key=session_key, **function_args
-                )
-            elif function_name == "capability_search":
-                result = (
-                    "Error: capability_search is not available. Use the native tools "
-                    "and enabled skills directly."
-                )
-            elif function_name in {"get_task_output", "wait_tasks", "kill_task"}:
-                result = await self._execute_background_task_tool(
-                    function_name, function_args
-                )
-            elif function_name in _SEARCH_TOOLS:
-                result = await self._execute_search_tool(
-                    function_name, function_args, session_key
-                )
-            elif function_name.startswith("browser_"):
-                result = await self._execute_browser_tool(
-                    function_name, function_args, session_key
-                )
-            elif function_name.startswith("mcp_"):
-                from core.mcp_client import get_mcp_manager
-
-                result = await get_mcp_manager().execute_tool(
-                    function_name, function_args
-                )
-            elif function_name in _TAG_COMPAT_TOOLS:
-                result = await self._execute_tag_compat_tool(
-                    function_name, function_args, session_key
-                )
-            else:
-                handler = self._tool_registry.get(function_name)
-                if handler:
-                    result = await handler(**function_args)
-                else:
-                    self.metrics.record_anomaly(
-                        session_key,
-                        "unknown_tool",
-                        detail=f"{function_name}({function_args})",
-                    )
-                    result = f"Error: Unknown tool '{function_name}'"
-
-            is_read_only = function_name in _BROWSER_CACHEABLE or function_name in {
-                "read_file",
-                "list_dir",
-                "search_files",
-                "verify_files",
-                "diagnose_files",
-                "memory_search",
-                "web_search",
-                "inspect_skill",
-            }
-            if result and not str(result).startswith("Error:") and is_read_only:
-                self.tool_cache.set(function_name, function_args, result)
-
-            if (
-                function_name
-                in {
-                    "edit_file",
-                    "write_file",
-                    "delete_file",
-                    "create_skill",
-                    "edit_skill",
-                    "run_command",
-                }
-                and result
-                and not str(result).startswith("Error:")
-            ):
-                # File/system mutations can stale read/list/search caches.
-                self.tool_cache.clear()
-
-            return result
-        except Exception as e:
-            return f"Error executing '{function_name}': {e}"
+        return await self.tool_runtime.execute(
+            function_name, function_args, context
+        )
 
     def _tool_execution_timeout(self, function_name: str) -> Optional[float]:
         """Return the outer LimeBot deadline for a native tool invocation."""
@@ -5476,70 +3612,6 @@ class AgentLoop:
         return getattr(self.config, "tool_timeout", 120.0)
 
     @staticmethod
-    def _extract_run_command_exit_code(result: Any) -> Optional[int]:
-        match = re.search(r"Exit Code:\s*(-?\d+)", str(result))
-        if not match:
-            return None
-        try:
-            return int(match.group(1))
-        except (TypeError, ValueError):
-            return None
-
-    def _is_tool_result_error(self, function_name: str, result: Any) -> bool:
-        text = str(result or "")
-
-        if text.startswith("Error:") or text.startswith("Error executing"):
-            return True
-        if text.startswith("ACTION CANCELLED:") or text.startswith("ACTION BLOCKED:"):
-            return True
-        if "[TIMEOUT]" in text or "[STALL]" in text:
-            return True
-
-        if function_name in {"run_command", "run_steps"}:
-            exit_code = self._extract_run_command_exit_code(text)
-            if exit_code not in (None, 0):
-                return True
-
-        if function_name in {
-            "edit_file",
-            "edit_skill",
-            "create_skill",
-            "inspect_skill",
-            "verify_files",
-            "diagnose_files",
-        }:
-            try:
-                payload = json.loads(text)
-            except (TypeError, json.JSONDecodeError):
-                payload = None
-            if isinstance(payload, dict):
-                status = str(payload.get("status") or "").strip().lower()
-                code = str(payload.get("code") or "").strip().lower()
-                if status in {"error", "failed", "blocked", "cancelled"}:
-                    return True
-                if code in {
-                    "validation_failed",
-                    "skill_read_only",
-                    "stale_match",
-                    "path_rejected",
-                    "symlink_rejected",
-                    "sensitive_path",
-                    "reload_failed",
-                    "skill_edit_failed",
-                    "skill_create_failed",
-                }:
-                    return True
-                verification = payload.get("verification")
-                if (
-                    function_name == "edit_file"
-                    and isinstance(verification, dict)
-                    and verification.get("status") == "failed"
-                ):
-                    return True
-
-        return False
-
-    @staticmethod
     def _is_coding_turn(content: str, tool_calls: Optional[List[Dict[str, Any]]] = None) -> bool:
         if _CODING_HINT_RE.search(str(content or "")):
             return True
@@ -5550,88 +3622,6 @@ class AgentLoop:
                 return True
         return False
 
-    @staticmethod
-    def _tool_phase(function_name: str, function_args: Dict[str, Any]) -> str:
-        if function_name in {"verify_files", "diagnose_files"}:
-            return "verify"
-        if function_name in _MUTATION_TOOL_NAMES:
-            return "apply"
-        if function_name in {"run_command", "run_steps"}:
-            command = str(
-                (function_args or {}).get("command")
-                or (function_args or {}).get("commands")
-                or ""
-            ).lower()
-            if re.search(r"\b(test|pytest|unittest|lint|build|compile|check|verify)\b", command):
-                return "verify"
-            return "apply"
-        return "inspect"
-
-    def _build_tool_outcome(self, function_name: str, result: Any) -> ToolOutcome:
-        text = str(result or "")
-        exit_code = self._extract_run_command_exit_code(text)
-        timed_out = "[TIMEOUT]" in text or "timed out" in text.lower()
-        stalled = "[STALL]" in text
-        success = not self._is_tool_result_error(function_name, text)
-        normalized = re.sub(r"\d+", "#", text.lower())[:2000]
-        fingerprint = ""
-        if not success:
-            fingerprint = hashlib.sha256(
-                f"{function_name}:{normalized}".encode("utf-8", "replace")
-            ).hexdigest()[:16]
-        verification_status: Optional[str] = None
-        verification_detail = ""
-        if function_name in {
-            "edit_file",
-            "edit_skill",
-            "verify_files",
-            "diagnose_files",
-        }:
-            try:
-                payload = json.loads(text)
-            except (TypeError, json.JSONDecodeError):
-                payload = None
-            if isinstance(payload, dict):
-                verification = payload.get("verification")
-                if function_name == "verify_files":
-                    verification = payload
-                if isinstance(verification, dict):
-                    status = str(verification.get("status") or "").strip().lower()
-                    if status:
-                        verification_status = status
-                    verification_detail = truncate_tool_result(
-                        redact_sensitive_text(json.dumps(verification, ensure_ascii=False)),
-                        600,
-                    )
-        diagnostic_limit = 800
-        diagnostic = truncate_tool_result(redact_sensitive_text(text), diagnostic_limit)
-        split = diagnostic.split("\n... [truncated diagnostic] ...\n", 1)
-        failure_category = "" if success else classify_failure(function_name, text)
-        progress = success and function_name in {
-            "edit_file",
-            "write_file",
-            "edit_skill",
-            "create_skill",
-            "verify_files",
-            "diagnose_files",
-            "run_command",
-        }
-        return ToolOutcome(
-            tool=function_name,
-            success=success,
-            exit_code=exit_code,
-            timed_out=timed_out,
-            stalled=stalled,
-            retry_safe=function_name in _READ_ONLY_TOOL_NAMES,
-            failure_fingerprint=fingerprint,
-            diagnostic_head=split[0][:400],
-            diagnostic_tail=(split[1] if len(split) == 2 else split[0])[-400:],
-            verification_status=verification_status,
-            verification_detail=verification_detail,
-            failure_category=failure_category or "unknown",
-            progress=progress,
-        )
-
     def _get_tool_outcomes(self, turn_id: Optional[str] = None) -> List[ToolOutcome]:
         """Return outcomes for this turn without crossing session boundaries."""
 
@@ -5641,35 +3631,28 @@ class AgentLoop:
                 return list(scoped)
         return list(getattr(self, "_last_tool_outcomes", []) or [])
 
+    def _tool_recovery_service(self) -> ToolRecoveryService:
+        """Bind recovery policy to this loop's current turn state and event ports."""
+        return ToolRecoveryService(
+            config=self.config,
+            get_tool_definitions=self._get_tool_definitions,
+            get_tool_outcomes=self._get_tool_outcomes,
+            append_history=lambda session_key, entry: self._history_append(
+                session_key, entry, mark_dirty=False
+            ),
+            mark_dirty=self._mark_dirty,
+            log_session_event=self._log_session_event,
+            log_tool_debug=self._log_tool_debug,
+            emit_coding_phase=self._emit_coding_phase,
+        )
+
     def _recovery_tool_definitions(
         self,
         initial: Optional[List[Dict[str, Any]]],
         state: Optional[RecoveryState],
     ) -> Optional[List[Dict[str, Any]]]:
         """Rebuild a recovery catalog from the exact registered tool names."""
-        if state is None or not state.active:
-            return initial
-        all_tools = self._get_tool_definitions()
-        by_name = {
-            str(tool.get("function", {}).get("name") or ""): tool
-            for tool in all_tools
-            if isinstance(tool, dict)
-        }
-        allowed = state.allowed_tool_names(by_name.keys())
-        ordered: List[Dict[str, Any]] = []
-        seen: Set[str] = set()
-        for tool in list(initial or []) + all_tools:
-            name = str(tool.get("function", {}).get("name") or "")
-            if name in allowed and name not in seen:
-                ordered.append(by_name[name])
-                seen.add(name)
-        self._log_tool_debug(
-            "recovery_tool_catalog_rebuilt",
-            failed_tool=state.failed_tool,
-            failure_category=state.failure_category,
-            tools=sorted(seen),
-        )
-        return ordered
+        return self._tool_recovery_service().tool_definitions(initial, state)
 
     @staticmethod
     def _task_run_acceptance_satisfied(
@@ -5685,38 +3668,32 @@ class AgentLoop:
         plan_mode: bool = False,
         pending_workspaces: Optional[List[Any]] = None,
     ) -> bool:
-        if iterations_limit_reached or unresolved_tool_failure:
-            return False
-        goal = getattr(run, "goal", "")
-        coding_goal = is_coding_goal(goal)
-        mutated = turn_had_file_mutations(outcomes, history)
-        if casual_turn and not mutated and not coding_turn and not coding_goal:
-            return True
-        verdict = evaluate_operator_invariants(
-            casual_turn=casual_turn,
-            plan_mode=plan_mode,
+        return acceptance_satisfied(
+            run,
+            outcomes,
             coding_turn=coding_turn,
-            coding_goal=coding_goal,
-            outcomes=outcomes,
+            iterations_limit_reached=iterations_limit_reached,
+            unresolved_tool_failure=unresolved_tool_failure,
             history=history,
             session_key=session_key,
+            casual_turn=casual_turn,
+            plan_mode=plan_mode,
             pending_workspaces=pending_workspaces,
-            unresolved_tool_failure=unresolved_tool_failure,
-            iterations_limit_reached=iterations_limit_reached,
         )
-        if verdict.applies and not verdict.ok:
-            return False
-        if not outcomes:
-            checkpoint = getattr(run, "checkpoint", {}) or {}
-            if mutated or coding_goal:
-                return checkpoint.get("verification_state") == "passed"
-            return True
-        if mutated or coding_turn or coding_goal:
-            return has_verification_evidence(
-                outcomes,
-                history=history,
+
+    def _task_run_completion_service(self) -> TaskRunCompletionService:
+        """Bind durable completion policy to this turn's live task services."""
+        service = getattr(self, "task_run_completion_service", None)
+        if service is None:
+            service = TaskRunCompletionService(
+                task_runs=self.task_runs,
+                evaluate_invariants=self._evaluate_operator_invariants,
+                acceptance_satisfied=self._task_run_acceptance_satisfied,
+                is_casual_turn=self._is_fast_casual_turn,
+                schedule_continuation=self._schedule_task_run_continuation,
             )
-        return True
+            self.task_run_completion_service = service
+        return service
 
     def _pending_isolated_workspaces(self) -> List[Any]:
         try:
@@ -5770,22 +3747,7 @@ class AgentLoop:
         )
 
     def _recovery_tool_contract(self, state: Optional[RecoveryState]) -> str:
-        if state is None or not state.active:
-            return ""
-        definitions = self._get_tool_definitions()
-        names = sorted(
-            state.allowed_tool_names(
-                str(item.get("function", {}).get("name") or "")
-                for item in definitions
-                if isinstance(item, dict)
-            )
-        )
-        exact = ", ".join(names) or "(no recovery tools are currently available)"
-        return (
-            "RECOVERY TOOL CONTRACT. Use only these exact registered tool names; do not invent "
-            f"aliases or wrapper names: {exact}. Inspect the source/schema before retrying an "
-            "invalid-argument failure, and do not repeat an identical failed action without new evidence."
-        )
+        return self._tool_recovery_service().tool_contract(state)
 
     async def _schedule_task_run_continuation(
         self,
@@ -5799,106 +3761,22 @@ class AgentLoop:
         recovery: Optional[RecoveryState] = None,
     ) -> bool:
         """Persist and enqueue one bounded continuation slice."""
-        if run is None or run.terminal:
-            return False
-        if run.slice_count >= run.max_slices:
-            self.task_runs.block(
-                run.run_id,
-                error="Task continuation limit reached without verified completion.",
-                next_action="Review the last checkpoint and continue explicitly.",
-            )
-            return False
-        if recovery is not None and not recovery.can_continue():
-            self.task_runs.block(
-                run.run_id,
-                error=error or "Corrective recovery limit reached after the recorded failures.",
-                next_action="Review the diagnostic and provide a new direction or credential.",
-            )
-            return False
-        checkpoint = dict(run.checkpoint or {})
-        if recovery is not None:
-            checkpoint["recovery"] = recovery.to_dict()
-        updated = self.task_runs.request_resume(
-            run.run_id,
-            phase=phase,
+        service = TaskRunContinuationService(
+            task_runs=self.task_runs,
+            job_queue=self.job_queue,
+            bus=self.bus,
+            log_session_event=self._log_session_event,
+            publish_activity=self._publish_activity,
+        )
+        return await service.schedule(
+            run,
+            msg,
             next_action=next_action,
+            phase=phase,
             error=error,
             corrective_failure=corrective_failure,
-            corrective_failures=(
-                recovery.corrective_failures if recovery is not None else None
-            ),
-            checkpoint=checkpoint,
-            metadata_update={"continuation_requested": True},
+            recovery=recovery,
         )
-        if updated is None:
-            return False
-        self._log_session_event(
-            str((updated.metadata or {}).get("session_key") or msg.session_key),
-            {
-                "type": "task_run_checkpoint",
-                "task_run_id": updated.run_id,
-                "status": updated.status,
-                "phase": updated.phase,
-                "slice_count": updated.slice_count,
-                "corrective_failures": updated.corrective_failures,
-                "next_action": updated.next_action[:500],
-                "last_error": redact_sensitive_text(updated.last_error[:500]),
-            },
-        )
-
-        metadata = dict(msg.metadata or {})
-        metadata.update(
-            {
-                "task_run_id": run.run_id,
-                "task_run_resume": True,
-            }
-        )
-        durable_id = str(metadata.get("durable_job_id") or "").strip()
-        resume_msg = InboundMessage(
-            channel=msg.channel,
-            sender_id=msg.sender_id,
-            chat_id=msg.chat_id,
-            content=msg.content,
-            media=list(msg.media or []),
-            metadata=metadata,
-        )
-        msg.metadata.update({"task_run_continuation_scheduled": True})
-        if durable_id:
-            self.job_queue.update_payload_metadata(
-                durable_id,
-                {
-                    "task_run_id": run.run_id,
-                    "task_run_resume": True,
-                },
-            )
-            self.job_queue.requeue_continuation(
-                durable_id,
-                # The in-memory bus is the fast handoff, while the queued
-                # record is the crash-safe fallback.  Keep the record
-                # immediately claimable: delaying it and publishing the same
-                # message now lets the bus process it once and the queue
-                # process it again after the delay, which showed up as
-                # duplicate WhatsApp replies.
-                delay=0,
-                error=error or "Continuing durable task from checkpoint.",
-            )
-        else:
-            metadata["durable_job_id"] = run.run_id
-            resume_msg.metadata = metadata
-            self.job_queue.enqueue(
-                resume_msg,
-                kind="task_continuation",
-                job_id=run.run_id,
-                max_attempts=1,
-            )
-        await self.bus.publish_inbound(resume_msg)
-        await self._publish_activity(
-            msg,
-            f"Continuing task from checkpoint: {next_action}",
-            turn_id=None,
-            message_id=None,
-        )
-        return True
 
     async def _emit_coding_phase(
         self,
@@ -5941,14 +3819,8 @@ class AgentLoop:
         )
 
     def _coding_recovery_message(self, outcome: ToolOutcome, attempt: int, budget: int) -> str:
-        return (
-            "Coding verification failed. Continue deliberately: inspect the relevant "
-            "failure, apply one targeted edit only if justified, then rerun a narrowed "
-            "verification command; otherwise report a blocker. Do not blindly retry a "
-            "mutation. "
-            f"Repair attempt {attempt}/{budget}. Tool: {outcome.tool}. "
-            f"Exit code: {outcome.exit_code!r}. Diagnostic tail: "
-            f"{redact_sensitive_text(outcome.diagnostic_tail)}"
+        return self._tool_recovery_service().coding_recovery_message(
+            outcome, attempt, budget
         )
 
     def _tool_recovery_message(
@@ -5959,65 +3831,21 @@ class AgentLoop:
         *,
         repeated: bool = False,
     ) -> str:
-        repeated_note = (
-            " The same failure fingerprint appeared before; choose a materially "
-            "different diagnostic or route."
-            if repeated
-            else ""
-        )
-        return (
-            "A tool operation failed while pursuing the user's original goal. "
-            "Continue toward that goal instead of finalizing a blocker. Classify "
-            "the failure (local/client, server, authentication, permission, or "
-            "policy), inspect the evidence, and try a different safe route or "
-            "diagnostic. Do not disable security controls and do not repeat the "
-            "identical failing call unless new evidence justifies it. Only report "
-            "the goal as blocked after the blocker is independently confirmed and "
-            "reasonable safe alternatives are exhausted."
-            f"{repeated_note} Recovery attempt {attempt}/{budget}. "
-            f"Tool: {outcome.tool}. Diagnostic tail: "
-            f"{redact_sensitive_text(outcome.diagnostic_tail)}"
+        return self._tool_recovery_service().tool_recovery_message(
+            outcome, attempt, budget, repeated=repeated
         )
 
     def _has_successful_mutation_since_previous_verifier_failure(
         self, session_key: str
     ) -> bool:
         """Allow one repeated failure only when an edit succeeded between failures."""
-        entries = self.history.get(session_key, [])
-        failure_indexes = [
-            index
-            for index, entry in enumerate(entries)
-            if entry.get("role") == "tool"
-            and entry.get("name") == "run_command"
-            and self._is_tool_result_error("run_command", entry.get("content", ""))
-        ]
-        if len(failure_indexes) < 2:
-            return False
-        start = failure_indexes[-2] + 1
-        end = failure_indexes[-1]
-        return any(
-            entry.get("role") == "tool"
-            and entry.get("name") in _MUTATION_TOOL_NAMES
-            and not self._is_tool_result_error(
-                str(entry.get("name")), entry.get("content", "")
-            )
-            for entry in entries[start:end]
+        return self._tool_recovery_service().has_successful_mutation_since_previous_verifier_failure(
+            self.history.get(session_key, [])
         )
 
     def _build_step_cap_fallback(self, session_key: str) -> str:
-        recent = [
-            entry for entry in self.history.get(session_key, []) if entry.get("role") == "tool"
-        ][-2:]
-        if not recent:
-            return "The coding step limit was reached before verification could run."
-        details = "; ".join(
-            f"{entry.get('name', 'tool')}: "
-            f"{redact_sensitive_text(str(entry.get('content', ''))[-220:])}"
-            for entry in recent
-        )
-        return (
-            "The coding step limit was reached. I ran: " + details +
-            ". Remaining work: inspect the last diagnostic and run the narrowed verification."
+        return self._tool_recovery_service().build_step_cap_fallback(
+            self.history.get(session_key, [])
         )
 
     async def _queue_tool_recovery(
@@ -6034,113 +3862,46 @@ class AgentLoop:
         message_id: Optional[str] = None,
     ) -> Tuple[int, Optional[str]]:
         """Queue one model-directed recovery step, or return a concrete blocker."""
-        failures = [
-            outcome
-            for outcome in self._get_tool_outcomes(turn_id)
-            if not outcome.success
-            and (allowed_tools is None or outcome.tool in allowed_tools)
-        ]
-        if not failures:
-            return attempts, None
-        failure = failures[-1]
-        configured_budget = getattr(
-            self.config, "tool_recovery_max_corrective_failures", None
+        result = await self._coordinate_tool_recovery(
+            session_key,
+            msg,
+            fingerprints,
+            attempts,
+            coding_turn=coding_turn,
+            allowed_tools=allowed_tools,
+            recovery_state=recovery_state,
+            turn_id=turn_id,
+            message_id=message_id,
         )
-        legacy_budget = getattr(self.config, "tool_recovery_max_attempts", None)
-        # Older integrations mutate only the alias. Respect that explicit
-        # change while treating the new name as authoritative when both values
-        # still match the loaded configuration.
-        if configured_budget is None or (
-            legacy_budget is not None and legacy_budget != configured_budget
-        ):
-            configured_budget = legacy_budget
-        if configured_budget is None:
-            configured_budget = getattr(self.config, "coding_repair_max_attempts", 5)
-        budget = max(1, int(configured_budget or 5))
-        if recovery_state is not None:
-            # Persist the effective budget with the recovery record so a
-            # continuation cannot silently switch policy between slices.
-            recovery_state.max_corrective_failures = budget
-        repeated = failure.failure_fingerprint in fingerprints
-        attempts += 1
-        fingerprints.add(failure.failure_fingerprint)
-        recovery_limit_reached = (
-            not recovery_state.can_continue()
-            if recovery_state is not None
-            else attempts > budget
-        )
-        if recovery_limit_reached:
-            corrective_count = (
-                recovery_state.corrective_failures
-                if recovery_state is not None
-                else attempts - 1
-            )
-            blocked = (
-                f"Tool recovery budget reached ({corrective_count}/{budget} corrective "
-                "failures). The original goal remains incomplete. "
-                f"Failure category: {failure.failure_category}. Last diagnostic: "
-                f"{redact_sensitive_text(failure.diagnostic_tail)}. "
-                "Next action: inspect this diagnostic and provide a new direction, "
-                "credential, permission, or corrected input."
-            )
-            if coding_turn:
-                await self._emit_coding_phase(
-                    "blocked", session_key, msg, turn_id=turn_id,
-                    message_id=message_id, outcome=failure
-                )
-            else:
-                self._log_session_event(
-                    session_key,
-                    {
-                        "type": "tool_recovery_blocked",
-                        "tool": failure.tool,
-                        "failure_fingerprint": failure.failure_fingerprint,
-                        "diagnostic": redact_sensitive_text(failure.diagnostic_tail),
-                    },
-                )
-            return attempts, blocked
-        recovery_attempt = (
-            max(1, recovery_state.corrective_failures + 1)
-            if recovery_state is not None
-            else attempts
-        )
-        recovery_message = (
-            self._coding_recovery_message(failure, recovery_attempt, budget)
-            if coding_turn
-            else self._tool_recovery_message(
-                failure, recovery_attempt, budget, repeated=repeated
+        return result.attempts, result.blocked
+
+    async def _coordinate_tool_recovery(
+        self,
+        session_key: str,
+        msg: Optional[InboundMessage],
+        fingerprints: Set[str],
+        attempts: int,
+        *,
+        coding_turn: bool = False,
+        allowed_tools: Optional[Set[str]] = None,
+        recovery_state: Optional[RecoveryState] = None,
+        turn_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> ToolRecoveryResult:
+        """Let recovery policy decide whether this turn needs another model step."""
+        return await self._tool_recovery_service().queue_recovery(
+            ToolRecoveryRequest(
+                session_key=session_key,
+                fingerprints=fingerprints,
+                attempts=attempts,
+                message=msg,
+                coding_turn=coding_turn,
+                allowed_tools=allowed_tools,
+                recovery_state=recovery_state,
+                turn_id=turn_id,
+                message_id=message_id,
             )
         )
-        self.history[session_key].append(
-            {
-                "role": "system",
-                "content": recovery_message,
-            }
-        )
-        self._mark_dirty(session_key)
-        if coding_turn:
-            await self._emit_coding_phase(
-                "repair", session_key, msg, turn_id=turn_id,
-                message_id=message_id, outcome=failure
-            )
-        else:
-            self._log_session_event(
-                session_key,
-                {
-                    "type": "tool_recovery_queued",
-                    "tool": failure.tool,
-                    "attempt": recovery_attempt,
-                    "budget": budget,
-                    "corrective_failures": (
-                        recovery_state.corrective_failures
-                        if recovery_state is not None
-                        else max(0, attempts - 1)
-                    ),
-                    "failure_category": failure.failure_category,
-                    "repeated_failure": repeated,
-                },
-            )
-        return attempts, None
 
     async def _queue_coding_recovery(
         self,
@@ -6166,49 +3927,17 @@ class AgentLoop:
 
     def _collect_turn_tool_errors(self, session_key: str) -> List[Tuple[str, str]]:
         """Return this turn's error/rejection/policy-deny tool results."""
-        errors: List[Tuple[str, str]] = []
-        for entry in reversed(self.history.get(session_key, [])):
-            role = entry.get("role")
-            if role == "user":
-                break
-            if role != "tool":
-                continue
-            name = str(entry.get("name") or "tool")
-            content = str(entry.get("content") or "").strip()
-            if self._is_tool_result_error(name, content):
-                errors.append((name, redact_sensitive_text(content)))
-        errors.reverse()
-        return errors
+        return self._tool_recovery_service().collect_turn_tool_errors(
+            self.history.get(session_key, [])
+        )
 
     def _ensure_reply_includes_tool_errors(
         self, reply: str, session_key: str
     ) -> str:
         """Make sure a failed tool's exact text is visible in the user reply."""
-        errors = self._collect_turn_tool_errors(session_key)
-        if not errors:
-            return reply
-        visible = str(reply or "")
-        missing: List[Tuple[str, str]] = []
-        for name, content in errors:
-            first_line = next(
-                (line.strip() for line in content.splitlines() if line.strip()),
-                content,
-            )
-            marker = first_line or content[:160]
-            if marker and marker in visible:
-                continue
-            if content[:120] and content[:120] in visible:
-                continue
-            missing.append((name, content))
-        if not missing:
-            return visible
-        blocks = [
-            f"`{name}` rejected:\n{content}" for name, content in missing
-        ]
-        appendix = "\n\n".join(blocks)
-        if visible.strip():
-            return visible.rstrip() + "\n\n" + appendix
-        return "I ran the requested tool(s), but they failed:\n" + appendix
+        service = self._tool_recovery_service()
+        errors = service.collect_turn_tool_errors(self.history.get(session_key, []))
+        return service.ensure_reply_includes_tool_errors(reply, errors)
 
     def _ensure_reply_includes_operator_failures(
         self,
@@ -6243,27 +3972,8 @@ class AgentLoop:
         return bool(callable(checker) and checker(turn_id))
 
     def _build_tool_fallback_reply(self, session_key: str, max_items: int = 2) -> str:
-        errors = self._collect_turn_tool_errors(session_key)
-        if errors:
-            return self._ensure_reply_includes_tool_errors("", session_key)
-
-        tool_rows: List[Tuple[str, str]] = []
-        for entry in reversed(self.history.get(session_key, [])):
-            if entry.get("role") != "tool":
-                continue
-            name = str(entry.get("name") or "tool")
-            content = str(entry.get("content") or "").strip()
-            tool_rows.append((name, content))
-            if len(tool_rows) >= max_items:
-                break
-
-        if not tool_rows:
-            return "I finished running the tool, but I don't have a follow-up response yet."
-
-        recent_tools = ", ".join(f"`{name}`" for name, _ in reversed(tool_rows))
-        return (
-            "I finished the requested tool step(s) successfully, but I did not produce "
-            f"a natural-language wrap-up. Recent steps: {recent_tools}."
+        return self._tool_recovery_service().build_tool_fallback_reply(
+            self.history.get(session_key, []), max_items=max_items
         )
 
     @staticmethod
@@ -6276,6 +3986,20 @@ class AgentLoop:
     def _workspace_id_from_message(msg: Optional[InboundMessage]) -> str:
         metadata = getattr(msg, "metadata", {}) if msg else {}
         return str((metadata or {}).get("workspace_id") or "").strip()
+
+    def _workspace_review_service(self) -> WorkspaceReviewService:
+        """Bind review-artifact ownership to the current loop's UI and parser ports."""
+        service = getattr(self, "workspace_review_service", None)
+        if service is None:
+            service = WorkspaceReviewService(
+                parse_tool_call=self._parse_tool_call,
+                build_confirmation_preview=self._build_confirmation_preview,
+                workspace_id_from_message=self._workspace_id_from_message,
+                publish_changeset=self._publish_changeset,
+                publish_coding_plan=self._publish_coding_plan_artifact,
+            )
+            self.workspace_review_service = service
+        return service
 
     async def _publish_changeset(
         self,
@@ -6295,6 +4019,24 @@ class AgentLoop:
             ),
         )
 
+    async def _publish_coding_plan_artifact(
+        self,
+        plan: Dict[str, Any],
+        msg: Optional[InboundMessage],
+        *,
+        turn_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> None:
+        await self._publish_both(
+            msg,
+            "",
+            self._with_trace_metadata(
+                {"type": "coding_plan", "plan": plan},
+                turn_id=turn_id,
+                message_id=message_id,
+            ),
+        )
+
     async def _stage_workspace_changeset(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -6304,62 +4046,13 @@ class AgentLoop:
         turn_id: Optional[str] = None,
         message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Create one redacted review artifact before a coding mutation runs."""
-        write_previews: List[Dict[str, Any]] = []
-        for tool_call in tool_calls or []:
-            _, name, args = self._parse_tool_call(tool_call, session_key)
-            if name not in _MUTATION_TOOL_NAMES:
-                continue
-            write_previews.append(self._build_confirmation_preview(name, args, session_key))
-        if not write_previews:
-            return None
-
-        from core.review_entrypoint import build_changeset_artifact, changeset_for_app
-
-        diff_parts: List[str] = []
-        for index, preview in enumerate(write_previews):
-            diff = str(preview.get("diff") or "").strip()
-            if diff:
-                diff_parts.append(diff)
-                continue
-            path = str(preview.get("path") or f"file-{index + 1}")
-            mode = str(preview.get("mode") or preview.get("kind") or "change")
-            if mode == "delete":
-                diff_parts.append(
-                    f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ /dev/null\n@@ -1 +0,0 @@\n- [content redacted]"
-                )
-            else:
-                diff_parts.append(
-                    f"diff --git a/{path} b/{path}\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+ [content redacted]"
-                )
-        changeset = build_changeset_artifact(
-            "\n".join(diff_parts),
-            status="awaiting_approval",
-            summary=f"{len(write_previews)} file change(s) are staged for review.",
-        )
-        changeset["id"] = f"changeset-{turn_id or uuid.uuid4().hex[:12]}"
-        workspace_id = self._workspace_id_from_message(msg)
-        if workspace_id:
-            from core.task_tracker import get_task_tracker
-
-            artifact = await get_task_tracker().add_workspace_artifact(
-                workspace_id,
-                kind="change_set",
-                title="Patch review",
-                metadata=changeset,
-            )
-            if artifact:
-                self._workspace_changesets[session_key] = (
-                    workspace_id,
-                    artifact.artifact_id,
-                )
-        await self._publish_changeset(
-            changeset_for_app(changeset),
+        return await self._workspace_review_service().stage_changeset(
+            tool_calls,
+            session_key,
             msg,
             turn_id=turn_id,
             message_id=message_id,
         )
-        return changeset
 
     async def _refresh_workspace_changeset(
         self,
@@ -6371,65 +4064,14 @@ class AgentLoop:
         turn_id: Optional[str] = None,
         message_id: Optional[str] = None,
     ) -> None:
-        stored = self._workspace_changesets.get(session_key)
-        if not stored:
-            return
-        workspace_id, artifact_id = stored
-        from core.review_entrypoint import changeset_for_app
-        from core.task_tracker import get_task_tracker
-
-        tracker = get_task_tracker()
-        workspace = await tracker.get_workspace(workspace_id)
-        if workspace is None:
-            return
-        artifact = next(
-            (item for item in workspace.artifacts if item.artifact_id == artifact_id),
-            None,
+        await self._workspace_review_service().refresh_changeset(
+            session_key,
+            msg,
+            outcome,
+            blocked=blocked,
+            turn_id=turn_id,
+            message_id=message_id,
         )
-        if artifact is None or artifact.kind != "change_set":
-            return
-        changeset = dict(artifact.metadata)
-        verification = list(changeset.get("verification") or [])
-        if outcome.tool == "run_command":
-            verification.append(
-                {
-                    "id": f"verification-{len(verification) + 1}",
-                    "label": "Verification",
-                    "status": "passed" if outcome.success else "failed",
-                    "exit_code": outcome.exit_code,
-                    "diagnostic": outcome.diagnostic_tail,
-                }
-            )
-        elif outcome.verification_status:
-            verification.append(
-                {
-                    "id": f"verification-{len(verification) + 1}",
-                    "label": "Native file checks",
-                    "status": "passed" if outcome.verification_status == "passed" else "failed",
-                    "diagnostic": outcome.verification_detail,
-                }
-            )
-        if blocked:
-            changeset["status"] = "blocked"
-        elif outcome.tool == "run_command":
-            changeset["status"] = "verified" if outcome.success else "failed"
-        elif outcome.verification_status == "failed":
-            changeset["status"] = "failed"
-        elif outcome.success:
-            changeset["status"] = "applied"
-        changeset["verification"] = verification
-        updated = await tracker.update_workspace_artifact(
-            workspace_id,
-            artifact_id,
-            metadata_update=changeset,
-        )
-        if updated:
-            await self._publish_changeset(
-                changeset_for_app(changeset),
-                msg,
-                turn_id=turn_id,
-                message_id=message_id,
-            )
 
     async def _persist_coding_plan(
         self,
@@ -6439,27 +4081,11 @@ class AgentLoop:
         turn_id: Optional[str] = None,
         message_id: Optional[str] = None,
     ) -> None:
-        from core.review_entrypoint import build_coding_plan_artifact
-
-        artifact_data = build_coding_plan_artifact(plan_text)
-        workspace_id = self._workspace_id_from_message(msg)
-        if workspace_id:
-            from core.task_tracker import get_task_tracker
-
-            await get_task_tracker().add_workspace_artifact(
-                workspace_id,
-                kind="coding_plan",
-                title="Coding plan",
-                metadata=artifact_data,
-            )
-        await self._publish_both(
+        await self._workspace_review_service().persist_coding_plan(
+            plan_text,
             msg,
-            "",
-            self._with_trace_metadata(
-                {"type": "coding_plan", "plan": artifact_data},
-                turn_id=turn_id,
-                message_id=message_id,
-            ),
+            turn_id=turn_id,
+            message_id=message_id,
         )
 
     @staticmethod
@@ -6586,29 +4212,15 @@ class AgentLoop:
         turn_id: Optional[str] = None,
         message_id: Optional[str] = None,
     ) -> None:
-        for tool_call in tool_calls:
-            tc_id, function_name, function_args = self._parse_tool_call(
-                tool_call, session_key
-            )
-            preview = self._build_confirmation_preview(
-                function_name, function_args, session_key
-            )
-            await self._publish_both(
-                msg,
-                "",
-                {
-                    "type": "tool_execution",
-                    "status": "planned",
-                    "tool": function_name,
-                    "args": self._display_tool_args(
-                        function_name, function_args, preview
-                    ),
-                    "preview": redact_sensitive_value(preview),
-                    "tool_call_id": tc_id,
-                    "turn_id": turn_id,
-                    "message_id": message_id,
-                },
-            )
+        await self._tool_batch_event_service().publish_planned(
+            tool_calls,
+            ToolBatchEventContext(
+                session_key=session_key,
+                message=msg,
+                turn_id=turn_id,
+                message_id=message_id,
+            ),
+        )
 
     async def _execute_tool_batch(
         self,
@@ -6624,6 +4236,13 @@ class AgentLoop:
         """Run reads concurrently, but keep stateful steps in causal model order."""
         any_blocked = False
         batch_tool_outcomes: List[ToolOutcome] = []
+        event_service = self._tool_batch_event_service()
+        event_context = ToolBatchEventContext(
+            session_key=session_key,
+            message=msg,
+            turn_id=turn_id,
+            message_id=message_id,
+        )
 
         async def _run_one(tool_call: dict):
             tc_id = tool_call["id"]
@@ -6681,7 +4300,7 @@ class AgentLoop:
 
                 if coding_turn:
                     await self._emit_coding_phase(
-                        self._tool_phase(function_name, function_args),
+                        tool_phase(function_name, function_args),
                         session_key,
                         msg,
                         turn_id=turn_id,
@@ -6724,203 +4343,36 @@ class AgentLoop:
                             )
 
                 if function_name in _SENSITIVE_TOOLS:
-                    approval = self._get_tool_approval_decision(
-                        session_key,
-                        function_name,
-                        is_internal=is_internal,
-                        is_whatsapp=is_whatsapp,
-                        function_args=function_args,
-                        msg=msg,
-                    )
-                    client_source = str(
-                        getattr(msg, "channel", "") or "system"
-                    ).strip().lower()
-                    if approval["allowed"]:
-                        self._log_session_event(
-                            session_key,
-                            {
-                                "type": "approval_decided",
-                                "conf_id": f"policy_{uuid.uuid4().hex[:8]}",
-                                "tool": function_name,
-                                "approved": True,
-                                "session_whitelist": approval["reason"] == "session_whitelist",
-                                "policy_profile": approval["policy_profile"],
-                                "decision_reason": approval["reason"],
-                                "client_source": client_source,
-                            },
+                    approval_result = await self._tool_approval_flow_service().authorize(
+                        ToolApprovalRequest(
+                            session_key=session_key,
+                            tool_call_id=tc_id,
+                            function_name=function_name,
+                            function_args=function_args,
+                            message=msg,
+                            turn_id=turn_id,
+                            message_id=message_id,
+                            is_internal=is_internal,
+                            is_whatsapp=is_whatsapp,
                         )
-
-                    if not approval["allowed"] and not approval["requires_confirmation"]:
+                    )
+                    if not approval_result.proceed:
                         return (
                             tc_id,
                             function_name,
                             function_args,
-                            (
-                                "ACTION CANCELLED: Unattended policy denied "
-                                f"{function_name} ({approval['reason']})."
-                            ),
+                            approval_result.rejection,
                             False,
                             is_internal,
                         )
 
-                    if approval["requires_confirmation"]:
-                        conf_id = f"conf_{uuid.uuid4().hex[:8]}"
-                        event = asyncio.Event()
-                        confirmation_preview = self._build_confirmation_preview(
-                            function_name, function_args, session_key
-                        )
-                        self.pending_confirmations[conf_id] = {
-                            "event": event,
-                            "approved": False,
-                            "session_key": session_key,
-                            "tool": function_name,
-                            "whitelist_key": self._session_whitelist_key(
-                                function_name, function_args
-                            ),
-                            "preview": confirmation_preview,
-                            "policy_profile": approval["policy_profile"],
-                            "decision_reason": approval["reason"],
-                            "client_source": client_source,
-                        }
-                        self._log_session_event(
-                            session_key,
-                            {
-                                "type": "approval_requested",
-                                "conf_id": conf_id,
-                                "tool": function_name,
-                                "preview": self._approval_audit_preview(
-                                    confirmation_preview
-                                ),
-                                "policy_profile": approval["policy_profile"],
-                                "decision_reason": approval["reason"],
-                                "client_source": client_source,
-                            },
-                        )
-
-                        embed_fields = self._build_confirmation_embed(
-                            function_name,
-                            function_args,
-                            session_key,
-                            preview=confirmation_preview,
-                        )
-
-                        tool_content = (
-                            f"🛠️ Executing {function_name}..." if is_whatsapp else "⏳"
-                        )
-                        conf_meta = {
-                            "type": "tool_execution",
-                            "status": "waiting_confirmation",
-                            "tool": function_name,
-                            "args": self._display_tool_args(
-                                function_name, function_args, confirmation_preview
-                            ),
-                            "preview": confirmation_preview,
-                            "tool_call_id": tc_id,
-                            "conf_id": conf_id,
-                            "policy_profile": approval["policy_profile"],
-                            "decision_reason": approval["reason"],
-                            "turn_id": turn_id,
-                            "message_id": message_id,
-                            "embed": {
-                                "title": "Exec Approval Required",
-                                "description": "A command needs your approval.",
-                                "color": "#F59E0B",
-                                "fields": embed_fields,
-                                "footer": f"Expires in 300s | ID: {conf_id}",
-                            },
-                        }
-                        await self._publish(msg, tool_content, conf_meta)
-                        if msg and msg.channel != "web":
-                            web_meta = {
-                                k: v for k, v in conf_meta.items() if k != "embed"
-                            }
-                            await self.bus.publish_outbound(
-                                OutboundMessage(
-                                    channel="web",
-                                    chat_id=msg.chat_id or "system",
-                                    content="",
-                                    metadata=web_meta,
-                                )
-                            )
-
-                        try:
-                            await asyncio.wait_for(event.wait(), timeout=300)
-                            if not self.pending_confirmations[conf_id]["approved"]:
-                                return (
-                                    tc_id,
-                                    function_name,
-                                    function_args,
-                                    "ACTION CANCELLED: User denied.",
-                                    False,
-                                    is_internal,
-                                )
-                        except asyncio.TimeoutError:
-                            self._log_session_event(
-                                session_key,
-                                {
-                                    "type": "approval_timed_out",
-                                    "conf_id": conf_id,
-                                    "tool": function_name,
-                                    "approved": False,
-                                    "session_whitelist": False,
-                                    "policy_profile": approval["policy_profile"],
-                                    "decision_reason": "timeout",
-                                    "client_source": client_source,
-                                },
-                            )
-                            return (
-                                tc_id,
-                                function_name,
-                                function_args,
-                                "ACTION CANCELLED: Timed out.",
-                                False,
-                                is_internal,
-                            )
-                        except asyncio.CancelledError:
-                            self._log_session_event(
-                                session_key,
-                                {
-                                    "type": "approval_decided",
-                                    "conf_id": conf_id,
-                                    "tool": function_name,
-                                    "approved": False,
-                                    "session_whitelist": False,
-                                    "policy_profile": approval["policy_profile"],
-                                    "decision_reason": "run_cancelled",
-                                    "client_source": client_source,
-                                },
-                            )
-                            raise
-                        finally:
-                            self.pending_confirmations.pop(conf_id, None)
-
-                tool_content = (
-                    f"🛠️ Executing {function_name}..." if is_whatsapp else "⏳"
-                )
-                run_meta = {
-                    "type": "tool_execution",
-                    "status": "running",
-                    "tool": function_name,
-                    "args": self._display_tool_args(function_name, function_args),
-                    "tool_call_id": tc_id,
-                    "turn_id": turn_id,
-                    "message_id": message_id,
-                }
-                await self._publish_both(msg, tool_content, run_meta)
-                if on_progress_queued:
-                    on_progress_queued("tool_progress")
-                self._log_session_event(
-                    session_key,
-                    {
-                        "type": "tool_started",
-                        "tool": function_name,
-                        "tool_call_id": tc_id,
-                        "args": (
-                            {"redacted": True}
-                            if function_name in _SENSITIVE_TOOLS
-                            else redact_sensitive_value(function_args)
-                        ),
-                    },
+                await event_service.publish_running(
+                    event_context,
+                    tool_call_id=tc_id,
+                    function_name=function_name,
+                    function_args=function_args,
+                    is_whatsapp=is_whatsapp,
+                    on_progress_queued=on_progress_queued,
                 )
 
                 t0 = time.time()
@@ -6971,47 +4423,18 @@ class AgentLoop:
                 self.metrics.record_tool_call(session_key, function_name, 0, error=True)
 
             is_blocked = str(result).startswith("ACTION BLOCKED:")
-            self._log_session_event(
-                session_key,
-                {
-                    "type": "tool_finished",
-                    "tool": function_name,
-                    "tool_call_id": tc_id,
-                    "blocked": is_blocked,
-                    "is_internal": is_internal,
-                    "result_preview": str(result)[:400],
-                },
+            event_service.record_finished(
+                event_context,
+                tool_call_id=tc_id,
+                function_name=function_name,
+                result=result,
+                is_blocked=is_blocked,
+                is_internal=is_internal,
             )
             return tc_id, function_name, function_args, result, is_blocked, is_internal
 
-        # A read-only group may run concurrently, but every mutation and shell
-        # command forms a barrier. This keeps write -> test causal without
-        # weakening the confirmation gate inside _run_one.
-        outcomes = []
-        read_group = []
-
-        async def _flush_reads() -> None:
-            nonlocal read_group
-            if read_group:
-                outcomes.extend(
-                    await asyncio.gather(
-                        *[_run_one(call) for call in read_group],
-                        return_exceptions=True,
-                    )
-                )
-                read_group = []
-
-        for tool_call in tool_calls:
-            function = tool_call.get("function") if isinstance(tool_call, dict) else {}
-            function_name = str((function or {}).get("name") or "")
-            if function_name in _READ_ONLY_TOOL_NAMES:
-                read_group.append(tool_call)
-                continue
-            await _flush_reads()
-            outcomes.append(await _run_one(tool_call))
-        await _flush_reads()
-
-        for i, outcome in enumerate(outcomes):
+        async def _consume_outcome(i: int, _tool_call: dict, outcome: Any) -> None:
+            nonlocal any_blocked
             if isinstance(outcome, asyncio.CancelledError):
                 # A cancelled child is a cancelled turn, not an ordinary tool
                 # failure.  Re-raise it so _process_message can emit the
@@ -7032,31 +4455,23 @@ class AgentLoop:
                 except Exception:
                     pass
 
-                try:
-                    err_meta = {
-                        "type": "tool_execution",
-                        "tool": fail_name,
-                        "status": "error",
-                        "args": self._display_tool_args(fail_name, fail_args),
-                        "result": redact_sensitive_text(
-                            f"Execution failed or was cancelled: {type(outcome).__name__}"
-                        ),
-                        "tool_call_id": fail_tc_id,
-                        "turn_id": turn_id,
-                        "message_id": message_id,
-                    }
-                    await self._publish_both(msg, fail_name, err_meta)
-                except Exception:
-                    pass
+                await event_service.publish_failure(
+                    event_context,
+                    tool_call_id=fail_tc_id,
+                    function_name=fail_name,
+                    function_args=fail_args,
+                    exception_type=type(outcome).__name__,
+                )
                 failure_result = (
                     f"Error executing {fail_name}: {type(outcome).__name__}"
                 )
                 batch_tool_outcomes.append(
-                    self._build_tool_outcome(fail_name, failure_result)
+                    build_tool_outcome(fail_name, failure_result)
                 )
                 if recovery_state is not None:
                     recovery_state.observe(batch_tool_outcomes[-1], fail_args)
-                self.history[session_key].append(
+                self._history_append(
+                    session_key,
                     {
                         "role": "tool",
                         "tool_call_id": fail_tc_id,
@@ -7064,8 +4479,7 @@ class AgentLoop:
                         "content": failure_result,
                     }
                 )
-                self._mark_dirty(session_key)
-                continue
+                return
 
             tc_id, function_name, function_args, result, is_blocked, is_internal = (
                 outcome
@@ -7077,13 +4491,13 @@ class AgentLoop:
             if clean_result:
                 result = clean_result
 
-            outcome_details = self._build_tool_outcome(function_name, result)
+            outcome_details = build_tool_outcome(function_name, result)
             batch_tool_outcomes.append(outcome_details)
             if recovery_state is not None:
                 recovery_state.observe(outcome_details, function_args)
             if coding_turn:
                 await self._emit_coding_phase(
-                    self._tool_phase(function_name, function_args),
+                    tool_phase(function_name, function_args),
                     session_key,
                     msg,
                     turn_id=turn_id,
@@ -7100,32 +4514,19 @@ class AgentLoop:
                 )
 
             if not is_internal:
-                tool_status = (
-                    "error"
-                    if self._is_tool_result_error(function_name, result)
-                    else "completed"
+                await event_service.publish_result(
+                    event_context,
+                    tool_call_id=tc_id,
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
                 )
-                try:
-                    done_meta = {
-                        "type": "tool_execution",
-                        "tool": function_name,
-                        "status": tool_status,
-                        "args": self._display_tool_args(function_name, function_args),
-                        "result": redact_sensitive_text(result)[
-                            :TOOL_BROADCAST_MAX_CHARS
-                        ],
-                        "tool_call_id": tc_id,
-                        "turn_id": turn_id,
-                        "message_id": message_id,
-                    }
-                    await self._publish_both(msg, "", done_meta)
-                except Exception:
-                    pass
 
             limit = _TOOL_RESULT_LIMITS.get(function_name, _DEFAULT_TOOL_RESULT_LIMIT)
             str_result = truncate_tool_result(result, limit)
 
-            self.history[session_key].append(
+            self._history_append(
+                session_key,
                 {
                     "role": "tool",
                     "tool_call_id": tc_id,
@@ -7133,10 +4534,10 @@ class AgentLoop:
                     "content": str_result,
                 }
             )
-            self._mark_dirty(session_key)
 
             if tool_images and not is_internal:
-                self.history[session_key].append(
+                self._history_append(
+                    session_key,
                     {
                         "role": "user",
                         "content": self._build_tool_image_followup_content(
@@ -7144,8 +4545,14 @@ class AgentLoop:
                         ),
                     }
                 )
-                self._mark_dirty(session_key)
                 self._sessions_pending_tool_image_reply.add(session_key)
+
+        # The executor owns concurrency, barriers, and ordered outcome
+        # consumption. `_run_one` supplies the per-call policy and execution;
+        # `_consume_outcome` applies each result in model order.
+        await self.tool_batch_executor.execute_ordered(
+            tool_calls, _run_one, on_outcome=_consume_outcome
+        )
 
         if turn_id:
             self._last_tool_outcomes_by_turn[turn_id] = list(batch_tool_outcomes)
@@ -7179,510 +4586,6 @@ class AgentLoop:
             )
         )
 
-    def _extract_tool_from_content(self, content: str) -> list:
-        if not content or not content.strip():
-            return []
-
-        default_arg_names = {
-            "read_file": "path",
-            "inspect_skill": "skill_name",
-            "edit_file": "edits",
-            "edit_skill": "changes",
-            "verify_files": "paths",
-            "diagnose_files": "paths",
-            "write_file": "content",
-            "create_spreadsheet": "path",
-            "calculate": "expression",
-            "delete_file": "path",
-            "list_dir": "path",
-            "search_files": "query",
-            "run_command": "command",
-            "memory_search": "query",
-            "memory_save": "content",
-            "generate_image": "prompt",
-            "google_search": "query",
-            "browser_navigate": "url",
-            "spawn_agent": "task",
-            "send_media": "path",
-            "send_voice": "text",
-            "send_discord_message": "message",
-            "send_discord_embed": "description",
-            "cron_remove": "job_id",
-            "save_memory": "content",
-            "log_memory": "content",
-        }
-
-        def _make_tool_call(function_name: str, function_args: Dict[str, Any]) -> list:
-            return [
-                {
-                    "id": f"call_{uuid.uuid4().hex[:12]}",
-                    "type": "function",
-                    "function": {
-                        "name": function_name,
-                        "arguments": json.dumps(function_args),
-                    },
-                }
-            ]
-
-        def _tool_code_call(tool_expr: str) -> list:
-            raw_expr = str(tool_expr or "").strip()
-            if not raw_expr:
-                return []
-
-            try:
-                parsed = ast.parse(raw_expr, mode="eval")
-            except Exception:
-                return []
-
-            call = parsed.body
-            if not isinstance(call, ast.Call):
-                return []
-            if not isinstance(call.func, ast.Name):
-                return []
-
-            canonical_name = TOOL_NAME_ALIASES.get(call.func.id, call.func.id)
-            arg_names = {
-                "read_file": ["path"],
-                "inspect_skill": ["skill_name", "path", "start_line", "end_line"],
-                "edit_file": ["path", "edits", "expected_sha256"],
-                "edit_skill": ["skill_name", "changes"],
-                "verify_files": ["paths", "include_diagnostics", "provider"],
-                "diagnose_files": ["paths", "provider", "timeout"],
-                "write_file": ["path", "content"],
-                "create_spreadsheet": ["path", "sheets", "title"],
-                "calculate": ["expression"],
-                "delete_file": ["path"],
-                "list_dir": ["path"],
-                "search_files": ["query", "path"],
-                "run_command": ["command"],
-                "memory_search": ["query"],
-                "memory_save": ["content", "scope"],
-                "google_search": ["query"],
-                "browser_navigate": ["url"],
-                "spawn_agent": ["task"],
-                "cron_remove": ["job_id"],
-                "save_memory": ["content"],
-                "log_memory": ["content"],
-            }.get(canonical_name)
-            if arg_names is None:
-                return []
-
-            function_args: Dict[str, Any] = {}
-            try:
-                for idx, arg in enumerate(call.args):
-                    if idx >= len(arg_names):
-                        return []
-                    function_args[arg_names[idx]] = ast.literal_eval(arg)
-                for kw in call.keywords:
-                    if kw.arg is None:
-                        return []
-                    function_args[kw.arg] = ast.literal_eval(kw.value)
-            except Exception:
-                return []
-
-            return _make_tool_call(canonical_name, function_args)
-
-        def _legacy_xml_tool_call(tag_name: str, inner_content: str) -> list:
-            canonical_name = TOOL_NAME_ALIASES.get(tag_name, tag_name)
-            raw_content = (inner_content or "").strip()
-            if not raw_content:
-                return []
-
-            function_args: Dict[str, Any]
-            if raw_content.startswith("{") and raw_content.endswith("}"):
-                try:
-                    parsed = json.loads(raw_content)
-                    if isinstance(parsed, dict):
-                        function_args = parsed
-                    else:
-                        function_args = {}
-                except Exception:
-                    function_args = {}
-            else:
-                default_arg_name = default_arg_names.get(canonical_name)
-                if not default_arg_name:
-                    return []
-                function_args = {default_arg_name: raw_content}
-
-            return _make_tool_call(canonical_name, function_args)
-
-        def _xml_attr_tool_call(tag_name: str, raw_attrs: str) -> list:
-            canonical_name = TOOL_NAME_ALIASES.get(tag_name, tag_name)
-            default_arg_name = default_arg_names.get(canonical_name)
-            if not default_arg_name:
-                return []
-
-            attrs: Dict[str, Any] = {}
-            for match in re.finditer(
-                r'([A-Za-z_][\w-]*)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', raw_attrs or ""
-            ):
-                attrs[match.group(1)] = (
-                    match.group(2) if match.group(2) is not None else match.group(3)
-                )
-
-            if not attrs:
-                return []
-
-            if default_arg_name in attrs:
-                function_args = {default_arg_name: attrs[default_arg_name]}
-            else:
-                first_value = next(iter(attrs.values()))
-                function_args = {default_arg_name: first_value}
-            return _make_tool_call(canonical_name, function_args)
-
-        def _implicit_tool_call_from_dict(parsed: dict):
-            if not isinstance(parsed, dict) or "name" in parsed:
-                return []
-
-            if isinstance(parsed.get("prompt"), str) and parsed["prompt"].strip():
-                image_keys = {
-                    "model",
-                    "size",
-                    "quality",
-                    "count",
-                    "reference_images",
-                    "use_attached_images",
-                }
-                if image_keys.intersection(parsed.keys()):
-                    return _make_tool_call(
-                        "generate_image",
-                        {
-                            key: value
-                            for key, value in parsed.items()
-                            if key
-                            in {
-                                "prompt",
-                                "model",
-                                "size",
-                                "quality",
-                                "count",
-                                "reference_images",
-                                "use_attached_images",
-                            }
-                        },
-                    )
-
-            if isinstance(parsed.get("url"), str) and parsed["url"].strip():
-                return _make_tool_call("browser_navigate", {"url": parsed["url"]})
-
-            if isinstance(parsed.get("query"), str) and parsed["query"].strip():
-                return _make_tool_call("google_search", {"query": parsed["query"]})
-
-            cmd = parsed.get("cmd")
-            if isinstance(cmd, list):
-                cmd_text = " ".join(str(part or "") for part in cmd).strip().lower()
-                if re.search(r"\b(ls|dir)\b", cmd_text):
-                    return _make_tool_call("list_dir", {"path": "."})
-
-            return []
-
-        try:
-            cleaned = content
-            if "```" in content:
-                m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
-                if m:
-                    cleaned = m.group(1)
-
-            s = cleaned.find("{")
-            e = cleaned.rfind("}")
-            if s != -1 and e >= s:
-                json_str = cleaned[s : e + 1]
-                parsed = json.loads(json_str)
-                lower = json_str.lower()
-                if isinstance(parsed, dict) and "name" in parsed and '"name"' in lower and (
-                    '"arguments"' in lower or '"parameters"' in lower
-                ):
-                    args = parsed.get("arguments", parsed.get("parameters", {}))
-                    args_str = (
-                        json.dumps(args) if isinstance(args, dict) else str(args)
-                    )
-                    return [
-                        {
-                            "id": f"call_{uuid.uuid4().hex[:12]}",
-                            "type": "function",
-                            "function": {
-                                "name": parsed["name"],
-                                "arguments": args_str,
-                            },
-                        }
-                    ]
-                implicit = _implicit_tool_call_from_dict(parsed)
-                if implicit:
-                    return implicit
-        except Exception:
-            pass
-
-        tool_calls = []
-        try:
-            pattern = (
-                r"<\|tool_call_begin\|>\s*(?:functions\.)?([\w\.]+)(?::\d+)?\s*"
-                r"<\|tool_call_argument_begin\|>\s*({.*?})\s*<\|tool_call_end\|>"
-            )
-            for m in re.finditer(pattern, content, re.DOTALL):
-                tool_calls.append(
-                    {
-                        "id": f"call_{uuid.uuid4().hex[:8]}",
-                        "type": "function",
-                        "function": {"name": m.group(1), "arguments": m.group(2)},
-                    }
-                )
-        except Exception:
-            pass
-        if tool_calls:
-            return tool_calls
-
-        # Some OpenAI-compatible bridges serialize a tool call using the
-        # provider-facing ``to=functions.name code: {...}`` envelope. Recover
-        # it instead of leaking the protocol text into the visible reply.
-        try:
-            provider_envelope = _VISIBLE_PROVIDER_TOOL_CALL_PREFIX_RE.search(content)
-            if provider_envelope:
-                raw_tail = content[provider_envelope.end() :].lstrip()
-                parsed_args, _ = json.JSONDecoder().raw_decode(raw_tail)
-                if isinstance(parsed_args, dict):
-                    return _make_tool_call(
-                        provider_envelope.group("name"), parsed_args
-                    )
-        except Exception:
-            pass
-
-        try:
-            pipe_tag_pattern = re.compile(
-                r"<\|(?P<tag>[A-Za-z_][\w]*)\|>\s*(?P<body>{.*?})\s*<\|/(?P=tag)\|>",
-                re.DOTALL,
-            )
-            for match in pipe_tag_pattern.finditer(content):
-                extracted = _legacy_xml_tool_call(
-                    match.group("tag"), match.group("body")
-                )
-                if extracted:
-                    return extracted
-
-            tool_code_pattern = re.compile(
-                r"<tool_code>\s*(?P<body>.*?)\s*</tool_code>",
-                re.IGNORECASE | re.DOTALL,
-            )
-            for match in tool_code_pattern.finditer(content):
-                extracted = _tool_code_call(match.group("body"))
-                if extracted:
-                    return extracted
-
-            legacy_tag_pattern = re.compile(
-                r"<(?P<tag>[A-Za-z_][\w]*)>\s*(?P<body>.*?)\s*</(?P=tag)>",
-                re.DOTALL,
-            )
-            for match in legacy_tag_pattern.finditer(content):
-                extracted = _legacy_xml_tool_call(
-                    match.group("tag"), match.group("body")
-                )
-                if extracted:
-                    return extracted
-
-            legacy_attr_tag_pattern = re.compile(
-                r"<(?P<tag>[A-Za-z_][\w]*)\s+(?P<attrs>[^<>]*?)\s*/?>",
-                re.DOTALL,
-            )
-            for match in legacy_attr_tag_pattern.finditer(content):
-                extracted = _xml_attr_tool_call(
-                    match.group("tag"), match.group("attrs")
-                )
-                if extracted:
-                    return extracted
-
-            bare_call_pattern = re.compile(
-                r"\b(?:list_dir|read_file|inspect_skill|edit_file|edit_skill|write_file|delete_file|search_files|verify_files|diagnose_files|"
-                r"run_command|memory_search|memory_save|google_search|browser_navigate|"
-                r"spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|cron_remove|save_memory|log_memory|ls|dir|cat|"
-                r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|"
-                r"powershell|cmd)\s*\([^)]*\)"
-            )
-            for match in bare_call_pattern.finditer(content):
-                extracted = _tool_code_call(match.group(0))
-                if extracted:
-                    return extracted
-        except Exception:
-            pass
-
-        # ── Kimi K2 inline format: functions.tool_name:N{"arg":"val"} ──
-        try:
-            kimi_pattern = r"(?:^|\s)(?::?functions\.)(\w+)(?::\d+)?\s*(\{[^}]*\})"
-            for m in re.finditer(kimi_pattern, content, re.DOTALL):
-                try:
-                    args = json.loads(m.group(2))
-                except json.JSONDecodeError:
-                    continue
-                tool_calls.append(
-                    {
-                        "id": f"call_{uuid.uuid4().hex[:8]}",
-                        "type": "function",
-                        "function": {
-                            "name": m.group(1),
-                            "arguments": json.dumps(args),
-                        },
-                    }
-                )
-        except Exception:
-            pass
-
-        return tool_calls
-
-    @staticmethod
-    def _trim_leading_structural_lines(content: str) -> str:
-        """Drop leading fence/bracket residue that sometimes leaks before tool calls."""
-        if not content:
-            return ""
-
-        lines = content.splitlines(keepends=True)
-        while lines:
-            stripped = lines[0].strip()
-            if not stripped:
-                lines.pop(0)
-                continue
-            if re.fullmatch(r"[`{}\[\],:;]+", stripped):
-                lines.pop(0)
-                continue
-            break
-        return "".join(lines)
-
-    def _sanitize_tool_call_content(self, content: str) -> str:
-        """Keep only meaningful prose when the model mixes text with tool syntax."""
-        if not content:
-            return ""
-
-        cleaned = content
-        marker_positions = []
-        legacy_tag_pattern = (
-            r"<(?:read_file|inspect_skill|edit_file|edit_skill|write_file|delete_file|list_dir|search_files|verify_files|diagnose_files|run_command|"
-            r"memory_search|memory_save|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|"
-            r"save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|"
-            r"grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>"
-        )
-        tool_code_pattern = r"<tool_code>"
-
-        inline_match = re.search(r"(?::?functions\.\w+(?::\d+)?\s*\{)", cleaned)
-        if inline_match:
-            marker_positions.append(inline_match.start())
-
-        visible_provider_match = _VISIBLE_PROVIDER_TOOL_CALL_PREFIX_RE.search(cleaned)
-        if visible_provider_match:
-            marker_positions.append(visible_provider_match.start())
-
-        block_match = re.search(r"<\|tool_call_begin\|>", cleaned)
-        if block_match:
-            marker_positions.append(block_match.start())
-
-        pipe_tag_match = re.search(r"<\|[A-Za-z_][\w]*\|>", cleaned)
-        if pipe_tag_match:
-            marker_positions.append(pipe_tag_match.start())
-
-        json_tool_match = re.search(
-            r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|parameters)"\s*:\s*\{',
-            cleaned,
-            flags=re.DOTALL,
-        )
-        if json_tool_match:
-            marker_positions.append(json_tool_match.start())
-
-        image_args_match = re.search(
-            r'\{\s*"prompt"\s*:\s*".*?"\s*,\s*"(?:model|size|quality|count)"\s*:',
-            cleaned,
-            flags=re.DOTALL,
-        )
-        if image_args_match:
-            marker_positions.append(image_args_match.start())
-
-        legacy_tag_match = re.search(legacy_tag_pattern, cleaned, flags=re.IGNORECASE)
-        if legacy_tag_match:
-            marker_positions.append(legacy_tag_match.start())
-        tool_code_match = re.search(tool_code_pattern, cleaned, flags=re.IGNORECASE)
-        if tool_code_match:
-            marker_positions.append(tool_code_match.start())
-
-        if marker_positions:
-            cleaned = cleaned[: min(marker_positions)]
-
-        cleaned = re.sub(
-            r"```(?:json)?\s*\{.*?\}\s*```",
-            "",
-            cleaned,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-        cleaned = re.sub(
-            r"<\|tool_call_begin\|>.*?<\|tool_call_end\|>",
-            "",
-            cleaned,
-            flags=re.DOTALL,
-        )
-        cleaned = re.sub(
-            r"<\|[A-Za-z_][\w]*\|>.*?<\|/[A-Za-z_][\w]*\|>",
-            "",
-            cleaned,
-            flags=re.DOTALL,
-        )
-        cleaned = re.sub(
-            r"(?::?functions\.\w+(?::\d+)?\s*\{[^}]*\})",
-            "",
-            cleaned,
-        )
-        cleaned = re.sub(
-            legacy_tag_pattern + r".*?</(?:read_file|inspect_skill|edit_file|edit_skill|write_file|delete_file|list_dir|search_files|verify_files|diagnose_files|run_command|memory_search|memory_save|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
-            "",
-            cleaned,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-        cleaned = re.sub(
-            r"<tool_code>.*?</tool_code>",
-            "",
-            cleaned,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-        cleaned = re.sub(
-            r'^\s*\{\s*"path"\s*:\s*".*?"\s*\}\s*$',
-            "",
-            cleaned,
-            flags=re.MULTILINE,
-        )
-        # Strip bare JSON tool-call objects: {"name": "...", "arguments|parameters": {...}}
-        cleaned = re.sub(
-            r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|parameters)"\s*:\s*\{[^}]*\}\s*\}',
-            "",
-            cleaned,
-        )
-        cleaned = re.sub(
-            r'\{\s*"prompt"\s*:\s*".*?"\s*,\s*"(?:model|size|quality|count)"\s*:.*?\}\s*$',
-            "",
-            cleaned,
-            flags=re.DOTALL,
-        )
-        cleaned = self._trim_leading_structural_lines(cleaned)
-        cleaned_lines = []
-        for line in cleaned.splitlines():
-            stripped = line.strip()
-            if stripped and re.fullmatch(r"[`{}\[\],:;]+", stripped):
-                continue
-            cleaned_lines.append(line)
-        cleaned = "\n".join(cleaned_lines).strip()
-
-        try:
-            parsed = json.loads(cleaned)
-            if isinstance(parsed, dict):
-                if isinstance(parsed.get("prompt"), str) and {
-                    "model",
-                    "size",
-                    "quality",
-                    "count",
-                }.intersection(parsed.keys()):
-                    return ""
-                if isinstance(parsed.get("url"), str) and parsed["url"].strip():
-                    return ""
-                if isinstance(parsed.get("query"), str) and parsed["query"].strip():
-                    return ""
-        except Exception:
-            pass
-
-        if not re.search(r"[A-Za-z0-9]", cleaned):
-            return ""
-        return cleaned
 
     async def _consume_stream(
         self,
@@ -7698,486 +4601,28 @@ class AgentLoop:
         iteration: int = 0,
         on_output_queued: Optional[Callable[[str], None]] = None,
     ):
-        full_content: str = ""
-        tool_calls: list = []
-        usage = None
-        is_potential_json: bool = False
-        streamed_any: bool = False
-        display_buffer: str = ""
-        ghost_active: Optional[str] = None
-        match_index = 0
-        dedup_active = bool(previous_content)
-        streamed_to_web: bool = False
-        streamed_to_discord: bool = False
-        last_flush = time.monotonic()
-        flush_interval_s = 0.08
-        flush_min_chars = 256
-        thinking_buffer: str = ""
-        extracted_from = "provider_tool_calls"
-        chunk_index = 0
-        provider_first_delta_recorded = False
-
-        def first_delta_metadata(delta_kind: str) -> Dict[str, Any]:
-            return {
-                "iteration_kind": iteration_kind,
-                "iteration": iteration,
-                "delta_kind": delta_kind,
-            }
-
-        def record_provider_first_delta(delta_kind: str) -> None:
-            nonlocal provider_first_delta_recorded
-            if provider_first_delta_recorded or llm_started_at is None:
-                return
-            provider_first_delta_recorded = True
-            self._record_stage_timing(
-                session_key,
-                "provider_first_delta",
-                llm_started_at,
-                metadata=first_delta_metadata(delta_kind),
-            )
-
-        try:
-            async for chunk in response_stream:
-                chunk_index += 1
-                if hasattr(chunk, "usage") and chunk.usage:
-                    usage = chunk.usage
-
-                delta = chunk.choices[0].delta
-
-                if hasattr(delta, "content") and delta.content:
-                    record_provider_first_delta("content")
-                    content_chunk = delta.content
-                    self._log_tool_debug(
-                        "stream_chunk_content",
-                        session_key=session_key,
-                        chunk_index=chunk_index,
-                        delta_content=content_chunk,
-                    )
-
-                    if full_content and content_chunk == full_content:
-                        continue
-                    if len(content_chunk) > 5 and full_content.startswith(
-                        content_chunk
-                    ):
-                        continue
-                    if full_content and content_chunk.startswith(full_content):
-                        content_chunk = content_chunk[len(full_content) :]
-
-                    to_stream = content_chunk
-                    if dedup_active:
-                        remaining_prev = previous_content[match_index:]
-                        if not remaining_prev:
-                            dedup_active = False
-                        else:
-                            common = 0
-                            for i in range(
-                                min(len(content_chunk), len(remaining_prev))
-                            ):
-                                if content_chunk[i] == remaining_prev[i]:
-                                    common += 1
-                                else:
-                                    break
-                            if common > 0:
-                                match_index += common
-                                to_stream = content_chunk[common:]
-                                if common < len(content_chunk):
-                                    dedup_active = False
-                            else:
-                                dedup_active = False
-
-                    full_content += content_chunk
-
-                    if not streamed_any:
-                        stripped = full_content.strip()
-                        if not stripped:
-                            continue
-                        is_potential_json = stripped.startswith(
-                            "{"
-                        ) or stripped.startswith("```")
-                        streamed_any = True
-
-                    if msg.channel == "web" and not is_potential_json and to_stream:
-                        display_buffer += to_stream
-                        display_buffer = self._trim_leading_structural_lines(
-                            display_buffer
-                        )
-                        if not display_buffer.strip():
-                            continue
-
-                        now = time.monotonic()
-                        should_flush = (
-                            len(display_buffer) >= flush_min_chars
-                            or (now - last_flush) >= flush_interval_s
-                        )
-
-                        while display_buffer and should_flush:
-                            if not ghost_active:
-                                tag_start = display_buffer.find("<")
-                                if tag_start == -1:
-                                    await self.bus.publish_outbound(
-                                        OutboundMessage(
-                                            channel=msg.channel,
-                                            chat_id=msg.chat_id,
-                                            content=display_buffer,
-                                            metadata=self._with_trace_metadata(
-                                                {"type": "chunk"},
-                                                turn_id=turn_id,
-                                                message_id=message_id,
-                                            ),
-                                        )
-                                    )
-                                    if on_output_queued:
-                                        on_output_queued("content")
-                                    display_buffer = ""
-                                    last_flush = time.monotonic()
-                                    break
-
-                                if tag_start > 0:
-                                    await self.bus.publish_outbound(
-                                        OutboundMessage(
-                                            channel=msg.channel,
-                                            chat_id=msg.chat_id,
-                                            content=display_buffer[:tag_start],
-                                            metadata=self._with_trace_metadata(
-                                                {"type": "chunk"},
-                                                turn_id=turn_id,
-                                                message_id=message_id,
-                                            ),
-                                        )
-                                    )
-                                    if on_output_queued:
-                                        on_output_queued("content")
-                                    streamed_to_web = True
-                                    last_flush = time.monotonic()
-                                    display_buffer = display_buffer[tag_start:]
-
-                                tag_end = display_buffer.find(">")
-                                if tag_end == -1:
-                                    break
-
-                                tag_content = display_buffer[: tag_end + 1]
-                                found_ghost = None
-                                if not tag_content.startswith("</"):
-                                    for g in _GHOST_TAG_NAMES:
-                                        if tag_content.startswith(f"<{g}"):
-                                            found_ghost = g
-                                            break
-
-                                if found_ghost:
-                                    ghost_active = found_ghost
-                                    await self.bus.publish_outbound(
-                                        OutboundMessage(
-                                            channel=msg.channel,
-                                            chat_id=msg.chat_id,
-                                            content="",
-                                            metadata={
-                                                "type": "activity",
-                                                "text": f"🧠 Processing {found_ghost}…",
-                                            },
-                                        )
-                                    )
-                                    display_buffer = display_buffer[tag_end + 1 :]
-                                elif tag_content.startswith("</"):
-                                    display_buffer = display_buffer[tag_end + 1 :]
-                                else:
-                                    await self.bus.publish_outbound(
-                                        OutboundMessage(
-                                            channel=msg.channel,
-                                            chat_id=msg.chat_id,
-                                            content=tag_content,
-                                            metadata=self._with_trace_metadata(
-                                                {"type": "chunk"},
-                                                turn_id=turn_id,
-                                                message_id=message_id,
-                                            ),
-                                        )
-                                    )
-                                    if on_output_queued:
-                                        on_output_queued("content")
-                                    streamed_to_web = True
-                                    display_buffer = display_buffer[tag_end + 1 :]
-                            else:
-                                closing = f"</{ghost_active}>"
-                                close_idx = display_buffer.find(closing)
-                                if close_idx == -1:
-                                    display_buffer = ""
-                                    break
-                                ghost_active = None
-                                await self.bus.publish_outbound(
-                                    OutboundMessage(
-                                        channel=msg.channel,
-                                        chat_id=msg.chat_id,
-                                        content="",
-                                        metadata={"type": "activity", "text": ""},
-                                    )
-                                )
-                                display_buffer = display_buffer[
-                                    close_idx + len(closing) :
-                                ]
-
-                # Discord intentionally buffers provider deltas. Its typing
-                # indicator stays active and the normal delivery path sends
-                # only the completed response. Web remains token-streamed.
-                thinking = getattr(delta, "reasoning_content", None) or getattr(
-                    delta, "thinking", None
-                )
-                if thinking:
-                    thinking_buffer += thinking
-                    self._log_tool_debug(
-                        "stream_chunk_thinking",
-                        session_key=session_key,
-                        chunk_index=chunk_index,
-                        delta_thinking=thinking,
-                    )
-                if thinking and msg.channel == "web":
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content=thinking,
-                            metadata=self._with_trace_metadata(
-                                {"type": "thinking"},
-                                turn_id=turn_id,
-                                message_id=message_id,
-                            ),
-                        )
-                    )
-
-                if hasattr(delta, "tool_calls") and delta.tool_calls:
-                    record_provider_first_delta("tool_call")
-                    self._log_tool_debug(
-                        "stream_chunk_tool_delta",
-                        session_key=session_key,
-                        chunk_index=chunk_index,
-                        tool_delta=str(delta.tool_calls),
-                    )
-                    for tc_chunk in delta.tool_calls:
-                        while len(tool_calls) <= tc_chunk.index:
-                            tool_calls.append(
-                                {
-                                    "id": "",
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""},
-                                }
-                            )
-                        tc = tool_calls[tc_chunk.index]
-                        if tc_chunk.id:
-                            tc["id"] = tc_chunk.id
-                        if tc_chunk.function.name:
-                            tc["function"]["name"] += tc_chunk.function.name
-                        if tc_chunk.function.arguments:
-                            tc["function"]["arguments"] += tc_chunk.function.arguments
-
-        except (RateLimitError, Exception) as e:
-            err_msg_lower = str(e).lower()
-            if (
-                "429" in err_msg_lower
-                or "RateLimitError" in type(e).__name__
-                or "rate limit" in err_msg_lower
-                or "rate_limit" in err_msg_lower
-                or "usage_limit" in err_msg_lower
-                or "usage limit" in err_msg_lower
-                or "limit has been reached" in err_msg_lower
-                or "limit_reached" in err_msg_lower
-                or "codex provider returned an error" in err_msg_lower
-                or "no visible response" in err_msg_lower
-            ):
-                logger.warning(f"⚠ Rate limit during streaming: {e}")
-                rate_limit_notice = "\n\n[⚠ Generation stopped due to rate limit/usage limit reached]"
-                display_buffer += rate_limit_notice
-                full_content += rate_limit_notice
-                await self.bus.publish_outbound(
-                    OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content="",
-                        metadata=self._with_trace_metadata(
-                            {"type": "rate_limit_error", "details": str(e)},
-                            turn_id=turn_id,
-                            message_id=message_id,
-                        ),
-                    )
-                )
-            else:
-                raise
-
-        if usage:
-            await self.session_manager.update_session(
-                session_key=session_key,
-                model=self.model,
-                origin=msg.channel,
-                usage=usage,
-            )
-
-        if display_buffer and msg.channel == "web":
-            # ── Scrub any ghost / orphan tags that survived streaming ──
-            if ghost_active:
-                # Stream ended mid-ghost — drop everything up to (and
-                # including) the closing tag, or the whole buffer if
-                # the closing tag never arrived.
-                closing = f"</{ghost_active}>"
-                close_idx = display_buffer.find(closing)
-                if close_idx != -1:
-                    display_buffer = display_buffer[close_idx + len(closing) :]
-                else:
-                    display_buffer = ""
-                ghost_active = None
-
-            display_buffer = self._trim_leading_structural_lines(display_buffer)
-
-            # Strip any leftover opening or closing ghost tags.
-            display_buffer = _GHOST_TAG_RE.sub("", display_buffer).strip()
-
-            if display_buffer:
-                await self.bus.publish_outbound(
-                    OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=display_buffer,
-                        metadata=self._with_trace_metadata(
-                            {"type": "chunk"},
-                            turn_id=turn_id,
-                            message_id=message_id,
-                        ),
-                    )
-                )
-                if on_output_queued:
-                    on_output_queued("content")
-                streamed_to_web = True
-            display_buffer = ""
-
-        if not tool_calls and full_content:
-            extracted = self._extract_tool_from_content(full_content)
-            if extracted:
-                extracted_from = "assistant_content"
-                tool_calls = extracted
-                clean_content = re.sub(
-                    r"```(?:json)?\s*\{.*?\}(?:\s*```)?",
-                    "",
-                    full_content,
-                    flags=re.DOTALL,
-                ).strip()
-                # Also strip Kimi K2 inline tool syntax: functions.name:N{...}
-                clean_content = re.sub(
-                    r"(?::?functions\.\w+(?::\d+)?\s*\{[^}]*\})",
-                    "",
-                    clean_content,
-                ).strip()
-                clean_content = re.sub(
-                    r"<(?:read_file|inspect_skill|edit_file|edit_skill|write_file|delete_file|list_dir|search_files|verify_files|diagnose_files|run_command|memory_search|memory_save|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>.*?</(?:read_file|inspect_skill|edit_file|edit_skill|write_file|delete_file|list_dir|search_files|verify_files|diagnose_files|run_command|memory_search|memory_save|google_search|browser_navigate|spawn_agent|send_media|send_voice|generate_image|send_discord_message|send_discord_embed|list_discord_channels|save_memory|log_memory|ls|dir|list_files|cat|open_file|show_file|grep|rg|ripgrep|find_files|shell|terminal|exec|bash|powershell|cmd)>",
-                    "",
-                    clean_content,
-                    flags=re.DOTALL | re.IGNORECASE,
-                ).strip()
-                clean_content = re.sub(
-                    r"<tool_code>.*?</tool_code>",
-                    "",
-                    clean_content,
-                    flags=re.DOTALL | re.IGNORECASE,
-                ).strip()
-                if clean_content:
-                    full_content = clean_content
-                logger.info(f"✨ Extracted tool: {tool_calls[0]['function']['name']}")
-
-        if not tool_calls and thinking_buffer:
-            extracted = self._extract_tool_from_content(thinking_buffer)
-            if extracted:
-                extracted_from = "reasoning_content"
-                tool_calls = extracted
-                logger.info(
-                    f"✨ Extracted tool from reasoning: {tool_calls[0]['function']['name']}"
-                )
-
-        valid_tcs = []
-        for tc in tool_calls:
-            if not tc.get("id"):
-                tc["id"] = f"call_{uuid.uuid4().hex[:8]}"
-            if not tc.get("type"):
-                tc["type"] = "function"
-
-            fn = tc.get("function", {})
-            if fn.get("name"):
-                # Fix common LLM hallucination: double JSON objects in arguments
-                args = fn.get("arguments", "")
-                if args.startswith("{") and "}{" in args:
-                    try:
-                        idx = args.find("}{")
-                        json.loads(args[: idx + 1])
-                        fn["arguments"] = args[: idx + 1]
-                    except Exception:
-                        pass
-                valid_tcs.append(tc)
-        tool_calls = valid_tcs
-
-        if tool_calls and full_content:
-            pre_sanitize = full_content
-            full_content = self._sanitize_tool_call_content(full_content)
-            if pre_sanitize.strip() and pre_sanitize != full_content:
-                self.metrics.record_anomaly(
-                    session_key,
-                    "tool_call_residue_stripped",
-                    detail=pre_sanitize[:160],
-                )
-                self._log_tool_debug(
-                    "tool_residue_stripped",
-                    session_key=session_key,
-                    before=pre_sanitize,
-                    after=full_content,
-                )
-                if msg.channel == "web" and streamed_to_web:
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content=full_content,
-                            metadata=self._with_trace_metadata(
-                                {"type": "full_content"},
-                                turn_id=turn_id,
-                                message_id=message_id,
-                            ),
-                        )
-                    )
-
-        if (
-            is_potential_json
-            and not tool_calls
-            and full_content.strip()
-            and msg.channel == "web"
-            and not streamed_to_web
-        ):
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content=full_content,
-                    metadata=self._with_trace_metadata(
-                        {"type": "full_content"},
-                        turn_id=turn_id,
-                        message_id=message_id,
-                    ),
-                )
-            )
-
-        self._log_tool_debug(
-            "stream_summary",
+        return await consume_stream(
+            response_stream=response_stream,
+            msg=msg,
             session_key=session_key,
-            raw_content=full_content,
-            thinking=thinking_buffer,
-            tool_calls=self._tool_call_debug_rows(tool_calls),
-            extracted_from=extracted_from if tool_calls else "none",
-            streamed_to_web=streamed_to_web,
-            streamed_to_discord=streamed_to_discord,
-            usage=str(usage) if usage else "",
+            previous_content=previous_content,
+            turn_id=turn_id,
+            message_id=message_id,
+            turn_started_at=turn_started_at,
+            llm_started_at=llm_started_at,
+            iteration_kind=iteration_kind,
+            iteration=iteration,
+            on_output_queued=on_output_queued,
+            bus=self.bus,
+            metrics=self.metrics,
+            session_manager=self.session_manager,
+            get_model=lambda: self.model,
+            log_tool_debug=self._log_tool_debug,
+            record_stage_timing=self._record_stage_timing,
+            with_trace_metadata=self._with_trace_metadata,
+            tool_call_debug_rows=self._tool_call_debug_rows,
         )
 
-        return (
-            full_content,
-            tool_calls,
-            usage,
-            streamed_to_web,
-            streamed_to_discord,
-            thinking_buffer,
-        )
 
     async def _process_message(
         self, msg: InboundMessage, _task_id: Optional[str] = None
@@ -8305,6 +4750,16 @@ class AgentLoop:
                     "channel": msg.channel,
                     "chat_id": msg.chat_id,
                     "sender_id": msg.sender_id,
+                    "profile_id": (
+                        msg.metadata.get("profile_id", "default")
+                        if isinstance(msg.metadata, dict)
+                        else "default"
+                    ),
+                    "profile_name": (
+                        msg.metadata.get("profile_name", "Default")
+                        if isinstance(msg.metadata, dict)
+                        else "Default"
+                    ),
                     "durable_job_id": str((msg.metadata or {}).get("durable_job_id") or ""),
                 },
                 max_slices=task_run_max_slices,
@@ -8355,6 +4810,16 @@ class AgentLoop:
                     "channel": msg.channel,
                     "chat_id": msg.chat_id,
                     "sender_id": msg.sender_id,
+                    "profile_id": (
+                        msg.metadata.get("profile_id", "default")
+                        if isinstance(msg.metadata, dict)
+                        else "default"
+                    ),
+                    "profile_name": (
+                        msg.metadata.get("profile_name", "Default")
+                        if isinstance(msg.metadata, dict)
+                        else "Default"
+                    ),
                     "is_scheduler": bool(msg.metadata.get("is_scheduler")),
                     "content_preview": content[:500],
                     "attachments": [
@@ -8385,7 +4850,7 @@ class AgentLoop:
                     validate_identity=prompt_module.validate_and_save_identity,
                     validate_mood=prompt_module.validate_and_save_mood,
                     validate_relationship=prompt_module.validate_and_save_relationships,
-                    vector_service=self.vector_service,
+                    vector_service=self._get_current_vector_service(),
                     bus=self.bus,
                     msg=msg,
                     config=self.config,
@@ -8572,11 +5037,7 @@ class AgentLoop:
                             )
                         return
 
-                pending_for_session = [
-                    (cid, c)
-                    for cid, c in self.pending_confirmations.items()
-                    if c["session_key"] == session_key
-                ]
+                pending_for_session = self.confirm.for_session(session_key)
                 if pending_for_session:
                     is_approve = normalized in _APPROVE_WORDS or any(
                         normalized.startswith(k + " ") for k in _APPROVE_WORDS
@@ -8649,202 +5110,15 @@ class AgentLoop:
 
             async with self.session_locks[session_key]:
                 try:
-                    # ── Parallel: Auto-RAG + history load ───────────────────
-
-                    rag_timeout_s = getattr(
-                        getattr(self.config, "ai_harness", None),
-                        "rag_timeout_s",
-                        0.2,
-                    )
-                    rag_stage_started = time.perf_counter()
-                    history_stage_started = time.perf_counter()
-
-                    # Fast-path: skip RAG for short/casual messages.
-                    async def _do_rag() -> Dict[str, Any]:
-                        trace: Dict[str, Any] = {
-                            "ts": time.time(),
-                            "query": content,
-                            "status": "skipped",
-                            "mode": "none",
-                            "results": [],
-                            "recalled_context": "",
-                        }
-                        if not (
-                            content
-                            and len(content) > 10
-                            and not content.startswith(("/", "@"))
-                        ):
-                            return trace
-                        # Skip RAG for single casual words
-                        if content.strip().lower() in _CASUAL_WORDS:
-                            return trace
-                        try:
-                            results: list = []
-                            if self.vector_service.has_semantic_candidate():
-                                try:
-                                    semantic_results = (
-                                        await self.vector_service.search_semantic(
-                                            content, limit=3
-                                        )
-                                        or []
-                                    )
-                                    results = [
-                                        r
-                                        for r in semantic_results
-                                        if r.get("score", 1.0) >= AUTORAG_MIN_SCORE
-                                    ]
-                                    if results:
-                                        trace["mode"] = "vector"
-                                except Exception as e:
-                                    logger.warning(f"Semantic search failed: {e}")
-                            if not results:
-                                results = (
-                                    await self.vector_service.search_grep(
-                                        content, limit=3
-                                    )
-                                    or []
-                                )
-                                if results:
-                                    trace["mode"] = "grep_fallback"
-                            if results:
-                                seen, lines = set(), []
-                                for r in results:
-                                    text = r["text"].strip()
-                                    if text not in seen:
-                                        seen.add(text)
-                                        lines.append(
-                                            f"- {text} (Date: {r.get('timestamp', 'unknown')})"
-                                        )
-                                if lines:
-                                    trace["status"] = "recalled"
-                                    trace["results"] = [
-                                        self._build_rag_result_trace(r) for r in results
-                                    ]
-                                    trace["recalled_context"] = "\n".join(lines)
-                                    logger.info(
-                                        f"Auto-RAG: {len(lines)} memories recalled."
-                                    )
-                                    return trace
-                            trace["status"] = "miss"
-                        except Exception as e:
-                            trace["status"] = "error"
-                            trace["error"] = str(e)
-                            logger.warning(f"Auto-RAG failed: {e}")
-                        return trace
-
-                    async def _do_history_load():
-                        if session_key not in self.history:
-                            return await self.session_manager.load_history(session_key)
-                        return None
-
-                    _rag_needed = (
-                        bool(content)
-                        and len(content) > 10
-                        and not content.startswith(("/", "@"))
-                        and content.strip().lower() not in _CASUAL_WORDS
-                    )
-
-                    if _rag_needed:
-                        rag_coro = asyncio.wait_for(_do_rag(), timeout=rag_timeout_s)
-                        rag_task = asyncio.create_task(rag_coro)
-                    else:
-                        rag_task = None
-
-                    hist_task = asyncio.create_task(_do_history_load())
-
-                    # Start retrieval and disk history work before publishing the
-                    # ephemeral activity update. This overlaps channel delivery
-                    # latency with pre-inference preparation without changing the
-                    # prompt or recall result.
-                    await self._publish_activity(
+                    preparation = await self._get_turn_preparation_service().prepare(
                         msg,
-                        "Recalling memory and loading history...",
+                        content,
+                        session_key,
                         turn_id=turn_id,
                         message_id=assistant_message_id,
                     )
-
-                    rag_stage_metadata = {
-                        "status": "skipped",
-                        "mode": "none",
-                        "timeout_s": rag_timeout_s,
-                    }
-                    if rag_task is not None:
-                        try:
-                            rag_result = await rag_task
-                            recalled_context = rag_result.get("recalled_context", "")
-                            self._record_rag_trace(session_key, rag_result)
-                            rag_stage_metadata = {
-                                "status": rag_result.get("status", "completed"),
-                                "mode": rag_result.get("mode", "unknown"),
-                                "timeout_s": rag_timeout_s,
-                            }
-                        except asyncio.TimeoutError:
-                            recalled_context = ""
-                            self._record_rag_trace(
-                                session_key,
-                                {
-                                    "ts": time.time(),
-                                    "query": content,
-                                    "status": "timeout",
-                                    "mode": "timeout",
-                                    "results": [],
-                                    "recalled_context": "",
-                                },
-                            )
-                            rag_stage_metadata = {
-                                "status": "timeout",
-                                "mode": "timeout",
-                                "timeout_s": rag_timeout_s,
-                            }
-                            logger.debug("Auto-RAG timeout - skipping.")
-                        except Exception as e:
-                            recalled_context = ""
-                            self._record_rag_trace(
-                                session_key,
-                                {
-                                    "ts": time.time(),
-                                    "query": content,
-                                    "status": "error",
-                                    "mode": "error",
-                                    "results": [],
-                                    "recalled_context": "",
-                                    "error": str(e),
-                                },
-                            )
-                            rag_stage_metadata = {
-                                "status": "error",
-                                "mode": "error",
-                                "timeout_s": rag_timeout_s,
-                            }
-                            logger.warning(f"Auto-RAG error: {e}")
-                    else:
-                        recalled_context = ""
-                        self._record_rag_trace(
-                            session_key,
-                            {
-                                "ts": time.time(),
-                                "query": content,
-                                "status": "skipped",
-                                "mode": "none",
-                                "results": [],
-                                "recalled_context": "",
-                            },
-                        )
-                        logger.debug("Auto-RAG skipped (short/casual message).")
-
-                    self._record_stage_timing(
-                        session_key,
-                        "rag",
-                        rag_stage_started,
-                        metadata=rag_stage_metadata,
-                    )
-                    persisted = await hist_task
-                    self._record_stage_timing(
-                        session_key,
-                        "history_load",
-                        history_stage_started,
-                        metadata={"restored": bool(persisted)},
-                    )
+                    recalled_context = preparation.recalled_context
+                    persisted = preparation.persisted_history
 
                     sender_name = msg.metadata.get("sender_name", "")
                     ponytail_mode = normalize_ponytail_mode(
@@ -8878,19 +5152,20 @@ class AgentLoop:
 
                     if session_key not in self.history:
                         if persisted:
-                            self.history[session_key] = persisted
+                            self._history_replace(session_key, persisted)
                             logger.info(
                                 f"♻ Restored {session_key} ({len(persisted)} msgs)"
                             )
                         else:
-                            self.history[session_key] = [
+                            self._history_replace(session_key, [
                                 {"role": "system", "content": system_prompt}
-                            ]
+                            ])
 
-                    self.history[session_key][0] = {
-                        "role": "system",
-                        "content": system_prompt,
-                    }
+                    self._history_replace_entry(
+                        session_key,
+                        0,
+                        {"role": "system", "content": system_prompt},
+                    )
 
                     image_urls = self._collect_image_inputs(
                         attachments,
@@ -8921,10 +5196,10 @@ class AgentLoop:
                             else user_text_payload
                         )
                     if not task_run_resume:
-                        self.history[session_key].append(
-                            {"role": "user", "content": user_msg_content}
+                        self._history_append(
+                            session_key,
+                            {"role": "user", "content": user_msg_content},
                         )
-                        self._mark_dirty(session_key)
 
                         asyncio.create_task(
                             self.session_manager.append_chat_log(
@@ -8945,17 +5220,9 @@ class AgentLoop:
                             )
                         )
 
-                    injected = [
-                        "SOUL.md",
-                        "IDENTITY.md",
-                        f"memory/{datetime.now().strftime('%Y-%m-%d')}.md",
-                    ]
-                    if (USERS_DIR / f"{sender_id}.md").exists():
-                        injected.append(f"users/{sender_id}.md")
-                    for attachment in attachments:
-                        path = str(attachment.get("path") or "").strip()
-                        if path:
-                            injected.append(path)
+                    injected = self._build_session_injected_files(
+                        sender_id, attachments
+                    )
 
                     asyncio.create_task(
                         self.session_manager.update_session(
@@ -8966,7 +5233,7 @@ class AgentLoop:
                         )
                     )
 
-                    selected_subagent = self.subagent_registry.get_default_selection()
+                    selected_subagent = self._selected_subagent_for_turn()
                     should_route_via_selected_subagent = (
                         selected_subagent != "auto"
                         and not msg.metadata.get("is_report")
@@ -9005,16 +5272,16 @@ class AgentLoop:
                             validate_identity=prompt_module.validate_and_save_identity,
                             validate_mood=prompt_module.validate_and_save_mood,
                             validate_relationship=prompt_module.validate_and_save_relationships,
-                            vector_service=self.vector_service,
+                            vector_service=self._get_current_vector_service(),
                             bus=self.bus,
                             msg=msg,
                             config=self.config,
                         )
                         reply_to_user = tag_result.clean_reply or raw_reply
-                        self.history[session_key].append(
-                            {"role": "assistant", "content": raw_reply}
+                        self._history_append(
+                            session_key,
+                            {"role": "assistant", "content": raw_reply},
                         )
-                        self._mark_dirty(session_key)
                         asyncio.create_task(
                             self.session_manager.append_chat_log(
                                 session_key, {"role": "assistant", "content": raw_reply}
@@ -9216,8 +5483,7 @@ class AgentLoop:
                             am["tool_calls"] = tool_calls
                         if reasoning_content:
                             am["reasoning_content"] = reasoning_content
-                        self.history[session_key].append(am)
-                        self._mark_dirty(session_key)
+                        self._history_append(session_key, am)
 
                     raw_reply = accumulated_content or ""
                     coding_turn = self._is_coding_turn(content, tool_calls)
@@ -9330,17 +5596,19 @@ class AgentLoop:
                         unresolved_tool_failure = bool(batch_failures)
                         if batch_failures:
                             unresolved_failure_detail = batch_failures[-1].diagnostic_tail
-                            repair_attempts, recovery_blocked = await self._queue_tool_recovery(
-                                session_key,
-                                msg,
-                                repair_fingerprints,
-                                repair_attempts,
-                                coding_turn=coding_turn,
-                                recovery_state=recovery_state,
-                                turn_id=turn_id,
-                                message_id=assistant_message_id,
-                            )
-                            recovery_required = recovery_blocked is None
+                        recovery_result = await self._coordinate_tool_recovery(
+                            session_key,
+                            msg,
+                            repair_fingerprints,
+                            repair_attempts,
+                            coding_turn=coding_turn,
+                            recovery_state=recovery_state,
+                            turn_id=turn_id,
+                            message_id=assistant_message_id,
+                        )
+                        repair_attempts = recovery_result.attempts
+                        recovery_blocked = recovery_result.blocked
+                        recovery_required = recovery_result.queued
 
                         if recovery_blocked:
                             raw_reply = recovery_blocked
@@ -9423,13 +5691,13 @@ class AgentLoop:
                                         raw_reply = ""
                                     if not raw_reply:
                                         raw_reply = self._build_step_cap_fallback(session_key)
-                                    self.history[session_key].append(
+                                    self._history_append(
+                                        session_key,
                                         {
                                             "role": "assistant",
                                             "content": raw_reply,
-                                        }
+                                        },
                                     )
-                                    self._mark_dirty(session_key)
                                     break
 
                                 force_tool_image_reply = (
@@ -9559,8 +5827,9 @@ class AgentLoop:
                                         next_assistant_message[
                                             "reasoning_content"
                                         ] = nxt_reasoning_content
-                                    self.history[session_key].append(next_assistant_message)
-                                    self._mark_dirty(session_key)
+                                    self._history_append(
+                                        session_key, next_assistant_message
+                                    )
                                     break
 
                                 nxt_am: Dict = {
@@ -9570,8 +5839,7 @@ class AgentLoop:
                                 nxt_am["tool_calls"] = nxt_tool_calls
                                 if nxt_reasoning_content:
                                     nxt_am["reasoning_content"] = nxt_reasoning_content
-                                self.history[session_key].append(nxt_am)
-                                self._mark_dirty(session_key)
+                                self._history_append(session_key, nxt_am)
 
                                 research_actions_used += sum(
                                     1
@@ -9632,20 +5900,21 @@ class AgentLoop:
                                 unresolved_tool_failure = bool(batch_failures)
                                 if batch_failures:
                                     unresolved_failure_detail = batch_failures[-1].diagnostic_tail
-                                    repair_attempts, recovery_blocked = await self._queue_tool_recovery(
-                                        session_key,
-                                        msg,
-                                        repair_fingerprints,
-                                        repair_attempts,
-                                        coding_turn=coding_turn,
-                                        recovery_state=recovery_state,
-                                        turn_id=turn_id,
-                                        message_id=assistant_message_id,
-                                    )
-                                    recovery_required = recovery_blocked is None
                                 else:
-                                    recovery_required = False
                                     unresolved_failure_detail = ""
+                                recovery_result = await self._coordinate_tool_recovery(
+                                    session_key,
+                                    msg,
+                                    repair_fingerprints,
+                                    repair_attempts,
+                                    coding_turn=coding_turn,
+                                    recovery_state=recovery_state,
+                                    turn_id=turn_id,
+                                    message_id=assistant_message_id,
+                                )
+                                repair_attempts = recovery_result.attempts
+                                recovery_blocked = recovery_result.blocked
+                                recovery_required = recovery_result.queued
                                 if recovery_blocked:
                                     raw_reply = recovery_blocked
                                     force_direct_reply = True
@@ -9678,142 +5947,34 @@ class AgentLoop:
                     else:
                         raw_reply = full_content
 
-                    await self._maybe_host_deliver_instagram_photos(
-                        msg,
-                        content,
-                        turn_id=turn_id,
-                        message_id=assistant_message_id,
-                    )
-
-                    operator_verdict = self._evaluate_operator_invariants(
-                        session_key=session_key,
-                        content=content,
-                        coding_turn=coding_turn,
-                        coding_goal=is_coding_goal(getattr(task_run, "goal", "") if task_run else content),
-                        plan_mode=plan_mode,
-                        outcomes=all_tool_outcomes,
-                        unresolved_tool_failure=unresolved_tool_failure,
-                        iterations_limit_reached=iterations_limit_reached,
-                    )
-                    if task_run is not None:
-                        accepted = bool(plan_mode) or (
-                            self._task_run_acceptance_satisfied(
-                                task_run,
-                                all_tool_outcomes,
-                                coding_turn=coding_turn,
-                                iterations_limit_reached=iterations_limit_reached,
-                                unresolved_tool_failure=unresolved_tool_failure,
-                                history=self.history.get(session_key, []),
-                                session_key=session_key,
-                                casual_turn=self._is_fast_casual_turn(content),
-                                plan_mode=plan_mode,
-                                pending_workspaces=self._pending_isolated_workspaces(),
-                            )
-                            and (not operator_verdict.applies or operator_verdict.ok)
+                    completion = await self._task_run_completion_service().finalize(
+                        TaskRunCompletionRequest(
+                            task_run=task_run,
+                            content=content,
+                            coding_turn=coding_turn,
+                            plan_mode=plan_mode,
+                            outcomes=all_tool_outcomes,
+                            unresolved_tool_failure=unresolved_tool_failure,
+                            unresolved_failure_detail=unresolved_failure_detail,
+                            iterations_limit_reached=iterations_limit_reached,
+                            history=self.history.get(session_key, []),
+                            session_key=session_key,
+                            message=msg,
+                            raw_reply=str(raw_reply or ""),
+                            recovery_state=recovery_state,
+                            pending_workspaces=self._pending_isolated_workspaces(),
                         )
-                        verified = bool(
-                            operator_verdict.ok
-                            and has_verification_evidence(
-                                all_tool_outcomes,
-                                mutated_paths=operator_verdict.mutated_paths,
-                                history=self.history.get(session_key, []),
-                            )
+                    )
+                    task_run = completion.task_run
+                    operator_verdict = completion.operator_verdict
+                    task_run_continuation_scheduled = (
+                        completion.continuation_scheduled
+                    )
+                    task_run_progress_reply = completion.progress_reply
+                    if completion.turn_status_override:
+                        turn_status_override = (
+                            turn_status_override or completion.turn_status_override
                         )
-                        if verified:
-                            task_run.checkpoint["verification_state"] = "passed"
-                        if accepted:
-                            if recovery_state is not None and recovery_state.active:
-                                recovery_state.resolve()
-                            task_run = self.task_runs.complete(
-                                task_run.run_id,
-                                result=str(raw_reply or ""),
-                                checkpoint={
-                                    **dict(task_run.checkpoint or {}),
-                                    "recovery": recovery_state.to_dict()
-                                    if recovery_state is not None
-                                    else {},
-                                    "verification_state": "passed"
-                                    if verified
-                                    else task_run.checkpoint.get("verification_state"),
-                                },
-                            ) or task_run
-                        else:
-                            hard_category = (
-                                recovery_state.failure_category
-                                if recovery_state is not None
-                                else ""
-                            )
-                            hard_blocker = hard_category in {
-                                "authentication",
-                                "permission_policy",
-                                "cancellation",
-                            }
-                            invariant_error = (
-                                format_invariant_next_action(operator_verdict)
-                                if operator_verdict.applies and not operator_verdict.ok
-                                else ""
-                            )
-                            block_error = (
-                                unresolved_failure_detail
-                                or invariant_error
-                                or "A required external permission or credential is unavailable."
-                            )
-                            if hard_blocker:
-                                task_run = self.task_runs.block(
-                                    task_run.run_id,
-                                    error=block_error,
-                                    next_action="Resolve the blocker, then retry the task.",
-                                ) or task_run
-                            else:
-                                next_action = (
-                                    invariant_error
-                                    or (
-                                        "Inspect the last tool diagnostic and apply one targeted correction."
-                                        if unresolved_tool_failure
-                                        else "Run a narrowed verification check before claiming completion."
-                                    )
-                                )
-                                progress_prefix = (
-                                    "The last step failed, but I’m continuing this task "
-                                    "from its last checkpoint. "
-                                    if unresolved_tool_failure
-                                    else "I’m continuing this task from its last checkpoint. "
-                                )
-                                task_run_progress_reply = (
-                                    progress_prefix + f"Next: {next_action}"
-                                )
-                                task_run_continuation_scheduled = await self._schedule_task_run_continuation(
-                                    task_run,
-                                    msg,
-                                    next_action=next_action,
-                                    phase=TASK_RUN_REPAIRING
-                                    if unresolved_tool_failure or getattr(operator_verdict, "missing_apply", False)
-                                    else TASK_RUN_VERIFYING,
-                                    error=unresolved_failure_detail or invariant_error,
-                                    # The original failed operation is evidence
-                                    # for recovery, not a corrective failure.
-                                    # Count only failures observed after the
-                                    # recovery state became active.
-                                    corrective_failure=bool(
-                                        unresolved_tool_failure
-                                        and recovery_state is not None
-                                        and recovery_state.corrective_failures > 0
-                                    ),
-                                    recovery=recovery_state,
-                                )
-                                if not task_run_continuation_scheduled:
-                                    task_run = self.task_runs.block(
-                                        task_run.run_id,
-                                        error=block_error,
-                                        next_action=next_action,
-                                    ) or task_run
-                                    task_run_progress_reply = block_error
-                    elif (
-                        operator_verdict is not None
-                        and operator_verdict.applies
-                        and not operator_verdict.ok
-                    ):
-                        turn_status_override = turn_status_override or "blocked"
                     if (
                         operator_verdict is not None
                         and operator_verdict.applies
@@ -9844,10 +6005,10 @@ class AgentLoop:
                         raw_reply = self._build_tool_fallback_reply(session_key)
                         force_direct_reply = True
                         fallback_inserted = True
-                        self.history[session_key].append(
-                            {"role": "assistant", "content": raw_reply}
+                        self._history_append(
+                            session_key,
+                            {"role": "assistant", "content": raw_reply},
                         )
-                        self._mark_dirty(session_key)
 
                     if coding_turn and raw_reply and not recovery_blocked:
                         coding_phase = (
@@ -9875,7 +6036,7 @@ class AgentLoop:
                         validate_identity=prompt_module.validate_and_save_identity,
                         validate_mood=prompt_module.validate_and_save_mood,
                         validate_relationship=prompt_module.validate_and_save_relationships,
-                        vector_service=self.vector_service,
+                        vector_service=self._get_current_vector_service(),
                         bus=self.bus,
                         msg=msg,
                         config=self.config,
@@ -9904,10 +6065,10 @@ class AgentLoop:
                         raw_reply = fallback_reply
                         force_direct_reply = True
                         if not fallback_inserted:
-                            self.history[session_key].append(
-                                {"role": "assistant", "content": fallback_reply}
+                            self._history_append(
+                                session_key,
+                                {"role": "assistant", "content": fallback_reply},
                             )
-                            self._mark_dirty(session_key)
                             fallback_inserted = True
                     elif (
                         msg
@@ -9946,10 +6107,10 @@ class AgentLoop:
                         logger.info("🔄 Stable prompt cache invalidated.")
 
                     if not tool_calls and not (full_content or tool_calls):
-                        self.history[session_key].append(
-                            {"role": "assistant", "content": raw_reply}
+                        self._history_append(
+                            session_key,
+                            {"role": "assistant", "content": raw_reply},
                         )
-                        self._mark_dirty(session_key)
 
                     asyncio.create_task(
                         self.session_manager.append_chat_log(

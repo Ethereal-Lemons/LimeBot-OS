@@ -265,12 +265,19 @@ class IsolatedWorkspace:
     root: Path
     label: str
     baseline: Dict[str, Dict[str, Any]]
+    owner_session_key: str = ""
     workspace_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     last_capture: Optional[Dict[str, Any]] = None
     _cleaned: bool = False
 
     @classmethod
-    async def create(cls, source_root: Path, label: str = "subagent"):
+    async def create(
+        cls,
+        source_root: Path,
+        label: str = "subagent",
+        *,
+        owner_session_key: str = "",
+    ):
         source_root = Path(source_root).resolve()
         if not source_root.is_dir():
             raise ValueError(f"Workspace root is not a directory: {source_root}")
@@ -298,6 +305,7 @@ class IsolatedWorkspace:
             root=root,
             label=str(label or "subagent")[:120],
             baseline=baseline,
+            owner_session_key=str(owner_session_key or "").strip(),
         )
 
     def context_value(self) -> Dict[str, str]:
@@ -306,6 +314,7 @@ class IsolatedWorkspace:
             "root": str(self.root),
             "source_root": str(self.source_root),
             "label": self.label,
+            "owner_session_key": self.owner_session_key,
             "workspace_id": self.workspace_id,
         }
 
@@ -321,6 +330,8 @@ class IsolatedWorkspace:
 
         capture = await asyncio.to_thread(_capture_sync, self.root, self.baseline)
         capture["workspace_id"] = self.workspace_id
+        capture["label"] = self.label
+        capture["owner_session_key"] = self.owner_session_key
         self.last_capture = capture
         return capture
 

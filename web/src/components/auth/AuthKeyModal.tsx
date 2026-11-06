@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import axios from "axios";
 import { API_BASE_URL } from "@/lib/api";
+import { getApiErrorStatus } from "@/lib/api-error";
 
 interface AuthKeyModalProps {
     isOpen: boolean;
@@ -24,8 +25,9 @@ export function AuthKeyModal({ isOpen, onSuccess }: AuthKeyModalProps) {
                 headers: { 'X-API-Key': key }
             });
             onSuccess(key);
-        } catch (err: any) {
-            if (err.response?.status === 401 || err.response?.status === 403) {
+        } catch (error: unknown) {
+            const status = getApiErrorStatus(error);
+            if (status === 401 || status === 403) {
                 setError("Invalid API Key. Please try again.");
             } else {
                 setError("Failed to verify key. Check connection.");

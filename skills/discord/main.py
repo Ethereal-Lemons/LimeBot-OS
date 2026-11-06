@@ -100,10 +100,15 @@ def _post(endpoint: str, payload: dict[str, Any]) -> dict:
     """POST JSON to a backend endpoint. Returns parsed response or raises on error."""
     url = f"{BACKEND_URL}/{endpoint}"
     data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get("APP_API_KEY", "").strip()
+    if api_key:
+        headers["X-API-Key"] = api_key
+
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:

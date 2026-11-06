@@ -1,4 +1,3 @@
-import types
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -191,7 +190,7 @@ class TestBrowserState(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.user_data_dir, snapshot_profile)
         prepare_snapshot.assert_called_once()
 
-    async def test_execute_browser_tool_uses_calling_session_key(self):
+    async def test_browser_service_uses_calling_session_key(self):
         from core.bus import MessageBus
         from core.loop import AgentLoop
 
@@ -231,6 +230,7 @@ class TestBrowserState(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://example.com", str(result))
 
     async def test_browser_tool_results_are_not_cached(self):
+        from core.browser_search_service import Snapshot
         from core.bus import MessageBus
         from core.loop import AgentLoop
 
@@ -243,18 +243,20 @@ class TestBrowserState(unittest.IsolatedAsyncioTestCase):
         agent = _TestAgentLoop(bus=bus)
         calls = []
 
-        async def _fake_execute_browser_tool(self, function_name, function_args, session_key):
-            calls.append((function_name, dict(function_args), session_key))
+        async def _fake_execute_browser(
+            command, *, session_key, source_tool_name
+        ):
+            calls.append((source_tool_name, command, session_key))
             return f"browser call {len(calls)}"
 
-        agent._execute_browser_tool = types.MethodType(_fake_execute_browser_tool, agent)
+        agent.browser_search_service.execute_browser = _fake_execute_browser
 
         first = await agent._execute_tool("browser_snapshot", {}, session_key="web:test")
         second = await agent._execute_tool("browser_snapshot", {}, session_key="web:test")
 
         self.assertEqual(calls, [
-            ("browser_snapshot", {}, "web:test"),
-            ("browser_snapshot", {}, "web:test"),
+            ("browser_snapshot", Snapshot(), "web:test"),
+            ("browser_snapshot", Snapshot(), "web:test"),
         ])
         self.assertEqual(first, "browser call 1")
         self.assertEqual(second, "browser call 2")

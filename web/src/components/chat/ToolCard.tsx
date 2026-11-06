@@ -35,8 +35,10 @@ export interface ConfirmationPreview {
 
 export interface ToolExecution {
     tool: string;
+    profile_id?: string;
+    profile_name?: string;
     status: 'planned' | 'running' | 'completed' | 'error' | 'pending_confirmation' | 'progress' | 'waiting_confirmation';
-    args: any;
+    args: Record<string, unknown>;
     result?: string;
     tool_call_id: string;
     conf_id?: string;
@@ -136,12 +138,17 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
         const args = execution.args;
         if (!args) return '';
 
+        const argument = (key: string) => {
+            const value = args[key];
+            return typeof value === "string" ? value : "";
+        };
+
         switch (execution.tool) {
-            case 'read_file': return `Reading ${getFileName(args.path)}`;
-            case 'write_file': return `Writing ${getFileName(args.path)}`;
-            case 'run_command': return `> ${args.command}`;
-            case 'list_dir': return `Listing ${args.path}`;
-            case 'search_web': return `Searching "${args.query}"`;
+            case 'read_file': return `Reading ${getFileName(argument("path"))}`;
+            case 'write_file': return `Writing ${getFileName(argument("path"))}`;
+            case 'run_command': return `> ${argument("command")}`;
+            case 'list_dir': return `Listing ${argument("path")}`;
+            case 'search_web': return `Searching "${argument("query")}"`;
             default: return JSON.stringify(args).slice(0, 50);
         }
     };
@@ -266,6 +273,11 @@ export function ToolCard({ execution, onConfirm, onConfirmSession, onConfirmSide
                                             execution.status === 'running' ? 'Running...' :
                                                 execution.status === 'completed' ? 'Completed' : 'Failed'}
                             </span>
+                            {execution.profile_name && (
+                                <span className="rounded border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                    Agent: {execution.profile_name}
+                                </span>
+                            )}
                         </div>
                         <div className="text-xs text-muted-foreground truncate font-mono">
                             {getSummary()}

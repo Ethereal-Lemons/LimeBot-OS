@@ -24,7 +24,14 @@ class InboundMessage:
 
         for char in ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]:
             key = key.replace(char, "_")
-        return key
+        profile_id = (
+            self.metadata.get("profile_id", "default")
+            if isinstance(self.metadata, dict)
+            else "default"
+        )
+        from core.profiles import namespace_session_key
+
+        return namespace_session_key(profile_id, key)
 
 
 @dataclass

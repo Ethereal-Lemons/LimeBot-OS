@@ -2,6 +2,8 @@ export type TurnStatus = 'running' | 'completed' | 'retrying' | 'failed' | 'bloc
 
 export type ChatToolExecution = {
   tool: string;
+  profile_id?: string;
+  profile_name?: string;
   status:
     | 'planned'
     | 'running'
@@ -10,7 +12,7 @@ export type ChatToolExecution = {
     | 'pending_confirmation'
     | 'progress'
     | 'waiting_confirmation';
-  args: any;
+  args: Record<string, unknown>;
   result?: string;
   tool_call_id: string;
   conf_id?: string;

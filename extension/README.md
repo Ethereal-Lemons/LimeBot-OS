@@ -9,6 +9,7 @@ LimeBot Companion is the browser extension for LimeBot. It gives you a lightweig
 - Send selected text to LimeBot
 - Show recent replies, live status, and tool activity
 - Let you approve or deny pending tools
+- Select one of the LimeBot conversational agents
 - Use the same LimeBot name and avatar when a persona identity is available
 
 ## Browser behavior
@@ -75,6 +76,11 @@ If you did not set `APP_API_KEY`, leave the API key field empty.
 - Chrome or Edge: click `Open side panel`
 - Opera GX: click `Open companion`
 
+Use the **Agent** selector to choose a conversational agent. The companion
+remembers a separate chat session for each agent on this browser. The agent
+list is shared with the dashboard, and selecting an agent here does not change
+which profile Discord, WhatsApp, or Telegram use.
+
 ### Ask about a page
 
 1. Open any normal `http` or `https` page
@@ -117,6 +123,7 @@ When LimeBot requests approval for a tool, the companion shows the request so yo
 - `Send selected text` sends the selected content
 - `Watch video` captures the active video URL and playback position
 - Pending approvals appear and can be handled
+- Agent selection resumes that agent's companion session
 - Opera GX opens the companion in a tab
 
 ## Privacy

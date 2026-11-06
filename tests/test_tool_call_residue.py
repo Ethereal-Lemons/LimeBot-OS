@@ -1,6 +1,8 @@
 import unittest
 from types import SimpleNamespace
 
+from core.tool_call_parser import sanitize_tool_call_content
+
 
 class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -30,20 +32,20 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(choices=[SimpleNamespace(delta=delta)], usage=None)
 
     def test_sanitize_tool_call_content_drops_orphan_fences(self):
-        self.assertEqual(self.agent._sanitize_tool_call_content("}\n```"), "")
+        self.assertEqual(sanitize_tool_call_content("}\n```"), "")
         self.assertEqual(
-            self.agent._sanitize_tool_call_content("Let me check.\n}\n```"),
+            sanitize_tool_call_content("Let me check.\n}\n```"),
             "Let me check.",
         )
         self.assertEqual(
-            self.agent._sanitize_tool_call_content(
+            sanitize_tool_call_content(
                 '{"name":"run_command","arguments":{"command":"echo hi"}} '
                 "Therefresh voice note in English just landed in your DMs."
             ),
             "",
         )
         self.assertEqual(
-            self.agent._sanitize_tool_call_content(
+            sanitize_tool_call_content(
                 "Sending that now.\n"
                 'functions.run_command:1{"command":"echo hi"}\n'
                 "Extra promotional fluff."
@@ -51,49 +53,49 @@ class TestToolCallResidue(unittest.IsolatedAsyncioTestCase):
             "Sending that now.",
         )
         self.assertEqual(
-            self.agent._sanitize_tool_call_content(
+            sanitize_tool_call_content(
                 "Voy a editarlo.\n"
                 'to=functions.run_command code: {"command":"python fix_docx.py"}'
             ),
             "Voy a editarlo.",
         )
         self.assertEqual(
-            self.agent._sanitize_tool_call_content(
+            sanitize_tool_call_content(
                 "Voy a hacerlo.\n<read_file>index.html</read_file>\nMas texto."
             ),
             "Voy a hacerlo.",
         )
         self.assertEqual(
-            self.agent._sanitize_tool_call_content(
+            sanitize_tool_call_content(
                 'Voy a hacerlo.\n<tool_code>list_dir("C:/tmp")</tool_code>\nMas texto.'
             ),
             "Voy a hacerlo.",
         )
         self.assertEqual(
-            self.agent._sanitize_tool_call_content('Checking now.\n{"path":"."}'),
+            sanitize_tool_call_content('Checking now.\n{"path":"."}'),
             "Checking now.",
         )
         self.assertEqual(
-            self.agent._sanitize_tool_call_content(
+            sanitize_tool_call_content(
                 'Checking now.\n{"path":"C:\\Users\\ExampleUser\\Projects\\LimeBot-OS"}'
             ),
             "Checking now.",
         )
         self.assertEqual(
-            self.agent._sanitize_tool_call_content(
+            sanitize_tool_call_content(
                 'Checking now.\n<|list_dir|>{"path": "."}<|/list_dir|>\nDone.'
             ),
             "Checking now.",
         )
         self.assertEqual(
-            self.agent._sanitize_tool_call_content(
+            sanitize_tool_call_content(
                 '{"prompt":"A realistic Peruvian guinea pig","model":"openai/gpt-image-1",'
                 '"size":"1024x1024","quality":"high","count":1}'
             ),
             "",
         )
         self.assertEqual(
-            self.agent._sanitize_tool_call_content(
+            sanitize_tool_call_content(
                 'Generating it now.\n{"prompt":"A realistic Peruvian guinea pig",'
                 '"model":"openai/gpt-image-1","size":"1024x1024","quality":"high","count":1}'
             ),

@@ -91,6 +91,20 @@ Not a hardcoded system prompt. A living identity that evolves:
 - **Dynamic Mood**  optional `MOOD.md` that shifts based on conversations and persists between sessions
 - **Setup Interview**  if the local persona files are missing or invalid, the bot interviews you to rebuild its identity and saves the result automatically once it has enough to work with.
 
+### 🧑‍🤝‍🧑 Create Separate Agents
+The dashboard's **Agents** page lets you create conversational agents with
+their own display name, model choice, persona, memory, and chat history. The
+existing LimeBot persona and chats stay under the built-in **Default** agent;
+new agents keep their files under `persona/profiles/<id>/`. Switch agents from
+the chat selector or the browser companion. Discord, WhatsApp, and Telegram
+continue using Default.
+
+Agent settings can restrict tools and narrow filesystem access. Global
+approval and allowed-path rules still apply, and an agent cannot relax them.
+Shell and sub-agent tools use LimeBot's shared workspace, so named agents start
+without those tools and need an explicit tool allowlist to enable them. The
+profile selector keeps a separate chat session for each agent.
+
 ### 🌐 It Browses the Web
 Full Playwright-powered browser automation:
 - Navigate to any URL, click elements, fill forms, scroll pages
@@ -175,15 +189,15 @@ LimeBot uses [LiteLLM](https://github.com/BerriAI/litellm)  any model it support
 
 | Provider | Example model string |
 |----------|---------------------|
-| **Gemini** (default) | `gemini/gemini-3.6-flash` |
-| **OpenAI** | `openai/gpt-5.6-sol` |
+| **Gemini** (default) | `gemini/gemini-3.8-flash` |
+| **OpenAI** | `openai/gpt-6.1-sol` |
 | **Anthropic** | `anthropic/claude-opus-5` |
-| **xAI** | `xai/grok-4.6` |
+| **xAI** | `xai/grok-4.7` |
 | **DeepSeek** | `deepseek/deepseek-v4-flash` |
 | **Moonshot AI (Kimi)** | `moonshot/kimi-k3` |
 | **Qwen (DashScope)** | `qwen/qwen3.5-plus` |
 | **NVIDIA** | `nvidia/deepseek-ai/deepseek-v4-flash-0731` |
-| **OpenRouter** | `openrouter/openai/gpt-5.6-sol` |
+| **OpenRouter** | `openrouter/openai/gpt-6.1-sol` |
 Switch models live from the web dashboard without restarting.
 
 ### 🛡️ AI Gateway & Proxy Support
@@ -540,7 +554,7 @@ Copy `.env.example` to `.env`:
 
 ```env
 # Core
-LLM_MODEL=gemini/gemini-3.6-flash
+LLM_MODEL=gemini/gemini-3.8-flash
 GEMINI_API_KEY=your_key_here
 DASHSCOPE_API_KEY=your_dashscope_key_here
 # Optional for Qwen region routing:
@@ -593,6 +607,29 @@ prevent accidental actions; they do not change provider generation speed.
 ## 🤝 Contributing
 
 We love contributions! Please check out [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to submit PRs, report bugs, or request features.
+
+The offline task evaluator compares two source snapshots using synthetic local
+replays and makes no provider requests. Create a clean baseline snapshot from
+the revision you want to compare (for example, `main~1`), then use it as a
+separate directory:
+
+```bash
+mkdir -p ../limebot-baseline
+git archive main~1 | tar -x -C ../limebot-baseline
+python scripts/evaluate_tasks.py compare \
+  --baseline ../limebot-baseline \
+  --candidate . \
+  --baseline-id main~1 \
+  --candidate-id working-tree
+```
+
+The baseline and candidate paths must be different; comparing the same source
+directory with itself does not measure a revision change.
+
+Reports are stored under the local LimeBot state directory in
+`data/evaluations/`. They contain normalized outcomes and timing evidence, not
+raw prompts, replies, fixture contents, or persona text. See [evals/README.md](evals/README.md)
+for comparison options and limits.
 
 ---
 

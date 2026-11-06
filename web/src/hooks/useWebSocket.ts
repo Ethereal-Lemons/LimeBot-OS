@@ -79,8 +79,9 @@ export function useWebSocket({
     const [inputValue, setInputValue] = useState('');
     const [isConnected, setIsConnected] = useState(false);
     const [isTyping, setIsTyping] = useState(false);
-    const [turnStatuses, setTurnStatuses] = useState<Record<string, TurnStatus>>({});
     const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
+    const [turnStatusesBySession, setTurnStatusesBySession] = useState<Record<string, Record<string, TurnStatus>>>({});
+    const turnStatuses = turnStatusesBySession[sessionId] ?? {};
 
     const ws = useRef<WebSocket | null>(null);
     const reconnectTimerRef = useRef<number | null>(null);
@@ -191,9 +192,20 @@ export function useWebSocket({
     ) => {
         const key = turnStatusKey(chatId, turnId, messageId);
         if (!key) return;
-        setTurnStatuses((previous) => {
-            if (previous[key] === status) return previous;
-            return { ...previous, [key]: status };
+        const targetSessionId = chatId || sessionIdRef.current;
+        setTurnStatusesBySession((previous) => {
+            const currentSessionStatuses = previous[targetSessionId] ?? {};
+            if (currentSessionStatuses[key] === status) return previous;
+            const next = {
+                ...previous,
+                [targetSessionId]: { ...currentSessionStatuses, [key]: status },
+            };
+            const sessionIds = Object.keys(next);
+            while (sessionIds.length > 16) {
+                const oldestSessionId = sessionIds.shift();
+                if (oldestSessionId) delete next[oldestSessionId];
+            }
+            return next;
         });
     };
 
@@ -258,7 +270,6 @@ export function useWebSocket({
         streamBufferRef.current = { chatId: null, messageId: null, turnId: null, content: '', thinking: '' };
         streamRenderStateRef.current = EMPTY_STREAM_RENDER_STATE;
         settledStreamKeysRef.current.clear();
-        setTurnStatuses({});
     }, [sessionId]);
 
     // ── WebSocket connect ─────────────────────────────────────────────────
@@ -550,6 +561,8 @@ export function useWebSocket({
                                 content: data.content,
                                 toolExecution: {
                                     tool: toolData.tool,
+                                    profile_id: toolData.profile_id,
+                                    profile_name: toolData.profile_name,
                                     status: toolData.status,
                                     args: toolData.args,
                                     tool_call_id: toolData.tool_call_id,

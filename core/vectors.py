@@ -3,6 +3,7 @@ import hashlib
 import os
 import re
 import time as _time
+import threading
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,7 +13,9 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from config import load_config
-from core.paths import LONG_TERM_MEMORY_FILE, MEMORY_DIR
+from core.paths import LONG_TERM_MEMORY_FILE, MEMORY_DIR, PersonaPaths, get_persona_paths
+from core.profile_context import get_current_profile_id
+from core.runtime_paths import get_data_dir
 
 
 @dataclass(frozen=True)
@@ -76,8 +79,10 @@ class VectorService:
         db_path: str = "data/vectors",
         model: str = "gemini/gemini-embedding-001",
         candidate_models: Optional[List[EmbeddingCandidate]] = None,
+        persona_paths: Optional[PersonaPaths] = None,
     ):
         self.db_path = db_path
+        self.persona_paths = persona_paths or get_persona_paths("default")
         self.db = None
         self.table = None
         self.table_name = "memories"
@@ -664,14 +669,19 @@ class VectorService:
     def _markdown_tokens(cls, value: Any) -> List[str]:
         return re.findall(r"[a-z0-9]+", cls._normalize_markdown_text(value))
 
-    @staticmethod
-    def _markdown_source_paths() -> List[Path]:
-        """Return durable memory files, honoring ``LIMEBOT_STATE_DIR``."""
+    def _markdown_source_paths(self) -> List[Path]:
+        """Return the durable Markdown sources for this profile."""
+        if self.persona_paths.root == get_persona_paths("default").root:
+            long_term_memory_file = LONG_TERM_MEMORY_FILE
+            memory_dir = MEMORY_DIR
+        else:
+            long_term_memory_file = self.persona_paths.long_term_memory
+            memory_dir = self.persona_paths.memory
         paths: List[Path] = []
-        if LONG_TERM_MEMORY_FILE.exists() and LONG_TERM_MEMORY_FILE.is_file():
-            paths.append(LONG_TERM_MEMORY_FILE)
-        if MEMORY_DIR.exists() and MEMORY_DIR.is_dir():
-            paths.extend(sorted(MEMORY_DIR.glob("*.md"), reverse=True))
+        if long_term_memory_file.exists() and long_term_memory_file.is_file():
+            paths.append(long_term_memory_file)
+        if memory_dir.exists() and memory_dir.is_dir():
+            paths.extend(sorted(memory_dir.glob("*.md"), reverse=True))
 
         # A malformed state directory or a test monkeypatch can make the two
         # paths overlap.  Preserve order while avoiding duplicate scans.
@@ -701,9 +711,13 @@ class VectorService:
                 signature.append((str(path), None, None))
         return tuple(signature)
 
-    @staticmethod
-    def _markdown_source_label(path: Path) -> str:
-        if path == LONG_TERM_MEMORY_FILE:
+    def _markdown_source_label(self, path: Path) -> str:
+        long_term_memory_file = (
+            LONG_TERM_MEMORY_FILE
+            if self.persona_paths.root == get_persona_paths("default").root
+            else self.persona_paths.long_term_memory
+        )
+        if path == long_term_memory_file:
             return "MEMORY.md"
         return f"memory/{path.name}"
 
@@ -896,6 +910,8 @@ class VectorService:
 
 
 _instance: Optional[VectorService] = None
+_profile_instances: Dict[str, VectorService] = {}
+_profile_service_lock = threading.RLock()
 
 
 def get_vector_service(config=None) -> VectorService:
@@ -940,3 +956,42 @@ def get_vector_service(config=None) -> VectorService:
         if config:
             _instance._config = config
     return _instance
+
+
+def get_profile_vector_service(
+    config=None, *, profile_id: Optional[str] = None
+) -> VectorService:
+    """Return a vector index isolated to the active named profile."""
+    normalized_profile_id = str(
+        profile_id or get_current_profile_id() or "default"
+    ).strip().lower()
+    paths = get_persona_paths(normalized_profile_id)
+    if normalized_profile_id == "default":
+        return get_vector_service(config)
+
+    candidate_models = VectorService.build_candidate_models(config)
+    candidate_signature = tuple(
+        (candidate.model, candidate.source) for candidate in candidate_models
+    )
+    with _profile_service_lock:
+        service = _profile_instances.get(normalized_profile_id)
+        if service is not None:
+            current_signature = tuple(
+                (candidate.model, candidate.source)
+                for candidate in service.candidate_models
+            )
+            if not config or current_signature == candidate_signature:
+                return service
+
+        db_path = (
+            get_data_dir() / "vectors" / "profiles" / normalized_profile_id
+        )
+        service = VectorService(
+            db_path=str(db_path),
+            candidate_models=candidate_models,
+            persona_paths=paths,
+        )
+        if config:
+            service._config = config
+        _profile_instances[normalized_profile_id] = service
+        return service

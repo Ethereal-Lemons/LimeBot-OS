@@ -210,6 +210,9 @@ export function TaskQueuePanel() {
                     {getTypeIcon(task.taskType)}
                     <span className="font-medium text-sm">{task.taskType}</span>
                     <Badge variant="outline" className="text-xs font-mono">{task.channel}</Badge>
+                    <Badge variant="secondary" className="text-xs">
+                        Agent: {asString(task.metadata.profile_name, asString(task.metadata.profile_id, "Default"))}
+                    </Badge>
                 </div>
                 <div className="flex items-center gap-1 text-xs text-muted-foreground">
                     {formatTime(task.createdAt)}
@@ -234,6 +237,11 @@ export function TaskQueuePanel() {
             <div className="flex justify-between items-start mb-1">
                 <div className="flex items-center gap-2">
                     <span className="font-medium text-sm capitalize">Delivery to {delivery.channel}</span>
+                    {(asString(delivery.metadata.profile_name) || asString(delivery.metadata.profile_id)) && (
+                        <Badge variant="outline" className="text-xs">
+                            Agent: {asString(delivery.metadata.profile_name, asString(delivery.metadata.profile_id, "Default"))}
+                        </Badge>
+                    )}
                     <Badge variant={delivery.status === "failed" ? "destructive" : "secondary"} className="text-xs">
                         {delivery.status}
                     </Badge>

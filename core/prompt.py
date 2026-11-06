@@ -25,7 +25,62 @@ from core.paths import (
     IDENTITY_FILE,
     MOOD_FILE,
     RELATIONSHIPS_FILE,
+    PersonaPaths,
 )
+from core.profile_context import get_current_profile_context
+
+
+class _LegacyPromptPaths(PersonaPaths):
+    """Keep the module-level default path seams used by existing callers/tests."""
+
+    @property
+    def users(self) -> Path:
+        return USERS_DIR
+
+    @property
+    def memory(self) -> Path:
+        return MEMORY_DIR
+
+    @property
+    def long_term_memory(self) -> Path:
+        return LONG_TERM_MEMORY_FILE
+
+    @property
+    def user_context(self) -> Path:
+        return USER_CONTEXT_FILE
+
+    @property
+    def tools_notes(self) -> Path:
+        return TOOLS_NOTES_FILE
+
+    @property
+    def heartbeat(self) -> Path:
+        return HEARTBEAT_FILE
+
+    @property
+    def soul(self) -> Path:
+        return SOUL_FILE
+
+    @property
+    def identity(self) -> Path:
+        return IDENTITY_FILE
+
+    @property
+    def mood(self) -> Path:
+        return MOOD_FILE
+
+    @property
+    def relationships(self) -> Path:
+        return RELATIONSHIPS_FILE
+
+
+def _active_persona_paths(persona_paths: Optional[PersonaPaths]) -> PersonaPaths:
+    if persona_paths is not None:
+        return persona_paths
+    context = get_current_profile_context()
+    if context is not None:
+        return context.paths
+    return _LegacyPromptPaths(root=SOUL_FILE.parent)
 
 
 FORBIDDEN_FRAGMENTS = [
@@ -93,7 +148,10 @@ def should_load_private_context(
     return sender_id in whitelist
 
 
-def get_memory_context(include_private_memory: bool = True) -> str:
+def get_memory_context(
+    include_private_memory: bool = True,
+    persona_paths: Optional[PersonaPaths] = None,
+) -> str:
     """
     Retrieve memory context.
 
@@ -108,13 +166,14 @@ def get_memory_context(include_private_memory: bool = True) -> str:
             "Rely on the current chat, the per-user profile, and retrieved context only.\n\n"
         )
 
+    paths = _active_persona_paths(persona_paths)
     today_str = datetime.now().strftime("%Y-%m-%d")
-    memory_file = MEMORY_DIR / f"{today_str}.md"
+    memory_file = paths.memory / f"{today_str}.md"
     cache_key = (
         today_str,
         True,
         _memory_file_signature(memory_file),
-        _memory_file_signature(LONG_TERM_MEMORY_FILE),
+        _memory_file_signature(paths.long_term_memory),
     )
     cached = _memory_context_cache.get(cache_key)
     if cached is not None:
@@ -142,9 +201,9 @@ def get_memory_context(include_private_memory: bool = True) -> str:
     else:
         context += "(New day. No entries yet.)"
 
-    if LONG_TERM_MEMORY_FILE.exists():
+    if paths.long_term_memory.exists():
         try:
-            lt_content = LONG_TERM_MEMORY_FILE.read_text(encoding="utf-8").strip()
+            lt_content = paths.long_term_memory.read_text(encoding="utf-8").strip()
             if lt_content:
                 context += "\n\n--- LONG-TERM MEMORY (Essence) ---\n"
                 context += lt_content[:800]
@@ -175,26 +234,38 @@ def _read_optional_context_file(path: Path, heading: str) -> str:
     return f"\n--- {heading} ---\n{content}\n"
 
 
-def get_private_user_context(include_private_memory: bool = True) -> str:
+def get_private_user_context(
+    include_private_memory: bool = True,
+    persona_paths: Optional[PersonaPaths] = None,
+) -> str:
     if not include_private_memory:
         return ""
-    return _read_optional_context_file(USER_CONTEXT_FILE, "PRIMARY USER CONTEXT")
+    paths = _active_persona_paths(persona_paths)
+    return _read_optional_context_file(paths.user_context, "PRIMARY USER CONTEXT")
 
 
-def get_tools_notes_context(include_private_memory: bool = True) -> str:
+def get_tools_notes_context(
+    include_private_memory: bool = True,
+    persona_paths: Optional[PersonaPaths] = None,
+) -> str:
     if not include_private_memory:
         return ""
-    return _read_optional_context_file(TOOLS_NOTES_FILE, "LOCAL OPERATOR NOTES")
+    paths = _active_persona_paths(persona_paths)
+    return _read_optional_context_file(paths.tools_notes, "LOCAL OPERATOR NOTES")
 
 
-def get_heartbeat_context(current_message: str = "") -> str:
+def get_heartbeat_context(
+    current_message: str = "",
+    persona_paths: Optional[PersonaPaths] = None,
+) -> str:
     normalized = (current_message or "").strip().lower()
     if not (
         normalized in {"@heartbeat", "heartbeat"} or normalized.startswith("@heartbeat::")
     ):
         return ""
 
-    heartbeat_notes = _read_optional_context_file(HEARTBEAT_FILE, "HEARTBEAT POLICY")
+    paths = _active_persona_paths(persona_paths)
+    heartbeat_notes = _read_optional_context_file(paths.heartbeat, "HEARTBEAT POLICY")
     return (
         "\n--- HEARTBEAT MODE ---\n"
         "This turn is a proactive heartbeat check.\n"
@@ -205,12 +276,13 @@ def get_heartbeat_context(current_message: str = "") -> str:
     )
 
 
-def get_mood_context() -> str:
+def get_mood_context(persona_paths: Optional[PersonaPaths] = None) -> str:
     """Read the current mood state and format it for the prompt."""
-    if not MOOD_FILE.exists():
+    mood_file = _active_persona_paths(persona_paths).mood
+    if not mood_file.exists():
         return ""
     try:
-        content = MOOD_FILE.read_text(encoding="utf-8")
+        content = mood_file.read_text(encoding="utf-8")
         if not content.strip():
             return ""
         return f"\n--- CURRENT MOOD ---\n{content}\n"
@@ -218,23 +290,30 @@ def get_mood_context() -> str:
         return ""
 
 
-def validate_and_save_mood(content: str) -> bool:
+def validate_and_save_mood(
+    content: str, persona_paths: Optional[PersonaPaths] = None
+) -> bool:
     """Atomic write for mood state."""
     try:
-        temp_file = MOOD_FILE.with_suffix(".tmp")
+        mood_file = _active_persona_paths(persona_paths).mood
+        mood_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = mood_file.with_suffix(".tmp")
         temp_file.write_text(content, encoding="utf-8")
-        temp_file.replace(MOOD_FILE)
+        temp_file.replace(mood_file)
         return True
     except Exception:
         return False
 
 
-def get_relationship_context(sender_id: str) -> str:
+def get_relationship_context(
+    sender_id: str, persona_paths: Optional[PersonaPaths] = None
+) -> str:
     """Retrieve relationship context for a specific user from RELATIONSHIPS.md."""
-    if not RELATIONSHIPS_FILE.exists():
+    relationships_file = _active_persona_paths(persona_paths).relationships
+    if not relationships_file.exists():
         return ""
     try:
-        content = RELATIONSHIPS_FILE.read_text(encoding="utf-8")
+        content = relationships_file.read_text(encoding="utf-8")
 
         pattern = rf"##\s*{re.escape(sender_id)}.*?(?=\n##|$)"
         match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
@@ -245,12 +324,16 @@ def get_relationship_context(sender_id: str) -> str:
         return ""
 
 
-def validate_and_save_relationships(content: str) -> bool:
+def validate_and_save_relationships(
+    content: str, persona_paths: Optional[PersonaPaths] = None
+) -> bool:
     """Atomic write for relationship data."""
     try:
-        temp_file = RELATIONSHIPS_FILE.with_suffix(".tmp")
+        relationships_file = _active_persona_paths(persona_paths).relationships
+        relationships_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = relationships_file.with_suffix(".tmp")
         temp_file.write_text(content, encoding="utf-8")
-        temp_file.replace(RELATIONSHIPS_FILE)
+        temp_file.replace(relationships_file)
         return True
     except Exception:
         return False
@@ -344,14 +427,16 @@ def _extract_identity_fields(
     return parsed
 
 
-def _normalize_identity_content(content: str) -> str:
+def _normalize_identity_content(
+    content: str, identity_file: Path = IDENTITY_FILE
+) -> str:
     parsed = _extract_identity_fields(content, include_defaults=False)
     
     # Read existing IDENTITY.md if it exists, to merge fields
     existing_parsed = {}
-    if IDENTITY_FILE.exists():
+    if identity_file.exists():
         try:
-            existing_content = IDENTITY_FILE.read_text(encoding="utf-8")
+            existing_content = identity_file.read_text(encoding="utf-8")
             existing_parsed = _extract_identity_fields(existing_content, include_defaults=False)
         except Exception as e:
             logger.warning(f"Failed to read existing IDENTITY.md for merging: {e}")
@@ -399,19 +484,22 @@ def _matches_template(content: str, template_path: Path) -> bool:
 
 
 def get_setup_state(
-    soul_content: Optional[str] = None, identity_content: Optional[str] = None
+    soul_content: Optional[str] = None,
+    identity_content: Optional[str] = None,
+    persona_paths: Optional[PersonaPaths] = None,
 ) -> dict[str, Any]:
     """
     Return setup validation details for the current persona state.
     Accepts optional content to avoid redundant disk reads.
     """
+    paths = _active_persona_paths(persona_paths)
     try:
         soul = (
             soul_content
             if soul_content is not None
             else (
-                SOUL_FILE.read_text(encoding="utf-8").strip()
-                if SOUL_FILE.exists()
+                paths.soul.read_text(encoding="utf-8").strip()
+                if paths.soul.exists()
                 else ""
             )
         )
@@ -419,8 +507,8 @@ def get_setup_state(
             identity_content
             if identity_content is not None
             else (
-                IDENTITY_FILE.read_text(encoding="utf-8").strip()
-                if IDENTITY_FILE.exists()
+                paths.identity.read_text(encoding="utf-8").strip()
+                if paths.identity.exists()
                 else ""
             )
         )
@@ -438,9 +526,11 @@ def get_setup_state(
             ],
         }
 
-    soul_is_template = _matches_template(soul, SOUL_FILE.with_name("SOUL.md.example"))
+    soul_is_template = _matches_template(
+        soul, paths.soul.with_name("SOUL.md.example")
+    )
     identity_is_template = _matches_template(
-        identity, IDENTITY_FILE.with_name("IDENTITY.md.example")
+        identity, paths.identity.with_name("IDENTITY.md.example")
     )
 
     soul_valid = bool(soul) and not soul_is_template and len(soul) > 100 and any(
@@ -471,14 +561,20 @@ def get_setup_state(
 
 
 def is_setup_complete(
-    soul_content: Optional[str] = None, identity_content: Optional[str] = None
+    soul_content: Optional[str] = None,
+    identity_content: Optional[str] = None,
+    persona_paths: Optional[PersonaPaths] = None,
 ) -> bool:
     """
     Check if persona setup is fully complete with validation.
     Accepts optional content to avoid redundant disk reads.
     """
     return bool(
-        get_setup_state(soul_content=soul_content, identity_content=identity_content)[
+        get_setup_state(
+            soul_content=soul_content,
+            identity_content=identity_content,
+            persona_paths=persona_paths,
+        )[
             "complete"
         ]
     )
@@ -505,9 +601,10 @@ def get_identity_data(identity_content: Optional[str] = None) -> dict:
     try:
         content = identity_content
         if content is None:
-            if not IDENTITY_FILE.exists():
+            identity_file = _active_persona_paths(None).identity
+            if not identity_file.exists():
                 return _default
-            content = IDENTITY_FILE.read_text(encoding="utf-8")
+            content = identity_file.read_text(encoding="utf-8")
 
         if not content:
             return _default
@@ -520,10 +617,16 @@ def get_identity_data(identity_content: Optional[str] = None) -> dict:
         return _default
 
 
-def get_setup_prompt(soul_content: str = "", identity_content: str = "") -> str:
+def get_setup_prompt(
+    soul_content: str = "",
+    identity_content: str = "",
+    persona_paths: Optional[PersonaPaths] = None,
+) -> str:
     """Generate the system prompt for first-time interview / setup mode."""
     setup_state = get_setup_state(
-        soul_content=soul_content, identity_content=identity_content
+        soul_content=soul_content,
+        identity_content=identity_content,
+        persona_paths=persona_paths,
     )
     soul_exists = setup_state["soul_valid"]
     identity_exists = setup_state["identity_valid"]
@@ -643,6 +746,7 @@ def get_volatile_prompt_suffix(
     recalled_context: str = "",
     include_private_memory: bool = True,
     current_message: str = "",
+    persona_paths: Optional[PersonaPaths] = None,
 ) -> str:
     """
     Return the frequently-changing part of the system prompt.
@@ -652,8 +756,15 @@ def get_volatile_prompt_suffix(
     if recalled_context:
         suffix += f"RECALLED FROM VECTOR DB:\n{recalled_context}\n\n"
 
-    suffix += get_memory_context(include_private_memory=include_private_memory)
-    suffix += get_heartbeat_context(current_message=current_message)
+    paths = _active_persona_paths(persona_paths)
+    suffix += get_memory_context(
+        include_private_memory=include_private_memory,
+        persona_paths=paths,
+    )
+    suffix += get_heartbeat_context(
+        current_message=current_message,
+        persona_paths=paths,
+    )
 
     suffix += f"\n- **Current Timestamp:** {datetime.now().strftime('%A, %B %d, %Y - %H:%M:%S')}\n"
 
@@ -671,13 +782,23 @@ def build_stable_system_prompt(
     soul: str = "",
     identity_raw: str = "",
     sender_name: str = "",
+    persona_paths: Optional[PersonaPaths] = None,
 ) -> str:
     """
     Construct the rarely-changing part of the system prompt.
     """
 
-    if not is_setup_complete(soul_content=soul, identity_content=identity_raw):
-        return get_setup_prompt(soul_content=soul, identity_content=identity_raw)
+    paths = _active_persona_paths(persona_paths)
+    if not is_setup_complete(
+        soul_content=soul,
+        identity_content=identity_raw,
+        persona_paths=paths,
+    ):
+        return get_setup_prompt(
+            soul_content=soul,
+            identity_content=identity_raw,
+            persona_paths=paths,
+        )
 
     include_private_context = should_load_private_context(sender_id, channel, config)
     identity_data = get_identity_data(identity_content=identity_raw)
@@ -715,15 +836,19 @@ def build_stable_system_prompt(
         )
 
     if config and getattr(config.llm, "enable_dynamic_personality", False):
-        mood_ctx = get_mood_context()
+        mood_ctx = get_mood_context(persona_paths=paths)
         if mood_ctx:
             segments.append(mood_ctx)
 
-    private_user_ctx = get_private_user_context(include_private_context)
+    private_user_ctx = get_private_user_context(
+        include_private_context, persona_paths=paths
+    )
     if private_user_ctx:
         segments.append(private_user_ctx)
 
-    tools_notes_ctx = get_tools_notes_context(include_private_context)
+    tools_notes_ctx = get_tools_notes_context(
+        include_private_context, persona_paths=paths
+    )
     if tools_notes_ctx:
         segments.append(tools_notes_ctx)
 
@@ -760,7 +885,7 @@ def build_stable_system_prompt(
     )
 
     # Read user file once — reused for both adaptive behavior and user context.
-    user_file = USERS_DIR / f"{sender_id}.md"
+    user_file = paths.users / f"{sender_id}.md"
     user_text = ""
     if user_file.exists():
         try:
@@ -845,7 +970,7 @@ def build_stable_system_prompt(
     if user_text:
         base_prompt += f"\n--- USER PROFILE ({sender_id}) ---\n{user_text}\n"
 
-        relationship_ctx = get_relationship_context(sender_id)
+        relationship_ctx = get_relationship_context(sender_id, persona_paths=paths)
         if (
             relationship_ctx
             and config
@@ -923,6 +1048,7 @@ def _atomic_write_with_backup(target: Path, content: str, label: str) -> bool:
 
     tmp = target.with_suffix(".tmp")
     try:
+        target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             ts_bak = target.parent / f"{target.name}.{int(_time.time())}.bak"
             target.replace(ts_bak)
@@ -938,14 +1064,17 @@ def _atomic_write_with_backup(target: Path, content: str, label: str) -> bool:
         return False
 
 
-def validate_and_save_identity(content: str) -> bool:
+def validate_and_save_identity(
+    content: str, persona_paths: Optional[PersonaPaths] = None
+) -> bool:
     """Validate and save IDENTITY.md content."""
     content = content.strip()
 
     if _check_forbidden(content, "IDENTITY.md"):
         return False
 
-    normalized = _normalize_identity_content(content)
+    identity_file = _active_persona_paths(persona_paths).identity
+    normalized = _normalize_identity_content(content, identity_file=identity_file)
     parsed = _extract_identity_fields(normalized, include_defaults=False)
     has_name = bool(parsed.get("name"))
     has_style = bool(parsed.get("style"))
@@ -958,10 +1087,12 @@ def validate_and_save_identity(content: str) -> bool:
         )
         return False
 
-    return _atomic_write_with_backup(IDENTITY_FILE, normalized, "IDENTITY.md")
+    return _atomic_write_with_backup(identity_file, normalized, "IDENTITY.md")
 
 
-def validate_and_save_soul(content: str) -> bool:
+def validate_and_save_soul(
+    content: str, persona_paths: Optional[PersonaPaths] = None
+) -> bool:
     """Validate and save SOUL.md content."""
     content = content.strip()
 
@@ -980,4 +1111,5 @@ def validate_and_save_soul(content: str) -> bool:
         )
         return False
 
-    return _atomic_write_with_backup(SOUL_FILE, content, "SOUL.md")
+    soul_file = _active_persona_paths(persona_paths).soul
+    return _atomic_write_with_backup(soul_file, content, "SOUL.md")

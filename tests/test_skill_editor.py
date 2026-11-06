@@ -58,7 +58,13 @@ class TestSkillEditor(unittest.TestCase):
                 ],
             )
             self.assertEqual(result["code"], "skill_reloaded")
-            self.assertEqual((skill_dir / "main.py").read_text(encoding="utf-8").strip().splitlines()[-1], "    return 'after'")
+            self.assertEqual(
+                (skill_dir / "main.py")
+                .read_text(encoding="utf-8")
+                .strip()
+                .splitlines()[-1],
+                "    return 'after'",
+            )
             self.assertTrue(registry.skills["demo_skill"]["active"])
 
     def test_invalid_python_rolls_back_without_partial_changes(self):
@@ -188,8 +194,10 @@ class TestSkillEditor(unittest.TestCase):
             )
             config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
             toolbox = Toolbox([str(root)], MessageBus(), config)
-            with patch("core.tools.get_skills_dir", return_value=skill_root), patch(
-                "core.tools.get_config_file", return_value=config_path
+            with patch(
+                "core.skill_tool_service.get_skills_dir", return_value=skill_root
+            ), patch(
+                "core.skill_tool_service.get_config_file", return_value=config_path
             ):
                 result = json.loads(
                     awaitable_result(
@@ -200,6 +208,38 @@ class TestSkillEditor(unittest.TestCase):
             self.assertTrue((skill_root / "new_skill" / "SKILL.md").is_file())
             saved = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["skills"]["enabled"], ["new_skill"])
+
+    def test_create_skill_in_isolated_workspace_does_not_enable_globally(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            config = SimpleNamespace(skills=SimpleNamespace(enabled=[]))
+            with patch.object(
+                Toolbox,
+                "_active_workspace_paths",
+                return_value=(workspace, None),
+            ), patch(
+                "core.skill_tool_service.get_config_file",
+                side_effect=AssertionError(
+                    "isolated skills must not persist globally"
+                ),
+            ):
+                toolbox = Toolbox([str(root)], MessageBus(), config)
+                result = json.loads(
+                    awaitable_result(
+                        toolbox.create_skill("local_helper", "A workspace-only skill")
+                    )
+                )
+            self.assertEqual(result["code"], "skill_created")
+            self.assertTrue(result["isolated_workspace"])
+            self.assertEqual(config.skills.enabled, [])
+            self.assertTrue(
+                (workspace / "skills" / "local_helper" / "SKILL.md").is_file()
+            )
 
 
 def awaitable_result(awaitable):

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/api-error";
 import { Search, Zap, CheckCircle2, AlertCircle, Box } from 'lucide-react';
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
@@ -98,10 +99,9 @@ export function SkillsPage() {
                 throw new Error(res.data?.message || "Failed to install dependencies");
             }
             await loadSkills();
-        } catch (err: any) {
-            console.error("Failed to install skill deps:", err);
-            const msg = err?.response?.data?.message || err?.message || `Failed to install dependencies for ${skill.name}`;
-            toast.error(msg);
+        } catch (error: unknown) {
+            console.error("Failed to install skill deps:", error);
+            toast.error(getApiErrorMessage(error, `Failed to install dependencies for ${skill.name}`));
         } finally {
             setInstallingSkillId(null);
         }

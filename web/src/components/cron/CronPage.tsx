@@ -84,7 +84,6 @@ export function CronPage() {
 
     // FIX: wrapped in useCallback so it can be referenced as a stable dep in useEffect
     const fetchJobs = useCallback(() => {
-        setLoading(true);
         axios.get(`${API_BASE_URL}/api/cron/jobs`)
             .then(res => {
                 // FIX: guard against non-array responses

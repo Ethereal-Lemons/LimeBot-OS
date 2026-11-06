@@ -36,6 +36,7 @@ from core.events import OutboundMessage
 from core.llm_client import ChatRequest, LimeLLMClient
 from core.prompt_modes import normalize_ponytail_mode
 from core.oauth_profiles import get_codex_oauth_status
+from core.profiles import ProfileError, namespace_session_key
 from core.runtime_paths import (
     get_allowed_paths_file,
     get_config_file,
@@ -82,6 +83,26 @@ _PIAI_MODELS_JS_PATH = (
 )
 _PIAI_PROVIDER_MODEL_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
 _OPENAI_CURATED_MODELS = [
+    {
+        "id": "openai/gpt-6-astra",
+        "name": "GPT-6 Astra",
+        "provider": "openai",
+    },
+    {
+        "id": "openai/gpt-6.1-sol",
+        "name": "GPT-6.1 Sol",
+        "provider": "openai",
+    },
+    {
+        "id": "openai/gpt-6.1-terra",
+        "name": "GPT-6.1 Terra",
+        "provider": "openai",
+    },
+    {
+        "id": "openai/gpt-6-luna",
+        "name": "GPT-6 Luna",
+        "provider": "openai",
+    },
     {
         "id": "openai/gpt-5.6-sol",
         "name": "GPT-5.6 Sol",
@@ -317,6 +338,8 @@ def _serialize_pending_approval_for_app(conf_id, conf) -> dict:
         "conf_id": conf_id,
         "tool": conf.get("tool"),
         "session_key": conf.get("session_key"),
+        "profile_id": conf.get("profile_id", "default"),
+        "profile_name": conf.get("profile_name"),
         "policy_profile": conf.get("policy_profile"),
         "decision_reason": conf.get("decision_reason"),
         "client_source": conf.get("client_source"),
@@ -339,6 +362,25 @@ def _sanitize_web_session_key(chat_id: str) -> str:
     for char in ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]:
         session_key = session_key.replace(char, "_")
     return session_key
+
+
+def _profile_web_session_key(chat_id: str, profile_id: str = "default", agent=None) -> str:
+    normalized_profile_id = str(profile_id or "default").strip().lower()
+    registry = getattr(agent, "profile_registry", None)
+    if normalized_profile_id != "default" and registry is not None:
+        try:
+            registry.get_profile(normalized_profile_id)
+        except ProfileError as error:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent profile '{normalized_profile_id}' is unavailable.",
+            ) from error
+    try:
+        return namespace_session_key(
+            normalized_profile_id, _sanitize_web_session_key(chat_id)
+        )
+    except ProfileError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 def _canonicalize_app_workspace_session_key(value: Any) -> str:
@@ -395,6 +437,16 @@ def _extract_client_prompt_metadata(msg: Any) -> dict[str, str]:
     ponytail_mode = normalize_ponytail_mode(client_metadata.get("ponytail_mode"))
     if ponytail_mode != "off":
         extracted["ponytail_mode"] = ponytail_mode
+
+    raw_profile_id = client_metadata.get("profile_id")
+    if raw_profile_id is not None:
+        profile_id = (
+            raw_profile_id.strip().lower()
+            if isinstance(raw_profile_id, str)
+            else "__invalid_profile_id__"
+        )
+        if profile_id:
+            extracted["profile_id"] = profile_id[:100]
 
     skill_name = str(client_metadata.get("skill_name") or "").strip()
     if re.fullmatch(r"[A-Za-z0-9_-]+", skill_name):
@@ -588,6 +640,15 @@ class WebChannel(BaseChannel):
             return True
 
         self.verify_auth = verify_api_key
+        from core.profile_api import create_profile_router
+
+        self.app.include_router(
+            create_profile_router(
+                self.config,
+                self.verify_auth,
+                lambda: getattr(self, "agent", None),
+            )
+        )
         self._setup_routes()
 
         self.active_connections: set[WebSocket] = set()
@@ -1225,6 +1286,16 @@ class WebChannel(BaseChannel):
             models = [
                 # ── Google Gemini ─────────────────────────────────────────────
                 {
+                    "id": "gemini/gemini-3.8-flash",
+                    "name": "Gemini 3.8 Flash",
+                    "provider": "gemini",
+                },
+                {
+                    "id": "gemini/gemini-3.7-flash",
+                    "name": "Gemini 3.7 Flash",
+                    "provider": "gemini",
+                },
+                {
                     "id": "gemini/gemini-3.6-flash",
                     "name": "Gemini 3.6 Flash",
                     "provider": "gemini",
@@ -1258,11 +1329,6 @@ class WebChannel(BaseChannel):
                 *_OPENAI_CURATED_MODELS,
                 # ── Anthropic ─────────────────────────────────────────────────
                 {
-                    "id": "anthropic/claude-fable-5",
-                    "name": "Claude Fable 5",
-                    "provider": "anthropic",
-                },
-                {
                     "id": "anthropic/claude-opus-5",
                     "name": "Claude Opus 5",
                     "provider": "anthropic",
@@ -1273,19 +1339,84 @@ class WebChannel(BaseChannel):
                     "provider": "anthropic",
                 },
                 {
+                    "id": "anthropic/claude-fable-5",
+                    "name": "Claude Fable 5",
+                    "provider": "anthropic",
+                },
+                {
+                    "id": "anthropic/claude-opus-4-8",
+                    "name": "Claude Opus 4.8",
+                    "provider": "anthropic",
+                },
+                {
+                    "id": "anthropic/claude-sonnet-4-6",
+                    "name": "Claude Sonnet 4.6",
+                    "provider": "anthropic",
+                },
+                {
+                    "id": "anthropic/claude-opus-4-7",
+                    "name": "Claude Opus 4.7",
+                    "provider": "anthropic",
+                },
+                {
+                    "id": "anthropic/claude-opus-4-6",
+                    "name": "Claude Opus 4.6",
+                    "provider": "anthropic",
+                },
+                {
                     "id": "anthropic/claude-haiku-4-5-20251001",
                     "name": "Claude Haiku 4.5",
                     "provider": "anthropic",
                 },
+                {
+                    "id": "anthropic/claude-sonnet-4-5-20250929",
+                    "name": "Claude Sonnet 4.5",
+                    "provider": "anthropic",
+                },
+                {
+                    "id": "anthropic/claude-opus-4-5-20251101",
+                    "name": "Claude Opus 4.5",
+                    "provider": "anthropic",
+                },
                 # ── xAI Grok ─────────────────────────────────────────────────
+                {
+                    "id": "xai/grok-4.7",
+                    "name": "Grok 4.7",
+                    "provider": "xai",
+                },
+                {
+                    "id": "xai/grok-4.20",
+                    "name": "Grok 4.20 (Reasoning)",
+                    "provider": "xai",
+                },
+                {
+                    "id": "xai/grok-4.20-non-reasoning",
+                    "name": "Grok 4.20 (Non-Reasoning)",
+                    "provider": "xai",
+                },
+                {
+                    "id": "xai/grok-4.20-multi-agent",
+                    "name": "Grok 4.20 Multi-Agent (Beta)",
+                    "provider": "xai",
+                },
                 {
                     "id": "xai/grok-4.6",
                     "name": "Grok 4.6",
                     "provider": "xai",
                 },
                 {
-                    "id": "xai/grok-4.6-latest",
-                    "name": "Grok 4.6 (Latest Alias)",
+                    "id": "xai/grok-4.5",
+                    "name": "Grok 4.5",
+                    "provider": "xai",
+                },
+                {
+                    "id": "xai/grok-4.3",
+                    "name": "Grok 4.3",
+                    "provider": "xai",
+                },
+                {
+                    "id": "xai/grok-build-0.1",
+                    "name": "Grok Build 0.1",
                     "provider": "xai",
                 },
                 # ── DeepSeek ──────────────────────────────────────────────────
@@ -2543,7 +2674,10 @@ class WebChannel(BaseChannel):
 
             return {"status": "success", "channels": channels}
 
-        @self.app.post("/api/skill/{skill_name}/{action}")
+        @self.app.post(
+            "/api/skill/{skill_name}/{action}",
+            dependencies=[Depends(self.verify_auth)],
+        )
         async def skill_api(skill_name: str, action: str, request: Request):
             from core.skills import SkillAPI, SkillRegistry
 
@@ -2674,11 +2808,13 @@ class WebChannel(BaseChannel):
         @self.app.post(
             "/api/chat/{chat_id}/stop", dependencies=[Depends(self.verify_auth)]
         )
-        async def stop_generation(chat_id: str):
+        async def stop_generation(chat_id: str, profile_id: str = "default"):
             if not hasattr(self, "agent") or not self.agent:
                 raise HTTPException(status_code=503, detail="Agent not initialized")
 
-            session_key = _sanitize_web_session_key(chat_id)
+            session_key = _profile_web_session_key(
+                chat_id, profile_id, self.agent
+            )
 
             success = await self.agent.cancel_session(session_key)
             if success:
@@ -2707,7 +2843,13 @@ class WebChannel(BaseChannel):
                     status_code=400, detail="user_turn_index must be a non-negative integer"
                 )
 
-            session_key = _sanitize_web_session_key(chat_id)
+            client_metadata = data.get("metadata")
+            prompt_metadata = _extract_client_prompt_metadata(
+                {"metadata": client_metadata}
+            )
+            session_key = _profile_web_session_key(
+                chat_id, prompt_metadata.get("profile_id", "default"), self.agent
+            )
             active_task = getattr(self.agent, "active_tasks", {}).get(session_key)
             await self.agent.cancel_session(session_key)
             if active_task and not active_task.done():
@@ -2742,9 +2884,7 @@ class WebChannel(BaseChannel):
                 "client_message_id": replay_message_id,
                 "edited_from_message_id": clean_message_id,
             }
-            client_metadata = data.get("metadata")
-            if isinstance(client_metadata, dict):
-                metadata.update(_extract_client_prompt_metadata({"metadata": client_metadata}))
+            metadata.update(prompt_metadata)
 
             await self.session_manager.append_event_log(
                 session_key,
@@ -3357,7 +3497,9 @@ class WebChannel(BaseChannel):
                 "boot_id": self._boot_id,
             }
 
-        @self.app.post("/api/setup/complete")
+        @self.app.post(
+            "/api/setup/complete", dependencies=[Depends(self.verify_auth)]
+        )
         async def setup_complete(data: dict):
             env = data.get("env") or {}
             unknown_keys = set(env.keys()) - _ALLOWED_SETUP_ENV_KEYS

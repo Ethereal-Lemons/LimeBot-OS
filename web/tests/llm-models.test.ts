@@ -9,24 +9,50 @@ import {
 } from "../src/lib/llm-models.js";
 
 const models: LlmModelOption[] = [
-  { id: "openai/gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai" },
-  { id: "openai/gpt-5.6-terra", name: "GPT-5.6 Terra", provider: "openai" },
-  { id: "openai/gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai" },
-  { id: "openai/gpt-5.5", name: "GPT-5.5", provider: "openai" },
+  { id: "openai/gpt-6-astra", name: "GPT-6 Astra", provider: "openai" },
+  { id: "openai/gpt-6.1-sol", name: "GPT-6.1 Sol", provider: "openai" },
+  { id: "openai/gpt-6.1-terra", name: "GPT-6.1 Terra", provider: "openai" },
+  { id: "openai/gpt-6-luna", name: "GPT-6 Luna", provider: "openai" },
 ];
 
 test("OpenAI recommends exact live API model IDs in capability order", () => {
-  assert.equal(DEFAULT_MODEL_BY_PROVIDER.openai, "openai/gpt-5.6-sol");
+  assert.equal(DEFAULT_MODEL_BY_PROVIDER.openai, "openai/gpt-6.1-sol");
   assert.deepEqual(
     getRecommendedModels(models, "openai").map((model) => model.id),
     [
-      "openai/gpt-5.6-sol",
-      "openai/gpt-5.6-terra",
-      "openai/gpt-5.6-luna",
-      "openai/gpt-5.5",
+      "openai/gpt-6.1-sol",
+      "openai/gpt-6-astra",
+      "openai/gpt-6.1-terra",
+      "openai/gpt-6-luna",
     ],
   );
   assert.deepEqual(getAdditionalModels(models, "openai").map((model) => model.id), []);
+});
+
+test("Anthropic recommends active direct API model IDs", () => {
+  const activeIds = [
+    "anthropic/claude-opus-5",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-fable-5",
+    "anthropic/claude-opus-4-8",
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-opus-4-7",
+    "anthropic/claude-opus-4-6",
+    "anthropic/claude-haiku-4-5-20251001",
+    "anthropic/claude-sonnet-4-5-20250929",
+    "anthropic/claude-opus-4-5-20251101",
+  ];
+  const anthropicModels = activeIds.map((id) => ({
+    id,
+    name: id,
+    provider: "anthropic",
+  }));
+
+  assert.equal(DEFAULT_MODEL_BY_PROVIDER.anthropic, "anthropic/claude-opus-5");
+  assert.deepEqual(
+    getRecommendedModels(anthropicModels, "anthropic").map((model) => model.id),
+    activeIds,
+  );
 });
 
 test("DeepSeek recommends the current V4 API models first", () => {

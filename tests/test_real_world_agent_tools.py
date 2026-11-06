@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class TestCalculatorTool(unittest.IsolatedAsyncioTestCase):
@@ -95,6 +96,99 @@ class TestSpreadsheetTool(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(bad_extension.startswith("Error:"))
             self.assertTrue(too_many_sheets.startswith("Error:"))
+
+    async def test_uses_current_toolbox_path_policy(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = str(Path(temp_dir) / "blocked.xlsx")
+            toolbox = Toolbox(
+                allowed_paths=[temp_dir],
+                bus=MessageBus(),
+                config=SimpleNamespace(skills=SimpleNamespace(enabled=[])),
+            )
+            with patch.object(toolbox, "_is_path_allowed", return_value=False):
+                result = await toolbox.create_spreadsheet(
+                    target, [{"name": "Data", "rows": [["x"]]}]
+                )
+
+            self.assertEqual(result, f"Error: Access denied to path '{target}'.")
+            self.assertFalse(Path(target).exists())
+
+
+class TestVoiceTool(unittest.IsolatedAsyncioTestCase):
+    async def test_web_voice_publishes_inline_audio_url(self):
+        from unittest.mock import AsyncMock
+
+        from core.bus import MessageBus
+        from core.context import tool_context
+        from core.tools import Toolbox
+        from core.tts import ElevenLabsTTS
+
+        bus = MessageBus()
+        bus.publish_outbound = AsyncMock()
+        toolbox = Toolbox(
+            allowed_paths=[str(Path.cwd())],
+            bus=bus,
+            config=SimpleNamespace(skills=SimpleNamespace(enabled=[])),
+        )
+        token = tool_context.set({"channel": "web", "chat_id": "chat-1"})
+        try:
+            with patch.object(ElevenLabsTTS, "get_api_key", return_value="key"), patch.object(
+                ElevenLabsTTS,
+                "synthesize_and_save",
+                new=AsyncMock(return_value="/temp/voice.mp3"),
+            ):
+                result = await toolbox.send_voice(" hello ")
+        finally:
+            tool_context.reset(token)
+
+        self.assertEqual(result, "Sent a voice message to the web chat.")
+        outbound = bus.publish_outbound.await_args.args[0]
+        self.assertEqual(outbound.channel, "web")
+        self.assertEqual(outbound.chat_id, "chat-1")
+        self.assertEqual(outbound.metadata, {"voice_url": "/temp/voice.mp3"})
+
+    async def test_discord_voice_publishes_temporary_file(self):
+        from unittest.mock import AsyncMock
+
+        from core.bus import MessageBus
+        from core.context import tool_context
+        from core.tools import Toolbox
+        from core.tts import ElevenLabsTTS
+
+        bus = MessageBus()
+        bus.publish_outbound = AsyncMock()
+        toolbox = Toolbox(
+            allowed_paths=[str(Path.cwd())],
+            bus=bus,
+            config=SimpleNamespace(skills=SimpleNamespace(enabled=[])),
+        )
+        token = tool_context.set({"channel": "discord", "chat_id": "channel-1"})
+        try:
+            with patch.object(ElevenLabsTTS, "get_api_key", return_value="key"), patch.object(
+                ElevenLabsTTS,
+                "synthesize_to_file",
+                new=AsyncMock(return_value="temp/voice.mp3"),
+            ):
+                result = await toolbox.send_voice("hello")
+        finally:
+            tool_context.reset(token)
+
+        self.assertEqual(result, "Sent a voice message to the current discord chat.")
+        outbound = bus.publish_outbound.await_args.args[0]
+        self.assertEqual(outbound.channel, "discord")
+        self.assertEqual(outbound.chat_id, "channel-1")
+        self.assertEqual(
+            outbound.metadata,
+            {
+                "type": "file",
+                "file_path": "temp/voice.mp3",
+                "caption": "",
+                "cleanup_file": True,
+            },
+        )
 
 
 class TestAgentCompletionReserve(unittest.TestCase):

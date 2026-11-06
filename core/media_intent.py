@@ -38,6 +38,7 @@ _CREATE_RE = re.compile(
     rf"\b(?:{_CREATE_VERBS})\b.{{0,60}}\b(?:{_IMAGE_NOUNS}|art|illustration)\b",
     re.IGNORECASE | re.DOTALL,
 )
+_EXPLICIT_URL_RE = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
 
 _WRITE_RUN_RE = re.compile(
     r"(?:"
@@ -80,11 +81,6 @@ MEDIA_DELIVERY_RULES = (
     "best image and attaches it to the chat. Do not call `send_media`, "
     "`generate_image`, `spawn_agent`, `run_command`, or any browser tool. "
     "Do not open a search engine yourself.\n"
-    "If they named an instagram.com/p/ or /reel/ URL and asked to download/"
-    "send/forward those photos, do not call browser_navigate, browser_act, "
-    "run_command, or web_search. Call `send_media`. The host fetches the public "
-    "embed sidecar stills and attaches them. A browser launch failure does not "
-    "block send_media.\n"
     "Do NOT call `generate_image` unless they asked to create, draw, render, or "
     "transform a NEW picture. Finding or downloading an existing photo is not "
     "image generation.\n"
@@ -108,6 +104,10 @@ def is_chat_media_delivery(text: str) -> bool:
     blob = str(text or "").strip()
     if not blob or not _DELIVERY_RE.search(blob):
         return False
+    # A concrete source URL can require page inspection or direct file delivery.
+    # Keep the normal browser, search, and media tools available for that choice.
+    if _EXPLICIT_URL_RE.search(blob):
+        return False
     if is_image_generation_request(blob) and not re.search(
         r"\b(?:download|find|fetch|busca(?:r)?|descarga(?:r)?|baja(?:me|nos)?)\b",
         blob,
@@ -119,18 +119,6 @@ def is_chat_media_delivery(text: str) -> bool:
     return True
 
 
-def is_instagram_photo_send(text: str) -> bool:
-    """True when the user named an IG post/reel and asked to send its photos."""
-    from core.instagram import instagram_shortcodes
-
-    blob = str(text or "").strip()
-    if not blob or not instagram_shortcodes(blob):
-        return False
-    if is_image_generation_request(blob) and not is_chat_media_delivery(blob):
-        return False
-    return is_chat_media_delivery(blob)
-
-
 def exclusive_tools_for_turn(
     text: str, channel: str = ""
 ) -> Optional[FrozenSet[str]]:
@@ -140,9 +128,6 @@ def exclusive_tools_for_turn(
         return None
     if is_write_and_run_request(blob):
         return None
-    if is_instagram_photo_send(blob):
-        # Host fetches the public embed sidecar. Browser/curl cannot "see" it.
-        return frozenset({"send_media"})
     generation = is_image_generation_request(blob)
     delivery = is_chat_media_delivery(blob)
     if generation and not delivery:

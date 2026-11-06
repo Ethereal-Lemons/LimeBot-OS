@@ -43,6 +43,8 @@ interface Instance {
     last_active: number;
     origin: string;
     model: string;
+    profile_id?: string;
+    profile_name?: string;
     total_tokens: TokenUsage;
     injected_files: string[];
     history_file: string;
@@ -60,7 +62,6 @@ export function InstancesList({ currentSessionId }: { currentSessionId?: string 
     const [batchDeleting, setBatchDeleting] = useState(false);
 
     const fetchInstances = () => {
-        setLoading(true);
         axios.get(`${API_BASE_URL}/api/instances`)
             .then(res => {
                 setInstances(res.data as Instance[]);
@@ -110,6 +111,8 @@ export function InstancesList({ currentSessionId }: { currentSessionId?: string 
                 inst.id.toLowerCase().includes(query) ||
                 inst.origin.toLowerCase().includes(query) ||
                 inst.model.toLowerCase().includes(query) ||
+                (inst.profile_name && inst.profile_name.toLowerCase().includes(query)) ||
+                (inst.profile_id && inst.profile_id.toLowerCase().includes(query)) ||
                 (inst.skills && inst.skills.some(s => s.toLowerCase().includes(query)))
             );
         })
@@ -174,7 +177,9 @@ export function InstancesList({ currentSessionId }: { currentSessionId?: string 
                                     onChange={(e) => setSearchQuery(e.target.value)}
                                 />
                             </div>
-                            <Select value={sortOrder} onValueChange={(v: any) => setSortOrder(v)}>
+                            <Select value={sortOrder} onValueChange={(value) => {
+                                if (value === "recent" || value === "oldest") setSortOrder(value);
+                            }}>
                                 <SelectTrigger className="w-full md:w-[180px]">
                                     <SelectValue placeholder="Sort by" />
                                 </SelectTrigger>
@@ -399,6 +404,11 @@ function InstanceCard({
                     <div className="flex items-center gap-2 text-muted-foreground text-xs">
                         <Activity className="h-3 w-3" />
                         Context: <span className="text-foreground font-medium uppercase">{instance.origin || "Unknown"}</span>
+                    </div>
+                    <div className="mt-1 flex items-center gap-2 text-xs">
+                        <Bot className="h-3 w-3 text-primary/70" />
+                        <span className="text-muted-foreground">Agent:</span>
+                        <span className="font-medium text-foreground">{instance.profile_name || instance.profile_id || "Default"}</span>
                     </div>
                 </div>
 

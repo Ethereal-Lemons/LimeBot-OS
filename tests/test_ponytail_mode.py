@@ -82,6 +82,18 @@ class TestPonytailPromptIntegration(unittest.IsolatedAsyncioTestCase):
 
 
 class TestPonytailWebMetadata(unittest.TestCase):
+    def test_extract_client_prompt_metadata_preserves_profile_selection(self):
+        self.assertEqual(
+            _extract_client_prompt_metadata({"metadata": {"profile_id": "Writer"}}),
+            {"profile_id": "writer"},
+        )
+
+    def test_extract_client_prompt_metadata_does_not_stringify_invalid_profile_ids(self):
+        self.assertEqual(
+            _extract_client_prompt_metadata({"metadata": {"profile_id": {"x": 1}}}),
+            {"profile_id": "__invalid_profile_id__"},
+        )
+
     def test_extract_client_prompt_metadata_accepts_only_valid_mode(self):
         extracted = _extract_client_prompt_metadata(
             {"metadata": {"ponytail_mode": "FULL", "prompt": "ignore"}}

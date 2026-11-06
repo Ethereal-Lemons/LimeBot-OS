@@ -165,9 +165,9 @@ class TestNoHttpSearchProviders(unittest.TestCase):
 
 class TestSSRFGuard(unittest.TestCase):
     def _guard(self):
-        from core.tools import Toolbox
+        from core.safe_http_fetch import SafeHttpFetcher
 
-        return Toolbox._is_safe_public_url
+        return SafeHttpFetcher.is_safe_public_url
 
     def test_rejects_loopback(self):
         ok, reason = self._guard()("http://127.0.0.1:8000/x")
@@ -294,16 +294,39 @@ class TestSendMediaRemote(unittest.IsolatedAsyncioTestCase):
 
 class TestHostSearch(unittest.IsolatedAsyncioTestCase):
     def _loop(self):
+        from core.browser_search_service import (
+            BrowserSearchService,
+            BrowserSearchToolAdapter,
+        )
         from core.loop import AgentLoop
 
         loop = AgentLoop.__new__(AgentLoop)
         loop.config = SimpleNamespace(skills=SimpleNamespace(enabled=["browser"]))
+        loop.toolbox = SimpleNamespace(send_progress=AsyncMock())
+        loop.browser_search_service = BrowserSearchService(
+            manager_provider=lambda session_key: self._get_browser_manager(
+                session_key, loop.config
+            ),
+            report_progress=loop.toolbox.send_progress,
+            attach_chat_image=AsyncMock(),
+        )
+        loop.browser_search_adapter = BrowserSearchToolAdapter(
+            loop.browser_search_service
+        )
         return loop
+
+    @staticmethod
+    async def _get_browser_manager(session_key, config):
+        from core.loop import get_browser_manager
+
+        return await get_browser_manager(session_key=session_key, config=config)
 
     def _html(self, name: str) -> str:
         return (Path("tests/fixtures/search") / name).read_text(encoding="utf-8")
 
     async def test_web_search_parses_fetched_html(self):
+        from core.browser_search_service import SearchRequest
+
         loop = self._loop()
         google_html = self._html("google_web.html")
         browser = SimpleNamespace(
@@ -313,8 +336,8 @@ class TestHostSearch(unittest.IsolatedAsyncioTestCase):
         with patch("core.browser.PLAYWRIGHT_AVAILABLE", True), patch(
             "core.loop.get_browser_manager", AsyncMock(return_value=browser)
         ):
-            response, error = await loop._gather_search(
-                "cats", 5, "web", "web_test"
+            response, error = await loop.browser_search_service._gather_search(
+                SearchRequest("cats", "web", 5), session_key="web_test"
             )
 
         self.assertEqual(error, "")
@@ -323,6 +346,8 @@ class TestHostSearch(unittest.IsolatedAsyncioTestCase):
         browser.fetch_page_html.assert_awaited()
 
     async def test_image_search_kind_returns_image_urls(self):
+        from core.browser_search_service import SearchRequest
+
         loop = self._loop()
         browser = SimpleNamespace(
             fetch_page_html=AsyncMock(return_value=self._html("bing_images.html")),
@@ -331,8 +356,9 @@ class TestHostSearch(unittest.IsolatedAsyncioTestCase):
         with patch("core.browser.PLAYWRIGHT_AVAILABLE", True), patch(
             "core.loop.get_browser_manager", AsyncMock(return_value=browser)
         ):
-            response, error = await loop._gather_search(
-                "rose of blackpink", 8, "images", "web_test"
+            response, error = await loop.browser_search_service._gather_search(
+                SearchRequest("rose of blackpink", "images", 8),
+                session_key="web_test",
             )
 
         self.assertEqual(error, "")
@@ -347,6 +373,8 @@ class TestHostSearch(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("open google.com", formatted.lower())
 
     async def test_empty_serp_retries_then_fails_without_google_instruction(self):
+        from core.browser_search_service import SearchRequest
+
         loop = self._loop()
         browser = SimpleNamespace(
             fetch_page_html=AsyncMock(return_value=self._html("google_empty.html")),
@@ -355,8 +383,9 @@ class TestHostSearch(unittest.IsolatedAsyncioTestCase):
         with patch("core.browser.PLAYWRIGHT_AVAILABLE", True), patch(
             "core.loop.get_browser_manager", AsyncMock(return_value=browser)
         ):
-            response, error = await loop._gather_search(
-                "official pricing", 5, "web", "web_test"
+            response, error = await loop.browser_search_service._gather_search(
+                SearchRequest("official pricing", "web", 5),
+                session_key="web_test",
             )
 
         self.assertIsNone(response)
@@ -365,12 +394,13 @@ class TestHostSearch(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(browser.fetch_page_html.await_count, 2)
 
     async def test_missing_playwright_uses_browser_install_hint(self):
+        from core.browser_search_service import SearchRequest
         from core.browser import BROWSER_INSTALL_HINT
 
         loop = self._loop()
         with patch("core.browser.PLAYWRIGHT_AVAILABLE", False):
-            response, error = await loop._gather_search(
-                "cats", 5, "web", "web_test"
+            response, error = await loop.browser_search_service._gather_search(
+                SearchRequest("cats", "web", 5), session_key="web_test"
             )
 
         self.assertIsNone(response)
@@ -379,16 +409,16 @@ class TestHostSearch(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("BRAVE_SEARCH", error)
         self.assertNotIn("SERPAPI", error)
 
-    async def test_execute_search_tool_missing_playwright_mentions_install(self):
+    async def test_search_adapter_missing_playwright_mentions_install(self):
         from core.browser import BROWSER_INSTALL_HINT
 
         loop = self._loop()
-        loop.toolbox = SimpleNamespace(send_progress=AsyncMock())
         with patch("core.browser.PLAYWRIGHT_AVAILABLE", False):
-            out = await loop._execute_search_tool(
+            out = await loop.browser_search_adapter.search_tool(
                 "web_search",
                 {"query": "rose of blackpink", "kind": "images"},
                 "web_test",
+                user_text="",
             )
 
         self.assertTrue(out.startswith("Error:"))

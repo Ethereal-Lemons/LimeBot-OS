@@ -273,7 +273,7 @@ def load_config(force_reload=False):
     from core.llm_utils import get_api_key_for_model
 
     config.llm = SimpleNamespace()
-    default_llm_model = "gemini/gemini-3.6-flash"
+    default_llm_model = "gemini/gemini-3.8-flash"
     config.llm.model = str(os.getenv("LLM_MODEL") or "").strip() or default_llm_model
     config.llm.embedding_model = (
         str(os.getenv("LLM_EMBEDDING_MODEL") or "").strip() or None

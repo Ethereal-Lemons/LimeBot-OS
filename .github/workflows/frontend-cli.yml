@@ -24,6 +24,9 @@ jobs:
       - name: Install core workspace dependencies
         run: npm ci --include-workspace-root --workspace web
 
+      - name: Audit production npm dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Test CLI dependency decisions
         run: npm run test:cli
 

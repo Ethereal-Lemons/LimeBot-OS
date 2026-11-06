@@ -1,0 +1,35 @@
+{
+  "id": "guarded-edit",
+  "prompt": "Update the synthetic note from old value to new value, then verify the file.",
+  "fixtures": [
+    { "path": "workspace/note.txt", "content": "old value\n" }
+  ],
+  "replay": [
+    {
+      "tool_calls": [
+        {
+          "name": "edit_file",
+          "arguments": {
+            "path": "workspace/note.txt",
+            "expected_sha256": "84966acc99b5038fd15f0c8d24495e65db292c887191588581353414049a9142",
+            "edits": [{ "old_text": "old value", "new_text": "new value" }]
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        { "name": "verify_files", "arguments": { "paths": ["workspace/note.txt"] } }
+      ]
+    },
+    { "content": "The note was updated and verified." }
+  ],
+  "approvals": ["edit_file"],
+  "expectations": {
+    "status": "completed",
+    "verification": "passed",
+    "required_tools": ["edit_file", "verify_files"],
+    "file_checks": [{ "id": "note_updated", "path": "workspace/note.txt", "equals": "new value\n" }],
+    "reply_checks": [{ "id": "verified_reply", "contains": "updated and verified" }]
+  }
+}

@@ -24,6 +24,7 @@ type TimeThemeSettings = {
 };
 
 const TIME_THEME_STORAGE_KEY = 'limebot-time-theme';
+const WALLPAPER_STORAGE_KEY = 'limebot-wallpaper';
 const DEFAULT_TIME_THEME_SETTINGS: TimeThemeSettings = {
     enabled: false,
     dayTheme: 'glacier',
@@ -31,6 +32,38 @@ const DEFAULT_TIME_THEME_SETTINGS: TimeThemeSettings = {
     dayStart: 7,
     nightStart: 19,
 };
+
+type WallpaperSettings = {
+    url: string;
+    overlay: number;
+    active: boolean;
+};
+
+const DEFAULT_WALLPAPER_SETTINGS: WallpaperSettings = {
+    url: '',
+    overlay: 60,
+    active: false,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function loadWallpaperSettings(): WallpaperSettings {
+    try {
+        const saved = localStorage.getItem(WALLPAPER_STORAGE_KEY);
+        if (!saved) return DEFAULT_WALLPAPER_SETTINGS;
+        const parsed: unknown = JSON.parse(saved);
+        if (!isRecord(parsed)) return DEFAULT_WALLPAPER_SETTINGS;
+        const url = typeof parsed.url === 'string' ? parsed.url : '';
+        const overlay = typeof parsed.overlay === 'number' && Number.isFinite(parsed.overlay)
+            ? Math.round(parsed.overlay * 100)
+            : DEFAULT_WALLPAPER_SETTINGS.overlay;
+        return { url, overlay, active: Boolean(url) };
+    } catch {
+        return DEFAULT_WALLPAPER_SETTINGS;
+    }
+}
 
 function loadTimeThemeSettings(): TimeThemeSettings {
     try {
@@ -92,23 +125,11 @@ export function AppearancePage({
     const [currentTheme, setCurrentTheme] = useState(() => localStorage.getItem('limebot-theme') || 'lime');
     const [timeTheme, setTimeTheme] = useState<TimeThemeSettings>(() => loadTimeThemeSettings());
     const [openSection, setOpenSection] = useState<string | null>(null);
-    const [wallpaperUrl, setWallpaperUrl] = useState('');
-    const [wallpaperOverlay, setWallpaperOverlay] = useState(60);
-    const [wallpaperActive, setWallpaperActive] = useState(false);
-
-    useEffect(() => {
-        try {
-            const saved = localStorage.getItem('limebot-wallpaper');
-            if (saved) {
-                const wp = JSON.parse(saved);
-                setWallpaperUrl(wp.url || '');
-                setWallpaperOverlay(Math.round((wp.overlay ?? 0.6) * 100));
-                setWallpaperActive(!!wp.url);
-            }
-        } catch {
-            // Ignore malformed local wallpaper state.
-        }
-    }, []);
+    const [wallpaperSettings, setWallpaperSettings] = useState(loadWallpaperSettings);
+    const { url: wallpaperUrl, overlay: wallpaperOverlay, active: wallpaperActive } = wallpaperSettings;
+    const setWallpaperUrl = (url: string) => setWallpaperSettings((current) => ({ ...current, url }));
+    const setWallpaperOverlay = (overlay: number) => setWallpaperSettings((current) => ({ ...current, overlay }));
+    const setWallpaperActive = (active: boolean) => setWallpaperSettings((current) => ({ ...current, active }));
 
     const hourOptions = Array.from({ length: 24 }, (_, hour) => ({
         value: String(hour),

@@ -183,7 +183,13 @@ class SessionManager:
         task: Optional[str] = None,
         subagent_name: Optional[str] = None,
     ):
+        from core.profile_context import get_current_profile_context
 
+        profile_context = get_current_profile_context()
+        profile_id = profile_context.profile_id if profile_context else "default"
+        profile_name = (
+            profile_context.profile.display_name if profile_context else "Default"
+        )
         current_time = time.time()
 
         if session_key not in self.sessions:
@@ -193,6 +199,8 @@ class SessionManager:
                 "last_active": current_time,
                 "origin": origin,
                 "model": model,
+                "profile_id": profile_id,
+                "profile_name": profile_name,
                 "total_tokens": {"input": 0, "output": 0, "total": 0},
                 "skills": self._get_skills(),
                 "injected_files": injected_files or [],
@@ -205,6 +213,8 @@ class SessionManager:
         session = self.sessions[session_key]
         session["last_active"] = current_time
         session["model"] = model
+        session["profile_id"] = profile_id
+        session["profile_name"] = profile_name
 
         if parent_id:
             session["parent_id"] = parent_id

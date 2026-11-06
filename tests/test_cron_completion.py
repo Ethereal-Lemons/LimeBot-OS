@@ -61,11 +61,18 @@ class TestCronCompletesAfterAgent(unittest.IsolatedAsyncioTestCase):
                 "id": "cron2",
                 "trigger": time.time(),
                 "payload": "hello",
-                "context": {"channel": "web", "chat_id": "c", "sender_id": "s"},
+                "context": {
+                    "channel": "web",
+                    "chat_id": "c",
+                    "sender_id": "s",
+                    "profile_id": "researcher",
+                },
             }
         )
         msg = bus.messages[0]
         self.assertIsInstance(msg, InboundMessage)
         self.assertTrue(msg.metadata["is_scheduler"])
         self.assertTrue(msg.metadata["unattended"])
+        self.assertEqual(msg.metadata["profile_id"], "researcher")
+        self.assertEqual(msg.session_key, "profile__researcher__web_c")
         self.assertEqual(scheduler.job_state["cron2"]["lastStatus"], "running")

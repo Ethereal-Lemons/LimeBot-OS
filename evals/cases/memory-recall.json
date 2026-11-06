@@ -1,0 +1,18 @@
+{
+  "id": "memory-recall",
+  "prompt": "Recall the synthetic preference stored in memory.",
+  "memory": "Synthetic preference: use metric units for recipe quantities.\n",
+  "replay": [
+    {
+      "tool_calls": [
+        { "name": "memory_search", "arguments": { "query": "metric units recipe" } }
+      ]
+    },
+    { "content": "The stored preference is to use metric units for recipe quantities." }
+  ],
+  "expectations": {
+    "status": "completed",
+    "required_tools": ["memory_search"],
+    "reply_checks": [{ "id": "memory_fact_recalled", "contains": "metric units" }]
+  }
+}

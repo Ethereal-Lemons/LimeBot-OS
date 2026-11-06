@@ -39,6 +39,43 @@ TOOL_RESULT_LIMITS: Dict[str, int] = {
 }
 DEFAULT_TOOL_RESULT_LIMIT = 2_000
 
+READ_ONLY_TOOL_NAMES = frozenset(
+    {
+        "read_file",
+        "list_dir",
+        "search_files",
+        "verify_files",
+        "diagnose_files",
+        "memory_search",
+        "web_search",
+        "browser_extract",
+        "inspect_skill",
+    }
+)
+TOOL_CACHEABLE_NAMES = frozenset(
+    {
+        "read_file",
+        "list_dir",
+        "search_files",
+        "verify_files",
+        "diagnose_files",
+        "memory_search",
+        "web_search",
+        "inspect_skill",
+    }
+)
+MUTATION_TOOL_NAMES = frozenset(
+    {
+        "edit_file",
+        "write_file",
+        "create_spreadsheet",
+        "delete_file",
+        "create_skill",
+        "edit_skill",
+        "apply_workspace_changeset",
+    }
+)
+
 
 def truncate_tool_result(text: Any, limit: int) -> str:
     """Keep both the setup and terminal diagnostic of oversized tool output."""
@@ -67,6 +104,18 @@ TAG_COMPAT_TOOLS = frozenset({
     "save_relationship",
     "save_user",
 })
+
+SEARCH_TOOL_NAMES = frozenset(
+    {
+        "web_search",
+        "image_search",
+        "google_search",
+        "deep_research",
+        "imagesearch",
+        "search_images",
+        "research",
+    }
+)
 
 TOOL_INTENT_RE = re.compile(
     r"\b("

@@ -10,45 +10,29 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
             raise unittest.SkipTest("Missing dependencies (loguru).")
 
     async def test_run_command_nonzero_exit_is_error(self):
-        from core.bus import MessageBus
-        from core.loop import AgentLoop
-
-        class _TestAgentLoop(AgentLoop):
-            async def _init_skills_and_tools(self) -> None:
-                self._tool_definitions = []
-                self._warmed = True
-
-        bus = MessageBus()
-        agent = _TestAgentLoop(bus=bus)
+        from core.tool_outcomes import is_tool_result_error
 
         self.assertTrue(
-            agent._is_tool_result_error(
+            is_tool_result_error(
                 "run_command", "download failed\n\nExit Code: 1"
             )
         )
         self.assertFalse(
-            agent._is_tool_result_error("run_command", "done\n\nExit Code: 0")
+            is_tool_result_error("run_command", "done\n\nExit Code: 0")
         )
 
     async def test_structured_outcome_preserves_failure_tail_and_classification(self):
-        from core.bus import MessageBus
-        from core.loop import AgentLoop
+        from core.tool_outcomes import build_tool_outcome
 
-        class _TestAgentLoop(AgentLoop):
-            async def _init_skills_and_tools(self) -> None:
-                self._tool_definitions = []
-                self._warmed = True
-
-        agent = _TestAgentLoop(bus=MessageBus())
         long_failure = "setup line\n" + ("noise\n" * 800) + "assertion failed\nExit Code: 17"
-        failure = agent._build_tool_outcome("run_command", long_failure)
+        failure = build_tool_outcome("run_command", long_failure)
         self.assertFalse(failure.success)
         self.assertEqual(failure.exit_code, 17)
         self.assertIn("setup line", failure.diagnostic_head)
         self.assertIn("Exit Code: 17", failure.diagnostic_tail)
         self.assertTrue(failure.failure_fingerprint)
 
-        timeout = agent._build_tool_outcome("run_command", "Error: [TIMEOUT] [STALL]")
+        timeout = build_tool_outcome("run_command", "Error: [TIMEOUT] [STALL]")
         self.assertTrue(timeout.timed_out)
         self.assertTrue(timeout.stalled)
 
@@ -109,7 +93,9 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
         agent = _TestAgentLoop(bus=MessageBus())
         agent.config.tool_recovery_max_attempts = 3
         agent.history["web_test"] = []
-        failure = agent._build_tool_outcome("run_command", "failed assertion\nExit Code: 1")
+        from core.tool_outcomes import build_tool_outcome
+
+        failure = build_tool_outcome("run_command", "failed assertion\nExit Code: 1")
         agent._last_tool_outcomes = [failure]
         attempts, blocked = await agent._queue_coding_recovery(
             "web_test", None, set(), 0
@@ -146,7 +132,9 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
         agent = _TestAgentLoop(bus=MessageBus())
         agent.config.tool_recovery_max_attempts = 2
         agent.history["web_test"] = []
-        failure = agent._build_tool_outcome(
+        from core.tool_outcomes import build_tool_outcome
+
+        failure = build_tool_outcome(
             "browser_navigate", "Error: certificate verification failed"
         )
         agent._last_tool_outcomes = [failure]
@@ -156,6 +144,31 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, 1)
         self.assertIsNone(blocked)
         self.assertIn("different safe route or diagnostic", agent.history["web_test"][-1]["content"])
+
+    async def test_recovery_coordinator_reports_when_it_queues_a_step(self):
+        from core.bus import MessageBus
+        from core.loop import AgentLoop
+        from core.tool_outcomes import build_tool_outcome
+
+        class _TestAgentLoop(AgentLoop):
+            async def _init_skills_and_tools(self) -> None:
+                self._tool_definitions = []
+                self._warmed = True
+
+        agent = _TestAgentLoop(bus=MessageBus())
+        agent.history["web_test"] = []
+        agent._last_tool_outcomes = []
+        skipped = await agent._coordinate_tool_recovery("web_test", None, set(), 0)
+        self.assertFalse(skipped.queued)
+        self.assertEqual(skipped.attempts, 0)
+
+        agent._last_tool_outcomes = [
+            build_tool_outcome("browser_navigate", "Error: certificate verification failed")
+        ]
+        queued = await agent._coordinate_tool_recovery("web_test", None, set(), 0)
+        self.assertTrue(queued.queued)
+        self.assertEqual(queued.attempts, 1)
+        self.assertIsNone(queued.blocked)
 
     async def test_repeated_failure_after_successful_edit_allows_repair(self):
         from core.bus import MessageBus
@@ -180,7 +193,9 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
                 "content": "failed assertion\nExit Code: 1",
             },
         ]
-        failure = agent._build_tool_outcome("run_command", "failed assertion\nExit Code: 1")
+        from core.tool_outcomes import build_tool_outcome
+
+        failure = build_tool_outcome("run_command", "failed assertion\nExit Code: 1")
         agent._last_tool_outcomes = [failure]
         attempts, blocked = await agent._queue_coding_recovery(
             "web_test", None, {failure.failure_fingerprint}, 1

@@ -217,6 +217,80 @@ class TestWorkspaceIsolation(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(fake_agent.workspace.root.exists())
 
+    async def test_apply_changeset_refuses_another_session_workspace(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+        from core.workspace_isolation import IsolatedWorkspace
+
+        source_file = self.source_root / "profile.txt"
+        source_file.write_text("research source\n", encoding="utf-8")
+        workspace = await IsolatedWorkspace.create(
+            self.source_root,
+            label="profile__research__web_chat_sub_123456",
+            owner_session_key="profile__research__web_chat",
+        )
+        try:
+            (workspace.root / "profile.txt").write_text(
+                "research edit\n", encoding="utf-8"
+            )
+            await workspace.capture()
+            workspace.retain()
+
+            toolbox = Toolbox(
+                allowed_paths=[str(self.source_root)],
+                bus=MessageBus(),
+                config=SimpleNamespace(skills=SimpleNamespace(enabled=[])),
+            )
+            result = await toolbox.apply_workspace_changeset(
+                workspace_id=workspace.workspace_id,
+                session_key="profile__writer__web_chat",
+            )
+
+            self.assertIn("belongs to another session", result)
+            self.assertEqual(source_file.read_text(encoding="utf-8"), "research source\n")
+        finally:
+            await workspace.cleanup()
+
+    async def test_nested_subagent_workspace_owner_is_an_exact_session_match(self):
+        from core.bus import MessageBus
+        from core.tools import Toolbox
+        from core.workspace_isolation import IsolatedWorkspace
+
+        source_file = self.source_root / "nested.txt"
+        source_file.write_text("original\n", encoding="utf-8")
+        session_key = "profile__writer__web_chat"
+        nested_owner = f"{session_key}_sub_abcdef"
+        workspace = await IsolatedWorkspace.create(
+            self.source_root,
+            label=f"{nested_owner}_sub_123456",
+            owner_session_key=nested_owner,
+        )
+        try:
+            (workspace.root / "nested.txt").write_text(
+                "nested edit\n", encoding="utf-8"
+            )
+            await workspace.capture()
+            workspace.retain()
+
+            toolbox = Toolbox(
+                allowed_paths=[str(self.source_root)],
+                bus=MessageBus(),
+                config=SimpleNamespace(skills=SimpleNamespace(enabled=[])),
+            )
+            by_id = await toolbox.apply_workspace_changeset(
+                workspace_id=workspace.workspace_id,
+                session_key=session_key,
+            )
+            without_id = await toolbox.apply_workspace_changeset(
+                session_key=session_key
+            )
+
+            self.assertIn("belongs to another session", by_id)
+            self.assertIn("No retained isolated workspace", without_id)
+            self.assertEqual(source_file.read_text(encoding="utf-8"), "original\n")
+        finally:
+            await workspace.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
