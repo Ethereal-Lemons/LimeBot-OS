@@ -22,8 +22,6 @@ class TestDefaultToolSelectionRegressions(unittest.TestCase):
             os.environ,
             {
                 "LIMEBOT_AI_HARNESS_MODE": "",
-                "LIMEBOT_ENABLE_TOOL_SHORTLIST": "",
-                "LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL": "",
             },
             clear=False,
         ):
@@ -42,12 +40,12 @@ class TestDefaultToolSelectionRegressions(unittest.TestCase):
         agent._log_tool_debug = lambda *args, **kwargs: None
         return agent
 
-    def test_shortlist_disabled_returns_the_complete_available_schema(self):
+    def test_forced_skill_keeps_the_complete_available_schema(self):
         from core.tool_defs import build_tool_definitions
 
         all_tools = build_tool_definitions(enabled_skills=["browser"])
         agent = self._make_agent(
-            SimpleNamespace(tool_shortlist_enabled=False),
+            SimpleNamespace(),
             all_tools,
         )
 
@@ -73,7 +71,6 @@ class TestDefaultToolSelectionRegressions(unittest.TestCase):
         selected = agent._get_tool_definitions_for_turn(prompt)
         names = self._tool_names(selected)
 
-        self.assertFalse(default_config.tool_shortlist_enabled)
         self.assertEqual(selected, all_tools)
         self.assertTrue(
             {"read_file", "write_file", "run_command", "send_media"} <= names
@@ -93,16 +90,19 @@ class TestDefaultToolSelectionRegressions(unittest.TestCase):
             all_tools,
         )
 
-    def test_default_config_suppresses_tools_for_casual_smalltalk(self):
+    def test_default_config_exposes_tools_for_casual_smalltalk(self):
         from core.tool_defs import build_tool_definitions
 
         default_config = self._load_default_harness_config()
         all_tools = build_tool_definitions(enabled_skills=["browser"])
         agent = self._make_agent(default_config, all_tools)
 
-        self.assertTrue(default_config.ai_harness.fast_disable_tools_for_casual)
-        self.assertFalse(agent._should_include_tools_for_turn("hola"))
-        self.assertFalse(agent._should_include_tools_for_turn("how are you?"))
+        self.assertTrue(agent._should_include_tools_for_turn("hola"))
+        self.assertTrue(agent._should_include_tools_for_turn("how are you?"))
+        self.assertEqual(
+            agent._get_tool_definitions_for_turn("hola"),
+            all_tools,
+        )
 
 
 if __name__ == "__main__":

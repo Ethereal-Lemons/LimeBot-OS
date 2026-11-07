@@ -103,7 +103,7 @@ class TestCapabilityRouting(unittest.TestCase):
             agent = object.__new__(AgentLoop)
             agent.skill_registry = registry
             agent._session_capability_state = {}
-            agent.config = SimpleNamespace(tool_shortlist_enabled=True)
+            agent.config = SimpleNamespace()
             agent._get_tool_definitions = lambda: build_tool_definitions(
                 enabled_skills=[]
             )
@@ -140,7 +140,7 @@ class TestCapabilityRouting(unittest.TestCase):
             agent = object.__new__(AgentLoop)
             agent.skill_registry = registry
             agent._session_capability_state = {}
-            agent.config = SimpleNamespace(tool_shortlist_enabled=True)
+            agent.config = SimpleNamespace()
             agent._get_tool_definitions = lambda: build_tool_definitions(
                 enabled_skills=[]
             )
@@ -204,20 +204,6 @@ class TestCapabilityRouting(unittest.TestCase):
         )
         self.assertTrue(str(raw).startswith("Error:"))
         self.assertIn("not available", str(raw))
-
-    def test_explicit_research_requests_require_initial_tool_call(self):
-        from core.loop import AgentLoop
-
-        tools = [{"function": {"name": "run_command"}}]
-
-        self.assertTrue(
-            AgentLoop._requires_initial_tool_call(
-                "Investigate the current Jira ticket", tools
-            )
-        )
-        self.assertFalse(
-            AgentLoop._requires_initial_tool_call("Explain what Jira is", tools)
-        )
 
     def test_web_diagnostic_endpoint_delegates_to_live_agent(self):
         from fastapi.testclient import TestClient

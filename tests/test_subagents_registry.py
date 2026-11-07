@@ -122,7 +122,7 @@ class TestSubagentsRegistry(unittest.TestCase):
         self.assertIn("auto", selector_values)
         self.assertIn("explorer", selector_values)
 
-    def test_prompt_additions_recommend_matching_builtin_subagent_for_turn(self):
+    def test_prompt_lists_subagents_without_intent_based_recommendation(self):
         from core.subagents import SubagentRegistry
 
         tmp = self._tempdir()
@@ -135,32 +135,9 @@ class TestSubagentsRegistry(unittest.TestCase):
             "Review my auth changes for bugs and missing tests."
         )
 
-        self.assertIn("`reviewer` is a strong match", additions)
-
-    def test_recommend_subagent_uses_description_overlap_for_custom_agents(self):
-        from core.subagents import SubagentRegistry
-
-        tmp = self._tempdir()
-        agents_dir = tmp / "agents"
-        agents_dir.mkdir(parents=True, exist_ok=True)
-        (agents_dir / "planner.md").write_text(
-            "---\n"
-            "name: planner\n"
-            "description: Break down implementation plans into steps, risks, and verification tasks.\n"
-            "---\n"
-            "Turn requests into practical execution plans.\n",
-            encoding="utf-8",
-        )
-
-        registry = SubagentRegistry(agent_dirs=[str(agents_dir)])
-        registry.discover_and_load()
-
-        recommendation = registry.recommend_subagent(
-            "Break this implementation into steps and risks before coding."
-        )
-
-        self.assertIsNotNone(recommendation)
-        self.assertEqual(recommendation[0], "planner")
+        self.assertIn("`reviewer`:", additions)
+        self.assertIn("`verifier`:", additions)
+        self.assertNotIn("strong match because", additions)
 
     def test_project_subagent_can_shadow_builtin(self):
         from core.subagents import SubagentRegistry

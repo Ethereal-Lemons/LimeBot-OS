@@ -7,18 +7,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
-from core.media_intent import exclusive_tools_for_turn
 from core.profile_context import get_current_profile_context
 from core.profiles import profile_allows_tool
 from core.redaction import redact_sensitive_text
-from core.tool_capability import (
-    filter_tools_for_image_attachments,
-)
-from core.tool_defs import shortlist_tool_definitions
 
 
 class CapabilityService:
-    """Own capability matching, tool selection, and inventory resolution."""
+    """Expose registered tools and resolve the redacted capability inventory."""
 
     def __init__(
         self,
@@ -27,8 +22,6 @@ class CapabilityService:
         get_subagent_registry: Callable[[], Any],
         get_session_state: Callable[[], Dict[str, Dict[str, Any]]],
         get_tool_definitions: Callable[[], List[Dict[str, Any]]],
-        get_turn_attachments: Callable[[str], List[Dict[str, Any]]],
-        tool_shortlist_enabled: Callable[[], bool],
         tool_definition_names: Callable[[List[Dict[str, Any]]], List[str]],
         log_tool_debug: Callable[..., None],
         get_capability_turn_context: Callable[[Optional[str], str], Dict[str, Any]],
@@ -38,26 +31,10 @@ class CapabilityService:
         self._get_subagent_registry = get_subagent_registry
         self._get_session_state = get_session_state
         self._get_tool_definitions = get_tool_definitions
-        self._get_turn_attachments = get_turn_attachments
-        self._tool_shortlist_enabled = tool_shortlist_enabled
         self._tool_definition_names = tool_definition_names
         self._log_tool_debug = log_tool_debug
         self._get_capability_turn_context = get_capability_turn_context
         self._get_tool_definitions_for_turn = get_tool_definitions_for_turn
-
-    @staticmethod
-    def is_capability_followup(text: str) -> bool:
-        lowered = re.sub(r"\s+", " ", str(text or "").strip().lower())
-        if not lowered:
-            return True
-        return bool(
-            re.search(
-                r"\b(?:yes|yeah|yep|ok|okay|sure|continue|go ahead|do it|that one|"
-                r"same|proceed|sí|si|claro|dale|esa|ese|esa misma|la tienes|"
-                r"adelante|hazlo|continúa|continua)\b",
-                lowered,
-            )
-        )
 
     def get_capability_turn_context(
         self, session_key: Optional[str], user_text: str
@@ -84,9 +61,7 @@ class CapabilityService:
         previous_message = str(
             prior.get("last_substantive_message") or ""
         ).strip()
-        preserve = bool(previous_names) and (
-            self.is_capability_followup(current) or not current_names
-        )
+        preserve = bool(previous_names) and not current_names
         routing_text = current
         if preserve and previous_message:
             routing_text = f"{current}\n{previous_message}".strip()
@@ -95,7 +70,7 @@ class CapabilityService:
             max_skills=3,
             sticky_skill_names=previous_names if preserve else None,
         )
-        substantive = bool(current) and not self.is_capability_followup(current)
+        substantive = bool(current) and bool(current_names)
         last_substantive = current if substantive else previous_message
         state = {
             "skill_names": selected_names,
@@ -225,33 +200,8 @@ class CapabilityService:
                 required_tool_names = list(dict.fromkeys(required_tool_names))
         else:
             required_tool_names = []
-        channel = ""
-        if ":" in str(session_key or ""):
-            channel = str(session_key).split(":", 1)[0]
-        if attachments is None and session_key:
-            attachments = self._get_turn_attachments(str(session_key))
-        exclusive = exclusive_tools_for_turn(user_text, channel=channel)
-        if exclusive is not None:
-            selected = [
-                tool
-                for tool in all_tools
-                if str(tool.get("function", {}).get("name") or "") in exclusive
-            ]
-            strategy = "intent_exclusive"
-        elif self._tool_shortlist_enabled():
-            selected = shortlist_tool_definitions(
-                all_tools,
-                user_text,
-                required_tool_names=required_tool_names,
-                channel=channel,
-                attachments=attachments,
-            )
-            strategy = "shortlist"
-        else:
-            selected = list(all_tools)
-            strategy = "full_schema_default"
-
-        selected = filter_tools_for_image_attachments(selected, user_text, attachments)
+        selected = list(all_tools)
+        strategy = "full_schema_model_routed"
         profile_context = get_current_profile_context()
         if profile_context is not None:
             selected = [

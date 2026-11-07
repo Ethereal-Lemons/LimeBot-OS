@@ -47,7 +47,7 @@ The heart of the system. Manages:
 - **Auto-RAG** — `core/turn_preparation_service.py` runs bounded semantic vector search (then Markdown grep fallback) concurrently with history loading and injects matching memories into the prompt automatically.
 - **Tool execution loop** — after each LLM response, if tool calls are returned, executes them in parallel and loops back to the LLM (up to 30 iterations). Sensitive tools require user confirmation.
 - **Durable task runs** — state-changing and coding requests receive a persistent task-run identity, acceptance criteria, checkpoints, continuation slices, and crash-resume metadata. A turn can return a progress update while the same task continues from its checkpoint.
-- **Operator invariants** (`core/operator_invariants.py`) — the loop, not the prompt, gates terminal success for durable / coding / file-mutating / isolated-subagent task runs. Casual small talk is exempt and the fast harness still strips tools on greetings.
+- **Operator invariants** (`core/operator_invariants.py`) — the loop, not the prompt, gates terminal success for durable / coding / file-mutating / isolated-subagent task runs. Every non-empty turn receives the profile- and channel-available tool catalog; the model chooses whether to call a tool.
   1. **VERIFY** — a mutating turn cannot go `completed` / Ready / IDLE claiming success until `verify_files` (or the tests/commands the task used as proof) ran on the files the turn changed. Missing proof refuses success: the loop injects a continuation that requires verify, or completes as `blocked` with the missing-proof named in outbound chat.
   2. **MERGE** — copy-isolated `spawn_agent` work that retained a changeset cannot succeed while that clone is unapplied. The parent must call `apply_workspace_changeset`; the live tree stays unchanged until apply. An unapplied leftover is a hard stop that names `workspace_id` in chat, not a leftover directory the user is expected to notice.
   3. **NO SILENT FAIL** — tool errors, rejections, policy denials, verify failures, refused merges, and blocked task-run terminals must appear in the user-visible outbound turn. Ready/IDLE with empty chat after a failure is a loop bug. Child sub-agent failures are copied into the parent `SUB-AGENT REPORT`.
@@ -125,7 +125,7 @@ are separate: mutable browser page state is not cached.
 
 ### `core/capability_service.py` — Capability routing and inventory
 
-Owns sticky per-session skill routing, turn-specific tool selection, compact
+Owns sticky per-session skill routing, full profile-filtered tool catalog exposure, compact
 capability prompt construction, and the redacted capability resolver used by
 chat and the dashboard API. It receives explicit callbacks for registries,
 tool definitions, session state, attachments, and debug events. `AgentLoop`
@@ -361,7 +361,7 @@ service; Markdown remains the source of truth if vector indexing is unavailable.
   generated-image previews, and per-turn duplicate suppression. `Toolbox`
   supplies path-policy and safe-fetch callbacks.
 - `core/capability_service.py` owns sticky per-session skill routing,
-  turn-specific tool selection, capability prompt assembly, and the redacted
+  full profile-filtered tool catalog exposure, capability prompt assembly, and the redacted
   capability inventory. `AgentLoop` preserves its existing public and prompt
   callbacks as compatibility wrappers.
 - `core/video/` owns the optional bounded video-analysis pipeline; `Toolbox`
@@ -392,12 +392,11 @@ for a local baseline/candidate comparison; see `evals/README.md`.
 Discovers, loads, and describes named subagent profiles from built-ins and writable project/user locations.
 
 - **Built-in specialists** — ships with named profiles such as `reviewer`, `verifier`, and `explorer`
-- **Turn-level recommendation** — `recommend_subagent(task)` matches the current request against built-in intent keywords first, then against token overlap in custom subagent descriptions
-- **Prompt injection** — `get_prompt_additions(current_message)` adds available subagents to the prompt and can call out the strongest match for the current turn
+- **Prompt injection** — `get_prompt_additions(current_message)` adds available subagents and their descriptions to the prompt; the model chooses whether a specialist fits the task
 - **Selection-aware routing** — if a global default specialist is selected, the prompt nudges the model to prefer that specialist unless the user asks otherwise
 - **Project shadowing** — project-defined subagents can override built-in ones with the same name
 
-This registry is what makes `spawn_agent` more than a generic worker launcher: the model now gets explicit guidance about when a specialist is a strong fit.
+This registry is what makes `spawn_agent` more than a generic worker launcher: the model can compare each specialist's description and tool access.
 
 ### `core/subagent_runner.py` — Subagent execution
 
@@ -924,7 +923,7 @@ npm link
 
 ## ⚡ Performance Notes
 
-- **Fast response path (default)** — `LIMEBOT_AI_HARNESS_MODE=fast` uses an 80ms Auto-RAG budget; `balanced` uses 200ms. Casual turns omit tools by default so greetings and small talk cannot trigger accidental actions; explicit actions, URLs, paths, and slash commands still expose tools. Request-specific schemas capped at 12 tools require the explicit `LIMEBOT_ENABLE_TOOL_SHORTLIST=true` opt-in. Set `LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL=false` to expose tools on every non-empty turn. These settings optimize LimeBot overhead, not provider generation speed.
+- **Fast response path (default)** — `LIMEBOT_AI_HARNESS_MODE=fast` uses an 80ms Auto-RAG budget; `balanced` uses 200ms. Every non-empty turn receives the tools available to its current profile and channel; the model chooses whether to call them. These settings optimize LimeBot overhead, not provider generation speed.
 - **First-output metrics** — every provider iteration records `provider_first_delta` and `turn_first_output_queued` with `initial`, `post_tool`, or `synthesis` iteration metadata; typing indicators are excluded.
 - **Rendered memory cache** — today's last five journal entries and the first 800 long-term-memory characters are cached by date, privacy scope, resolved path, nanosecond mtime, and size. Writes invalidate on the next prompt build; RAG results are never cached here.
 - **Stable prompt cache** — 30s TTL per `(sender_id, channel)` pair avoids rebuilding the full system prompt on every message

@@ -181,75 +181,18 @@ class TestHostRefuseBeforeExecute(unittest.IsolatedAsyncioTestCase):
 
 
 class TestImageAttachmentToolSurface(unittest.TestCase):
-    def test_image_attachment_turn_hides_see_image_tools(self):
-        from core.tool_capability import hidden_tools_for_image_attachments
-        from core.tool_defs import build_tool_definitions, shortlist_tool_definitions
-
-        attachments = [_image_attachment()]
-        hidden = hidden_tools_for_image_attachments(
-            "who is this in the photos", attachments
-        )
-        self.assertEqual(hidden, {"read_file", "browser_navigate"})
-
-        tools = build_tool_definitions(enabled_skills=[])
-        selected = shortlist_tool_definitions(
-            tools,
-            "who is this in the photos",
-            channel="discord",
-            attachments=attachments,
-        )
-        names = {tool["function"]["name"] for tool in selected}
-        self.assertNotIn("read_file", names)
-        self.assertNotIn("browser_navigate", names)
-
-    def test_image_attachment_plus_real_page_keeps_navigate(self):
-        from core.tool_capability import hidden_tools_for_image_attachments
-        from core.tool_defs import build_tool_definitions, shortlist_tool_definitions
-
-        attachments = [_image_attachment()]
-        hidden = hidden_tools_for_image_attachments(
-            "also open https://www.python.org/downloads/", attachments
-        )
-        self.assertNotIn("browser_navigate", hidden)
-
-        selected = shortlist_tool_definitions(
-            build_tool_definitions(enabled_skills=[]),
-            "also open https://www.python.org/downloads/",
-            channel="discord",
-            attachments=attachments,
-        )
-        names = {tool["function"]["name"] for tool in selected}
-        self.assertIn("browser_navigate", names)
-
-    def test_image_attachment_plus_text_file_keeps_read_file(self):
-        from core.tool_capability import hidden_tools_for_image_attachments
-        from core.tool_defs import build_tool_definitions, shortlist_tool_definitions
-
-        attachments = [_image_attachment()]
-        hidden = hidden_tools_for_image_attachments(
-            "read README.md after you look at the photos", attachments
-        )
-        self.assertNotIn("read_file", hidden)
-
-        selected = shortlist_tool_definitions(
-            build_tool_definitions(enabled_skills=[]),
-            "read README.md after you look at the photos",
-            channel="discord",
-            attachments=attachments,
-        )
-        names = {tool["function"]["name"] for tool in selected}
-        self.assertIn("read_file", names)
-
-    def test_full_schema_path_still_hides_see_image_tools(self):
+    def test_image_attachment_does_not_filter_model_tool_choices(self):
         from core.loop import AgentLoop
         from core.tool_defs import build_tool_definitions
 
+        all_tools = build_tool_definitions(enabled_skills=[])
         agent = object.__new__(AgentLoop)
-        agent.config = SimpleNamespace(tool_shortlist_enabled=False)
+        agent.config = SimpleNamespace()
         agent.skill_registry = None
+        agent.subagent_registry = None
         agent._session_capability_state = {}
         agent._turn_attachments = {}
-        agent._get_tool_definitions = lambda: build_tool_definitions(enabled_skills=[])
+        agent._get_tool_definitions = lambda: all_tools
         agent._log_tool_debug = lambda *args, **kwargs: None
 
         selected = agent._get_tool_definitions_for_turn(
@@ -257,35 +200,21 @@ class TestImageAttachmentToolSurface(unittest.TestCase):
             session_key="discord:jennie",
             attachments=[_image_attachment()],
         )
-        names = {tool["function"]["name"] for tool in selected}
-        self.assertNotIn("read_file", names)
-        self.assertNotIn("browser_navigate", names)
-        self.assertIn("web_search", names)
+        self.assertEqual(selected, all_tools)
 
-    def test_image_only_url_is_not_a_named_page(self):
-        from core.tool_defs import user_named_a_page
+    def test_host_preflight_still_rejects_image_bytes_and_image_navigation(self):
+        from core.tool_capability import refuse_illegal_tool_call
 
-        self.assertFalse(user_named_a_page(JENNIE_CDN))
-        self.assertFalse(
-            user_named_a_page("look at these\n" + JENNIE_CDN)
+        self.assertIn(
+            "read_file cannot dump image bytes",
+            refuse_illegal_tool_call("read_file", {"path": JENNIE_PATH}) or "",
         )
-        self.assertTrue(
-            user_named_a_page("open https://www.python.org/downloads/")
-        )
-
-    def test_image_only_url_does_not_require_initial_tool_call(self):
-        from core.loop import AgentLoop
-
-        tools = [{"function": {"name": "browser_navigate"}}]
-        self.assertFalse(
-            AgentLoop._requires_initial_tool_call(
-                f"look at {JENNIE_CDN}", tools
+        self.assertIn(
+            "browser_navigate cannot open image URLs",
+            refuse_illegal_tool_call(
+                "browser_navigate", {"url": JENNIE_CDN}
             )
-        )
-        self.assertTrue(
-            AgentLoop._requires_initial_tool_call(
-                "Analice https://example.com y haga un resumen", tools
-            )
+            or "",
         )
 
 

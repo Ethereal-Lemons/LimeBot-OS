@@ -577,14 +577,9 @@ LLM_PROXY_URL=http://localhost:8080/v1 # Optional: Route all traffic through a g
 ```
 
 LimeBot defaults to the `fast` AI harness: Auto-RAG gets an 80ms request
-budget, and casual turns such as greetings do not receive tools. Explicit
-actions, URLs, paths, and slash commands still do. Set
+budget. Every non-empty turn receives the tools available to its current
+profile and channel, and the model chooses whether to call them. Set
 `LIMEBOT_AI_HARNESS_MODE=balanced` to use a 200ms Auto-RAG budget instead.
-Request-specific tool shortlisting remains opt-in through
-`LIMEBOT_ENABLE_TOOL_SHORTLIST=true`. Set
-`LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL=false` only when tools are needed on
-every non-empty turn. These settings reduce LimeBot-side preparation and
-prevent accidental actions; they do not change provider generation speed.
 
 > [!TIP]
 > **No manual editing required!** You can modify all environment settings live from the **Config** tab in the web dashboard. Your changes will automatically overwrite the `.env` file and trigger a clean backend restart.

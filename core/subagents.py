@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
@@ -166,14 +166,6 @@ def normalize_subagent_tool_name(name: str) -> str:
 def slugify_subagent_filename(name: str) -> str:
     text = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(name or "").strip()).strip("-_")
     return (text or "subagent").lower()
-
-
-def _tokenize_for_match(text: str) -> Set[str]:
-    return {
-        token
-        for token in re.findall(r"[a-z0-9_+-]+", str(text or "").lower())
-        if len(token) >= 3
-    }
 
 
 class SubagentRegistry:
@@ -443,110 +435,8 @@ class SubagentRegistry:
             for name, agent in sorted(self.subagents.items())
         }
 
-    def recommend_subagent(self, task: str) -> Optional[Tuple[str, str]]:
-        text = str(task or "").strip().lower()
-        if not text:
-            return None
-
-        builtin_keyword_matches = [
-            (
-                "reviewer",
-                (
-                    "review",
-                    "rate this code",
-                    "rate the code",
-                    "audit",
-                    "find bugs",
-                    "regression",
-                    "missing tests",
-                    "code review",
-                ),
-                "the request sounds like a review focused on bugs, regressions, or test gaps",
-            ),
-            (
-                "verifier",
-                (
-                    "verify",
-                    "does this work",
-                    "is this working",
-                    "test this",
-                    "run tests",
-                    "validate",
-                    "check if",
-                    "confirm",
-                ),
-                "the request is asking for proof, validation, or testing",
-            ),
-            (
-                "explorer",
-                (
-                    "find where",
-                    "search the codebase",
-                    "trace",
-                    "investigate",
-                    "understand how",
-                    "figure out where",
-                    "locate",
-                    "entry point",
-                ),
-                "the request sounds like codebase investigation before editing",
-            ),
-            (
-                "researcher",
-                (
-                    "research",
-                    "look up online",
-                    "search the web",
-                    "find sources",
-                    "what's the latest",
-                    "latest news",
-                    "compare online",
-                    "cite sources",
-                ),
-                "the request needs live internet research across multiple sources",
-            ),
-        ]
-        for name, keywords, reason in builtin_keyword_matches:
-            if name in self.subagents and any(keyword in text for keyword in keywords):
-                return name, reason
-
-        task_tokens = _tokenize_for_match(text)
-        best_name = None
-        best_reason = ""
-        best_score = 0.0
-
-        for name, agent in self.subagents.items():
-            description = (agent.get("description") or "").strip()
-            if not description:
-                continue
-            description_tokens = _tokenize_for_match(description)
-            if not description_tokens:
-                continue
-
-            overlap = task_tokens & description_tokens
-            if not overlap:
-                continue
-
-            score = len(overlap) / max(3, min(len(description_tokens), 12))
-            if score > best_score and (len(overlap) >= 2 or score >= 0.5):
-                best_name = name
-                best_score = score
-                sample = ", ".join(sorted(list(overlap))[:4])
-                best_reason = f"its description overlaps this task ({sample})"
-
-        if best_name:
-            return best_name, best_reason
-        return None
-
     def get_prompt_additions(self, current_message: str = "") -> str:
         if not self.subagents:
-            return ""
-
-        from core.media_intent import is_chat_media_delivery, is_image_generation_request
-
-        if is_chat_media_delivery(current_message) and not is_image_generation_request(
-            current_message
-        ):
             return ""
 
         lines = [
@@ -559,11 +449,6 @@ class SubagentRegistry:
         if selected != "auto":
             lines.append(
                 f"The current global assistant mode is `{selected}`. Prefer routing new work through that specialist unless the user asks otherwise."
-            )
-        recommendation = self.recommend_subagent(current_message)
-        if recommendation:
-            lines.append(
-                f"For this turn, `{recommendation[0]}` is a strong match because {recommendation[1]}."
             )
         lines.append(
             "When one of these fits well, pass its name in the optional `agent` field instead of doing the whole task yourself:\n"

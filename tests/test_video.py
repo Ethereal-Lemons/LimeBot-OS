@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from PIL import Image
 
-from core.tool_defs import build_tool_definitions, shortlist_tool_definitions
+from core.tool_defs import build_tool_definitions
 from core.video.captions import Segment, choose_caption, parse_vtt, render_transcript
 from core.video.contact_sheets import create_contact_sheets
 from core.video.frames import (
@@ -264,7 +264,7 @@ async def test_caption_download_cannot_be_bypassed_by_no_proxy(tmp_path):
     await target.wait_closed()
 
 
-def test_shortlist_makes_video_tool_mandatory():
+def test_video_tool_is_available_in_full_catalog():
     definitions = build_tool_definitions({})
     video_schema = next(tool["function"] for tool in definitions if tool["function"]["name"] == "analyze_video")
     properties = video_schema["parameters"]["properties"]
@@ -272,7 +272,7 @@ def test_shortlist_makes_video_tool_mandatory():
     assert properties["detail"]["enum"] == ["transcript", "efficient", "balanced"]
     assert properties["resolution"]["enum"] == [512, 1024]
     assert properties["max_frames"]["maximum"] == 100
-    names = {tool["function"]["name"] for tool in shortlist_tool_definitions(definitions, "watch this YouTube video https://youtu.be/example")}
+    names = {tool["function"]["name"] for tool in definitions}
     assert "analyze_video" in names
 
 

@@ -116,8 +116,6 @@ class TestConfigLoading(unittest.TestCase):
                 "LIMEBOT_AI_HARNESS_MODE": "",
                 "LIMEBOT_FAST_RAG_TIMEOUT": "",
                 "LIMEBOT_BALANCED_RAG_TIMEOUT": "",
-                "LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL": "",
-                "LIMEBOT_ENABLE_TOOL_SHORTLIST": "",
             }
         )
 
@@ -125,8 +123,6 @@ class TestConfigLoading(unittest.TestCase):
         self.assertAlmostEqual(loaded.ai_harness.fast_rag_timeout_s, 0.08)
         self.assertAlmostEqual(loaded.ai_harness.balanced_rag_timeout_s, 0.2)
         self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.08)
-        self.assertTrue(loaded.ai_harness.fast_disable_tools_for_casual)
-        self.assertFalse(loaded.tool_shortlist_enabled)
 
     def test_tool_recovery_attempts_are_bounded_and_configurable(self):
         loaded = self._load_config_with_env(
@@ -156,7 +152,6 @@ class TestConfigLoading(unittest.TestCase):
                 "LIMEBOT_AI_HARNESS_MODE": "fast",
                 "LIMEBOT_FAST_RAG_TIMEOUT": "0.05",
                 "LIMEBOT_BALANCED_RAG_TIMEOUT": "0.25",
-                "LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL": "false",
             }
         )
 
@@ -164,7 +159,6 @@ class TestConfigLoading(unittest.TestCase):
         self.assertAlmostEqual(loaded.ai_harness.fast_rag_timeout_s, 0.05)
         self.assertAlmostEqual(loaded.ai_harness.balanced_rag_timeout_s, 0.25)
         self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.05)
-        self.assertFalse(loaded.ai_harness.fast_disable_tools_for_casual)
 
     def test_ai_harness_invalid_mode_and_timeout_fall_back_to_defaults(self):
         loaded = self._load_config_with_env(
@@ -172,8 +166,6 @@ class TestConfigLoading(unittest.TestCase):
                 "LIMEBOT_AI_HARNESS_MODE": "warp-speed",
                 "LIMEBOT_FAST_RAG_TIMEOUT": "nope",
                 "LIMEBOT_BALANCED_RAG_TIMEOUT": "still-nope",
-                "LIMEBOT_FAST_DISABLE_TOOLS_FOR_CASUAL": "maybe",
-                "LIMEBOT_ENABLE_TOOL_SHORTLIST": "maybe",
             }
         )
 
@@ -181,31 +173,16 @@ class TestConfigLoading(unittest.TestCase):
         self.assertAlmostEqual(loaded.ai_harness.fast_rag_timeout_s, 0.08)
         self.assertAlmostEqual(loaded.ai_harness.balanced_rag_timeout_s, 0.2)
         self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.08)
-        self.assertTrue(loaded.ai_harness.fast_disable_tools_for_casual)
-        self.assertFalse(loaded.tool_shortlist_enabled)
-
-    def test_tool_shortlist_is_explicit_opt_in_in_fast_mode(self):
-        loaded = self._load_config_with_env(
-            {
-                "LIMEBOT_AI_HARNESS_MODE": "fast",
-                "LIMEBOT_ENABLE_TOOL_SHORTLIST": "true",
-            }
-        )
-
-        self.assertEqual(loaded.ai_harness.mode, "fast")
-        self.assertTrue(loaded.tool_shortlist_enabled)
 
     def test_ai_harness_explicit_balanced_mode_preserves_full_schema(self):
         loaded = self._load_config_with_env(
             {
                 "LIMEBOT_AI_HARNESS_MODE": "balanced",
-                "LIMEBOT_ENABLE_TOOL_SHORTLIST": "",
             }
         )
 
         self.assertEqual(loaded.ai_harness.mode, "balanced")
         self.assertAlmostEqual(loaded.ai_harness.rag_timeout_s, 0.2)
-        self.assertFalse(loaded.tool_shortlist_enabled)
 
     def test_approval_policy_defaults_to_manual(self):
         loaded = self._load_config_with_env(

@@ -13,7 +13,6 @@ from typing import Optional, Any
 
 from loguru import logger
 
-from core.media_intent import MEDIA_DELIVERY_RULES
 from core.paths import (
     USERS_DIR,
     MEMORY_DIR,
@@ -931,14 +930,13 @@ def build_stable_system_prompt(
 
     base_prompt += (
         "\n--- TOOL USAGE RULES ---\n"
-        f"{MEDIA_DELIVERY_RULES}"
         "Use the tool-calling API — NEVER by writing JSON blocks, describing commands, "
         "or narrating actions in your message text.\n"
         "XML tags are only for the supported side-effect tags like <save_soul>, <save_identity>, <save_user>, <save_mood>, <save_relationship>, <log_memory>, <save_memory>, <discord_send>, and <discord_embed>. "
         "Do NOT invent XML tags for normal tools such as <read_file>, <list_dir>, or <run_command>.\n"
         "CRITICAL: Do NOT use write_file or delete_file to create, modify, or delete user profiles, memory files (SOUL.md, IDENTITY.md, MOOD.md, RELATIONSHIPS.md, MEMORY.md), or daily journals. For an explicit memory request, use the native `memory_save` tool; legacy persona updates use the specified XML tags (e.g., <save_user>, <save_soul>, <save_identity>, <save_mood>, <save_relationship>, <save_memory>, or <log_memory>). Direct tool writes to the 'persona/' directory are blocked.\n"
         "If you need to edit an existing text or code file, first CALL read_file with include_hash=true, then CALL edit_file with exact old_text/new_text anchors and expected_sha256. Use write_file only to create a new file or intentionally replace an entire file. After edit_file, CALL verify_files before claiming completion.\n"
-        "For arithmetic, CALL calculate. For Excel/XLSX, CALL create_spreadsheet, then CALL send_media with the same path on Discord/WhatsApp. Web chat photos use web_search(kind=\"images\") and the host attaches them.\n"
+        "For arithmetic, CALL calculate. For Excel/XLSX, CALL create_spreadsheet, then CALL send_media with the same path on Discord/WhatsApp. Choose tools by matching their descriptions to the requested outcome.\n"
         "When the user provides a URL or asks to open, visit, or go to a page, call "
         "browser_navigate then browser_act/browser_extract. You can open pages. "
         "Search is host-owned lookup: call web_search for queries, not for a named URL. "
@@ -959,7 +957,7 @@ def build_stable_system_prompt(
         "After a news search, browser_navigate a world-desk article URL and quote the "
         "first sentence with browser_extract; do not paraphrase the lede.\n"
         "IMAGE GENERATION: Call generate_image only to create or transform a NEW picture. "
-        "Downloading or sending an existing photo is MEDIA DELIVERY above, not generation. "
+        "For an existing photo, use web_search with kind='images' or send_media as appropriate. "
         "If the current message already has images, set use_attached_images=true, "
         "including named public figures — do not replace them with an anonymous lookalike.\n"
         "Skill manuals are injected only when they are relevant to the current user request. "

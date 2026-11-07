@@ -8,7 +8,6 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from loguru import logger
 
 from core import prompt as prompt_module
-from core.media_intent import is_chat_media_delivery, is_image_generation_request
 from core.prompt_modes import build_ponytail_prompt_addition
 from core.paths import IDENTITY_FILE, SOUL_FILE, PersonaPaths
 from core.profile_context import get_current_persona_paths, get_current_profile_id
@@ -145,36 +144,26 @@ class PromptCoordinator:
             session_key, current_message
         )
         routing_text = capability_context.get("routing_text") or current_message
-        media_delivery_turn = is_chat_media_delivery(
-            routing_text
-        ) and not is_image_generation_request(routing_text)
 
         if forced_skill_name:
             skills_docs = self.skill_registry.get_forced_prompt_addition(
                 forced_skill_name
             )
-        elif media_delivery_turn:
-            # Host-owned image search is the whole job; skill manuals compete.
-            skills_docs = ""
         else:
             skills_docs = self.skill_registry.get_relevant_prompt_additions(
                 routing_text
             )
 
-        if media_delivery_turn:
-            capability_docs = ""
-            subagent_docs = ""
-        else:
-            capability_docs = (
-                self._capability_catalog_prompt()
-                if prompt_module.is_setup_complete(
-                    persona_paths=self._persona_paths()
-                )
-                else ""
+        capability_docs = (
+            self._capability_catalog_prompt()
+            if prompt_module.is_setup_complete(
+                persona_paths=self._persona_paths()
             )
-            subagent_docs = self.subagent_registry.get_prompt_additions(
-                current_message
-            )
+            else ""
+        )
+        subagent_docs = self.subagent_registry.get_prompt_additions(
+            current_message
+        )
 
         ponytail_docs = build_ponytail_prompt_addition(ponytail_mode)
         include_private_memory = prompt_module.should_load_private_context(

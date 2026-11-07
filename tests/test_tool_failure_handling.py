@@ -401,7 +401,7 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertTrue(replies, "Expected a user-visible fallback reply.")
         self.assertIn("failed", replies[-1].content.lower())
-        self.assertIn("required", agent.tool_choices)
+        self.assertEqual(agent.tool_choices[0], "auto")
 
     async def test_text_followup_after_tool_failure_is_not_rendered_as_error(self):
         from core.bus import MessageBus

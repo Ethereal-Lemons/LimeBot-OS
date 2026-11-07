@@ -8,7 +8,6 @@ from typing import Any, Literal, Optional, Union
 
 from loguru import logger
 
-from core.media_intent import is_chat_media_delivery, is_image_generation_request
 from core.redaction import redact_sensitive_text
 
 SearchKind = Literal["web", "news", "images"]
@@ -19,6 +18,7 @@ class SearchRequest:
     query: str
     kind: SearchKind
     count: int
+    attach_to_chat: bool = False
 
 
 @dataclass(frozen=True)
@@ -288,7 +288,9 @@ class BrowserSearchService:
                 "live lookup was empty. Do not open a search engine in the browser."
             )
 
-        await self._maybe_attach_search_image(response, request.query, user_text)
+        await self._maybe_attach_search_image(
+            response, request.query, attach_to_chat=request.attach_to_chat
+        )
         return format_search_response(response)
 
     async def _gather_search(
@@ -336,15 +338,16 @@ class BrowserSearchService:
         return None, last_error
 
     async def _maybe_attach_search_image(
-        self, response: Any, query: str, user_text: str
+        self,
+        response: Any,
+        query: str,
+        *,
+        attach_to_chat: bool,
     ) -> None:
-        if getattr(response, "kind", "") != "images" or not getattr(
-            response, "images", None
-        ):
-            return
-        intent_text = str(user_text or query or "")
-        if not is_chat_media_delivery(intent_text) or is_image_generation_request(
-            intent_text
+        if (
+            not attach_to_chat
+            or getattr(response, "kind", "") != "images"
+            or not getattr(response, "images", None)
         ):
             return
 
@@ -405,9 +408,17 @@ class BrowserSearchToolAdapter:
             count = max(1, min(int(args.get("count") or DEFAULT_COUNT), MAX_COUNT))
         except (TypeError, ValueError):
             count = DEFAULT_COUNT
+        attach_to_chat = args.get("attach_to_chat")
+        if not isinstance(attach_to_chat, bool):
+            attach_to_chat = kind == "images"
 
         return await self._service.execute_search(
-            SearchRequest(query=query, kind=kind, count=count),
+            SearchRequest(
+                query=query,
+                kind=kind,
+                count=count,
+                attach_to_chat=attach_to_chat,
+            ),
             session_key=session_key,
             user_text=user_text,
         )

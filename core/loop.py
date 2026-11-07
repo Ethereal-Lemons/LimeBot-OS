@@ -168,9 +168,6 @@ from core.session_manager import SessionManager
 from core.skills import SkillRegistry
 from core.subagents import SubagentRegistry, normalize_subagent_tool_name
 from core.tag_parser import process_tags
-from core.tool_capability import (
-    strip_image_urls,
-)
 from core.tools import Toolbox
 from core.vectors import get_profile_vector_service, get_vector_service
 
@@ -253,39 +250,6 @@ _CASUAL_WORDS = frozenset(
     }
 )
 
-_FAST_TOOL_ACTION_VERBS = frozenset(
-    {
-        "list",
-        "read",
-        "open",
-        "search",
-        "browse",
-        "send",
-        "schedule",
-        "remind",
-        "create",
-        "write",
-        "delete",
-        "run",
-        "install",
-        "show",
-        "find",
-        "inspect",
-        # Short Spanish follow-ups are action requests too.  Without these,
-        # fast mode mistakes commands such as "hazlo" for casual smalltalk and
-        # removes the tools needed to continue the previous task.
-        "haz",
-        "hazlo",
-        "hazla",
-        "hazme",
-        "continua",
-        "corrige",
-        "arregla",
-        "edita",
-        "revisa",
-    }
-)
-
 _CASUAL_PHRASE_PREFIXES = (
     "how are you",
     "how's it going",
@@ -298,14 +262,6 @@ _CASUAL_PHRASE_PREFIXES = (
     "thank you",
     "thanks",
 )
-
-_EXPLICIT_TOOL_REQUEST_RE = re.compile(
-    r"\b(?:browse|open|visit|navigate|search|research|investigate|download|export|"
-    r"abrir|abre|visitar|navegar|buscar|busca|investigar|investiga|investigue|"
-    r"descargar|descarga|exportar|exporta|utilizar|utiliza|utilice|probar|prueba)\b",
-    re.IGNORECASE,
-)
-
 
 # Backward-compat aliases for code that still uses the underscore-prefixed names
 _TOOL_RESULT_LIMITS = TOOL_RESULT_LIMITS
@@ -756,10 +712,6 @@ class AgentLoop:
                     self, "_session_capability_state", {}
                 ),
                 get_tool_definitions=lambda: self._get_tool_definitions(),
-                get_turn_attachments=lambda session_key: list(
-                    getattr(self, "_turn_attachments", {}).get(session_key) or []
-                ),
-                tool_shortlist_enabled=lambda: self._tool_shortlist_enabled(),
                 tool_definition_names=lambda tools: self._tool_definition_names(tools),
                 log_tool_debug=lambda *args, **kwargs: self._log_tool_debug(
                     *args, **kwargs
@@ -773,10 +725,6 @@ class AgentLoop:
             )
             self.capability_service = service
         return service
-
-    @staticmethod
-    def _is_capability_followup(text: str) -> bool:
-        return CapabilityService.is_capability_followup(text)
 
     def _get_capability_turn_context(
         self, session_key: Optional[str], user_text: str
@@ -2007,33 +1955,6 @@ class AgentLoop:
     def _tool_debug_enabled(self) -> bool:
         return self._env_truthy("LIMEBOT_TOOL_DEBUG")
 
-    def _tool_shortlist_enabled(self) -> bool:
-        return bool(
-            getattr(getattr(self, "config", None), "tool_shortlist_enabled", False)
-        )
-
-    def _is_fast_ai_harness_enabled(self) -> bool:
-        ai_harness = getattr(getattr(self, "config", None), "ai_harness", None)
-        return getattr(ai_harness, "mode", "fast") == "fast"
-
-    @staticmethod
-    def _looks_like_action_or_path_request(content: str) -> bool:
-        raw = str(content or "").strip()
-        if not raw:
-            return False
-        lowered = raw.lower()
-        first_token = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", lowered.split()[0])
-        if first_token in _FAST_TOOL_ACTION_VERBS:
-            return True
-        if lowered.startswith(("/", "@")):
-            return True
-        inspectable = strip_image_urls(raw)
-        if re.search(r"https?://|www\.", inspectable, re.IGNORECASE):
-            return True
-        if re.search(r"(?:[A-Za-z]:\\|(?:\./|\.\./|/|\\))", inspectable):
-            return True
-        return bool(re.search(r"\b[\w.-]+\.[A-Za-z0-9]{1,8}\b", inspectable))
-
     @staticmethod
     def _is_fast_casual_turn(content: str) -> bool:
         raw = str(content or "").strip()
@@ -2052,67 +1973,11 @@ class AgentLoop:
         session_key: Optional[str] = None,
         msg: Optional[InboundMessage] = None,
     ) -> bool:
-        if msg is not None and is_unattended_turn(msg):
-            return True
-        if not self._should_include_tools(content):
-            return False
-        active_capability_state = getattr(self, "_session_capability_state", {}).get(
-            str(session_key or ""), {}
+        """Expose the registered tool catalog; the model selects what applies."""
+        return bool(
+            (msg is not None and is_unattended_turn(msg))
+            or self._should_include_tools(content)
         )
-        lowered = str(content or "").strip().lower()
-        explicit_followup = bool(
-            re.search(
-                r"\b(?:yes|yeah|yep|ok|okay|sure|continue|go ahead|do it|that one|"
-                r"same|proceed|sí|si|claro|dale|esa|ese|la tienes|adelante|"
-                r"hazlo|continúa|continua)\b",
-                lowered,
-            )
-        )
-        if active_capability_state.get("skill_names") and (
-            explicit_followup
-            or (
-                len(lowered) > 10
-                and self._is_capability_followup(content)
-                and not self._is_fast_casual_turn(content)
-            )
-        ):
-            # A terse acknowledgement still belongs to the active task. Keep
-            # schemas available for verification.
-            return True
-        if not self._is_fast_ai_harness_enabled():
-            return True
-        ai_harness = getattr(getattr(self, "config", None), "ai_harness", None)
-        if not getattr(ai_harness, "fast_disable_tools_for_casual", True):
-            return True
-        if self._looks_like_action_or_path_request(content):
-            return True
-        return not self._is_fast_casual_turn(content)
-
-    @staticmethod
-    def _requires_initial_tool_call(
-        content: str, tool_definitions: Optional[List[Dict[str, Any]]]
-    ) -> bool:
-        """Require evidence-producing tool use for explicit external actions."""
-        if not str(content or "").strip() or not tool_definitions:
-            return False
-        tool_names = {
-            str(tool.get("function", {}).get("name", ""))
-            for tool in tool_definitions
-        }
-        has_external_tool = bool(
-            tool_names
-            & {
-                "browser_navigate",
-                "web_search",
-                "run_command",
-            }
-        )
-        if not has_external_tool:
-            return False
-        raw = strip_image_urls(str(content))
-        if re.search(r"https?://|www\.", raw, re.IGNORECASE):
-            return True
-        return bool(_EXPLICIT_TOOL_REQUEST_RE.search(str(content)))
 
     @staticmethod
     def _build_provider_config(
@@ -5371,14 +5236,7 @@ class AgentLoop:
                                 ),
                             },
                         )
-                    initial_tool_choice = (
-                        "required"
-                        if include_tools
-                        and self._requires_initial_tool_call(
-                            content, initial_tool_definitions
-                        )
-                        else "auto"
-                    )
+                    initial_tool_choice = "auto"
                     llm_first_call_started = time.perf_counter()
                     plan_instruction = (
                         "This is read-only coding Plan mode. Do not call or propose tool "
