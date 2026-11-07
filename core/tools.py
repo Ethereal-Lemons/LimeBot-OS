@@ -1144,6 +1144,20 @@ class Toolbox:
         """List Discord guilds and text channels available to the running bot."""
         return await self._get_discord_tool_service().list_channels()
 
+    async def voice_list_members(self) -> str:
+        """List people in the active Discord voice channel and other voice channels."""
+        return await self._get_discord_tool_service().voice_members()
+
+    async def voice_move_members(
+        self, channel: str = "", members: Optional[List[str]] = None
+    ) -> str:
+        """Move people from the active Discord voice channel to another one."""
+        return await self._get_discord_tool_service().voice_move(channel, members)
+
+    async def voice_set_listening(self, enabled: bool = False) -> str:
+        """Stop or resume listening in the active Discord voice conversation."""
+        return await self._get_discord_tool_service().voice_listening(enabled)
+
     async def cron_add(
         self,
         message: str,

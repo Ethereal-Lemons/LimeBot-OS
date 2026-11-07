@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import json
 import time
+import warnings
 from loguru import logger
 
 from config import load_config
@@ -24,10 +25,23 @@ from channels.whatsapp import WhatsAppChannel
 from channels.web import WebChannel
 
 
+# The full log always goes to logs/limebot.log. The terminal only shows
+# warnings and errors unless LIMEBOT_CONSOLE_LEVEL=INFO (or DEBUG) is set.
+_CONSOLE_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+_console_level = os.getenv("LIMEBOT_CONSOLE_LEVEL", "WARNING").strip().upper()
+if _console_level not in _CONSOLE_LEVELS:
+    _console_level = "WARNING"
+
+# litellm builds provider responses that pydantic cannot re-serialize exactly;
+# the warning repeats on every model call and carries no actionable information.
+warnings.filterwarnings(
+    "ignore", message="Pydantic serializer warnings", category=UserWarning
+)
+
 logger.remove()
 logger.add(
     sys.stderr,
-    level="DEBUG",
+    level=_console_level,
     filter=lambda r: (
         r["level"].no >= 10
         and (r["level"].no >= 20 or "core.loop" in r["name"] or "⏱" in r["message"])

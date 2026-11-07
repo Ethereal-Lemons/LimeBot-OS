@@ -717,6 +717,11 @@ Artifact serializers reveal only identity/title/type and whether a local artifac
 - `/voice_join` starts one speech session per guild from the caller's current regular voice channel; `/voice_leave` is limited to its owner or a moderator
 - Voice transcripts enter the normal `InboundMessage` bus under a separate per-guild voice session; final replies retain the voice session ID for speech playback
 - Voice receive uses the optional pinned Pycord PR build, not the default `discord.py` dependency; install with `limebot feature install discord-voice` and enable `ENABLE_DISCORD_VOICE=true`
+- Voice sessions only answer speech addressed to LimeBot by name (`voice_name` in the Voice tab, default the persona name; `listen_mode=always` disables this). The audio is still transcribed by ElevenLabs to check for the name, then discarded. The same speaker may continue for `voice_follow_up_seconds` after being addressed. `/voice_mute` / `/voice_unmute` (and the `voice_set_listening` tool, mute only) pause capture entirely.
+- Voice tools `voice_list_members`, `voice_move_members`, `voice_set_listening` act only inside the session's guild; moving people or muting requires the session owner or a moderator, plus Discord's Move Members permission. They are deliberately not in the confirmation list so they work hands-free.
+- Voice sessions use a tool allowlist (`core/voice_tool_policy.py`): the catalog hides everything else and `ToolRuntime` refuses it, so file, shell, sub-agent, image, and media tools are unavailable. `DISCORD_VOICE_EXTRA_TOOLS` opts more in.
+- The terminal shows WARNING and above (`LIMEBOT_CONSOLE_LEVEL`); `logs/limebot.log` keeps the full log. Fire-and-forget session event writes are tracked and drained in `AgentLoop.stop()`.
+- Tool-call embeds show only failures by default; `DISCORD_TOOL_EMBEDS=full` restores per-call embeds. Button callbacks accept both discord.py and Pycord argument orders.
 - `DISCORD_ALLOW_FROM` — comma-separated user IDs (empty = allow all)
 - `DISCORD_ALLOW_CHANNELS` — comma-separated channel IDs (empty = allow all)
 - Sends long responses split at word boundaries

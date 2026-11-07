@@ -157,6 +157,68 @@ class DiscordToolService:
         )
         return f"Sent native Discord embed to {target_kind} {target_id}."
 
+    def _voice_session(self) -> tuple[Any, Any, str, str]:
+        """Return (conversation, session, sender_id, error) for the active voice turn."""
+        ctx = tool_context.get() or {}
+        session_id = str(ctx.get("discord_voice_session") or "").strip()
+        sender_id = str(ctx.get("sender_id") or "").strip()
+        if not session_id:
+            return None, None, sender_id, (
+                "Error: This only works during a Discord voice conversation."
+            )
+        discord_channel = self._get_channel_by_name("discord")
+        conversation = getattr(discord_channel, "voice_conversation", None)
+        session = conversation.session_by_id(session_id) if conversation else None
+        if session is None:
+            return None, None, sender_id, "Error: The voice conversation has ended."
+        return conversation, session, sender_id, ""
+
+    async def voice_members(self) -> str:
+        """Who is in the voice channel LimeBot joined, and in the other voice channels."""
+        conversation, session, _sender, error = self._voice_session()
+        if error:
+            return error
+        return json.dumps(conversation.describe_voice_state(session), ensure_ascii=False)
+
+    async def voice_move(self, channel: str = "", members: Optional[List[str]] = None) -> str:
+        """Move people between voice channels; limited to the session owner or moderators."""
+        conversation, session, sender_id, error = self._voice_session()
+        if error:
+            return error
+        if not conversation.is_controller(session, sender_id):
+            return (
+                "Error: Only the person who started this voice session or a server "
+                "moderator can move people."
+            )
+        if not str(channel or "").strip():
+            return "Error: channel is required."
+        if isinstance(members, str):
+            members = [members]
+        return await conversation.move_members(
+            session,
+            target_ref=str(channel),
+            member_refs=list(members or []),
+            reason=f"Requested by {sender_id} through LimeBot voice",
+        )
+
+    async def voice_listening(self, enabled: bool = False) -> str:
+        """Stop or resume listening; limited to the session owner or moderators."""
+        conversation, session, sender_id, error = self._voice_session()
+        if error:
+            return error
+        if not conversation.is_controller(session, sender_id):
+            return (
+                "Error: Only the person who started this voice session or a server "
+                "moderator can change listening."
+            )
+        conversation.set_listening(session.guild_id, bool(enabled))
+        if enabled:
+            return "Listening resumed."
+        return (
+            "Listening stopped. Nothing is captured or transcribed until someone runs "
+            "/voice_unmute."
+        )
+
     async def list_channels(self) -> str:
         """List guild text channels available to the running Discord bot."""
         discord_channel = self._get_channel_by_name("discord")

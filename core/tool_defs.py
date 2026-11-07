@@ -790,6 +790,33 @@ BASE_TOOLS = [
         "required": [],
     },
     {
+        "name": "voice_list_members",
+        "description": "During a Discord voice conversation, list who is in the voice channel LimeBot is in, plus the server's other voice channels and who is in them. Use it when asked who is in the call or which channels exist.",
+        "params": {},
+        "required": [],
+    },
+    {
+        "name": "voice_move_members",
+        "description": "During a Discord voice conversation, move people from the current voice channel to another voice channel in the same server, for example when asked to move everyone to another channel. LimeBot follows if everyone moves. Only the person who started the voice session or a moderator may use it.",
+        "params": {
+            "channel": {"type": "string", "description": "Target voice channel name or numeric id."},
+            "members": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Names or ids of the people to move. Omit or pass [\"everyone\"] to move everyone in the channel.",
+            },
+        },
+        "required": ["channel"],
+    },
+    {
+        "name": "voice_set_listening",
+        "description": "During a Discord voice conversation, stop or resume listening. While listening is off, nothing is captured or sent for transcription. Turning it back on is only possible with the /voice_unmute command, so tell the user that when you stop listening. Only the person who started the voice session or a moderator may use it.",
+        "params": {
+            "enabled": {"type": "boolean", "description": "false to stop listening, true to resume."},
+        },
+        "required": ["enabled"],
+    },
+    {
         "name": "analyze_video",
         "description": "Analyze one allowed local video or public HTTP(S) video. Returns a bounded transcript and up to three timestamped contact sheets. Use transcript for audio-only questions, efficient for quick visual scans, and balanced for summaries, UI recordings, ads, and visual questions.",
         "params": {

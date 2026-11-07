@@ -4,6 +4,7 @@ import { API_BASE_URL } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -22,6 +23,9 @@ interface VoiceSettings {
     output_format: string;
     channels: string[];
     send_text_with_audio: boolean;
+    voice_name: string;
+    listen_mode: 'wake' | 'always';
+    voice_follow_up_seconds: number;
 }
 
 interface ElevenLabsVoice {
@@ -137,7 +141,10 @@ export function VoicePage() {
         model_id: 'eleven_multilingual_v2',
         output_format: 'mp3_44100_128',
         channels: ['web'],
-        send_text_with_audio: false
+        send_text_with_audio: false,
+        voice_name: '',
+        listen_mode: 'wake',
+        voice_follow_up_seconds: 20
     });
     const [originalSettings, setOriginalSettings] = useState<VoiceSettings | null>(null);
     const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
@@ -173,7 +180,10 @@ export function VoicePage() {
                 model_id: loaded.model_id ?? 'eleven_multilingual_v2',
                 output_format: loaded.output_format ?? 'mp3_44100_128',
                 channels: loaded.channels ?? ['web'],
-                send_text_with_audio: loaded.send_text_with_audio ?? false
+                send_text_with_audio: loaded.send_text_with_audio ?? false,
+                voice_name: loaded.voice_name ?? '',
+                listen_mode: loaded.listen_mode === 'always' ? 'always' : 'wake',
+                voice_follow_up_seconds: loaded.voice_follow_up_seconds ?? 20
             };
             
             setSettings(finalSettings);
@@ -369,6 +379,55 @@ export function VoicePage() {
                                         disabled={!hasKey}
                                     />
                                 </div>
+                            </div>
+
+                            {/* Discord voice conversations */}
+                            <div className="space-y-3 rounded-xl border border-border bg-background/50 p-4">
+                                <div className="space-y-0.5">
+                                    <Label className="font-semibold text-sm">Discord voice conversations</Label>
+                                    <p className="text-xs text-muted-foreground">
+                                        How LimeBot decides what to answer when she joins a voice channel with /voice_join.
+                                    </p>
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label className="text-xs">Voice name</Label>
+                                    <Input
+                                        value={settings.voice_name}
+                                        onChange={(e) => setSettings(prev => ({ ...prev, voice_name: e.target.value }))}
+                                        placeholder="Leave empty to use her persona name"
+                                        maxLength={120}
+                                    />
+                                    <p className="text-[11px] text-muted-foreground">
+                                        Say it at the start or end of a sentence to get her attention, for example "Jennie, move us to another channel". Separate nicknames with commas.
+                                    </p>
+                                </div>
+                                <div className="flex items-center justify-between border-t border-border pt-3">
+                                    <div className="space-y-0.5">
+                                        <Label className="text-xs">Only answer when called by name</Label>
+                                        <p className="text-[11px] text-muted-foreground">
+                                            Turn off to answer everything said in the channel. Audio is still sent to ElevenLabs for transcription to check for the name, then discarded; use /voice_mute for real silence.
+                                        </p>
+                                    </div>
+                                    <Switch
+                                        checked={settings.listen_mode === 'wake'}
+                                        onCheckedChange={(val) => setSettings(prev => ({ ...prev, listen_mode: val ? 'wake' : 'always' }))}
+                                    />
+                                </div>
+                                {settings.listen_mode === 'wake' && (
+                                    <div className="space-y-1.5">
+                                        <Label className="text-xs">Keep listening after she answers (seconds)</Label>
+                                        <Input
+                                            type="number"
+                                            min={0}
+                                            max={120}
+                                            value={settings.voice_follow_up_seconds}
+                                            onChange={(e) => setSettings(prev => ({ ...prev, voice_follow_up_seconds: Math.min(120, Math.max(0, Number(e.target.value) || 0)) }))}
+                                        />
+                                        <p className="text-[11px] text-muted-foreground">
+                                            The same person can keep talking for this long without repeating the name.
+                                        </p>
+                                    </div>
+                                )}
                             </div>
 
                             {/* Voice dropdown */}

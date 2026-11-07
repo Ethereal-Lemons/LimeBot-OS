@@ -429,6 +429,9 @@ class AgentLoop:
             "send_discord_message": self.toolbox.send_discord_message,
             "send_discord_embed": self.toolbox.send_discord_embed,
             "list_discord_channels": self.toolbox.list_discord_channels,
+            "voice_list_members": self.toolbox.voice_list_members,
+            "voice_move_members": self.toolbox.voice_move_members,
+            "voice_set_listening": self.toolbox.voice_set_listening,
             "cron_add": self.toolbox.cron_add,
             "cron_list": self.toolbox.cron_list,
             "cron_remove": self.toolbox.cron_remove,
@@ -1684,11 +1687,38 @@ class AgentLoop:
             )
             if profile_context is not None:
                 payload.setdefault("profile_name", profile_context.profile.display_name)
-            asyncio.create_task(
+            # Keep a strong reference: a bare create_task() can be garbage
+            # collected mid-write, and shutdown must be able to wait for it.
+            pending = self.__dict__.setdefault("_event_log_tasks", set())
+            task = asyncio.create_task(
                 self.session_manager.append_event_log(session_key, payload)
             )
+            pending.add(task)
+            task.add_done_callback(pending.discard)
         except Exception:
             pass
+
+    async def _drain_event_log_tasks(self, timeout: float = 2.0) -> None:
+        """Let queued session-event writes finish before the event loop closes."""
+        pending = [
+            task
+            for task in list(self.__dict__.get("_event_log_tasks", ()))
+            if not task.done()
+        ]
+        if not pending:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            logger.warning(
+                "Timed out flushing %d session event writes during shutdown.",
+                len(pending),
+            )
 
     async def _build_full_system_prompt(
         self,
@@ -2600,6 +2630,10 @@ class AgentLoop:
         getattr(self, "background_subagent_tasks", {}).clear()
         getattr(self, "background_subagent_sessions", {}).clear()
         getattr(self, "background_subagent_parents", {}).clear()
+
+        # Cancelling turns above queues session events; write them before the
+        # event loop closes instead of destroying pending tasks.
+        await self._drain_event_log_tasks()
 
         # Persist the latest durable delivery state before bus workers are cancelled.
         try:
@@ -4135,6 +4169,11 @@ class AgentLoop:
                         "turn_id": turn_id or "",
                         "message_id": message_id or "",
                         "user_text": str(msg.content if msg else "")[:4000],
+                        "discord_voice_session": str(
+                            (msg.metadata or {}).get("discord_voice_session") or ""
+                        )
+                        if msg
+                        else "",
                         "attachments": current_image_attachments,
                         "recent_image_attachments": recent_image_attachments,
                         "auto_reference_images": bool(current_image_attachments)

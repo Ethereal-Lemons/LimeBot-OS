@@ -51,6 +51,13 @@ class ElevenLabsTTS:
             "output_format": "mp3_44100_128",
             "channels": ["web"],
             "send_text_with_audio": False,
+            # Discord voice conversations: which names wake LimeBot (comma
+            # separated; empty uses the persona name), "wake" or "always"
+            # listening, and how long the same person can keep talking after
+            # being addressed without repeating the name.
+            "voice_name": "",
+            "listen_mode": "wake",
+            "voice_follow_up_seconds": 20,
         }
 
         if LIMEBOT_CONFIG_PATH.exists():
@@ -318,25 +325,42 @@ class ElevenLabsTTS:
         return deleted
 
     @staticmethod
-    def clean_text_for_speech(text: str) -> str:
-        """Strip markdown markers and system XML tags to prepare text for high-quality speech."""
+    def clean_text_for_speech(text: str, max_chars: int | None = None) -> str:
+        """Prepare chat text for speech: no markup, links, emoji or code.
+
+        ``max_chars`` shortens long replies at a sentence boundary so voice
+        conversations stay brief; the full text remains in the chat.
+        """
         import re
-        
+
         if not text:
             return ""
 
         # Remove XML tags (e.g. <save_soul>...</save_soul>, <log_memory>...)
         text = re.sub(r"<[^>]+>[^<]*</[^>]+>", "", text)
         text = re.sub(r"<[^>]+>", "", text)
-        
-        # Remove markdown symbols
+
+        text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)  # fenced code
+        text = re.sub(r"^\s*\|.*\|\s*$", " ", text, flags=re.MULTILINE)  # tables
+        text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # markdown links
+        text = re.sub(r"https?://\S+|www\.\S+", " ", text)  # bare URLs
         text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)  # bold
-        text = re.sub(r"\*([^*]+)\*", r"\1", text)      # italic
-        text = re.sub(r"`([^`]+)`", r"\1", text)        # code blocks/inline
-        text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text) # markdown links
-        text = re.sub(r"#{1,6}\s+", "", text)           # headers
-        text = re.sub(r"-\s+", "", text)                # bullets
-        
-        # Clean extra spaces
+        text = re.sub(r"\*([^*]+)\*", r"\1", text)  # italic
+        text = re.sub(r"`([^`]+)`", r"\1", text)  # inline code
+        text = re.sub(r"^\s*#{1,6}\s+", "", text, flags=re.MULTILINE)  # headers
+        text = re.sub(
+            r"^\s*(?:[-*\u2022]|\d+[.)])\s+", "", text, flags=re.MULTILINE
+        )  # list markers
+        text = re.sub(
+            r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]", "", text
+        )  # emoji and symbols
+
         text = re.sub(r"\s+", " ", text).strip()
+        if max_chars and len(text) > max_chars:
+            cut = text[:max_chars]
+            boundary = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
+            if boundary >= max_chars // 2:
+                text = cut[: boundary + 1]
+            else:
+                text = cut.rstrip() + "..."
         return text

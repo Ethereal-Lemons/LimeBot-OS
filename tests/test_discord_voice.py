@@ -192,3 +192,118 @@ async def test_voice_session_refuses_to_record_if_notice_cannot_be_sent(monkeypa
         )
 
     assert events == ["connect", "disconnect"]
+
+
+def _tone(seconds: float, amplitude: int) -> bytes:
+    import array
+
+    samples = array.array("h", [amplitude, -amplitude] * int(48_000 * seconds))
+    return samples.tobytes()
+
+
+def test_speech_gate_rejects_quiet_noise_and_accepts_speech():
+    from core.discord_voice import count_speech_seconds
+
+    assert count_speech_seconds(_tone(1.0, 80)) == 0
+    assert count_speech_seconds(_tone(1.0, 4_000)) == pytest.approx(1.0, abs=0.05)
+    # A short click inside silence is not speech.
+    click = _tone(0.06, 8_000) + _tone(1.0, 0)
+    assert count_speech_seconds(click) < 0.3
+
+
+def test_non_speech_transcripts_are_dropped():
+    from core.discord_voice import is_non_speech_transcript
+
+    assert is_non_speech_transcript("")
+    assert is_non_speech_transcript("(background noise)")
+    assert is_non_speech_transcript(" [click] ")
+    assert not is_non_speech_transcript("hello there (laughs)")
+
+
+def test_voice_buffer_ignores_audio_while_muted_and_during_echo_tail():
+    buffer = VoiceUtteranceBuffer(min_seconds=0)
+    frame = b"\x01" * 3_840
+
+    buffer.mute()
+    buffer.add_frame("user-a", "A", frame)
+    buffer.unmute(tail_seconds=60)
+    buffer.add_frame("user-a", "A", frame)
+    assert buffer.take_ready(now=10**9) == []
+
+    buffer.unmute()
+    buffer.add_frame("user-a", "A", frame)
+    assert len(buffer.take_ready(now=10**9)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pycord_order", [True, False])
+async def test_tool_confirmation_buttons_accept_both_library_argument_orders(pycord_order):
+    import discord
+
+    from channels.discord import ToolConfirmationView
+
+    resolved = []
+    published = []
+
+    class Agent:
+        async def confirm_tool(self, conf_id, approved, whitelist, source):
+            resolved.append((conf_id, approved, source))
+            return True
+
+    class Bus:
+        async def publish_inbound(self, message):
+            published.append(message.content)
+
+    class FakeInteraction:
+        user = SimpleNamespace(id=7)
+
+        def __init__(self):
+            self.message = SimpleNamespace(embeds=[discord.Embed(title="Exec Approval Required")])
+            self.response = SimpleNamespace(edit_message=self._edit)
+            self.edited = False
+
+        async def _edit(self, **_kwargs):
+            self.edited = True
+
+    interaction = FakeInteraction()
+    button = SimpleNamespace()
+    view = ToolConfirmationView("conf_1", "chat", Bus(), SimpleNamespace(), Agent())
+    approve = type(view).approve_button
+
+    # isinstance(..., discord.Interaction) is how the view tells the two apart.
+    import channels.discord as channel_module
+
+    original = channel_module.discord.Interaction
+    channel_module.discord.Interaction = FakeInteraction
+    try:
+        args = (button, interaction) if pycord_order else (interaction, button)
+        await approve(view, *args)
+    finally:
+        channel_module.discord.Interaction = original
+
+    assert interaction.edited
+    assert resolved == [("conf_1", True, "discord")]
+    assert published == ["[CONFIRMATION_APPROVED:conf_1]"]
+
+
+@pytest.mark.asyncio
+async def test_discord_tool_embeds_are_quiet_unless_failed(monkeypatch):
+    from channels.discord import DiscordChannel
+
+    sent = []
+
+    class Target:
+        async def send(self, **kwargs):
+            sent.append(kwargs)
+
+    channel = DiscordChannel.__new__(DiscordChannel)
+    channel._tool_messages = {}
+    channel._build_tool_embed = lambda **kwargs: kwargs["status"]
+    monkeypatch.delenv("DISCORD_TOOL_EMBEDS", raising=False)
+
+    for status in ("running", "completed", "error"):
+        await channel._handle_tool_execution(
+            Target(), {"tool_call_id": "t", "status": status, "tool": "web_search"}
+        )
+
+    assert sent == [{"embed": "error"}]
