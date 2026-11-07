@@ -73,3 +73,43 @@ async def test_stt_rejects_oversized_audio(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="15 MB"):
         await ElevenLabsSTT.transcribe_file(audio)
+
+
+@pytest.mark.parametrize(
+    ("status", "detail", "expected"),
+    [
+        (401, '{"status":"missing_permissions"}', "Speech to Text permission"),
+        (401, '{"status":"invalid_api_key"}', "rejected the API key"),
+        (429, "slow down", "rate limiting"),
+        (500, "boom", "Check ElevenLabs voice input"),
+    ],
+)
+def test_stt_error_user_message(status, detail, expected):
+    from core.stt import ElevenLabsSTTError
+
+    error = ElevenLabsSTTError(status, detail)
+
+    assert expected in error.user_message
+    assert str(status) in str(error)
+
+
+def test_speech_cleaning_drops_links_emoji_code_and_markup():
+    from core.tts import ElevenLabsTTS
+
+    text = (
+        "## Plan\n- **Search** the [docs](https://example.com/a) now\n"
+        "- see https://example.com/long/url?x=1 \U0001F34B\n```py\nprint(1)\n```\n"
+        "| a | b |\n1. Done - really."
+    )
+    spoken = ElevenLabsTTS.clean_text_for_speech(text)
+
+    assert spoken == "Plan Search the docs now see Done - really."
+
+
+def test_speech_cleaning_truncates_at_sentence_boundary():
+    from core.tts import ElevenLabsTTS
+
+    text = "First sentence here. Second sentence is longer than the cap allows."
+
+    assert ElevenLabsTTS.clean_text_for_speech(text, max_chars=36) == "First sentence here."
+    assert ElevenLabsTTS.clean_text_for_speech(text) == text

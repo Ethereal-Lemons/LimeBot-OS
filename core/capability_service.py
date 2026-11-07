@@ -9,6 +9,7 @@ from loguru import logger
 
 from core.profile_context import get_current_profile_context
 from core.profiles import profile_allows_tool
+from core.voice_tool_policy import is_voice_session_key, voice_allows_tool
 from core.redaction import redact_sensitive_text
 
 
@@ -211,6 +212,13 @@ class CapabilityService:
                     profile_context.profile,
                     str(tool.get("function", {}).get("name") or ""),
                 )
+            ]
+
+        if is_voice_session_key(session_key):
+            selected = [
+                tool
+                for tool in selected
+                if voice_allows_tool(str(tool.get("function", {}).get("name") or ""))
             ]
 
         all_names = self._tool_definition_names(all_tools)

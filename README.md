@@ -6,22 +6,37 @@
 
 
 
-> A persistent, self-evolving agentic AI that lives across your devices  with a soul, a memory, and a personality that's actually yours. Inspired by the powerful [OpenClaw](https://github.com/openclaw/openclaw) and the lightweight architecture of [Nanobot](https://github.com/HKUDS/nanobot).
+> A local-first, event-driven AI agent with persistent memory and a configurable persona, available through a web dashboard, Discord (text and voice), WhatsApp, and Telegram. Inspired by [OpenClaw](https://github.com/openclaw/openclaw) and the lightweight architecture of [Nanobot](https://github.com/HKUDS/nanobot).
 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-lime.svg)](https://opensource.org/licenses/MIT)
 [![Latest release](https://img.shields.io/github/v/release/Ethereal-Lemons/LimeBot-OS?label=Latest%20release)](https://github.com/Ethereal-Lemons/LimeBot-OS/releases/latest)
-[![Status](https://img.shields.io/badge/Status-Stable-brightgreen.svg)](#-getting-started)
-[![LLM Support](https://img.shields.io/badge/LLM%20Support-Universal-blue.svg)](#-llm-support)
+[![Status](https://img.shields.io/badge/Status-Stable-brightgreen.svg)](#getting-started)
+[![LLM Support](https://img.shields.io/badge/LLM%20Support-Universal-blue.svg)](#llm-support)
 [![Python](https://img.shields.io/badge/Python-3.11--3.14-blue.svg)](https://www.python.org/)
 [![LiteLLM](https://img.shields.io/badge/LLM-LiteLLM%20Universal-blueviolet.svg)](https://github.com/BerriAI/litellm)
-[![Local First](https://img.shields.io/badge/Privacy-Local%20First-green.svg)](#-privacy--security)
+[![Local First](https://img.shields.io/badge/Privacy-Local%20First-green.svg)](#privacy-and-security)
 
-LimeBot is not a wrapper around an API. It's a full agentic system  event-driven, multi-channel, and built to remember who you are. It browses the web, manages your files, schedules reminders, spawns sub-agents for complex tasks, and evolves its personality through every conversation. All of it runs on your hardware.
+LimeBot is a complete agent runtime rather than a thin API wrapper. A message from any channel enters an asynchronous event loop, is enriched with recalled memory, and is answered by the configured model, which can call tools to browse the web, work with files inside approved paths, schedule jobs, and delegate to sub-agents. Conversations, memory, and persona data are stored on your own machine.
+
+## Contents
+
+- [Quick start](#quick-start)
+- [Architecture](#architecture)
+- [Capabilities](#capabilities)
+- [Channels](#channels)
+- [LLM support](#llm-support)
+- [Skills](#skills)
+- [Getting started](#getting-started)
+- [Discord voice conversations](#discord-voice-conversations-experimental)
+- [Configuration](#configuration)
+- [Privacy and security](#privacy-and-security)
+- [Contributing](#contributing)
+- [License](#license)
 
 ---
 
-## Start here (one command)
+## Quick start
 
 You need two apps on the computer: **Node.js 22.19 or newer** and **Python 3.11–3.14**. If either one is missing or too old, LimeBot will say so in plain language and tell you which installer to download. It will not dump a stack trace.
 
@@ -52,7 +67,7 @@ again with `npm start`.
 
 ---
 
-## 🏛️ How It Works (Architecture Overview)
+## Architecture
 
 LimeBot operates on an **event-driven agentic loop**. When you send a message, it flows through the system as follows:
 
@@ -76,9 +91,9 @@ graph TD
 
 ---
 
-## ✨ What It Can Actually Do
+## Capabilities
 
-### 🧰 Model-Directed Tools
+### Model-directed tools
 
 Every eligible non-empty turn gives the model the tools available to the
 current channel and agent profile. The model chooses what fits the request and
@@ -86,14 +101,14 @@ can combine tools for multi-step work; tool selection does not depend on
 specific trigger words. Profile access, approval, and host safety checks still
 apply.
 
-### 🧠 It Remembers Everything
+### Memory
 Three-tier memory system that persists across sessions:
 - **Episodic Memory**  every conversation is appended to a daily markdown journal (`persona/memory/YYYY-MM-DD.md`)
 - **Semantic Memory**  entries are embedded and stored in a local LanceDB vector database, enabling fuzzy recall of anything said weeks ago
 - **Auto-RAG**  before every reply, LimeBot automatically searches its memory (semantically first, grep fallback) and injects relevant context into the prompt without you asking
 - **Reflection Engine**  a background cron job runs every 4 hours, reads today's journal, and distills the key facts into a permanent `MEMORY.md` long-term essence file
 
-### 👤 It Has a Real Persona
+### Persona
 Not a hardcoded system prompt. A living identity that evolves:
 - **`SOUL.md`**  core values, personality, and behavioral boundaries
 - **`IDENTITY.md`**  name, emoji, avatar URL, style, catchphrases, interests, birthday
@@ -103,7 +118,7 @@ Not a hardcoded system prompt. A living identity that evolves:
 - **Dynamic Mood**  optional `MOOD.md` that shifts based on conversations and persists between sessions
 - **Setup Interview**  if the local persona files are missing or invalid, the bot interviews you to rebuild its identity and saves the result automatically once it has enough to work with.
 
-### 🧑‍🤝‍🧑 Create Separate Agents
+### Agent profiles
 The dashboard's **Agents** page lets you create conversational agents with
 their own display name, model choice, persona, memory, and chat history. The
 existing LimeBot persona and chats stay under the built-in **Default** agent;
@@ -117,7 +132,7 @@ Shell and sub-agent tools use LimeBot's shared workspace, so named agents start
 without those tools and need an explicit tool allowlist to enable them. The
 profile selector keeps a separate chat session for each agent.
 
-### 🌐 It Browses the Web
+### Web browsing
 Full Playwright-powered browser automation:
 - Navigate to any URL, click elements, fill forms, scroll pages
 - `web_search()` for live web, news, and image lookup (the host parses results)
@@ -125,7 +140,7 @@ Full Playwright-powered browser automation:
 - Download high-resolution images from Pinterest, Reddit, Wikimedia, direct URLs
 - Results stream back in real time with progress updates in the dashboard
 
-### 📁 It Has Access to Your Files
+### Filesystem access
 Whitelisted filesystem operations:
 - Read, write, create, delete, move, rename files and directories
 - Apply exact hash-guarded patches to existing UTF-8 files with `edit_file`; LimeBot previews the diff, rejects stale/no-op/overlapping edits, and runs read-only verification checks afterward
@@ -133,7 +148,7 @@ Whitelisted filesystem operations:
 - All operations sandboxed to `ALLOWED_PATHS`  nothing outside those roots is touchable unless you explicitly allow it
 - Dangerous operations (write, delete, run) require explicit confirmation through the web UI before executing
 
-### ⚙️ It Can Run Commands
+### Command execution
 Secure subprocess execution with real-time output streaming:
 - Runs shell commands inside the project root
 - Shell injection filter blocks `;`, `&&`, `||`, redirects, backticks, `$()`, and `IFS=` / `PYTHONPATH=` assignments in live chat. Bare `|` is allowed except when piped into an interpreter. Isolated copy workspaces may use `&&` / `||` / `|` / redirects; `run_steps` runs a sequential command chain without `&&`.
@@ -142,14 +157,14 @@ Secure subprocess execution with real-time output streaming:
 - **Autonomous Mode**  optionally bypass all confirmation prompts for full hands-off operation
 - **Session-based approval**  approve a tool once for the current session without enabling full autonomy
 
-### 🕐 It Schedules Its Own Reminders
+### Scheduling
 Persistent cron system:
 - One-time reminders: `"remind me in 2 hours to call mom"`
 - Repeating jobs: full cron expression support (`0 8 * * *`)
 - Jobs survive restarts (persisted to `data/cron.json`)
 - With Dynamic Personality enabled: automatic morning greetings and silence check-ins
 
-### 🤖 It Can Spawn Sub-Agents
+### Sub-agents
 For complex multi-step tasks, LimeBot can delegate work to an isolated background agent:
 - Sub-agent runs in its own session with its own tool loop
 - The model sees available specialist profiles and their descriptions, then
@@ -164,7 +179,7 @@ LimeBot also exposes an authenticated local companion API at `/api/app/*` for in
 
 For CI review, `limebot review-diff --diff-file change.patch --output review.json` creates a capped, secret-redacted artifact. `.github/workflows/limebot-review.yml` is artifact-only with `contents: read`; model invocation is opt-in and it never posts PR comments, edits files, or pushes commits.
 
-### 🔌 Model Context Protocol (MCP) Support
+### Model Context Protocol (MCP)
 LimeBot is a fully-featured MCP client:
 - **Universal Tool Integration**  connect to any MCP server (Fetch, Filesystem, Brave Search, etc.) to immediately expand the bot's capabilities.
 - **Dynamic Discovery**  tools from connected MCP servers are automatically prefixed with `mcp_server_name_` and injected into the AI's tool registry.
@@ -173,16 +188,16 @@ LimeBot is a fully-featured MCP client:
 
 ---
 
-## 📡 Channels
+## Channels
 
 | Channel | How it works |
 |---------|-------------|
 | **Web Dashboard** | React + Vite UI connecting over WebSocket. Streams tokens as they arrive, shows live tool execution cards, confirmation prompts, thinking traces, and ghost activity indicators. **Includes a Custom CSS editor for global UI personalization.** |
-| **Discord** | Responds to DMs and `@mentions`, with configurable user and channel allow-lists. Optional experimental voice conversations can listen, transcribe, and speak replies. |
+| **Discord** | Responds to DMs and `@mentions`, with configurable user and channel allow-lists. Optional experimental [voice conversations](#discord-voice-conversations-experimental) answer when addressed by name, can list and move members between voice channels, and speak replies. |
 | **WhatsApp** | Connects to a local `whatsapp-web.js` bridge over WebSocket. Contact approval whitelist with pending/blocked states. QR code displayed in the web dashboard for easy pairing. |
 | **Telegram** | Bot API long-polling. Supports text send/receive, per-user allow-listing, optional per-chat allow-listing, typing indicators, and 4096-character chunking. |
 
-### 🧩 Browser Companion Extension
+### Browser companion extension
 
 LimeBot also ships with a browser companion extension for Chrome, Edge, and Opera GX.
 
@@ -195,7 +210,7 @@ Setup instructions live in [extension/README.md](extension/README.md).
 
 ---
 
-## 🤖 LLM Support
+## LLM support
 
 LimeBot uses [LiteLLM](https://github.com/BerriAI/litellm)  any model it supports, LimeBot supports:
 
@@ -212,14 +227,14 @@ LimeBot uses [LiteLLM](https://github.com/BerriAI/litellm)  any model it support
 | **OpenRouter** | `openrouter/openai/gpt-6.1-sol` |
 Switch models live from the web dashboard without restarting.
 
-### 🛡️ AI Gateway & Proxy Support
+### AI gateway and proxy support
 LimeBot supports routing all LLM traffic through external security or caching middleware (like AI Gateway, Open Guardian, or Helicone):
 - **`LLM_PROXY_URL`**  configure a global proxy URL in the dashboard or `.env`. This overrides the default base URL for all providers.
 - **Provider Normalization**  LiteLLM handles the complex routing and header manipulation required to use custom gateways with cloud providers.
 
 ---
 
-## 🧩 Skills
+## Skills
 
 Skills extend what LimeBot can do. Each skill is a folder with a `SKILL.md` (the LLM instructions) and a `skill.py` or script (the execution logic).
 
@@ -285,7 +300,7 @@ loaded by the existing skill registry; their MCP servers are merged into
 
 ---
 
-## 🚀 Getting Started
+## Getting started
 
 The short path is at the top of this file. This section is the same flow with
 more detail.
@@ -303,7 +318,7 @@ You do **not** need to create a virtual environment or run `npm install` yoursel
 If `npm start` says Node or Python is wrong, follow the numbered steps it prints.
 Close the terminal, open a new one, and try `npm start` again.
 
-### Quick Start
+### Installation
 
 1. Open a terminal in the LimeBot folder (clone with Git, or unzip the GitHub download).
 
@@ -370,7 +385,7 @@ WhatsApp is installed and built automatically before its first launch.
 If an optional package is absent, only that capability is unavailable; core
 chat still starts.
 
-#### Discord voice conversations (experimental)
+### Discord voice conversations (experimental)
 
 Discord requires DAVE end-to-end encryption for normal voice channels. Pycord's
 receive-side support is still an open upstream change, so this feature is
@@ -402,13 +417,44 @@ library.
    channel. Use `/voice_leave` to stop the session. Only the person who started
    the session or a server moderator can stop it.
 
-LimeBot waits for DAVE to become ready before listening. After a pause in
-speech, it sends the audio to ElevenLabs for transcription, passes the
-transcript to the agent, and speaks the reply. Audio is held temporarily for
-transcription and deleted afterward. Before recording starts, LimeBot posts a
-notice in the text channel. Only members allowed by `DISCORD_ALLOW_FROM` are
-transcribed; an empty allow-list keeps the existing behavior of allowing all
-members.
+#### How a voice session works
+
+LimeBot waits for DAVE to become ready before listening. Before recording
+starts it posts a notice in the text channel. After a pause in speech the audio
+is sent to ElevenLabs for transcription, the transcript goes to the agent, and
+the reply is spoken. Audio is held temporarily for transcription and deleted
+afterward. Only members allowed by `DISCORD_ALLOW_FROM` are transcribed; an
+empty allow-list allows every member.
+
+- **Addressed by name.** By default LimeBot answers only when its name is said
+  at the start or end of a sentence ("Jennie, who is in the call?"). The same
+  person can continue for 20 seconds after a reply without repeating the name.
+  Set the name and mode under **Voice** in the dashboard (**Voice name** accepts
+  several comma-separated nicknames; empty uses the persona name). Turning the
+  mode off answers everything said in the channel. Audio is still transcribed to
+  check for the name, then discarded.
+- **Listening control.** `/voice_mute` stops capture entirely: nothing is
+  recorded or sent for transcription until `/voice_unmute`. Saying "stop
+  listening" also mutes; unmuting always requires the slash command.
+- **Voice actions.** `voice_list_members` shows who is in the channel and in the
+  server's other voice channels. `voice_move_members` moves people to another
+  voice channel ("move us to Games"); LimeBot follows when everyone moves. Moving
+  people and muting are limited to the person who started the session or a
+  moderator, and need Discord's **Move Members** permission for the bot.
+- **Restricted tools.** Voice conversations can use web search, browsing,
+  memory, calculations, reminders, Discord messaging, and the voice actions
+  above. File, shell, sub-agent, image, and media-sharing tools are unavailable
+  and refused at run time. Add tool names to `DISCORD_VOICE_EXTRA_TOOLS` only if
+  you trust everyone in the channel.
+- **Brief speech.** Replies are cleaned of links, code, and emoji and limited to
+  about 500 characters when spoken; the full text stays in the channel.
+- **Noise handling.** Background noise, keyboard clicks, and echo of LimeBot's
+  own voice are filtered before transcription.
+
+Tool calls appear in Discord only when they fail (set
+`DISCORD_TOOL_EMBEDS=full` to show every call).
+
+#### Video analysis
 
 Video analysis accepts allowed local files and public, unauthenticated HTTP(S)
 media. It rejects playlists, livestreams, private network destinations, media
@@ -461,7 +507,7 @@ npm run extension:build
 
 Load the unpacked extension from `extension/dist`. Full setup steps are in [extension/README.md](extension/README.md).
 
-### 🛠️ CLI Command Reference
+### CLI reference
 
 You can use the following commands in the root directory to manage your LimeBot instance:
 
@@ -603,7 +649,7 @@ limebot auth codex logout
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Copy `.env.example` to `.env`:
 
@@ -629,6 +675,14 @@ APP_API_KEY=optional_dashboard_password
 ENABLE_DYNAMIC_PERSONALITY=false   # per-user affinity, mood tracking, proactive greetings
 VIDEO_WHISPER_ENABLED=false        # opt in to sending caption-less audio to OpenAI Whisper
 LLM_PROXY_URL=http://localhost:8080/v1 # Optional: Route all traffic through a gateway
+
+# Discord voice (optional)
+ENABLE_DISCORD_VOICE=false
+DISCORD_TOOL_EMBEDS=errors         # errors (default) or full
+DISCORD_VOICE_EXTRA_TOOLS=         # extra tools allowed in voice sessions
+
+# Terminal output (the full log is always written to logs/limebot.log)
+LIMEBOT_CONSOLE_LEVEL=WARNING      # WARNING (default), INFO, or DEBUG
 ```
 
 LimeBot defaults to the `fast` AI harness: Auto-RAG gets an 80ms request
@@ -637,11 +691,11 @@ current profile and channel, and the model chooses whether to call them. Set
 `LIMEBOT_AI_HARNESS_MODE=balanced` to use a 200ms Auto-RAG budget instead.
 
 > [!TIP]
-> **No manual editing required!** You can modify all environment settings live from the **Config** tab in the web dashboard. Your changes will automatically overwrite the `.env` file and trigger a clean backend restart.
+> Most settings can also be changed from the **Config** tab of the web dashboard. Saving writes the `.env` file and restarts the backend cleanly.
 
 ---
 
-## 🛡️ Privacy & Security
+## Privacy and security
 
 - **Local-first**  all conversations, memories, and personal data stay on your machine.
 - **Sandboxed Filesystem**  LimeBot can only read/write files in directories you explicitly whitelist.
@@ -650,13 +704,14 @@ current profile and channel, and the model chooses whether to call them. Set
   > By default, dangerous actions in live chat pause for dashboard approval.
   > Scheduled or explicitly unattended jobs use `UNATTENDED_PATH_ALLOWLIST` /
   > `UNATTENDED_COMMAND_ALLOWLIST` instead of forcing `AUTONOMOUS_MODE=true`.
+- **Voice privacy**  Discord voice audio is sent to ElevenLabs for transcription and not stored. Voice sessions announce themselves, can be muted, and cannot use file, shell, or sub-agent tools.
 - **Open Source**  audit the code yourself. No hidden telemetry.
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
-We love contributions! Please check out [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to submit PRs, report bugs, or request features.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to submit pull requests, report bugs, and request features.
 
 The offline task evaluator compares two source snapshots using synthetic local
 replays and makes no provider requests. Create a clean baseline snapshot from
@@ -683,6 +738,6 @@ for comparison options and limits.
 
 ---
 
-## 📄 License
+## License
 
 MIT © [LemonMantis5571](https://github.com/LemonMantis5571)

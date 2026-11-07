@@ -10,6 +10,7 @@ from loguru import logger
 
 from core.profile_context import ProfileRuntimeContext
 from core.profiles import profile_allows_tool
+from core.voice_tool_policy import is_voice_session_key, voice_allows_tool, voice_refusal
 from core.tool_dispatcher import (
     BROWSER_CACHEABLE,
     SEARCH_TOOL_NAMES,
@@ -96,6 +97,11 @@ class ToolRuntime:
                     f"Error: Tool '{function_name}' is disabled for profile "
                     f"'{profile_context.profile_id}'."
                 )
+
+        if is_voice_session_key(context.session_key) and not voice_allows_tool(
+            function_name
+        ):
+            return voice_refusal(function_name)
 
         refusal = preflight_tool_call(
             function_name,

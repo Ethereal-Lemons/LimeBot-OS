@@ -1,6 +1,7 @@
 """Discord channel implementation."""
 
 import asyncio
+import os
 import base64
 import contextlib
 import io
@@ -58,6 +59,15 @@ def _session_key(channel: str, chat_id: str) -> str:
     return key
 
 
+def _button_interaction(first: Any, second: Any) -> Any:
+    """Return the Interaction from a button callback's two arguments.
+
+    discord.py calls ``(interaction, button)`` while Pycord, which the optional
+    Discord voice feature installs, calls ``(button, interaction)``.
+    """
+    return first if isinstance(first, discord.Interaction) else second
+
+
 class ToolConfirmationView(discord.ui.View):
     def __init__(
         self, conf_id: str, chat_id: str, bus: MessageBus, config: Any, agent=None
@@ -70,16 +80,12 @@ class ToolConfirmationView(discord.ui.View):
         self.agent = agent
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="✅")
-    async def approve_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
-        await self._respond(interaction, True)
+    async def approve_button(self, first: Any, second: Any):
+        await self._respond(_button_interaction(first, second), True)
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="⛔")
-    async def deny_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
-        await self._respond(interaction, False)
+    async def deny_button(self, first: Any, second: Any):
+        await self._respond(_button_interaction(first, second), False)
 
     async def _respond(self, interaction: discord.Interaction, approved: bool):
         for child in self.children:
@@ -172,9 +178,8 @@ class StopGenerationView(discord.ui.View):
         self.message: discord.Message | None = None
 
     @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger, emoji="🛑")
-    async def stop_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def stop_button(self, first: Any, second: Any):
+        interaction = _button_interaction(first, second)
         if not self.agent:
             await interaction.response.send_message(
                 "Stop is unavailable right now.", ephemeral=True
@@ -298,6 +303,7 @@ class DiscordChannel(BaseChannel):
                 discord,
                 on_transcript=self._handle_voice_transcript,
                 is_allowed=self.is_allowed,
+                get_listening_settings=self._voice_listening_settings,
             )
         elif self._voice_enabled:
             logger.error(
@@ -654,6 +660,49 @@ class DiscordChannel(BaseChannel):
                 else "There isn't an active voice conversation.",
             )
 
+        async def _set_voice_listening(interaction: Any, enabled: bool) -> None:
+            guild = getattr(interaction, "guild", None)
+            user = self._interaction_user(interaction)
+            if not guild or not user or not self._voice_conversation:
+                await self._respond_interaction(
+                    interaction, "Voice conversations aren't active.", ephemeral=True
+                )
+                return
+            session = self._voice_conversation.session_for_guild(guild.id)
+            if session is None:
+                await self._respond_interaction(
+                    interaction, "There isn't an active voice conversation.", ephemeral=True
+                )
+                return
+            if not self._voice_conversation.is_controller(session, user.id):
+                await self._respond_interaction(
+                    interaction,
+                    "Only the person who started this session or a server moderator can do that.",
+                    ephemeral=True,
+                )
+                return
+            self._voice_conversation.set_listening(guild.id, enabled)
+            await self._respond_interaction(
+                interaction,
+                "LimeBot is listening again."
+                if enabled
+                else "LimeBot stopped listening. Nothing is captured or transcribed until `/voice_unmute`.",
+            )
+
+        @command(
+            name="voice_mute",
+            description="Stop LimeBot from listening in the voice channel (nothing is captured).",
+        )
+        async def cmd_voice_mute(interaction: _APPLICATION_CONTEXT_TYPE):
+            await _set_voice_listening(interaction, False)
+
+        @command(
+            name="voice_unmute",
+            description="Let LimeBot listen in the voice channel again.",
+        )
+        async def cmd_voice_unmute(interaction: _APPLICATION_CONTEXT_TYPE):
+            await _set_voice_listening(interaction, True)
+
         @self.client.event
         async def on_ready():
             logger.info(
@@ -754,6 +803,25 @@ class DiscordChannel(BaseChannel):
             await interaction.followup.send(content, ephemeral=ephemeral)
             return
         await interaction.followup.send(content, ephemeral=ephemeral)
+
+    @property
+    def voice_conversation(self) -> Any:
+        return self._voice_conversation
+
+    @staticmethod
+    def _voice_listening_settings() -> Any:
+        """Read the Voice tab's name and listening mode on every utterance."""
+        from core.prompt import get_identity_data
+        from core.tts import ElevenLabsTTS
+        from core.voice_wake import listening_settings_from_config
+
+        try:
+            identity_name = str(get_identity_data().get("name") or "")
+        except Exception:
+            identity_name = ""
+        return listening_settings_from_config(
+            ElevenLabsTTS.get_voice_config(), identity_name
+        )
 
     async def _handle_voice_transcript(
         self,
@@ -1019,10 +1087,28 @@ class DiscordChannel(BaseChannel):
 
         task.add_done_callback(_discard_done)
 
+    @staticmethod
+    def _tool_embed_mode() -> str:
+        """``errors`` (default) shows only failed tools; ``full`` shows every call."""
+        mode = os.getenv("DISCORD_TOOL_EMBEDS", "errors").strip().lower()
+        return mode if mode in {"errors", "full"} else "errors"
+
     async def _handle_tool_execution(self, target, metadata: dict) -> None:
         tc_id = metadata.get("tool_call_id")
         status = metadata.get("status")
         tool_name = metadata.get("tool", "unknown")
+
+        if self._tool_embed_mode() == "errors":
+            if status == "error":
+                embed = self._build_tool_embed(
+                    target=target,
+                    status=status,
+                    tool_name=tool_name,
+                    args=metadata.get("args"),
+                    result=metadata.get("result", "Unknown error"),
+                )
+                await target.send(embed=embed)
+            return
 
         if status == "running":
             embed = self._build_tool_embed(
@@ -1147,7 +1233,7 @@ class DiscordChannel(BaseChannel):
                 message_id = metadata.get("message_id")
 
                 # If target is a standard TextChannel, we can spawn threads off messages
-                if isinstance(target, discord.TextChannel) and message_id:
+                if isinstance(target, discord.TextChannel) and str(message_id or "").isdigit():
                     try:
                         root_msg = await target.fetch_message(int(message_id))
                         # If a thread doesn't already exist on this message, create it

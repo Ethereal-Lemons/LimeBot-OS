@@ -4321,8 +4321,14 @@ class WebChannel(BaseChannel):
                     s.bind((host, current_port))
 
                 # If we got here, the port is likely available
+                # Access lines ("GET /api/... 200") repeat dozens of times a
+                # minute from the dashboard and only bury real warnings.
                 config = uvicorn.Config(
-                    self.app, host=host, port=current_port, log_level="info"
+                    self.app,
+                    host=host,
+                    port=current_port,
+                    log_level=os.getenv("LIMEBOT_UVICORN_LOG_LEVEL", "warning").strip().lower(),
+                    access_log=False,
                 )
                 self.server = uvicorn.Server(config)
                 self.actual_port = current_port

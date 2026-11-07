@@ -16,6 +16,34 @@ LIMEBOT_CONFIG_PATH = get_config_file()
 ELEVENLABS_STT_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 
 
+class ElevenLabsSTTError(RuntimeError):
+    """ElevenLabs rejected a transcription request."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(f"ElevenLabs STT error ({status_code}): {detail}")
+        self.status_code = status_code
+        self.missing_permission = (
+            status_code in (401, 403) and "missing_permissions" in detail
+        )
+
+    @property
+    def user_message(self) -> str:
+        if self.missing_permission:
+            return (
+                "I couldn't transcribe that: the ElevenLabs API key is missing the "
+                "Speech to Text permission. Enable it on the key in the ElevenLabs "
+                "dashboard, then restart LimeBot."
+            )
+        if self.status_code in (401, 403):
+            return (
+                "I couldn't transcribe that: ElevenLabs rejected the API key. "
+                "Check ELEVENLABS_API_KEY."
+            )
+        if self.status_code == 429:
+            return "I couldn't transcribe that: ElevenLabs is rate limiting requests. Try again shortly."
+        return "I couldn't process that voice message. Check ElevenLabs voice input and try again."
+
+
 class ElevenLabsSTT:
     """Transcribe audio files with ElevenLabs Scribe."""
 
@@ -100,7 +128,7 @@ class ElevenLabsSTT:
 
         if response.status_code != 200:
             detail = response.text[:500]
-            raise RuntimeError(f"ElevenLabs STT error ({response.status_code}): {detail}")
+            raise ElevenLabsSTTError(response.status_code, detail)
 
         try:
             payload = response.json()
