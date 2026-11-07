@@ -90,6 +90,7 @@ persona/USER.md
 
 # Sensitive Data
 data/*.json
+/data/cli-start.lock
 /.limebot-update-backups/
 contacts.json
 server_diagnostics/

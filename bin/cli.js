@@ -41,6 +41,7 @@ import {
 } from './startup-flow.js';
 import { describeSupportedNode, explainUnsupportedNode, isSupportedNodeVersion } from './runtime-support.js';
 import { cleanupStoppedTaskState } from './task-state.js';
+import { acquireStartLock, isProcessAlive, readStartLock } from './start-lock.js';
 import { refreshWindowsProcessPath } from './windows-path.js';
 import {
     applyUpdate,
@@ -55,6 +56,7 @@ const UPDATE_CHECK_TTL_MS = 1000 * 60 * 60 * 6;
 const UPDATE_CHECK_TIMEOUT_MS = 2500;
 const UPDATE_CHECK_CACHE_PATH = path.join(rootDir, 'data', 'cli-update-check.json');
 const DEPENDENCY_STATE_PATH = path.join(rootDir, 'data', 'dependency-state.json');
+const START_LOCK_PATH = path.join(rootDir, 'data', 'cli-start.lock');
 const WIN_MAX_PATH_SAFE = 259;
 const MIN_PYTHON_MAJOR = 3;
 const MIN_PYTHON_MINOR = 11;
@@ -1893,6 +1895,20 @@ async function cmdLogs(args) {
 async function cmdStop() {
     console.log(`${colors.lime}${colors.bright}\n  🍋 Stopping LimeBot${colors.reset}\n`);
 
+    const startLock = readStartLock(START_LOCK_PATH, rootDir);
+    if (startLock && startLock.pid !== process.pid && isProcessAlive(startLock.pid)) {
+        try {
+            if (process.platform === 'win32') {
+                execSync(`taskkill /T /F /PID ${startLock.pid}`, { stdio: 'ignore' });
+            } else {
+                process.kill(startLock.pid, 'SIGTERM');
+            }
+            success(`Stopped LimeBot supervisor (process ${startLock.pid})`);
+        } catch {
+            warning(`Could not stop LimeBot supervisor (process ${startLock.pid}).`);
+        }
+    }
+
     const backendPort = getConfiguredPort('WEB_PORT', 8000);
     const frontendPort = getConfiguredPort('FRONTEND_PORT', 5173);
 
@@ -2312,9 +2328,41 @@ async function cmdStart(args, updateStatus = null) {
 
     // ── Process management ────────────────────────────────────────
 
+    let startLock = null;
+    if (!frontendOnly) {
+        startLock = acquireStartLock({ lockPath: START_LOCK_PATH, rootDir });
+        if (!startLock.acquired) {
+            const owner = startLock.ownerPid ? ` (process ${startLock.ownerPid})` : '';
+            warning(
+                `LimeBot is already ${startLock.reason === 'starting' ? 'starting' : 'running'} in this project${owner}. ` +
+                'Use "npm run stop" before starting it again.'
+            );
+            return;
+        }
+    }
+
     let backendProc = null;
     let frontendProc = null;
     let bridgeProc = null;
+    let configWatcher = null;
+    let cleaned = false;
+
+    const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+
+        log(colors.gray, '\n  Stopping LimeBot...');
+        configWatcher?.close();
+        configWatcher = null;
+        killProc(backendProc);
+        killProc(frontendProc);
+        killProc(bridgeProc);
+        process.exitCode = 0;
+    };
+    process.once('SIGINT', cleanup);
+    process.once('SIGTERM', cleanup);
+    process.once('exit', cleanup);
+    process.once('exit', () => startLock?.release());
 
     const startBackend = async () => {
         // FIX: removed duplicate info('Starting backend...') line
@@ -2390,7 +2438,7 @@ async function cmdStart(args, updateStatus = null) {
     await scheduleBridgeUpdate();
     if (!frontendOnly && !backendProc) await startBackend();
     try {
-        watchConfigFile({
+        configWatcher = watchConfigFile({
             directory: rootDir,
             filename: '.env',
             debounceMs: 1000,
@@ -2494,20 +2542,6 @@ async function cmdStart(args, updateStatus = null) {
         });
     }
 
-    let cleaned = false;
-    const cleanup = () => {
-        if (cleaned) return;
-        cleaned = true;
-
-        log(colors.gray, '\n  Stopping LimeBot...');
-        killProc(backendProc);
-        killProc(frontendProc);
-        killProc(bridgeProc);
-        process.exitCode = 0;
-    };
-    process.once('SIGINT', cleanup);
-    process.once('SIGTERM', cleanup);
-    process.once('exit', cleanup);
 }
 
 // ── Entry point ───────────────────────────────────────────────────

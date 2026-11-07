@@ -328,6 +328,8 @@ Close the terminal, open a new one, and try `npm start` again.
 6. Send a first message. LimeBot will ask a few persona questions and write `SOUL.md` and `IDENTITY.md`.
 
 After one successful start, `npm run start:quick` is the fastest warm start.
+Only one backend can run from a checkout at a time; use `npm run stop` before
+starting it again.
 
 ### What gets installed
 
