@@ -31,9 +31,9 @@ except ImportError:
     logger.warning("Playwright not installed. Browser features will be disabled.")
 
 BROWSER_INSTALL_HINT = (
-    "The real browser is not installed yet. One step from the LimeBot folder: "
-    "npm run lime-bot setup -- --recommended"
-    " (or: npm run lime-bot feature install browser && npm run install-browser)."
+    "The LimeBot browser is not installed. Do not retry browser or search tools "
+    "during this turn. From the LimeBot folder, run "
+    "`npm run lime-bot setup -- --recommended` to install it."
 )
 
 BROWSER_LAUNCH_FAILED_ERROR = (

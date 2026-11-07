@@ -307,9 +307,11 @@ class ToolRecoveryService:
             )
         return ToolRecoveryResult(attempts, queued=True)
 
-    def collect_turn_tool_errors(self, entries: List[Dict[str, Any]]) -> List[Tuple[str, str]]:
-        """Return this turn's error/rejection/policy-deny tool results."""
+    @staticmethod
+    def collect_turn_tool_errors(entries: List[Dict[str, Any]]) -> List[Tuple[str, str]]:
+        """Return distinct error/rejection/policy-deny results from this turn."""
         errors: List[Tuple[str, str]] = []
+        seen: Set[str] = set()
         for entry in reversed(entries):
             role = entry.get("role")
             if role == "user":
@@ -319,37 +321,77 @@ class ToolRecoveryService:
             name = str(entry.get("name") or "tool")
             content = str(entry.get("content") or "").strip()
             if is_tool_result_error(name, content):
-                errors.append((name, redact_sensitive_text(content)))
+                safe_content = redact_sensitive_text(content)
+                signature = " ".join(safe_content.casefold().split())
+                if signature not in seen:
+                    errors.append((name, safe_content))
+                    seen.add(signature)
         errors.reverse()
         return errors
+
+    @staticmethod
+    def _format_user_visible_tool_error(
+        name: str, content: str, reply: str
+    ) -> str:
+        """Turn tool diagnostics into one concise, actionable chat message."""
+        normalized = " ".join(str(content or "").casefold().split())
+        visible = str(reply or "").casefold()
+        browser_missing = (
+            "browser is not installed" in normalized
+            or "playwright is not installed" in normalized
+        )
+        if browser_missing:
+            setup = "`npm run lime-bot setup -- --recommended`"
+            reply_already_explains_cause = (
+                "browser" in visible
+                and any(
+                    phrase in visible
+                    for phrase in ("not installed", "isn't installed", "isn’t installed", "missing")
+                )
+            )
+            if reply_already_explains_cause:
+                return (
+                    "To enable search, run "
+                    f"{setup} from the LimeBot folder."
+                )
+            return (
+                "Search is unavailable because LimeBot's browser is not installed. "
+                f"Run {setup} from the LimeBot folder."
+            )
+
+        detail = str(content or "").strip()
+        for prefix in (f"Error executing {name}:", "Error:"):
+            if detail.casefold().startswith(prefix.casefold()):
+                detail = detail[len(prefix):].strip()
+                break
+        label = "Web search" if name == "web_search" else name.replace("_", " ").capitalize()
+        return f"{label} failed: {detail or 'unknown error'}"
 
     @staticmethod
     def ensure_reply_includes_tool_errors(
         reply: str, errors: List[Tuple[str, str]]
     ) -> str:
-        """Make sure a failed tool's exact text is visible in the user reply."""
+        """Make each distinct tool failure visible once in clear language."""
         if not errors:
             return reply
         visible = str(reply or "")
         missing: List[Tuple[str, str]] = []
+        seen: Set[str] = set()
         for name, content in errors:
-            first_line = next(
-                (line.strip() for line in content.splitlines() if line.strip()),
-                content,
+            message = ToolRecoveryService._format_user_visible_tool_error(
+                name, content, visible
             )
-            marker = first_line or content[:160]
-            if marker and marker in visible:
+            signature = " ".join(message.casefold().split())
+            if signature in seen or message.casefold() in visible.casefold():
                 continue
-            if content[:120] and content[:120] in visible:
-                continue
-            missing.append((name, content))
+            missing.append((name, message))
+            seen.add(signature)
         if not missing:
             return visible
-        blocks = [f"`{name}` rejected:\n{content}" for name, content in missing]
-        appendix = "\n\n".join(blocks)
+        appendix = "\n\n".join(message for _name, message in missing)
         if visible.strip():
             return visible.rstrip() + "\n\n" + appendix
-        return "I ran the requested tool(s), but they failed:\n" + appendix
+        return "I couldn't complete the request. " + appendix
 
     def build_tool_fallback_reply(
         self, entries: List[Dict[str, Any]], max_items: int = 2

@@ -36,6 +36,56 @@ class TestToolFailureHandling(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(timeout.timed_out)
         self.assertTrue(timeout.stalled)
 
+    async def test_repeated_tool_errors_are_collapsed_and_humanized(self):
+        from core.browser import BROWSER_INSTALL_HINT
+        from core.tool_recovery_service import ToolRecoveryService
+
+        service = object.__new__(ToolRecoveryService)
+        entries = [
+            {"role": "user", "content": "Find an image"},
+            {
+                "role": "tool",
+                "name": "web_search",
+                "content": f"Error: {BROWSER_INSTALL_HINT}",
+            },
+            {
+                "role": "tool",
+                "name": "web_search",
+                "content": f"Error: {BROWSER_INSTALL_HINT}",
+            },
+            {
+                "role": "tool",
+                "name": "web_search",
+                "content": f"Error: {BROWSER_INSTALL_HINT}",
+            },
+        ]
+
+        errors = service.collect_turn_tool_errors(entries)
+        self.assertEqual(len(errors), 1)
+
+        reply = service.ensure_reply_includes_tool_errors(
+            "I couldn't fetch the image because the local browser isn't installed.",
+            errors * 3,
+        )
+        self.assertEqual(reply.count("npm run lime-bot setup -- --recommended"), 1)
+        self.assertIn("To enable search", reply)
+        self.assertNotIn("web_search` rejected", reply)
+        self.assertNotIn("One step from the LimeBot folder", reply)
+
+    async def test_generic_tool_failure_is_reported_once_without_error_prefix(self):
+        from core.tool_recovery_service import ToolRecoveryService
+
+        reply = ToolRecoveryService.ensure_reply_includes_tool_errors(
+            "",
+            [
+                ("read_file", "Error: missing file"),
+                ("read_file", "Error: missing file"),
+            ],
+        )
+        self.assertEqual(reply.count("Read file failed"), 1)
+        self.assertIn("missing file", reply)
+        self.assertNotIn("Error:", reply)
+
     async def test_batch_serializes_write_before_verification_command(self):
         from core.bus import MessageBus
         from core.loop import AgentLoop
