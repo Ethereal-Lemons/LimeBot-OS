@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.16 - 2026-11-07
+### Added
+- Model-directed tool choice: every eligible non-empty turn receives the tools
+  allowed for its channel and profile, and the model can combine tools as needed.
+- A structured `attach_to_chat` option for image-search results, so the model
+  controls whether a result is displayed in the current conversation.
+- Refreshed model catalog entries for Anthropic, Gemini, OpenAI/Codex, and xAI.
+
+### Changed
+- Removed phrase-based tool shortlisting, exclusive media tool sets, casual-turn
+  tool suppression, and keyword-based subagent recommendations.
+- Removed the obsolete tool-shortlist setting from config and the dashboard.
+- Tool failures are deduplicated and summarized in clearer user-facing text.
+
+### Reliability
+- Improved provider recovery and MCP SDK compatibility.
+- Continued durable task and queued-chat recovery across process restarts.
+
 ## 1.0.15 - 2026-08-30
 ### Fixed
 - Discord/WhatsApp photo-send: after `web_search(kind="images")` the host

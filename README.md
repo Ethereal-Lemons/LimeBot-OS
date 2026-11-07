@@ -10,6 +10,7 @@
 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-lime.svg)](https://opensource.org/licenses/MIT)
+[![Latest release](https://img.shields.io/github/v/release/Ethereal-Lemons/LimeBot-OS?label=Latest%20release)](https://github.com/Ethereal-Lemons/LimeBot-OS/releases/latest)
 [![Status](https://img.shields.io/badge/Status-Stable-brightgreen.svg)](#-getting-started)
 [![LLM Support](https://img.shields.io/badge/LLM%20Support-Universal-blue.svg)](#-llm-support)
 [![Python](https://img.shields.io/badge/Python-3.11--3.14-blue.svg)](https://www.python.org/)
@@ -46,6 +47,9 @@ On Windows PowerShell use `powershell -ExecutionPolicy Bypass -File docker/prepa
 
 Details, optional extras, and developer commands are further down.
 
+Already have a checkout? Update it with `npm run update`, then start LimeBot
+again with `npm start`.
+
 ---
 
 ## 🏛️ How It Works (Architecture Overview)
@@ -73,6 +77,14 @@ graph TD
 ---
 
 ## ✨ What It Can Actually Do
+
+### 🧰 Model-Directed Tools
+
+Every eligible non-empty turn gives the model the tools available to the
+current channel and agent profile. The model chooses what fits the request and
+can combine tools for multi-step work; tool selection does not depend on
+specific trigger words. Profile access, approval, and host safety checks still
+apply.
 
 ### 🧠 It Remembers Everything
 Three-tier memory system that persists across sessions:
@@ -140,8 +152,8 @@ Persistent cron system:
 ### 🤖 It Can Spawn Sub-Agents
 For complex multi-step tasks, LimeBot can delegate work to an isolated background agent:
 - Sub-agent runs in its own session with its own tool loop
-- Built-in specialist profiles like `reviewer`, `verifier`, and `explorer` can be recommended automatically when the request wording matches the task
-- Custom subagents can also be suggested when their descriptions overlap strongly with the current request
+- The model sees available specialist profiles and their descriptions, then
+  decides whether and where to delegate
 - Reports back to the parent session when complete
 - Coding, repository, review, and verification work defaults to a temporary copy-on-write workspace; the report includes a bounded structured diff and changes are not merged into the live project implicitly
 - Use `isolation="copy"` to force isolation or `isolation="none"` only for an explicitly shared task
@@ -577,8 +589,8 @@ LLM_PROXY_URL=http://localhost:8080/v1 # Optional: Route all traffic through a g
 ```
 
 LimeBot defaults to the `fast` AI harness: Auto-RAG gets an 80ms request
-budget. Every non-empty turn receives the tools available to its current
-profile and channel, and the model chooses whether to call them. Set
+budget. Every eligible non-empty turn receives the tools available to its
+current profile and channel, and the model chooses whether to call them. Set
 `LIMEBOT_AI_HARNESS_MODE=balanced` to use a 200ms Auto-RAG budget instead.
 
 > [!TIP]
