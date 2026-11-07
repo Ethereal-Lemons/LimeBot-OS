@@ -7,7 +7,14 @@ import io
 import json
 import aiohttp
 import discord
-from discord import app_commands
+try:
+    from discord import app_commands
+except ImportError:  # Pycord's experimental voice-receive build has its own Bot API.
+    app_commands = None
+
+_APPLICATION_CONTEXT_TYPE = getattr(
+    discord, "ApplicationContext", getattr(discord, "Interaction", object)
+)
 import random
 import re
 import time
@@ -231,9 +238,26 @@ class DiscordChannel(BaseChannel):
 
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.voice_states = True
+        self._using_pycord = app_commands is None
+        self._voice_enabled = bool(getattr(self.config, "voice_enabled", False))
+        self._client_loop = None
+        self._owns_client_loop = False
 
-        self.client = discord.Client(intents=intents)
-        self.tree = discord.app_commands.CommandTree(self.client)
+        if self._using_pycord:
+            try:
+                self._client_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._client_loop = asyncio.new_event_loop()
+                self._owns_client_loop = True
+            self.client = discord.Bot(intents=intents, loop=self._client_loop)
+        else:
+            self.client = discord.Client(intents=intents)
+        self.tree = (
+            None
+            if self._using_pycord
+            else discord.app_commands.CommandTree(self.client)
+        )
         self.token: str | None = getattr(self.config, "token", None)
 
         raw_channels = getattr(self.config, "allow_channels", [])
@@ -266,6 +290,20 @@ class DiscordChannel(BaseChannel):
         self._embed_theme = getattr(self.config, "embed_theme", {}) or {}
         self._nickname_templates = getattr(self.config, "nickname_templates", {}) or {}
         self._avatar_overrides = getattr(self.config, "avatar_overrides", {}) or {}
+        self._voice_conversation = None
+        if self._voice_enabled and self._using_pycord:
+            from core.discord_voice import DiscordVoiceConversation
+
+            self._voice_conversation = DiscordVoiceConversation(
+                discord,
+                on_transcript=self._handle_voice_transcript,
+                is_allowed=self.is_allowed,
+            )
+        elif self._voice_enabled:
+            logger.error(
+                "[Discord Voice] Voice listening is enabled, but this environment uses discord.py. "
+                "Install the optional 'discord-voice' feature and restart LimeBot."
+            )
 
         self._register_events()
 
@@ -456,12 +494,14 @@ class DiscordChannel(BaseChannel):
                                 pass
 
     def _register_events(self) -> None:
-        """Register discord.py event handlers."""
+        """Register Discord event and application command handlers."""
 
-        @self.tree.command(
+        command = self.tree.command if self.tree is not None else self.client.slash_command
+
+        @command(
             name="status", description="Check LimeBot system health and uptime."
         )
-        async def cmd_status(interaction: discord.Interaction):
+        async def cmd_status(interaction: _APPLICATION_CONTEXT_TYPE):
             from time import time
             import psutil
 
@@ -472,12 +512,12 @@ class DiscordChannel(BaseChannel):
             embed.add_field(
                 name="RAM", value=f"{psutil.virtual_memory().percent}%", inline=True
             )
-            await interaction.response.send_message(embed=embed)
+            await self._respond_interaction(interaction, embed=embed)
 
-        @self.tree.command(
+        @command(
             name="persona", description="View the currently active bot personality."
         )
-        async def cmd_persona(interaction: discord.Interaction):
+        async def cmd_persona(interaction: _APPLICATION_CONTEXT_TYPE):
             from core.prompt import get_identity_data
 
             data = get_identity_data()
@@ -491,25 +531,127 @@ class DiscordChannel(BaseChannel):
                 if len(desc) > 4000
                 else f"```\n{desc}\n```"
             )
-            await interaction.response.send_message(embed=embed)
+            await self._respond_interaction(interaction, embed=embed)
 
-        @self.tree.command(
+        @command(
             name="clear_memory",
             description="Wipe temporary session history for this chat.",
         )
-        async def cmd_clear(interaction: discord.Interaction):
+        async def cmd_clear(interaction: _APPLICATION_CONTEXT_TYPE):
             if not self.agent:
-                await interaction.response.send_message(
-                    "❌ Agent runtime not linked.", ephemeral=True
+                await self._respond_interaction(
+                    interaction, "❌ Agent runtime not linked.", ephemeral=True
                 )
                 return
 
             from core.session_manager import get_session_manager
 
             sm = get_session_manager()
-            await sm.clear_session(str(interaction.channel_id))
-            await interaction.response.send_message(
-                "🧠 Chat session history has been cleared.", ephemeral=False
+            channel_id = getattr(interaction, "channel_id", None)
+            if channel_id is None:
+                channel_id = getattr(getattr(interaction, "channel", None), "id", "")
+            await sm.clear_session(str(channel_id))
+            await self._respond_interaction(
+                interaction, "🧠 Chat session history has been cleared.", ephemeral=False
+            )
+
+        @command(
+            name="voice_join",
+            description="Join your voice channel and start a spoken conversation with LimeBot.",
+        )
+        async def cmd_voice_join(interaction: _APPLICATION_CONTEXT_TYPE):
+            user = self._interaction_user(interaction)
+            guild = getattr(interaction, "guild", None)
+            text_channel = getattr(interaction, "channel", None)
+            if not guild or not user or not text_channel:
+                await self._respond_interaction(
+                    interaction,
+                    "Use `/voice_join` in a server text channel while you are connected to a voice channel.",
+                    ephemeral=True,
+                )
+                return
+            if not self.is_allowed(str(user.id)):
+                await self._respond_interaction(
+                    interaction, "You aren't allowed to start a LimeBot voice session.", ephemeral=True
+                )
+                return
+            if self._allowed_channels and str(text_channel.id) not in self._allowed_channels:
+                await self._respond_interaction(
+                    interaction,
+                    "Voice sessions can only be started from an allowed Discord text channel.",
+                    ephemeral=True,
+                )
+                return
+            voice_state = getattr(user, "voice", None)
+            voice_channel = getattr(voice_state, "channel", None)
+            if voice_channel is None:
+                await self._respond_interaction(
+                    interaction, "Join a voice channel first, then run `/voice_join` again.", ephemeral=True
+                )
+                return
+            if not self._voice_conversation:
+                if self._using_pycord:
+                    message = "Voice conversations are off. Set `ENABLE_DISCORD_VOICE=true` in `.env` and restart LimeBot."
+                else:
+                    message = "Voice conversations need the optional DAVE receive package. Run `limebot feature install discord-voice`, then enable `ENABLE_DISCORD_VOICE=true` and restart."
+                await self._respond_interaction(interaction, message, ephemeral=True)
+                return
+
+            await self._defer_interaction(interaction)
+            try:
+                await self._voice_conversation.join(
+                    guild=guild,
+                    voice_channel=voice_channel,
+                    text_channel=text_channel,
+                    owner_id=int(user.id),
+                )
+                await self._followup_interaction(
+                    interaction, f"Joined <#{voice_channel.id}>. Say something when you're ready."
+                )
+            except Exception as exc:
+                logger.warning(f"[Discord Voice] Could not join voice: {exc}")
+                await self._followup_interaction(
+                    interaction, f"I couldn't start the voice conversation: {exc}", ephemeral=True
+                )
+
+        @command(
+            name="voice_leave",
+            description="Stop listening and leave the active voice conversation.",
+        )
+        async def cmd_voice_leave(interaction: _APPLICATION_CONTEXT_TYPE):
+            guild = getattr(interaction, "guild", None)
+            user = self._interaction_user(interaction)
+            if not guild or not user:
+                await self._respond_interaction(
+                    interaction, "Use `/voice_leave` in the server where LimeBot is listening.", ephemeral=True
+                )
+                return
+            if not self._voice_conversation:
+                await self._respond_interaction(
+                    interaction, "Voice conversations aren't active.", ephemeral=True
+                )
+                return
+            permissions = getattr(user, "guild_permissions", None)
+            administrator = bool(
+                getattr(permissions, "administrator", False)
+                or getattr(permissions, "manage_channels", False)
+            )
+            if not self._voice_conversation.can_leave(
+                guild.id, user.id, administrator=administrator
+            ):
+                await self._respond_interaction(
+                    interaction,
+                    "Only the person who started this session or a server moderator can stop it.",
+                    ephemeral=True,
+                )
+                return
+            await self._defer_interaction(interaction)
+            left = await self._voice_conversation.leave(guild.id)
+            await self._followup_interaction(
+                interaction,
+                "LimeBot left the voice channel and stopped listening."
+                if left
+                else "There isn't an active voice conversation.",
             )
 
         @self.client.event
@@ -519,12 +661,13 @@ class DiscordChannel(BaseChannel):
             )
             try:
                 # Global sync — registers /status, /persona, /clear_memory worldwide.
-                synced = await self.tree.sync()
-                logger.info(f"[Discord] Synced {len(synced)} global slash command(s).")
+                if self.tree is not None:
+                    synced = await self.tree.sync()
+                    logger.info(f"[Discord] Synced {len(synced)} global slash command(s).")
             except Exception as e:
                 logger.error(f"[Discord] Failed to sync global slash commands: {e}")
 
-            for guild in self.client.guilds:
+            for guild in self.client.guilds if self.tree is not None else []:
                 try:
                     self.tree.copy_global_to(guild=guild)
                     await self.tree.sync(guild=guild)
@@ -556,32 +699,98 @@ class DiscordChannel(BaseChannel):
         async def on_error(event: str, *args, **kwargs):
             logger.exception(f"[Discord] Unhandled error in event '{event}'")
 
-        @self.tree.error
-        async def on_app_command_error(
-            interaction: discord.Interaction,
-            error: app_commands.AppCommandError,
-        ):
-
-            if isinstance(error, app_commands.CommandInvokeError):
-                original = error.original
-                if isinstance(original, discord.NotFound) and original.code == 10062:
-                    logger.debug(
-                        f"[Discord] Stale interaction for '{interaction.command and interaction.command.name}' "
-                        "ignored (10062 — likely an evicted voice skill command)."
-                    )
-                    return
-            # All other command errors — try to tell the user, log the full trace
-            logger.exception(
-                f"[Discord] Slash command error in '{interaction.command and interaction.command.name}': {error}"
+        async def on_app_command_error(interaction: Any, error: Exception):
+            command_obj = getattr(interaction, "command", None)
+            if command_obj is None:
+                command_obj = getattr(getattr(interaction, "interaction", None), "command", None)
+            command_name = getattr(command_obj, "name", "unknown")
+            original = getattr(error, "original", error)
+            if isinstance(original, discord.NotFound) and getattr(original, "code", None) == 10062:
+                logger.debug(f"[Discord] Ignored stale interaction for '{command_name}'.")
+                return
+            logger.opt(exception=error).error(
+                f"[Discord] Slash command error in '{command_name}': {error}"
             )
-            msg = "Something went wrong. Please try again."
             try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(msg, ephemeral=True)
-                else:
-                    await interaction.response.send_message(msg, ephemeral=True)
+                await self._respond_interaction(
+                    interaction, "Something went wrong. Please try again.", ephemeral=True
+                )
             except Exception:
                 pass
+
+        if self.tree is not None:
+            self.tree.error(on_app_command_error)
+        else:
+            on_app_command_error.__name__ = "on_application_command_error"
+            self.client.event(on_app_command_error)
+
+    @staticmethod
+    def _interaction_user(interaction: Any) -> Any:
+        return getattr(interaction, "user", None) or getattr(interaction, "author", None)
+
+    @staticmethod
+    async def _respond_interaction(
+        interaction: Any, content: str | None = None, *, embed: Any = None, ephemeral: bool = False
+    ) -> None:
+        if app_commands is None:
+            await interaction.respond(content=content, embed=embed, ephemeral=ephemeral)
+            return
+        await interaction.response.send_message(
+            content=content, embed=embed, ephemeral=ephemeral
+        )
+
+    @staticmethod
+    async def _defer_interaction(interaction: Any) -> None:
+        if app_commands is None:
+            await interaction.defer(ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+    @staticmethod
+    async def _followup_interaction(
+        interaction: Any, content: str, *, ephemeral: bool = False
+    ) -> None:
+        if app_commands is None:
+            await interaction.followup.send(content, ephemeral=ephemeral)
+            return
+        await interaction.followup.send(content, ephemeral=ephemeral)
+
+    async def _handle_voice_transcript(
+        self,
+        *,
+        sender_id: str,
+        sender_name: str,
+        text_channel: Any,
+        voice_channel: Any,
+        guild_id: str,
+        session_id: str,
+        transcript: str,
+    ) -> None:
+        if not self.is_allowed(sender_id):
+            return
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=str(text_channel.id),
+            content=transcript,
+            metadata={
+                "session_id": session_id,
+                "discord_voice_session": session_id,
+                "sender_name": sender_name,
+                "author": sender_name,
+                "author_display": sender_name,
+                "channel_name": getattr(voice_channel, "name", "Voice"),
+                "guild_id": guild_id,
+                "channel_id": str(voice_channel.id),
+                "kind": "voice",
+                "mentioned": True,
+                "is_dm": False,
+                "discord_conversation": {
+                    "kind": "voice",
+                    "channel_id": str(voice_channel.id),
+                    "guild_id": guild_id,
+                },
+            },
+        )
 
     async def _set_presence(self) -> None:
         """Set bot activity and status from config."""
@@ -779,11 +988,20 @@ class DiscordChannel(BaseChannel):
 
     async def stop(self) -> None:
         """Stop the Discord bot gracefully."""
+        if self._voice_conversation:
+            await self._voice_conversation.close()
         await self._drain_send_tasks()
         await self._cancel_typing_tasks()
         if not self.client.is_closed():
             await self.client.close()
             logger.info("[Discord] Client closed.")
+        if (
+            self._owns_client_loop
+            and self._client_loop is not None
+            and not self._client_loop.is_running()
+            and not self._client_loop.is_closed()
+        ):
+            self._client_loop.close()
 
     async def send(self, msg: OutboundMessage) -> None:
         """Schedule a message send without blocking the caller."""
@@ -978,6 +1196,22 @@ class DiscordChannel(BaseChannel):
                 target, msg.chat_id, msg.content
             ):
                 await self._send_text(target, msg.content)
+            voice_session_id = str(metadata.get("discord_voice_session") or "")
+            if (
+                self._voice_conversation
+                and voice_session_id
+                and metadata.get("event_kind") == "assistant_message"
+                and metadata.get("terminal")
+                and self._voice_conversation.has_session(voice_session_id)
+            ):
+                spoken = await self._voice_conversation.speak_reply(
+                    voice_session_id, msg.content
+                )
+                if not spoken:
+                    await self._send_text(
+                        target,
+                        "I couldn't play that reply aloud. The text is above; check ElevenLabs and FFmpeg setup.",
+                    )
 
     async def _resolve_target(
         self, chat_id: str

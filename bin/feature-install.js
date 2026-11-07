@@ -11,6 +11,12 @@ export const FEATURE_DEFINITIONS = Object.freeze({
         manifest: 'requirements-video.txt',
         requiredBinaries: Object.freeze(['ffmpeg', 'ffprobe']),
     }),
+    'discord-voice': Object.freeze({
+        kind: 'python',
+        manifest: 'requirements-discord-voice.txt',
+        replacesDistribution: 'discord.py',
+        requiredBinaries: Object.freeze(['ffmpeg']),
+    }),
     whatsapp: Object.freeze({ kind: 'node', workspace: 'bridge' }),
     extension: Object.freeze({ kind: 'node', workspace: 'extension' }),
 });
@@ -39,6 +45,12 @@ export function getVideoReadinessState({ pythonDependenciesReady, binariesReady 
 
 export function getFeatureDefinition(name) {
     return FEATURE_DEFINITIONS[String(name || '').toLowerCase()] || null;
+}
+
+export function getPythonRequirementsPath({ rootDir, dependencyState }) {
+    const voiceInstalled = Boolean(dependencyState?.features?.['discord-voice']);
+    const manifest = voiceInstalled ? 'requirements-discord-voice.txt' : 'requirements.txt';
+    return path.join(rootDir, manifest);
 }
 
 export function getFeatureInstallSpec(name, { rootDir, venvPython }) {

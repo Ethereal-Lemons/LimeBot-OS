@@ -79,6 +79,7 @@ def load_config(force_reload=False):
     config.discord.activity_type = os.getenv("DISCORD_ACTIVITY_TYPE", "playing")
     config.discord.activity_text = os.getenv("DISCORD_ACTIVITY_TEXT", "LimeBot")
     config.discord.status = os.getenv("DISCORD_STATUS", "online")
+    config.discord.voice_enabled = _load_bool_env("ENABLE_DISCORD_VOICE", False)
  
     config.web = SimpleNamespace()
     try:

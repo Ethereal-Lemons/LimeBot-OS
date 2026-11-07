@@ -5989,6 +5989,11 @@ class AgentLoop:
                             "terminal": True,
                             "turn_status": turn_delivery_status,
                         }
+                        voice_session_id = str(
+                            msg.metadata.get("discord_voice_session") or ""
+                        ).strip()
+                        if msg.channel == "discord" and voice_session_id:
+                            meta["discord_voice_session"] = voice_session_id
                         if identity_updated:
                             meta["identity_updated"] = True
                         if iterations_limit_reached:
@@ -6041,9 +6046,15 @@ class AgentLoop:
                                 voice_cfg.get("enabled", False)
                                 and ElevenLabsTTS.get_api_key()
                             )
-                            delivery_mode = self._resolve_voice_delivery(
-                                msg.channel, voice_cfg, voice_on, bool(reply_to_user)
-                            )
+                            if msg.metadata.get("discord_voice_session"):
+                                # Discord voice sessions speak through the active
+                                # DAVE connection; don't create a second voice
+                                # attachment for the text channel.
+                                delivery_mode = "text"
+                            else:
+                                delivery_mode = self._resolve_voice_delivery(
+                                    msg.channel, voice_cfg, voice_on, bool(reply_to_user)
+                                )
                             outbound = None
 
                             if delivery_mode in ("audio_only", "audio_and_text"):

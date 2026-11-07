@@ -1,0 +1,4 @@
+-r requirements-core.txt
+# Experimental receive-side DAVE support, pinned to Pycord PR #3159.
+py-cord[voice] @ git+https://github.com/Pycord-Development/pycord.git@10a5e8cf13bd8db21f95baf62cf866056d1e1091
+davey>=0.1.6

@@ -25,6 +25,7 @@ import {
     getFeatureInstallSpec,
     getVideoBinaryInstallInstructions,
     getVideoReadinessState,
+    getPythonRequirementsPath,
     installRequestedFeatureSet,
     installFeatureThen,
     settleDependencyLanes,
@@ -1243,7 +1244,7 @@ ${colors.reset}
     ${colors.dim}limebot plugin uninstall <name>${colors.reset}
 
   ${colors.bright}Feature Commands:${colors.reset}
-    ${colors.dim}limebot feature install <browser|memory|documents|mcp|video|whatsapp|extension|all>${colors.reset}
+    ${colors.dim}limebot feature install <browser|memory|documents|mcp|video|discord-voice|whatsapp|extension|all>${colors.reset}
 
   ${colors.bright}Review Options:${colors.reset}
     ${colors.dim}limebot review-diff --diff-file change.patch --output review.json${colors.reset}
@@ -1583,15 +1584,16 @@ async function refreshDependenciesAfterUpdate() {
     }
 
     const venvPython = venvPythonPath();
-    const requirements = path.join(rootDir, 'requirements.txt');
+    const dependencyState = loadDependencyState(DEPENDENCY_STATE_PATH) || createDependencyState();
+    const requirements = getPythonRequirementsPath({ rootDir, dependencyState });
     if (fs.existsSync(venvPython) && fs.existsSync(requirements)) {
         await runDependencyCommand(
             venvPython,
-            ['-m', 'pip', 'install', '-r', 'requirements.txt', '--quiet'],
+            ['-m', 'pip', 'install', '-r', requirements, '--quiet'],
             {
                 env: childEnv,
                 label: 'Python dependency refresh',
-                retryCommand: `"${venvPython}" -m pip install -r requirements.txt`,
+                retryCommand: `"${venvPython}" -m pip install -r ${path.basename(requirements)}`,
             },
         );
     }
@@ -1709,6 +1711,13 @@ async function installOptionalFeature(feature) {
         : process.version;
     const fingerprint = buildFeatureFingerprint({ manifestPath: spec.manifestPath, runtime });
     const state = loadDependencyState(DEPENDENCY_STATE_PATH) || createDependencyState();
+    const requiredBinaries = definition.requiredBinaries || [];
+    const missingBinaries = await missingVideoBinaries(requiredBinaries);
+    if (missingBinaries.length) {
+        throw new Error(
+            `${name} needs ${missingBinaries.join(' and ')}. Install FFmpeg and retry:\n  ${getVideoBinaryInstallInstructions()}`
+        );
+    }
     const nodeFeatureSentinels = {
         whatsapp: path.join(rootDir, 'node_modules', '@whiskeysockets', 'baileys', 'package.json'),
         extension: path.join(rootDir, 'node_modules', '@types', 'chrome', 'package.json'),
@@ -1731,11 +1740,54 @@ async function installOptionalFeature(feature) {
     }
     info(`Installing optional ${name} feature...`);
     const command = spec.command === 'npm' && process.platform === 'win32' ? 'npm.cmd' : spec.command;
-    await runDependencyCommand(command, spec.args, {
-        env: buildChildEnv(),
-        label: `${name} feature installation`,
-        retryCommand: `${spec.command} ${spec.args.join(' ')}`,
-    });
+    if (definition.replacesDistribution) {
+        await runDependencyCommand(
+            venvPython,
+            ['-m', 'pip', 'uninstall', '--yes', definition.replacesDistribution, 'py-cord'],
+            {
+                env: buildChildEnv(),
+                label: `${name} Discord library replacement`,
+                retryCommand: `"${venvPython}" -m pip uninstall --yes ${definition.replacesDistribution} py-cord`,
+            },
+        );
+    }
+    try {
+        await runDependencyCommand(command, spec.args, {
+            env: buildChildEnv(),
+            label: `${name} feature installation`,
+            retryCommand: `${spec.command} ${spec.args.join(' ')}`,
+        });
+    } catch (installError) {
+        if (definition.replacesDistribution) {
+            try {
+                await runDependencyCommand(
+                    venvPython,
+                    ['-m', 'pip', 'uninstall', '--yes', 'py-cord', 'discord.py'],
+                    {
+                        env: buildChildEnv(),
+                        label: `${name} installation rollback cleanup`,
+                        retryCommand: `"${venvPython}" -m pip uninstall --yes py-cord discord.py`,
+                    },
+                );
+                await runDependencyCommand(
+                    venvPython,
+                    ['-m', 'pip', 'install', '-r', path.join(rootDir, 'requirements.txt'), '--quiet'],
+                    {
+                        env: buildChildEnv(),
+                        label: `${name} installation rollback`,
+                        retryCommand: `"${venvPython}" -m pip install -r requirements.txt`,
+                    },
+                );
+                writeDependencyStateAtomic(
+                    DEPENDENCY_STATE_PATH,
+                    clearFeatures(state, [name]),
+                );
+            } catch (rollbackError) {
+                error(`[CLI] Could not restore the standard Discord package: ${rollbackError}`);
+            }
+        }
+        throw installError;
+    }
     if (name === 'video') {
         const missing = await missingVideoBinaries(definition.requiredBinaries || []);
         if (missing.length) {
@@ -2260,8 +2312,12 @@ async function cmdStart(args, updateStatus = null) {
             const pythonInfo = await ensureSupportedPython(
                 venvPython, 'Virtual environment Python', venvDir
             );
+            const pythonRequirements = getPythonRequirementsPath({
+                rootDir,
+                dependencyState,
+            });
             pythonFingerprint = buildPythonFingerprint({
-                requirementsPath: path.join(rootDir, 'requirements.txt'),
+                requirementsPath: pythonRequirements,
                 venvPython,
                 pythonVersion: pythonInfo.version,
             });
@@ -2295,12 +2351,16 @@ async function cmdStart(args, updateStatus = null) {
         }
         if (pythonDecision?.installRequired) {
             info(`Refreshing core Python dependencies: ${pythonDecision.reason}.`);
+            const pythonRequirements = getPythonRequirementsPath({
+                rootDir,
+                dependencyState,
+            });
             lanes.python = async () => {
-                await runVenvPip(venvPython, ['install', '-r', 'requirements.txt', '--quiet'], {
+                await runVenvPip(venvPython, ['install', '-r', pythonRequirements, '--quiet'], {
                     run: (command, commandArgs) => runDependencyCommand(command, commandArgs, {
                         env: childEnv,
                         label: 'Core Python dependency installation',
-                        retryCommand: `"${venvPython}" -m pip install -r requirements.txt`,
+                        retryCommand: `"${venvPython}" -m pip install -r ${path.basename(pythonRequirements)}`,
                     }),
                 });
                 return pythonFingerprint;

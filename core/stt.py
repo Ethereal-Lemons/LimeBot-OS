@@ -65,7 +65,7 @@ class ElevenLabsSTT:
         api_key = cls.get_api_key()
         config = cls.get_config()
         if not config.get("enabled", True):
-            raise RuntimeError("WhatsApp voice transcription is disabled")
+            raise RuntimeError("Voice transcription is disabled")
         if config.get("provider", "elevenlabs") != "elevenlabs":
             raise RuntimeError("Unsupported voice transcription provider")
         if not api_key:

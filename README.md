@@ -178,7 +178,7 @@ LimeBot is a fully-featured MCP client:
 | Channel | How it works |
 |---------|-------------|
 | **Web Dashboard** | React + Vite UI connecting over WebSocket. Streams tokens as they arrive, shows live tool execution cards, confirmation prompts, thinking traces, and ghost activity indicators. **Includes a Custom CSS editor for global UI personalization.** |
-| **Discord** | Full `discord.py` integration. Responds to DMs and `@mentions`. Configurable allow-list by user ID and channel ID. Custom presence status, activity type, and display name. |
+| **Discord** | Responds to DMs and `@mentions`, with configurable user and channel allow-lists. Optional experimental voice conversations can listen, transcribe, and speak replies. |
 | **WhatsApp** | Connects to a local `whatsapp-web.js` bridge over WebSocket. Contact approval whitelist with pending/blocked states. QR code displayed in the web dashboard for easy pairing. |
 | **Telegram** | Bot API long-polling. Supports text send/receive, per-user allow-listing, optional per-chat allow-listing, typing indicators, and 4096-character chunking. |
 
@@ -360,14 +360,55 @@ same command again.
 | Word/PDF helpers | `npm run lime-bot feature install documents` | 10-30 MB |
 | MCP integration | `npm run lime-bot feature install mcp` | 10-30 MB |
 | Video analysis (`yt-dlp`, Pillow, FFmpeg checks) | `npm run lime-bot feature install video` | 100-300 MB |
+| Discord voice conversations | `npm run lime-bot feature install discord-voice` | Requires FFmpeg; replaces the standard Discord library with a pinned experimental DAVE receive build |
 | WhatsApp bridge | `npm run lime-bot feature install whatsapp` | 200-500 MB |
 | Browser companion build tools | `npm run lime-bot feature install extension` | 100-300 MB |
-| All optional features + Chromium | `npm run lime-bot feature install all` | Platform-dependent |
+| All stable optional features + Chromium | `npm run lime-bot feature install all` | Platform-dependent |
 
 WhatsApp is installed and built automatically before its first launch.
 `npm run extension:build` installs the extension workspace before building it.
 If an optional package is absent, only that capability is unavailable; core
 chat still starts.
+
+#### Discord voice conversations (experimental)
+
+Discord requires DAVE end-to-end encryption for normal voice channels. Pycord's
+receive-side support is still an open upstream change, so this feature is
+experimental and pins that revision. It is installed separately because it
+replaces `discord.py` in the LimeBot virtual environment; the CLI keeps using
+the selected Discord package on later starts and updates. The regular text bot
+continues to use the default package unless this feature is installed.
+Stop LimeBot before installation because the feature replaces its Discord
+library.
+
+1. Install FFmpeg if it is not already available on `PATH`:
+
+   ```bash
+   winget install --id Gyan.FFmpeg -e
+   # macOS: brew install ffmpeg
+   # Debian/Ubuntu: sudo apt install ffmpeg
+   ```
+
+2. From the LimeBot folder, install the voice package:
+
+   ```bash
+   npm run lime-bot feature install discord-voice
+   ```
+
+3. In `.env`, set `ENABLE_DISCORD_VOICE=true` and add `ELEVENLABS_API_KEY`.
+   Start LimeBot again with `npm run start`.
+
+4. Join a regular voice channel, then run `/voice_join` in a server text
+   channel. Use `/voice_leave` to stop the session. Only the person who started
+   the session or a server moderator can stop it.
+
+LimeBot waits for DAVE to become ready before listening. After a pause in
+speech, it sends the audio to ElevenLabs for transcription, passes the
+transcript to the agent, and speaks the reply. Audio is held temporarily for
+transcription and deleted afterward. Before recording starts, LimeBot posts a
+notice in the text channel. Only members allowed by `DISCORD_ALLOW_FROM` are
+transcribed; an empty allow-list keeps the existing behavior of allowing all
+members.
 
 Video analysis accepts allowed local files and public, unauthenticated HTTP(S)
 media. It rejects playlists, livestreams, private network destinations, media

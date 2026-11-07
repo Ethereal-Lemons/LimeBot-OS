@@ -8,6 +8,7 @@ import {
     getCoreNpmInstallSpec,
     getDependencySpawnSpec,
     getFeatureInstallSpec,
+    getPythonRequirementsPath,
     getRequestedFeatures,
     getVideoBinaryInstallInstructions,
     getVideoReadinessState,
@@ -20,7 +21,7 @@ import {
 test('feature mapping is closed and uses argv arrays', () => {
     const rootDir = path.resolve('fixture');
     assert.deepEqual(Object.keys(FEATURE_DEFINITIONS), [
-        'browser', 'memory', 'documents', 'mcp', 'video', 'whatsapp', 'extension',
+        'browser', 'memory', 'documents', 'mcp', 'video', 'discord-voice', 'whatsapp', 'extension',
     ]);
     const browser = getFeatureInstallSpec('browser', { rootDir, venvPython: 'python' });
     assert.equal(browser.command, 'python');
@@ -55,11 +56,34 @@ test('video feature declares its manifest and platform binary guidance', () => {
     assert.match(getVideoBinaryInstallInstructions('linux'), /apt install ffmpeg/);
 });
 
-test('all expands to every optional feature in a stable retry order', () => {
+test('Discord voice uses an isolated alternate dependency manifest and FFmpeg', () => {
+    const rootDir = path.resolve('fixture');
+    const voice = getFeatureInstallSpec('discord-voice', { rootDir, venvPython: 'python' });
+    assert.match(voice.manifestPath, /requirements-discord-voice\.txt$/);
+    assert.deepEqual(FEATURE_DEFINITIONS['discord-voice'].requiredBinaries, ['ffmpeg']);
+    assert.equal(FEATURE_DEFINITIONS['discord-voice'].replacesDistribution, 'discord.py');
+    assert.equal(
+        getPythonRequirementsPath({ rootDir, dependencyState: { features: {} } }),
+        path.join(rootDir, 'requirements.txt'),
+    );
+    assert.equal(
+        getPythonRequirementsPath({
+            rootDir,
+            dependencyState: { features: { 'discord-voice': { manifestHash: 'installed' } } },
+        }),
+        path.join(rootDir, 'requirements-discord-voice.txt'),
+    );
+});
+
+test('all installs the stable optional features and leaves experimental Discord voice opt-in', () => {
     assert.deepEqual(getRequestedFeatures('all'), [...FULL_FEATURE_INSTALL_ORDER]);
     assert.deepEqual(getRequestedFeatures('memory'), ['memory']);
+    assert.equal(FULL_FEATURE_INSTALL_ORDER.includes('discord-voice'), false);
     assert.throws(() => getRequestedFeatures('all; rm -rf'), /Unknown feature/);
-    assert.deepEqual(FULL_FEATURE_INSTALL_ORDER, Object.keys(FEATURE_DEFINITIONS));
+    assert.deepEqual(
+        [...FULL_FEATURE_INSTALL_ORDER, 'discord-voice'].sort(),
+        Object.keys(FEATURE_DEFINITIONS).sort(),
+    );
 });
 
 test('all installs every profile before launch-verifying Chromium', async () => {

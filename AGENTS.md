@@ -69,6 +69,7 @@ The heart of the system. Manages:
 - `config.llm.model` — active chat model
 - `config.llm.enable_dynamic_personality` — enables mood, affinity, and proactive jobs
 - `config.autonomous_mode` — bypasses confirmation gate for sensitive tools
+- `config.discord.voice_enabled` — enables the optional experimental Discord voice conversation path
 - `config.whitelist.allowed_paths` — roots for filesystem access
 
 ### `core/tool_recovery_service.py` — Recovery Coordination and Visibility
@@ -342,6 +343,12 @@ service; Markdown remains the source of truth if vector indexing is unavailable.
   callbacks and preserves the registered tool surface.
 - `core/voice_tool_service.py` owns on-demand voice synthesis and publication
   through the current chat bus; automatic voice delivery remains in the loop.
+- `core/discord_voice.py` owns optional per-guild Discord voice sessions,
+  per-speaker utterance buffering, silence-based turn splitting, temporary WAV
+  creation, ElevenLabs transcription, and reply playback. It starts only when
+  `ENABLE_DISCORD_VOICE=true` and the optional `discord-voice` CLI feature has
+  installed the pinned Pycord DAVE-receive build. It refuses to listen until the
+  voice client's DAVE session is ready. Audio files are removed after STT.
 - `core/safe_http_fetch.py` owns public-address checks, redirect-hop validation,
   response-size limits, and download type detection for URL downloads and
   readable pages.
@@ -707,6 +714,9 @@ Artifact serializers reveal only identity/title/type and whether a local artifac
 
 ### Discord Channel (`channels/discord.py`)
 - Responds to DMs and `@mentions` only (ignores ambient channel messages)
+- `/voice_join` starts one speech session per guild from the caller's current regular voice channel; `/voice_leave` is limited to its owner or a moderator
+- Voice transcripts enter the normal `InboundMessage` bus under a separate per-guild voice session; final replies retain the voice session ID for speech playback
+- Voice receive uses the optional pinned Pycord PR build, not the default `discord.py` dependency; install with `limebot feature install discord-voice` and enable `ENABLE_DISCORD_VOICE=true`
 - `DISCORD_ALLOW_FROM` — comma-separated user IDs (empty = allow all)
 - `DISCORD_ALLOW_CHANNELS` — comma-separated channel IDs (empty = allow all)
 - Sends long responses split at word boundaries
@@ -841,7 +851,7 @@ Enabled by `ENABLE_DYNAMIC_PERSONALITY=true`.
 The JavaScript toolchain requires Node.js 22.19 or newer. Both `start` and `doctor` reject an older runtime before dependency installation begins.
 
 First start installs the `core` profile only: root + `web` npm workspaces and
-`requirements.txt`. Optional features use a closed allowlist in
+`requirements.txt` (common Python packages plus stable `discord.py`). Optional features use a closed allowlist in
 `bin/feature-install.js`. On Windows, `.cmd`/`.bat` dependency shims are invoked
 through `ComSpec /d /s /c` with an argument array; direct `spawn("npm.cmd")`
 can raise `EINVAL` on supported Windows/Node combinations and must not be
@@ -932,7 +942,7 @@ npm link
 - **Per-tool result limits** — each tool has its own character limit instead of one global cap, preserving context window budget proportionally
 - **Grep cache** — `search_grep` results are cached for 30 seconds to avoid scanning all Markdown memory files on every message; file signatures invalidate stale entries immediately after a write
 - **History summarization** — when the session exceeds the token budget, the LLM summarizes older turns before they're evicted; the summary is inserted back into history as a system message
-- **Dependency profiles** — normal startup installs only `requirements.txt` plus root/web npm. Browser, memory, documents, MCP, and video are explicit optional Python manifests; WhatsApp and extension are optional Node workspace profiles. `requirements-dev.txt` includes all Python profiles and test tooling.
+- **Dependency profiles** — normal startup installs only `requirements.txt` plus root/web npm. Browser, memory, documents, MCP, and video are explicit optional Python manifests; WhatsApp and extension are optional Node workspace profiles. The opt-in `discord-voice` feature switches the Python Discord package to the pinned experimental Pycord DAVE-receive manifest; startup and updates retain that selected manifest. `requirements-dev.txt` includes stable Python profiles and test tooling, not the Discord voice replacement.
 - **Dependency fingerprints** — state schema 2 records core profiles and successful optional features. Old broad-install state forces one core refresh. Independent core npm/Python lanes run concurrently, then write `data/dependency-state.json` once after both settle; failed lanes are never current.
 - **Optional capability contract** — every optional capability declares a profile, closed install command, missing/degraded readiness behavior, and fingerprint or sentinel. Optional imports cannot break core startup. Browser setup launch-verifies Chromium. The project-directory watcher observes first `.env` creation, and WhatsApp installs/builds before launch.
 - **Liveness-first combined startup** — normal backend + frontend startup waits only for `/api/live`, then starts Vite immediately while capabilities continue loading. Backend-only startup and diagnostics still wait for authenticated `/api/ready`; the web composer and automatic persona kickoff keep using capability readiness before accepting agent work.
