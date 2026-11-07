@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -62,6 +63,10 @@ test('Discord voice uses an isolated alternate dependency manifest and FFmpeg', 
     assert.match(voice.manifestPath, /requirements-discord-voice\.txt$/);
     assert.deepEqual(FEATURE_DEFINITIONS['discord-voice'].requiredBinaries, ['ffmpeg']);
     assert.equal(FEATURE_DEFINITIONS['discord-voice'].replacesDistribution, 'discord.py');
+    assert.match(
+        readFileSync(path.resolve('requirements-discord-voice.txt'), 'utf8'),
+        /davey>=0\.1\.6,<0\.2\.0/,
+    );
     assert.equal(
         getPythonRequirementsPath({ rootDir, dependencyState: { features: {} } }),
         path.join(rootDir, 'requirements.txt'),
