@@ -185,9 +185,9 @@ class DiscordVoiceConversation:
                 "LimeBot is already listening in another voice channel in this server. Use /voice_leave first."
             )
 
-        # Discord voice clients default to self-deafened; explicitly opt out so
-        # the receive sink can hear the channel.
-        voice_client = await voice_channel.connect(self_deaf=False)
+        # Connectable.connect does not expose self_deaf. Pycord's VoiceClient
+        # defaults to self_deaf=False, which is required for receive sinks.
+        voice_client = await voice_channel.connect()
         notice = None
         try:
             if not await self._wait_for_dave(voice_client):

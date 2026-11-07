@@ -53,7 +53,7 @@ def test_voice_buffer_bounds_active_speakers_and_utterance_length():
 
 
 @pytest.mark.asyncio
-async def test_voice_session_announces_before_recording_and_joins_undeafened(monkeypatch):
+async def test_voice_session_announces_before_recording_and_uses_connect_defaults(monkeypatch):
     from core.discord_voice import DiscordVoiceConversation
     from core.stt import ElevenLabsSTT
     from core.tts import ElevenLabsTTS
@@ -121,7 +121,7 @@ async def test_voice_session_announces_before_recording_and_joins_undeafened(mon
     await conversation.leave(10)
 
     assert events[:3] == [
-        ("connect", {"self_deaf": False}),
+        ("connect", {}),
         "notice",
         "recording",
     ]

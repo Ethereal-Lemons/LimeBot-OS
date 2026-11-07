@@ -303,6 +303,72 @@ class TestSynthesizeLengthCap(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ElevenLabsTTS._truncate_for_speech("short", 2500), "short")
 
 
+class TestModelSpecificTtsSettings(unittest.IsolatedAsyncioTestCase):
+    async def _synthesize_settings(self, model_id):
+        from core.tts import ElevenLabsTTS
+
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            content = b"audio"
+            text = ""
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, json=None, headers=None):
+                captured["payload"] = json
+                return FakeResponse()
+
+        config = {
+            "voice_id": "voice-test",
+            "stability": 0.4,
+            "similarity_boost": 0.8,
+            "style": 0.2,
+            "use_speaker_boost": True,
+            "speed": 1.1,
+            "output_format": "mp3_44100_128",
+        }
+        with patch.object(ElevenLabsTTS, "get_api_key", return_value="test-key"), patch.object(
+            ElevenLabsTTS, "get_voice_config", return_value=config
+        ), patch("core.tts.httpx.AsyncClient", FakeAsyncClient):
+            await ElevenLabsTTS.synthesize_text("Hi.", settings={"model_id": model_id})
+
+        return captured["payload"]["voice_settings"]
+
+    async def test_v4_sends_only_supported_voice_settings(self):
+        self.assertEqual(
+            await self._synthesize_settings("eleven_v4"),
+            {"stability": 0.4, "similarity_boost": 0.8},
+        )
+
+    async def test_v3_sends_only_supported_voice_settings(self):
+        self.assertEqual(
+            await self._synthesize_settings("eleven_v3"),
+            {"stability": 0.4, "style": 0.2},
+        )
+
+    async def test_legacy_model_keeps_its_existing_settings(self):
+        self.assertEqual(
+            await self._synthesize_settings("eleven_multilingual_v2"),
+            {
+                "stability": 0.4,
+                "similarity_boost": 0.8,
+                "style": 0.2,
+                "use_speaker_boost": True,
+                "speed": 1.1,
+            },
+        )
+
+
 class TestSaveVoiceConfigAtomic(unittest.TestCase):
     def test_save_writes_no_leftover_tmp_and_preserves_other_keys(self):
         from core.tts import ElevenLabsTTS

@@ -32,6 +32,98 @@ interface ElevenLabsVoice {
     preview_url: string;
 }
 
+interface ElevenLabsTtsModel {
+    id: string;
+    name: string;
+    description: string;
+    supportsSpeed: boolean;
+    supportsSimilarity: boolean;
+    supportsStyle: boolean;
+    supportsSpeakerBoost: boolean;
+}
+
+const ELEVENLABS_TTS_MODELS = [
+    {
+        id: 'eleven_v4',
+        name: 'Eleven v4',
+        description: 'Most expressive speech, with support for 90+ languages.',
+        supportsSpeed: false,
+        supportsSimilarity: true,
+        supportsStyle: false,
+        supportsSpeakerBoost: false,
+    },
+    {
+        id: 'eleven_v4_turbo',
+        name: 'Eleven v4 Turbo',
+        description: 'Expressive, low-latency speech for conversations.',
+        supportsSpeed: false,
+        supportsSimilarity: true,
+        supportsStyle: false,
+        supportsSpeakerBoost: false,
+    },
+    {
+        id: 'eleven_v3',
+        name: 'Eleven v3',
+        description: 'Expressive speech with audio tags in 70+ languages.',
+        supportsSpeed: false,
+        supportsSimilarity: false,
+        supportsStyle: true,
+        supportsSpeakerBoost: false,
+    },
+    {
+        id: 'eleven_multilingual_v2',
+        name: 'Eleven Multilingual v2',
+        description: 'Consistent quality for long-form speech in 29 languages.',
+        supportsSpeed: true,
+        supportsSimilarity: true,
+        supportsStyle: true,
+        supportsSpeakerBoost: true,
+    },
+    {
+        id: 'eleven_flash_v2_5',
+        name: 'Eleven Flash v2.5',
+        description: 'Fast, lower-cost speech in 32 languages.',
+        supportsSpeed: true,
+        supportsSimilarity: true,
+        supportsStyle: true,
+        supportsSpeakerBoost: true,
+    },
+    {
+        id: 'eleven_flash_v2',
+        name: 'Eleven Flash v2',
+        description: 'Fast speech generation for English.',
+        supportsSpeed: true,
+        supportsSimilarity: true,
+        supportsStyle: true,
+        supportsSpeakerBoost: true,
+    },
+] satisfies readonly ElevenLabsTtsModel[];
+
+function getPreviewErrorMessage(error: unknown): string {
+    let message = '';
+
+    if (axios.isAxiosError<unknown>(error)) {
+        const payload = error.response?.data;
+        if (typeof payload === 'object' && payload !== null && 'detail' in payload) {
+            const detail = payload.detail;
+            if (typeof detail === 'string') {
+                message = detail;
+            } else if (
+                typeof detail === 'object' && detail !== null && 'message' in detail &&
+                typeof detail.message === 'string'
+            ) {
+                message = detail.message;
+            }
+        }
+        if (!message) message = error.message;
+    } else if (error instanceof Error) {
+        message = error.message;
+    }
+
+    return message.replace(/\s+/g, ' ').trim().slice(0, 320)
+        || 'Preview generation failed. Try again.';
+}
+
 export function VoicePage() {
     const [hasKey, setHasKey] = useState(false);
     const [settings, setSettings] = useState<VoiceSettings>({
@@ -154,8 +246,7 @@ export function VoicePage() {
                 toast.success("Preview generated successfully!");
             }
         } catch (err) {
-            console.error("Failed to generate voice preview:", err);
-            toast.error("Generation failed. Check ElevenLabs key and quota.");
+            toast.error(getPreviewErrorMessage(err));
         } finally {
             setGeneratingPreview(false);
         }
@@ -186,6 +277,11 @@ export function VoicePage() {
 
     const isDirty = JSON.stringify(settings) !== JSON.stringify(originalSettings);
     const activeVoice = voices.find(v => v.voice_id === settings.voice_id);
+    const activeModel = ELEVENLABS_TTS_MODELS.find(model => model.id === settings.model_id);
+    const supportsSpeed = activeModel?.supportsSpeed ?? true;
+    const supportsSimilarity = activeModel?.supportsSimilarity ?? true;
+    const supportsStyle = activeModel?.supportsStyle ?? true;
+    const supportsSpeakerBoost = activeModel?.supportsSpeakerBoost ?? true;
 
     if (loadingSettings) {
         return (
@@ -319,10 +415,19 @@ export function VoicePage() {
                                         <SelectValue placeholder="Select TTS model" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="eleven_multilingual_v2">Eleven Multilingual v2</SelectItem>
-                                        <SelectItem value="eleven_monolingual_v1">Eleven Monolingual v1</SelectItem>
-                                        <SelectItem value="eleven_turbo_v2_5">Eleven Turbo v2.5</SelectItem>
-                                        <SelectItem value="eleven_flash_v2_5">Eleven Flash v2.5</SelectItem>
+                                        {ELEVENLABS_TTS_MODELS.map(model => (
+                                            <SelectItem key={model.id} value={model.id}>
+                                                <span>{model.name}</span>
+                                                <span className="ml-2 text-xs text-muted-foreground">
+                                                    {model.description}
+                                                </span>
+                                            </SelectItem>
+                                        ))}
+                                        {!activeModel && settings.model_id && (
+                                            <SelectItem value={settings.model_id}>
+                                                Saved model ({settings.model_id})
+                                            </SelectItem>
+                                        )}
                                     </SelectContent>
                                 </Select>
                             </div>
@@ -332,7 +437,7 @@ export function VoicePage() {
                                 <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Voice Settings</h3>
 
                                 {/* Speed */}
-                                <div className="space-y-2">
+                                {supportsSpeed && <div className="space-y-2">
                                     <div className="flex justify-between text-sm items-center">
                                         <Label className="font-semibold text-xs">Speed</Label>
                                         <span className="bg-primary/10 text-primary px-2 py-0.5 rounded font-mono text-xs font-bold">{settings.speed}</span>
@@ -351,7 +456,7 @@ export function VoicePage() {
                                         <span>Slower</span>
                                         <span>Faster</span>
                                     </div>
-                                </div>
+                                </div>}
 
                                 {/* Stability */}
                                 <div className="space-y-2">
@@ -376,7 +481,7 @@ export function VoicePage() {
                                 </div>
 
                                 {/* Similarity boost */}
-                                <div className="space-y-2">
+                                {supportsSimilarity && <div className="space-y-2">
                                     <div className="flex justify-between text-sm items-center">
                                         <Label className="font-semibold text-xs">Similarity</Label>
                                         <span className="bg-primary/10 text-primary px-2 py-0.5 rounded font-mono text-xs font-bold">{settings.similarity_boost}</span>
@@ -395,10 +500,10 @@ export function VoicePage() {
                                         <span>Low</span>
                                         <span>High</span>
                                     </div>
-                                </div>
+                                </div>}
 
                                 {/* Style */}
-                                <div className="space-y-2">
+                                {supportsStyle && <div className="space-y-2">
                                     <div className="flex justify-between text-sm items-center">
                                         <Label className="font-semibold text-xs">Style Exaggeration</Label>
                                         <span className="bg-primary/10 text-primary px-2 py-0.5 rounded font-mono text-xs font-bold">{settings.style}</span>
@@ -417,7 +522,7 @@ export function VoicePage() {
                                         <span>None</span>
                                         <span>Exaggerated</span>
                                     </div>
-                                </div>
+                                </div>}
 
                                 {/* Output Format */}
                                 <div className="space-y-2 border-t border-border pt-4">
@@ -439,8 +544,8 @@ export function VoicePage() {
                                     </Select>
                                 </div>
 
-                                {/* Speaker Boost & Reset Block */}
-                                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-3 rounded-lg border border-border bg-background/30">
+                                {/* Speaker Boost */}
+                                {supportsSpeakerBoost && <div className="flex items-center justify-between gap-3 p-3 rounded-lg border border-border bg-background/30">
                                     <div className="flex items-center justify-between flex-1">
                                         <div className="space-y-0.5">
                                             <Label className="font-semibold text-xs">Speaker boost</Label>
@@ -455,19 +560,18 @@ export function VoicePage() {
                                             className="ml-4 shrink-0"
                                         />
                                     </div>
-
-                                    <div className="flex justify-end border-t sm:border-t-0 border-border pt-2 sm:pt-0 shrink-0">
-                                        <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={handleResetValues}
-                                            disabled={!hasKey}
-                                            className="h-8 text-xs text-muted-foreground hover:text-foreground gap-1.5 px-2"
-                                        >
-                                            <RotateCcw className="h-3.5 w-3.5" />
-                                            Reset values
-                                        </Button>
-                                    </div>
+                                </div>}
+                                <div className="flex justify-end">
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={handleResetValues}
+                                        disabled={!hasKey}
+                                        className="h-8 text-xs text-muted-foreground hover:text-foreground gap-1.5 px-2"
+                                    >
+                                        <RotateCcw className="h-3.5 w-3.5" />
+                                        Reset values
+                                    </Button>
                                 </div>
                             </div>
                         </CardContent>

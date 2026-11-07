@@ -21,6 +21,12 @@ _VOICE_FILE_PREFIX = "voice"
 class ElevenLabsTTS:
     """Handles communications with ElevenLabs API for Voice List and Text-to-Speech synthesis."""
 
+    MODEL_VOICE_SETTINGS = {
+        "eleven_v4": frozenset({"stability", "similarity_boost"}),
+        "eleven_v4_turbo": frozenset({"stability", "similarity_boost"}),
+        "eleven_v3": frozenset({"stability", "style"}),
+    }
+
     # ElevenLabs rejects very long requests (HTTP 400) and long replies cost
     # disproportionately more; cap and truncate at a clean boundary instead.
     MAX_TTS_CHARS = 2500
@@ -168,7 +174,7 @@ class ElevenLabsTTS:
         payload = {
             "text": text,
             "model_id": active_model_id,
-            "voice_settings": merged_settings
+            "voice_settings": cls._settings_for_model(active_model_id, merged_settings),
         }
 
         headers = {
@@ -195,6 +201,19 @@ class ElevenLabsTTS:
             except Exception as e:
                 logger.error(f"[TTS] TTS synthesis failed: {e}")
                 raise
+
+    @classmethod
+    def _settings_for_model(
+        cls, model_id: str, settings: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        supported_settings = cls.MODEL_VOICE_SETTINGS.get(model_id)
+        if supported_settings is None:
+            return settings
+        return {
+            name: value
+            for name, value in settings.items()
+            if name in supported_settings
+        }
 
     @classmethod
     async def synthesize_and_save(cls, text: str, filename_prefix: str = "voice") -> str:
