@@ -3,19 +3,15 @@ Toolbox implementation — OS and OS-like capabilities for the agent.
 Provides safe, whitelisted, and confirmed interface for file/OS operations.
 """
 
-import asyncio
 import hashlib
-import json
 import os
 import re
 import shlex
 import stat
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from loguru import logger
-from datetime import datetime
 
 from core.tool_defs import build_tool_definitions
 from core.calculator import calculate_expression

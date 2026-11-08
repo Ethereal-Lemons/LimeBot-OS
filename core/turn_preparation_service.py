@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Collection, Dict, Optional
+from typing import Any, Awaitable, Callable, Collection, Dict
 
 from loguru import logger
 

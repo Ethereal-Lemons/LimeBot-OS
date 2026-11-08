@@ -180,7 +180,7 @@ class WhatsAppChannel(BaseChannel):
                         f"[WhatsApp] Ignoring empty control message type '{msg_type}'."
                     )
                 else:
-                    logger.warning(
+                    logger.debug(
                         "[WhatsApp] Attempted to send empty message, skipping."
                     )
                 return

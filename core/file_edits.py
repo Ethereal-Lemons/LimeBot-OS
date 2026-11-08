@@ -9,7 +9,7 @@ approval preview.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 
 
 MAX_EDIT_OPERATIONS = 64
