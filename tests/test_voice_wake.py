@@ -33,7 +33,7 @@ def test_settings_fall_back_to_persona_name_and_validate_mode():
     )
     assert custom.names == ("Lima",)
     assert custom.mode == "always"
-    assert custom.follow_up_seconds == 20.0
+    assert custom.follow_up_seconds == 0.0
 
 
 @pytest.mark.parametrize(

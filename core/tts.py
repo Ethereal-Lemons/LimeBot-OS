@@ -56,7 +56,7 @@ class ElevenLabsTTS:
             # being addressed without repeating the name.
             "voice_name": "",
             "listen_mode": "wake",
-            "voice_follow_up_seconds": 20,
+            "voice_follow_up_seconds": 0,
         }
 
         if LIMEBOT_CONFIG_PATH.exists():

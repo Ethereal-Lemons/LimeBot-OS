@@ -326,3 +326,22 @@ async def test_discord_tool_embeds_are_quiet_unless_failed(monkeypatch):
         )
 
     assert sent == [{"embed": "error"}]
+
+
+def test_without_a_follow_up_window_every_request_needs_the_name():
+    from core.discord_voice import DiscordVoiceConversation
+    from core.voice_wake import ListeningSettings
+
+    settings = ListeningSettings(mode="wake", names=("Jennie",))
+    assert settings.follow_up_seconds == 0
+    conversation = DiscordVoiceConversation(
+        SimpleNamespace(Bot=object, StageChannel=type("StageChannel", (), {})),
+        on_transcript=lambda **_kwargs: None,
+        is_allowed=lambda _speaker_id: True,
+        get_listening_settings=lambda: settings,
+    )
+    session = SimpleNamespace(addressed_until={})
+
+    assert conversation._is_addressed(session, "1", "Jennie, who is in the call?")
+    assert not conversation._is_addressed(session, "1", "and what about the weather")
+    assert not conversation._is_addressed(session, "2", "so anyway I was saying")

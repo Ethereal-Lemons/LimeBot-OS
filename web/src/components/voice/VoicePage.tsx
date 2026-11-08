@@ -144,7 +144,7 @@ export function VoicePage() {
         send_text_with_audio: false,
         voice_name: '',
         listen_mode: 'wake',
-        voice_follow_up_seconds: 20
+        voice_follow_up_seconds: 0
     });
     const [originalSettings, setOriginalSettings] = useState<VoiceSettings | null>(null);
     const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
@@ -183,7 +183,7 @@ export function VoicePage() {
                 send_text_with_audio: loaded.send_text_with_audio ?? false,
                 voice_name: loaded.voice_name ?? '',
                 listen_mode: loaded.listen_mode === 'always' ? 'always' : 'wake',
-                voice_follow_up_seconds: loaded.voice_follow_up_seconds ?? 20
+                voice_follow_up_seconds: loaded.voice_follow_up_seconds ?? 0
             };
             
             setSettings(finalSettings);
@@ -424,7 +424,7 @@ export function VoicePage() {
                                             onChange={(e) => setSettings(prev => ({ ...prev, voice_follow_up_seconds: Math.min(120, Math.max(0, Number(e.target.value) || 0)) }))}
                                         />
                                         <p className="text-[11px] text-muted-foreground">
-                                            The same person can keep talking for this long without repeating the name.
+                                            0 means she answers only when you say her name. A higher value lets the same person keep talking for that long without repeating it.
                                         </p>
                                     </div>
                                 )}
