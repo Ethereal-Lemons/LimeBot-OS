@@ -17,7 +17,6 @@ def is_supported_python_runtime(
     version_info: Optional[Sequence[int]] = None,
     platform: Optional[str] = None,
 ) -> bool:
-    target_platform = platform or sys.platform
     info = tuple(version_info or sys.version_info)
     current = info[:2]
 

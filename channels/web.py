@@ -1909,7 +1909,6 @@ class WebChannel(BaseChannel):
 
         @self.app.get("/api/discord/config", dependencies=[Depends(self.verify_auth)])
         async def get_discord_config():
-            from pathlib import Path
 
             cfg_path = get_config_file()
             if not cfg_path.exists():
@@ -1923,7 +1922,6 @@ class WebChannel(BaseChannel):
 
         @self.app.post("/api/discord/config", dependencies=[Depends(self.verify_auth)])
         async def update_discord_config(payload: dict):
-            from pathlib import Path
 
             cfg_path = get_config_file()
             try:
@@ -1949,7 +1947,6 @@ class WebChannel(BaseChannel):
         async def update_config(data: dict):
             """Update .env file and restart to apply changes."""
             try:
-                from pathlib import Path
 
                 env_file = get_env_file()
                 new_env = data.get("env", {})
@@ -2077,7 +2074,6 @@ class WebChannel(BaseChannel):
         @self.app.get("/api/mcp/config", dependencies=[Depends(self.verify_auth)])
         async def get_mcp_config():
             from core.mcp_client import CONFIG_PATH
-            import json
 
             if not CONFIG_PATH.exists():
                 return {"mcpServers": {}}
@@ -2090,7 +2086,6 @@ class WebChannel(BaseChannel):
                 get_mcp_manager,
                 validate_mcp_config,
             )
-            import json
 
             try:
                 ok, err = validate_mcp_config(data)
@@ -3553,7 +3548,7 @@ class WebChannel(BaseChannel):
                         "retryable": True,
                     }
                 )
-            except Exception as e:
+            except Exception:
                 return JSONResponse(
                     status_code=422,
                     content={

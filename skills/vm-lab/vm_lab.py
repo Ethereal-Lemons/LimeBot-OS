@@ -9,7 +9,6 @@ import os
 import shutil
 import socket
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -547,7 +546,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         result = actions[args.action](args)
     except SystemExit as exc:
-        message = str(exc) if exc.code not in {0, 1, 2} and exc.code is not None else str(exc)
         if isinstance(exc.code, int) and exc.code > 2:
             raise
         if str(exc):

@@ -5015,8 +5015,8 @@ class AgentLoop:
                             session_key in self.session_locks
                             and self.session_locks[session_key].locked()
                         ):
-                            logger.warning(
-                                f"♻️ Message '{msg.content[:20]}...' skipped - session {session_key} is currently BUSY processing another task."
+                            logger.debug(
+                                f"Ignored an identical repeat of '{msg.content[:20]}...' while session {session_key} is still processing the first copy."
                             )
                         else:
                             logger.debug("♻️ Skipping identical duplicate message.")

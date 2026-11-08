@@ -581,6 +581,13 @@ class WhatsAppChannel(BaseChannel):
     def _is_connected(self) -> bool:
         """Return True if the bridge WebSocket is ready; log a warning otherwise."""
         if not self._ws or not self._connected:
-            logger.warning("[WhatsApp] Bridge not connected, skipping operation.")
+            if not getattr(self, "_warned_disconnected", False):
+                self._warned_disconnected = True
+                logger.warning(
+                    "[WhatsApp] Bridge not connected; skipping operations until it reconnects."
+                )
+            else:
+                logger.debug("[WhatsApp] Bridge not connected, skipping operation.")
             return False
+        self._warned_disconnected = False
         return True

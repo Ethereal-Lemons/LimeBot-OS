@@ -1,0 +1,13 @@
+# Lint only: this file does not configure packaging or pytest.
+[tool.ruff]
+line-length = 100
+extend-exclude = ["temp", "third_party", "web", "node_modules", ".venv", "venv"]
+
+[tool.ruff.lint]
+# Real mistakes only: unused imports/variables, redefinitions, undefined names,
+# `== None` style comparisons and bare `except:`. Style rules stay off on purpose.
+select = ["F401", "F811", "F821", "F841", "E711", "E712", "E722"]
+
+[tool.ruff.lint.per-file-ignores]
+# AgentLoop re-exports names that tests and other modules patch as `core.loop.<name>`.
+"core/loop.py" = ["F401"]
