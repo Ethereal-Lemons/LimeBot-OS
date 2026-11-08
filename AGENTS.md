@@ -392,6 +392,21 @@ text. The allowlisted worker is a trusted-code runner, not an OS sandbox for
 malicious source snapshots. Use `python scripts/evaluate_tasks.py compare`
 for a local baseline/candidate comparison; see `evals/README.md`.
 
+### `core/live_eval.py` — Live-model task evaluation
+
+Runs the configured model on the realistic tasks in `evals/live/` through
+`scripts/live_eval_worker.py`, one disposable project per attempt, and scores
+the resulting workspace with hidden checks (hidden test files, file
+comparisons, reply facts). `BudgetedLLMClient` wraps the real client and refuses
+a call before it reaches the provider once the per-case call or token cap is
+reached; the run-wide token budget stops later cases. The worker receives only
+the provider credentials from the caller's environment, and its tools are limited
+to the file tools plus python/pytest/read-only-git commands inside `workspace/`.
+Reports in `data/evaluations/live-*.json` record outcomes and counts, never
+prompts, replies, or file contents, and track `false_successes` (completed but
+failing its checks). Nothing runs without `--yes`:
+`python scripts/evaluate_live.py plan|validate|run|compare`.
+
 ---
 
 ### `core/subagents.py` — Subagent Registry

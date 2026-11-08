@@ -1,0 +1,33 @@
+{
+  "id": "json-config-edit",
+  "category": "precise-edit",
+  "prompt": "In workspace/config.json set database.port to 5433, turn the cache on (cache.enabled true) and set cache.ttl_seconds to 600. Do not change anything else in the file, and keep it valid JSON.",
+  "fixtures": [
+    {
+      "path": "workspace/config.json",
+      "content": "{\n  \"app\": {\n    \"name\": \"inventory\",\n    \"debug\": false,\n    \"workers\": 4\n  },\n  \"database\": {\n    \"host\": \"db.internal\",\n    \"port\": 5432,\n    \"pool\": {\n      \"min\": 2,\n      \"max\": 10\n    }\n  },\n  \"cache\": {\n    \"enabled\": false,\n    \"ttl_seconds\": 60,\n    \"backend\": \"memory\"\n  },\n  \"logging\": {\n    \"level\": \"INFO\",\n    \"file\": \"app.log\"\n  }\n}\n"
+    }
+  ],
+  "hidden_fixtures": [],
+  "solution": [
+    {
+      "path": "workspace/config.json",
+      "content": "{\n  \"app\": {\n    \"name\": \"inventory\",\n    \"debug\": false,\n    \"workers\": 4\n  },\n  \"database\": {\n    \"host\": \"db.internal\",\n    \"port\": 5433,\n    \"pool\": {\n      \"min\": 2,\n      \"max\": 10\n    }\n  },\n  \"cache\": {\n    \"enabled\": true,\n    \"ttl_seconds\": 600,\n    \"backend\": \"memory\"\n  },\n  \"logging\": {\n    \"level\": \"INFO\",\n    \"file\": \"app.log\"\n  }\n}\n"
+    }
+  ],
+  "checks": {
+    "commands": [
+      {
+        "id": "only_requested_changes",
+        "argv": [
+          "python",
+          "-c",
+          "import json; d = json.load(open('config.json')); expected = json.loads(\"{\\\"app\\\": {\\\"name\\\": \\\"inventory\\\", \\\"debug\\\": false, \\\"workers\\\": 4}, \\\"database\\\": {\\\"host\\\": \\\"db.internal\\\", \\\"port\\\": 5433, \\\"pool\\\": {\\\"min\\\": 2, \\\"max\\\": 10}}, \\\"cache\\\": {\\\"enabled\\\": true, \\\"ttl_seconds\\\": 600, \\\"backend\\\": \\\"memory\\\"}, \\\"logging\\\": {\\\"level\\\": \\\"INFO\\\", \\\"file\\\": \\\"app.log\\\"}}\"); assert d == expected, d"
+        ]
+      }
+    ]
+  },
+  "timeout_seconds": 240,
+  "max_model_calls": 15,
+  "max_tokens": 80000
+}

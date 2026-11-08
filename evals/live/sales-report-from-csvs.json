@@ -1,0 +1,70 @@
+{
+  "id": "sales-report-from-csvs",
+  "category": "long-read",
+  "prompt": "Read every CSV file in workspace/data. Each row is region, units and unit_price. Write workspace/report.md with the total revenue per region (units x unit_price, summed over all files) as plain numbers with two decimals and no thousands separators, one line per region like `- North: 123.45`, and a final line `Grand total: <number>`.",
+  "fixtures": [
+    {
+      "path": "workspace/data/sales_01.csv",
+      "content": "region,units,unit_price\nWest,29,9.99\nSouth,39,4.25\nSouth,14,9.99\nEast,5,14.50\nSouth,26,9.99\nEast,12,4.25\n"
+    },
+    {
+      "path": "workspace/data/sales_02.csv",
+      "content": "region,units,unit_price\nSouth,19,14.50\nWest,39,9.99\nNorth,33,33.30\nSouth,16,9.99\n"
+    },
+    {
+      "path": "workspace/data/sales_03.csv",
+      "content": "region,units,unit_price\nWest,34,9.99\nWest,34,14.50\nSouth,9,33.30\nNorth,30,120.00\nNorth,30,33.30\nWest,14,14.50\n"
+    },
+    {
+      "path": "workspace/data/sales_04.csv",
+      "content": "region,units,unit_price\nWest,15,9.99\nNorth,17,4.25\nEast,24,33.30\nWest,2,4.25\n"
+    },
+    {
+      "path": "workspace/data/sales_05.csv",
+      "content": "region,units,unit_price\nEast,1,9.99\nSouth,13,14.50\nSouth,29,120.00\nSouth,17,14.50\nWest,1,9.99\n"
+    },
+    {
+      "path": "workspace/data/sales_06.csv",
+      "content": "region,units,unit_price\nNorth,38,4.25\nEast,17,33.30\nNorth,28,120.00\nEast,14,33.30\nNorth,1,14.50\nWest,37,4.25\n"
+    }
+  ],
+  "hidden_fixtures": [],
+  "solution": [
+    {
+      "path": "workspace/report.md",
+      "content": "# Revenue\n\n- North: 9306.15\n- South: 5215.39\n- East: 1964.99\n- West: 2040.57\n\nGrand total: 18527.10\n"
+    }
+  ],
+  "checks": {
+    "files": [
+      {
+        "id": "total_north",
+        "path": "workspace/report.md",
+        "regex": "(?i)North\\D{0,6}9306.15(?!\\d)"
+      },
+      {
+        "id": "total_south",
+        "path": "workspace/report.md",
+        "regex": "(?i)South\\D{0,6}5215.39(?!\\d)"
+      },
+      {
+        "id": "total_east",
+        "path": "workspace/report.md",
+        "regex": "(?i)East\\D{0,6}1964.99(?!\\d)"
+      },
+      {
+        "id": "total_west",
+        "path": "workspace/report.md",
+        "regex": "(?i)West\\D{0,6}2040.57(?!\\d)"
+      },
+      {
+        "id": "grand_total",
+        "path": "workspace/report.md",
+        "regex": "(?i)grand total\\D{0,6}18527.10(?!\\d)"
+      }
+    ]
+  },
+  "timeout_seconds": 240,
+  "max_model_calls": 30,
+  "max_tokens": 250000
+}
