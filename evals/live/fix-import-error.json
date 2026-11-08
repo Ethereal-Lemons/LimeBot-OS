@@ -35,5 +35,5 @@
   },
   "timeout_seconds": 240,
   "max_model_calls": 20,
-  "max_tokens": 100000
+  "max_tokens": 160000
 }
