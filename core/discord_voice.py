@@ -42,6 +42,21 @@ _MIN_SPEECH_SECONDS = 0.3
 _MAX_SPOKEN_CHARS = 500  # longer replies stay in text; speech stays brief
 _PLAYBACK_TAIL_SECONDS = 1.2  # ignore room echo of the bot's own voice
 _NON_SPEECH_TAG = re.compile(r"^\s*[\(\[][^)\]]*[\)\]]\s*$")
+_NEEDS_READING = re.compile(r"https?://|www\.|```|^\s*\|.*\|\s*$", re.MULTILINE)
+
+
+def reply_needs_text(text: str) -> bool:
+    """True when speech cannot carry the whole reply.
+
+    Voice replies are spoken only, so the channel stays quiet. Links, code,
+    tables and replies longer than the spoken limit are worth reading, so
+    those are also posted as text.
+    """
+    if not text or not text.strip():
+        return False
+    if _NEEDS_READING.search(text):
+        return True
+    return len(text.strip()) > _MAX_SPOKEN_CHARS
 
 
 def count_speech_seconds(pcm: bytes) -> float:
@@ -232,7 +247,13 @@ class DiscordVoiceConversation:
         voice_channel: Any,
         text_channel: Any,
         owner_id: int,
+        notify: Callable[[str], Any] | None = None,
     ) -> str:
+        """Join a voice channel and start listening.
+
+        ``notify`` receives the transcription notice before audio is captured.
+        The caller decides who sees it, so the channel itself stays quiet.
+        """
         from core.stt import ElevenLabsSTT
         from core.tts import ElevenLabsTTS
 
@@ -261,7 +282,6 @@ class DiscordVoiceConversation:
         # Connectable.connect does not expose self_deaf. Pycord's VoiceClient
         # defaults to self_deaf=False, which is required for receive sinks.
         voice_client = await voice_channel.connect()
-        notice = None
         try:
             if not await self._wait_for_dave(voice_client):
                 raise RuntimeError(
@@ -270,11 +290,12 @@ class DiscordVoiceConversation:
 
             # Announce the external transcription before opening the receive
             # sink, so the channel is never recorded before its notice is sent.
-            notice = await text_channel.send(
-                f"🎙️ LimeBot is starting a voice conversation in <#{voice_channel.id}>. "
-                "Speech from allowed Discord members is sent to ElevenLabs for transcription; "
-                "LimeBot does not keep the audio. Use `/voice_leave` to stop."
-            )
+            if notify is not None:
+                await notify(
+                    f"🎙️ Joined <#{voice_channel.id}>. Speech from allowed Discord members "
+                    "is sent to ElevenLabs for transcription; LimeBot does not keep the audio. "
+                    "Say her name when you want something. Use `/voice_leave` to stop."
+                )
 
             utterance_buffer = VoiceUtteranceBuffer()
             sink = self._make_sink(utterance_buffer)
@@ -303,9 +324,6 @@ class DiscordVoiceConversation:
             self._sessions[guild.id] = session
             return session_id
         except Exception:
-            if notice is not None:
-                with contextlib.suppress(Exception):
-                    await notice.delete()
             with contextlib.suppress(Exception):
                 if voice_client.is_recording():
                     voice_client.stop_recording()

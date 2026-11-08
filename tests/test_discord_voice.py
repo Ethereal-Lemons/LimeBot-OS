@@ -98,8 +98,10 @@ async def test_voice_session_announces_before_recording_and_uses_connect_default
 
     class TextChannel:
         async def send(self, content):
-            events.append("notice")
-            return SimpleNamespace(delete=lambda: None)
+            events.append("public message")
+
+    async def notify(_text):
+        events.append("notice")
 
     discord_module = SimpleNamespace(
         Bot=object,
@@ -117,18 +119,21 @@ async def test_voice_session_announces_before_recording_and_uses_connect_default
         voice_channel=VoiceChannel(),
         text_channel=TextChannel(),
         owner_id=1,
+        notify=notify,
     )
     await conversation.leave(10)
 
+    # The notice goes to the caller, never to the shared text channel.
     assert events[:3] == [
         ("connect", {}),
         "notice",
         "recording",
     ]
+    assert "public message" not in events
 
 
 @pytest.mark.asyncio
-async def test_voice_session_refuses_to_record_if_notice_cannot_be_sent(monkeypatch):
+async def test_voice_session_refuses_to_record_if_notice_cannot_be_delivered(monkeypatch):
     from core.discord_voice import DiscordVoiceConversation
     from core.stt import ElevenLabsSTT
     from core.tts import ElevenLabsTTS
@@ -170,7 +175,10 @@ async def test_voice_session_refuses_to_record_if_notice_cannot_be_sent(monkeypa
 
     class TextChannel:
         async def send(self, _content):
-            raise RuntimeError("missing send permission")
+            raise AssertionError("the shared channel must stay quiet")
+
+    async def notify(_text):
+        raise RuntimeError("missing send permission")
 
     discord_module = SimpleNamespace(
         Bot=object,
@@ -189,9 +197,20 @@ async def test_voice_session_refuses_to_record_if_notice_cannot_be_sent(monkeypa
             voice_channel=VoiceChannel(),
             text_channel=TextChannel(),
             owner_id=1,
+            notify=notify,
         )
 
     assert events == ["connect", "disconnect"]
+
+
+def test_voice_replies_post_text_only_when_speech_cannot_carry_them():
+    from core.discord_voice import reply_needs_text
+
+    assert not reply_needs_text("Sí, aquí estoy, te escucho. ¿Qué pasó?")
+    assert not reply_needs_text("   ")
+    assert reply_needs_text("Mira esto: https://example.com/docs")
+    assert reply_needs_text("```print(1)```")
+    assert reply_needs_text("palabra " * 100)
 
 
 def _tone(seconds: float, amplitude: int) -> bytes:
