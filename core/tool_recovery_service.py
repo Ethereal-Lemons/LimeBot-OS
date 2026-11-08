@@ -9,6 +9,7 @@ from core.recovery_controller import RecoveryState
 from core.redaction import redact_sensitive_text
 from core.tool_dispatcher import MUTATION_TOOL_NAMES
 from core.tool_outcomes import ToolOutcome, is_tool_result_error
+from core.voice_tool_policy import is_voice_session_key, voice_allows_tool
 
 
 @dataclass(frozen=True)
@@ -59,11 +60,16 @@ class ToolRecoveryService:
         self,
         initial: Optional[List[Dict[str, Any]]],
         state: Optional[RecoveryState],
+        session_key: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
-        """Rebuild a recovery catalog from the exact registered tool names."""
+        """Rebuild a recovery catalog from the exact registered tool names.
+
+        Voice sessions keep their reduced catalog: recovery must not hand the
+        model file or shell tools the session policy has taken away.
+        """
         if state is None or not state.active:
             return initial
-        all_tools = self._get_tool_definitions()
+        all_tools = self._voice_filtered(self._get_tool_definitions(), session_key)
         by_name = {
             str(tool.get("function", {}).get("name") or ""): tool
             for tool in all_tools
@@ -85,10 +91,25 @@ class ToolRecoveryService:
         )
         return ordered
 
-    def tool_contract(self, state: Optional[RecoveryState]) -> str:
+    @staticmethod
+    def _voice_filtered(
+        definitions: List[Dict[str, Any]], session_key: Optional[str]
+    ) -> List[Dict[str, Any]]:
+        if not is_voice_session_key(session_key):
+            return definitions
+        return [
+            tool
+            for tool in definitions
+            if isinstance(tool, dict)
+            and voice_allows_tool(str(tool.get("function", {}).get("name") or ""))
+        ]
+
+    def tool_contract(
+        self, state: Optional[RecoveryState], session_key: Optional[str] = None
+    ) -> str:
         if state is None or not state.active:
             return ""
-        definitions = self._get_tool_definitions()
+        definitions = self._voice_filtered(self._get_tool_definitions(), session_key)
         names = sorted(
             state.allowed_tool_names(
                 str(item.get("function", {}).get("name") or "")

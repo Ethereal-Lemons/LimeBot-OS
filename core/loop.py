@@ -3657,9 +3657,12 @@ class AgentLoop:
         self,
         initial: Optional[List[Dict[str, Any]]],
         state: Optional[RecoveryState],
+        session_key: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """Rebuild a recovery catalog from the exact registered tool names."""
-        return self._tool_recovery_service().tool_definitions(initial, state)
+        return self._tool_recovery_service().tool_definitions(
+            initial, state, session_key=session_key
+        )
 
     @staticmethod
     def _task_run_acceptance_satisfied(
@@ -3753,8 +3756,12 @@ class AgentLoop:
             "before reporting completion."
         )
 
-    def _recovery_tool_contract(self, state: Optional[RecoveryState]) -> str:
-        return self._tool_recovery_service().tool_contract(state)
+    def _recovery_tool_contract(
+        self, state: Optional[RecoveryState], session_key: Optional[str] = None
+    ) -> str:
+        return self._tool_recovery_service().tool_contract(
+            state, session_key=session_key
+        )
 
     async def _schedule_task_run_continuation(
         self,
@@ -5368,7 +5375,9 @@ class AgentLoop:
                             attachments=attachments,
                         )
                         initial_tool_definitions = self._recovery_tool_definitions(
-                            initial_tool_definitions, recovery_state
+                            initial_tool_definitions,
+                            recovery_state,
+                            session_key=session_key,
                         )
                         self._record_stage_timing(
                             session_key,
@@ -5413,7 +5422,9 @@ class AgentLoop:
                         initial_messages = initial_messages + [
                             {"role": "system", "content": task_run_instruction}
                         ]
-                    recovery_contract = self._recovery_tool_contract(recovery_state)
+                    recovery_contract = self._recovery_tool_contract(
+                        recovery_state, session_key=session_key
+                    )
                     if recovery_contract:
                         initial_messages = initial_messages + [
                             {"role": "system", "content": recovery_contract}
@@ -5720,9 +5731,13 @@ class AgentLoop:
                                 )
                                 post_tool_messages = normalized_history
                                 post_tool_definitions = self._recovery_tool_definitions(
-                                    initial_tool_definitions, recovery_state
+                                    initial_tool_definitions,
+                                    recovery_state,
+                                    session_key=session_key,
                                 )
-                                recovery_contract = self._recovery_tool_contract(recovery_state)
+                                recovery_contract = self._recovery_tool_contract(
+                                    recovery_state, session_key=session_key
+                                )
                                 if recovery_contract:
                                     post_tool_messages = post_tool_messages + [
                                         {"role": "system", "content": recovery_contract}

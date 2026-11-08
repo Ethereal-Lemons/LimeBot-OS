@@ -97,3 +97,40 @@ async def test_session_event_writes_are_tracked_and_drained():
 
     assert sorted(finished) == ["s1", "s2"]
     assert not loop._event_log_tasks
+
+
+def test_voice_prompt_applies_only_to_voice_sessions():
+    from core.voice_tool_policy import voice_prompt_addition
+
+    assert "VOICE CONVERSATION RULES" in voice_prompt_addition("discord:1:discord-voice:2:3")
+    assert voice_prompt_addition("discord:1") == ""
+    assert voice_prompt_addition(None) == ""
+
+
+def test_recovery_catalog_keeps_the_voice_tool_policy():
+    from core.recovery_controller import RecoveryState
+    from core.tool_recovery_service import ToolRecoveryService
+
+    tools = [
+        {"function": {"name": name}}
+        for name in ("web_search", "run_command", "list_dir", "search_files")
+    ]
+    service = ToolRecoveryService(
+        config=None,
+        get_tool_definitions=lambda: tools,
+        get_tool_outcomes=lambda _key: [],
+        append_history=lambda *_a: None,
+        mark_dirty=lambda *_a: None,
+        log_session_event=lambda *_a: None,
+        log_tool_debug=lambda *_a, **_k: None,
+        emit_coding_phase=lambda *_a, **_k: None,
+    )
+    state = RecoveryState(original_goal="look something up", active=True, failed_tool="web_search")
+
+    voice = service.tool_definitions(tools, state, session_key="discord:1:discord-voice:2")
+    names = {tool["function"]["name"] for tool in voice}
+    assert names == {"web_search"}
+    assert "run_command" not in service.tool_contract(state, session_key="discord-voice:2")
+
+    text = service.tool_definitions(tools, state, session_key="discord:1")
+    assert {"run_command", "list_dir"} <= {tool["function"]["name"] for tool in text}
