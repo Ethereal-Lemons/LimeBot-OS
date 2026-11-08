@@ -25,6 +25,7 @@ from typing import Any
 
 from core.bus import MessageBus
 from core.discord_voice import reply_needs_text
+from core.voice_tool_policy import is_voice_session_key
 from core.events import OutboundMessage, InboundMessage
 from channels.base import BaseChannel
 from loguru import logger
@@ -1260,6 +1261,17 @@ class DiscordChannel(BaseChannel):
 
         if msg_type == "tool_execution":
             status = metadata.get("status")
+            if (
+                is_voice_session_key(msg.chat_id)
+                and status != "waiting_confirmation"
+                and self._tool_embed_mode() != "full"
+            ):
+                # A spoken conversation should not fill the text channel with
+                # tool failures the speaker cannot act on.
+                logger.debug(
+                    f"[Discord Voice] Tool {metadata.get('tool', 'unknown')} {status}; embed suppressed."
+                )
+                return
             if status == "waiting_confirmation" and metadata.get("embed"):
                 await self._send_embed(
                     target, metadata["embed"], metadata, msg.chat_id

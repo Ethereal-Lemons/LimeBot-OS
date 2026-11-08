@@ -9,6 +9,7 @@ from loguru import logger
 
 from core import prompt as prompt_module
 from core.prompt_modes import build_ponytail_prompt_addition
+from core.voice_tool_policy import voice_prompt_addition
 from core.paths import IDENTITY_FILE, SOUL_FILE, PersonaPaths
 from core.profile_context import get_current_persona_paths, get_current_profile_id
 
@@ -182,4 +183,5 @@ class PromptCoordinator:
             + (subagent_docs + "\n" if subagent_docs else "")
             + (ponytail_docs + "\n" if ponytail_docs else "")
             + volatile
+            + voice_prompt_addition(session_key)
         )

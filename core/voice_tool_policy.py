@@ -53,3 +53,22 @@ def voice_refusal(tool_name: str) -> str:
         f"Error: Tool '{tool_name}' is disabled in Discord voice conversations. "
         "Ask for it in a text channel instead."
     )
+
+
+VOICE_PROMPT_ADDITION = (
+    "\n\nVOICE CONVERSATION RULES (these override every other instruction about tools):\n"
+    "You are talking out loud in a Discord voice channel. You have no access to files, the "
+    "shell, sub-agents, images or media here, and the earlier instructions to read files, run "
+    "commands or inspect the project do not apply. Never try them; they will be refused. If the "
+    "user asks for something that needs them, say so in one short sentence and suggest a text "
+    "channel.\n"
+    "Search with web_search using a short plain query in the user's words. Do not use quotes, "
+    "site: filters, forum URLs or other operators. If a search returns nothing, try one simpler "
+    "query at most, then say you could not find it. Do not retry with other tools.\n"
+    "Answer in one to three short spoken sentences, without lists, links or markdown."
+)
+
+
+def voice_prompt_addition(session_key: str | None) -> str:
+    """Prompt text for voice sessions, empty for every other session."""
+    return VOICE_PROMPT_ADDITION if is_voice_session_key(session_key) else ""
