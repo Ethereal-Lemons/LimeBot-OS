@@ -429,8 +429,9 @@ afterward. Only members allowed by `DISCORD_ALLOW_FROM` are transcribed; an
 empty allow-list allows every member.
 
 - **Addressed by name.** By default LimeBot answers only when its name is said
-  at the start or end of a sentence ("Jennie, who is in the call?"). The same
-  person can continue for 20 seconds after a reply without repeating the name.
+  at the start or end of a sentence ("Jennie, who is in the call?"). Every
+  request needs the name; set a follow-up window under **Voice** if you want the
+  same person to keep talking for a few seconds without repeating it.
   Set the name and mode under **Voice** in the dashboard (**Voice name** accepts
   several comma-separated nicknames; empty uses the persona name). Turning the
   mode off answers everything said in the channel. Audio is still transcribed to
