@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from core.bus import MessageBus
+from core.discord_voice import reply_needs_text
 from core.events import OutboundMessage, InboundMessage
 from channels.base import BaseChannel
 from loguru import logger
@@ -605,14 +606,18 @@ class DiscordChannel(BaseChannel):
 
             await self._defer_interaction(interaction)
             try:
+                # Only the person who ran /voice_join sees the notice.
+                async def notify(text: str) -> None:
+                    await self._followup_interaction(
+                        interaction, text, ephemeral=True
+                    )
+
                 await self._voice_conversation.join(
                     guild=guild,
                     voice_channel=voice_channel,
                     text_channel=text_channel,
                     owner_id=int(user.id),
-                )
-                await self._followup_interaction(
-                    interaction, f"Joined <#{voice_channel.id}>. Say something when you're ready."
+                    notify=notify,
                 )
             except Exception as exc:
                 logger.warning(f"[Discord Voice] Could not join voice: {exc}")
@@ -1278,10 +1283,6 @@ class DiscordChannel(BaseChannel):
         elif metadata.get("embed"):
             await self._send_embed(target, metadata["embed"], metadata, msg.chat_id)
         else:
-            if not await self._finalize_live_message(
-                target, msg.chat_id, msg.content
-            ):
-                await self._send_text(target, msg.content)
             voice_session_id = str(metadata.get("discord_voice_session") or "")
             if (
                 self._voice_conversation
@@ -1290,14 +1291,29 @@ class DiscordChannel(BaseChannel):
                 and metadata.get("terminal")
                 and self._voice_conversation.has_session(voice_session_id)
             ):
+                # Voice replies are spoken, not posted, so the text channel
+                # stays quiet. Text is added only when speech cannot carry the
+                # reply (links, code, long answers), on warnings, or if
+                # playback fails.
                 spoken = await self._voice_conversation.speak_reply(
                     voice_session_id, msg.content
                 )
+                if (
+                    not spoken
+                    or metadata.get("is_warning")
+                    or metadata.get("turn_status") == "blocked"
+                    or reply_needs_text(msg.content)
+                ):
+                    await self._send_text(target, msg.content)
                 if not spoken:
                     await self._send_text(
                         target,
                         "I couldn't play that reply aloud. The text is above; check ElevenLabs and FFmpeg setup.",
                     )
+            elif not await self._finalize_live_message(
+                target, msg.chat_id, msg.content
+            ):
+                await self._send_text(target, msg.content)
 
     async def _resolve_target(
         self, chat_id: str

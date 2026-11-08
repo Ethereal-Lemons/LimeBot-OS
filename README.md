@@ -420,9 +420,11 @@ library.
 #### How a voice session works
 
 LimeBot waits for DAVE to become ready before listening. Before recording
-starts it posts a notice in the text channel. After a pause in speech the audio
-is sent to ElevenLabs for transcription, the transcript goes to the agent, and
-the reply is spoken. Audio is held temporarily for transcription and deleted
+starts it shows the transcription notice only to the person who ran `/voice_join`
+(an ephemeral message), so the text channel stays quiet. After a pause in speech the
+audio is sent to ElevenLabs for transcription, the transcript goes to the agent, and
+the reply is spoken. The reply is posted as text only when speech cannot carry it:
+links, code, long answers, warnings, or a playback failure. Audio is held temporarily for transcription and deleted
 afterward. Only members allowed by `DISCORD_ALLOW_FROM` are transcribed; an
 empty allow-list allows every member.
 
@@ -704,7 +706,7 @@ current profile and channel, and the model chooses whether to call them. Set
   > By default, dangerous actions in live chat pause for dashboard approval.
   > Scheduled or explicitly unattended jobs use `UNATTENDED_PATH_ALLOWLIST` /
   > `UNATTENDED_COMMAND_ALLOWLIST` instead of forcing `AUTONOMOUS_MODE=true`.
-- **Voice privacy**  Discord voice audio is sent to ElevenLabs for transcription and not stored. Voice sessions announce themselves, can be muted, and cannot use file, shell, or sub-agent tools.
+- **Voice privacy**  Discord voice audio is sent to ElevenLabs for transcription and not stored. Voice sessions tell the person who started them what is transcribed, can be muted, and cannot use file, shell, or sub-agent tools.
 - **Open Source**  audit the code yourself. No hidden telemetry.
 
 ---
