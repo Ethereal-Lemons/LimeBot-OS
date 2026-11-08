@@ -510,6 +510,9 @@ def worker_environment(
     )
     if model:
         env["LLM_MODEL"] = model
+    keep = source_env.get("LIMEBOT_EVAL_KEEP_REPLIES")
+    if keep:
+        env["LIMEBOT_EVAL_KEEP_REPLIES"] = keep
     return env
 
 

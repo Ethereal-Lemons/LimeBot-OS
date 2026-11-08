@@ -124,6 +124,14 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
 
     agent._execute_tool = guarded_execute
 
+    # A persona that fails validation switches LimeBot into its first-run
+    # interview, and the model then asks onboarding questions instead of working.
+    from core.prompt import get_setup_state
+
+    if not get_setup_state().get("complete"):
+        await agent.stop()
+        return {"worker_code": "persona_setup_incomplete"}
+
     ready = await agent.await_ready(timeout=30)
     if not ready.get("ready"):
         await agent.stop()
@@ -206,6 +214,14 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         project_dir, tuple(FixtureFile(f.path, f.content) for f in case.hidden_fixtures)
     )
     checks = evaluate_checks(case, project_dir, reply_text)
+
+    keep_dir = os.environ.get("LIMEBOT_EVAL_KEEP_REPLIES")
+    if keep_dir:
+        # Opt-in, local only: lets you read what the model said when a run fails.
+        # Reports never contain this text.
+        target = Path(keep_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / f"{case.id}-{run_id[-8:]}.txt").write_text(reply_text, encoding="utf-8")
 
     result = {
         "worker_code": "ok",

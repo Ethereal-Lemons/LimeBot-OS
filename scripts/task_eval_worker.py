@@ -89,9 +89,9 @@ def _seed_state(state_dir: Path, case: dict[str, Any]) -> None:
     (state_dir / "allowed_paths.txt").write_text("", encoding="utf-8")
     (state_dir / ".env").write_text("", encoding="utf-8")
     (persona / "SOUL.md").write_text(
-        "I am the LimeBot evaluation soul. I follow the user's local task, "
-        "use only the supplied synthetic fixtures, preserve safety rules, "
-        "and report outcomes clearly.\n",
+        "I am the LimeBot evaluation soul. My core values are to follow the "
+        "user's local task, use only the supplied synthetic fixtures, respect "
+        "every safety boundary, and report outcomes clearly and honestly.\n",
         encoding="utf-8",
     )
     (persona / "IDENTITY.md").write_text(

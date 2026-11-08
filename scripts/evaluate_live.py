@@ -112,6 +112,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     cases = _select(load_live_cases(args.cases.resolve()), args.case)
     env = _load_environment()
+    if args.keep_replies:
+        env["LIMEBOT_EVAL_KEEP_REPLIES"] = str(args.keep_replies.resolve())
     plan = LivePlan(
         cases=cases,
         snapshot=SourceSnapshot("live", args.snapshot.resolve()),
@@ -177,6 +179,8 @@ def main() -> int:
     run.add_argument("--snapshot", type=Path, default=ROOT, help="LimeBot checkout to test")
     run.add_argument("--model", help="override LLM_MODEL for this run")
     run.add_argument("--yes", action="store_true", help="confirm that tokens will be spent")
+    run.add_argument("--keep-replies", type=Path, metavar="DIR",
+                     help="also save each reply as a local text file, to see why a run failed")
     run.set_defaults(func=cmd_run)
 
     compare = sub.add_parser("compare", help="diff two saved live reports")
