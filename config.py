@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from dotenv import load_dotenv
 from loguru import logger
 
-from pathlib import Path
 from core.runtime_paths import PROJECT_DIR, get_state_dir
 
 _project_env_path = PROJECT_DIR / ".env"
@@ -180,10 +179,10 @@ def load_config(force_reload=False):
         os.getenv("ALLOW_UNSAFE_COMMANDS", "false").lower() == "true"
     )
     try:
-        config.max_iterations = int(os.getenv("MAX_ITERATIONS", "30"))
+        config.max_iterations = int(os.getenv("MAX_ITERATIONS", "40"))
     except ValueError:
-        logger.warning("Invalid MAX_ITERATIONS in .env, defaulting to 30.")
-        config.max_iterations = 30
+        logger.warning("Invalid MAX_ITERATIONS in .env, defaulting to 40.")
+        config.max_iterations = 40
 
     new_recovery_budget = os.getenv("TOOL_RECOVERY_MAX_CORRECTIVE_FAILURES")
     legacy_recovery_budget = os.getenv("TOOL_RECOVERY_MAX_ATTEMPTS")

@@ -15,7 +15,7 @@ from core.job_queue import FAILED, SUCCEEDED
 from core.profile_context import ProfileCoordinator
 from core.profiles import ProfileError
 from core.task_runs import ACTIVE_STATES as TASK_RUN_ACTIVE_STATES
-from core.task_tracker import TaskStatus, get_task_tracker
+from core.task_tracker import TaskStatus
 
 
 class InboundTurnLifecycle:

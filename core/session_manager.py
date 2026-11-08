@@ -5,7 +5,6 @@ import re
 import shutil
 import asyncio
 import uuid
-from pathlib import Path
 from typing import Dict, Any, Optional
 from loguru import logger
 
@@ -101,13 +100,15 @@ def _sanitize_assistant_content(message: Dict[str, Any]) -> tuple[Optional[Dict[
             return cleaned, True
         return message, False
 
-    if not content.strip() or _STRUCTURAL_RESIDUE_RE.fullmatch(content.strip()) or content_changed:
+    # Nothing readable is left. A tool-call message legitimately has empty
+    # text; only report a change when text actually had to be removed,
+    # otherwise every load counted (and rewrote) healthy history.
+    if message.get("tool_calls"):
+        if content == "":
+            return message, False
         cleaned["content"] = ""
-        if cleaned.get("tool_calls"):
-            return cleaned, True
-        return None, True
-
-    return message, False
+        return cleaned, True
+    return None, True
 
 
 def _sanitize_history_rows(rows: list[Dict[str, Any]]) -> tuple[list[Dict[str, Any]], int]:

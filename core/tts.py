@@ -5,7 +5,6 @@ import json
 import httpx
 from typing import Dict, Any, List
 from loguru import logger
-from pathlib import Path
 from core.runtime_paths import get_config_file, get_state_dir
 
 # Paths

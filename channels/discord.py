@@ -1772,7 +1772,7 @@ class DiscordChannel(BaseChannel):
         files_to_send, content = self._collect_markdown_files(content)
 
         if not content and not files_to_send:
-            logger.warning(
+            logger.debug(
                 f"[Discord] Attempted to send empty message to {_target_name(target)}, skipping."
             )
             return

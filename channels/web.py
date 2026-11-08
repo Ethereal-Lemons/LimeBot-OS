@@ -3867,7 +3867,7 @@ class WebChannel(BaseChannel):
         if not await self._authenticate_websocket(websocket):
             return
         self.active_connections.add(websocket)
-        logger.info(f"Web client connected ({websocket.url.path})")
+        logger.debug(f"Web client connected ({websocket.url.path})")
 
         if self._whatsapp_qr:
             try:
@@ -4003,7 +4003,7 @@ class WebChannel(BaseChannel):
             pass
         finally:
             self.active_connections.discard(websocket)
-            logger.info("Web client disconnected")
+            logger.debug("Web client disconnected")
 
     async def _app_websocket_handler(self, websocket: WebSocket) -> None:
         await websocket.accept()

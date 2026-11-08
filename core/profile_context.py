@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Optional
 
 from core.paths import PersonaPaths, get_persona_paths
-from core.profiles import AgentProfile, ProfileError, ProfileRegistry
+from core.profiles import AgentProfile, ProfileRegistry
 
 
 @dataclass(frozen=True)

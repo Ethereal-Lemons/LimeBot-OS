@@ -6,7 +6,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, MutableMapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, MutableMapping, Tuple
 
 
 class ConversationImageService:

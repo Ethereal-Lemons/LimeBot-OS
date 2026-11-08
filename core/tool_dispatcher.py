@@ -25,19 +25,19 @@ TOOL_RESULT_LIMITS: Dict[str, int] = {
     "search_files": 5_000,
     "verify_files": 6_000,
     "diagnose_files": 8_000,
-    "memory_search": 3_000,
+    "memory_search": 4_000,
     "browser_extract": 5_000,
     "browser_act": 3_000,
     "web_search": 6_000,
-    "run_command": 2_000,
-    "run_steps": 4_000,
+    "run_command": 6_000,
+    "run_steps": 6_000,
     "apply_workspace_changeset": 8_000,
-    "list_dir": 500,
+    "list_dir": 3_000,
     "generate_image": 2_000,
     "analyze_video": 30_000,
     "spawn_agent": 12_000,
 }
-DEFAULT_TOOL_RESULT_LIMIT = 2_000
+DEFAULT_TOOL_RESULT_LIMIT = 4_000
 
 READ_ONLY_TOOL_NAMES = frozenset(
     {

@@ -28,7 +28,7 @@ Channel (Discord / WhatsApp / Web / Telegram) or CronManager
      ├─ LLM call, retries, and provider failover (`core/llm_call_service.py`)
      ├─ `core.stream_consumer.consume_stream` (stream events and output)
      ├─ `core.tool_call_parser` (serialized tool-call recovery)
-     ├─ Tool execution loop (up to 30 iterations)
+     ├─ Tool execution loop (up to `MAX_ITERATIONS`, default 40)
      ├─ Tag processing (save_soul, log_memory, etc.)
      └─ OutboundMessage → bounded per-channel worker → Channel.send()
 ```
@@ -45,7 +45,7 @@ The heart of the system. Manages:
   dirty-flag persistence owned by `TurnHistoryService`
 - **Stable prompt cache** — the rarely-changing part of the system prompt (soul + identity + user context) is cached for 30 seconds per `(sender_id, channel)` pair. Only the volatile suffix (memory, RAG results, timestamp) is rebuilt each message.
 - **Auto-RAG** — `core/turn_preparation_service.py` runs bounded semantic vector search (then Markdown grep fallback) concurrently with history loading and injects matching memories into the prompt automatically.
-- **Tool execution loop** — after each LLM response, if tool calls are returned, executes them in parallel and loops back to the LLM (up to 30 iterations). Sensitive tools require user confirmation.
+- **Tool execution loop** — after each LLM response, if tool calls are returned, executes them in parallel and loops back to the LLM (up to `MAX_ITERATIONS`, default 40). Sensitive tools require user confirmation.
 - **Durable task runs** — state-changing and coding requests receive a persistent task-run identity, acceptance criteria, checkpoints, continuation slices, and crash-resume metadata. A turn can return a progress update while the same task continues from its checkpoint.
 - **Operator invariants** (`core/operator_invariants.py`) — the loop, not the prompt, gates terminal success for durable / coding / file-mutating / isolated-subagent task runs. Every eligible non-empty turn outside explicit read-only Plan mode receives the profile- and channel-available tool catalog; the model chooses whether to call a tool.
   1. **VERIFY** — a mutating turn cannot go `completed` / Ready / IDLE claiming success until `verify_files` (or the tests/commands the task used as proof) ran on the files the turn changed. Missing proof refuses success: the loop injects a continuation that requires verify, or completes as `blocked` with the missing-proof named in outbound chat.
@@ -55,7 +55,7 @@ The heart of the system. Manages:
 - **Sub-agent delegation** — `spawn_agent` creates an isolated session that runs its own tool loop, can use named specialist profiles, defaults coding/review work to a temporary copy-on-write workspace, captures a bounded structured diff, and reports back to the parent without merging changes implicitly. The parent loop then enforces MERGE: success requires `apply_workspace_changeset`, or the turn is blocked with the unapplied `workspace_id`.
 - **Capability readiness gate** — skill, subagent, MCP, and tool discovery run through explicit startup phases. User turns wait for required skills/tools before prompt or schema construction; optional MCP failures produce `degraded` readiness rather than blocking chat. Embedding and LLM warmups are not part of the required gate.
 - **Per-session dedup** — identical consecutive messages within 2 seconds are silently dropped, keyed per session (not globally).
-- **History summarization** — when token count exceeds limit, older messages are summarized by the LLM and squashed; large tool outputs from old turns are truncated in-place.
+- **History budget** — `_context_budget_tokens()` allows half of the model's input window (clamped to 12k–120k tokens; 48k when the window is unknown; override with `LIMEBOT_CONTEXT_TOKENS`). Only when history exceeds it are the oldest tool results shrunk to a 1,200-character head/tail digest (the current turn and the 8 most recent results are never touched); a single very long turn is also shrunk past 1.5x the budget; if still over at the next turn, older messages are summarized (up to 400 words, keeping paths, commands and decisions).
 - **Stream consumption** — `core/stream_consumer.py` aggregates provider chunks, streams web output, records usage and timing, and hands tool syntax to the parser. `AgentLoop._consume_stream` remains a compatibility wrapper that supplies the active bus and callbacks.
 - **Text-carried tool calls** — when a provider puts a tool call in assistant
   text instead of its structured field, `core/tool_call_parser.py` recovers the
@@ -536,15 +536,15 @@ are deleted. Clean clones are removed immediately.
 | `verify_files` | 6,000 chars |
 | `diagnose_files` | 8,000 chars |
 | `spawn_agent` | 12,000 chars |
-| `run_steps` | 4,000 chars |
+| `run_steps` | 6,000 chars |
 | `apply_workspace_changeset` | 8,000 chars |
 | `browser_extract` | 5,000 chars |
-| `memory_search` | 3,000 chars |
+| `memory_search` | 4,000 chars |
 | `browser_act` | 3,000 chars |
 | `web_search` | 6,000 chars |
-| `run_command` | 2,000 chars |
-| `list_dir` | 500 chars |
-| Everything else | 2,000 chars |
+| `run_command` | 6,000 chars |
+| `list_dir` | 3,000 chars |
+| Everything else | 4,000 chars |
 
 **Web search (`core/web_search.py`)** — one model-facing tool: `web_search(kind=web|news|images)`. The host fetches SERP HTML (Playwright internally), parses organic cards, drops ads and tracking URLs (`aclk`, DoubleClick, Google Ads, leftover click-wrappers), unwraps Bing organic `ck/a` and news `apiclick` destinations, ranks official hosts for software version queries, and retries another engine when a layout is empty, ads-only, or thinner than three organic hits. For `kind=news`, school-assembly / exam-prep / Yahoo / Mashable / “catching our eye” roundups and leftover MSN BingNewsVerp chrome are dropped; world desks (Reuters, AP, BBC, AFP, NYT, Washington Post, The Guardian, Al Jazeera, FT, WSJ, Bloomberg, NPR, DW, France 24) are ranked first, and the host retries until at least three world-desk hits are merged. Python “What’s New” / docs queries prefer `docs.python.org` and drop WhatsApp leftovers. Live FX queries drop history URLs, JS-only Xe shells, and default-pair junk (calculator.net EUR/USD 1.366 when the query is USD/GTQ); they require both query currencies on the card, parse a numeric GTQ-per-USD rate from HTML/snippets (retrying another source when the first page is an empty SPA or the wrong pair), and tell the model to compute Q1000 / rate rather than refuse or reuse another pair. Engine names and browser clicks are not model tools. There is no Tavily / Brave Search API / SerpAPI / DuckDuckGo i.js provider chain. If Playwright is missing, search fails with `BROWSER_INSTALL_HINT` (`npm run lime-bot feature install browser && npm run install-browser`). Empty results tell the model to answer from what it knows — never to open a search engine. A named page URL is `browser_navigate`, not search; `browser_navigate` / `browser_act` / `browser_extract` stay registered even when the browser skill is off. `browser_extract` returns compact HTML table rows first so Active Python Releases survive truncation.
 

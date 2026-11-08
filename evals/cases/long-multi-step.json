@@ -1,0 +1,182 @@
+{
+  "id": "long-multi-step",
+  "prompt": "Read every part file in the synthetic workspace, write a report that lists each figure and their total, and verify it.",
+  "fixtures": [
+    {
+      "path": "workspace/part1.txt",
+      "content": "Section 1 figure: 11\n"
+    },
+    {
+      "path": "workspace/part2.txt",
+      "content": "Section 2 figure: 22\n"
+    },
+    {
+      "path": "workspace/part3.txt",
+      "content": "Section 3 figure: 33\n"
+    },
+    {
+      "path": "workspace/part4.txt",
+      "content": "Section 4 figure: 44\n"
+    },
+    {
+      "path": "workspace/part5.txt",
+      "content": "Section 5 figure: 55\n"
+    },
+    {
+      "path": "workspace/part6.txt",
+      "content": "Section 6 figure: 66\n"
+    },
+    {
+      "path": "workspace/part7.txt",
+      "content": "Section 7 figure: 77\n"
+    },
+    {
+      "path": "workspace/part8.txt",
+      "content": "Section 8 figure: 88\n"
+    }
+  ],
+  "replay": [
+    {
+      "tool_calls": [
+        {
+          "name": "list_dir",
+          "arguments": {
+            "path": "workspace"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "workspace/part1.txt"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "workspace/part2.txt"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "workspace/part3.txt"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "workspace/part4.txt"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "workspace/part5.txt"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "workspace/part6.txt"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "workspace/part7.txt"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "workspace/part8.txt"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "workspace/report.txt",
+            "content": "part1: 11\npart2: 22\npart3: 33\npart4: 44\npart5: 55\npart6: 66\npart7: 77\npart8: 88\ntotal: 396\n"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "verify_files",
+          "arguments": {
+            "paths": [
+              "workspace/report.txt"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "content": "The report is written and verified. The total is 396."
+    }
+  ],
+  "approvals": [
+    "write_file"
+  ],
+  "expectations": {
+    "status": "completed",
+    "verification": "passed",
+    "required_tools": [
+      "list_dir",
+      "read_file",
+      "write_file",
+      "verify_files"
+    ],
+    "file_checks": [
+      {
+        "id": "report_total",
+        "path": "workspace/report.txt",
+        "equals": "part1: 11\npart2: 22\npart3: 33\npart4: 44\npart5: 55\npart6: 66\npart7: 77\npart8: 88\ntotal: 396\n"
+      }
+    ],
+    "reply_checks": [
+      {
+        "id": "total_reported",
+        "contains": "total is 396"
+      }
+    ]
+  }
+}

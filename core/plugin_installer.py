@@ -28,7 +28,7 @@ from core.plugin_manifest import (
     PluginManifestError,
     discover_plugins,
 )
-from core.runtime_paths import get_config_file, get_plugins_dir, get_state_dir
+from core.runtime_paths import get_config_file, get_plugins_dir
 
 
 GITHUB_TREE_RE = re.compile(

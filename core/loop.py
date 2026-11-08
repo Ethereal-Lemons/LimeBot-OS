@@ -2,7 +2,6 @@ import asyncio
 import ast
 import base64
 import contextvars
-import hashlib
 import json
 import mimetypes
 import os
@@ -106,7 +105,7 @@ from core.context import tool_context
 from core.events import InboundMessage, OutboundMessage
 from core.llm_client import ChatRequest, LimeLLMClient, ProviderConfig
 from core.managed_tasks import ManagedTaskRegistry
-from core.job_queue import FAILED, SUCCEEDED, get_job_queue
+from core.job_queue import get_job_queue
 from core.operator_invariants import (
     collect_subagent_failures,
     ensure_visible_failures,
@@ -151,7 +150,7 @@ from core.profile_context import (
     get_current_profile_context,
     get_current_profile_id,
 )
-from core.profiles import ProfileError, get_profile_registry, profile_allows_tool
+from core.profiles import get_profile_registry, profile_allows_tool
 from core.metrics import MetricsCollector
 from core.prompt_modes import (
     build_ponytail_prompt_addition,
@@ -179,6 +178,15 @@ _RECENT_IMAGE_REFERENCE_TTL_S = 30 * 60
 _TOOL_MEDIA_PAYLOAD_START = "<limebot-tool-payload>"
 _TOOL_MEDIA_PAYLOAD_END = "</limebot-tool-payload>"
 _HISTORY_TOOL_OUTPUT_MAX_CHARS = 8_000
+# Conversation budget used when the model's context window is unknown. Known
+# windows use half of the window, clamped to the bounds below.
+_CONTEXT_BUDGET_DEFAULT_TOKENS = 48_000
+_CONTEXT_BUDGET_MIN_TOKENS = 12_000
+_CONTEXT_BUDGET_MAX_TOKENS = 120_000
+# Recent tool results always stay intact; older ones shrink to a digest only
+# while the conversation is over budget.
+_RECENT_TOOL_RESULTS_KEPT = 8
+_SQUASHED_TOOL_RESULT_CHARS = 1_200
 _HISTORY_INTERRUPTED_TOOL_MESSAGE = (
     "[Tool call interrupted before a result was recorded. The previous runtime "
     "did not persist a tool result.]"
@@ -3191,7 +3199,107 @@ class AgentLoop:
         )
 
 
-    async def _trim_history(self, session_key: str, max_tokens: int = 12_000) -> None:
+    def _context_budget_tokens(self) -> int:
+        """Token budget for conversation history, derived from the active model."""
+        override = os.getenv("LIMEBOT_CONTEXT_TOKENS", "").strip()
+        if override.isdigit() and int(override) >= 4_000:
+            return min(int(override), 2_000_000)
+        model = str(getattr(self, "model", "") or "")
+        cache = self.__dict__.setdefault("_context_budget_cache", {})
+        if model in cache:
+            return cache[model]
+        budget = _CONTEXT_BUDGET_DEFAULT_TOKENS
+        try:
+            import litellm
+
+            info = litellm.get_model_info(model)
+            window = int(info.get("max_input_tokens") or 0)
+            if window > 0:
+                budget = min(
+                    max(window // 2, _CONTEXT_BUDGET_MIN_TOKENS),
+                    _CONTEXT_BUDGET_MAX_TOKENS,
+                )
+        except Exception:
+            pass
+        cache[model] = budget
+        return budget
+
+    @staticmethod
+    def _squash_old_tool_results(
+        conv: List[Dict[str, Any]],
+        budget_tokens: int,
+        total_tokens: int,
+        protect_current_turn: bool = True,
+    ) -> int:
+        """Shrink the oldest tool results until the history fits; return the new total.
+
+        The current turn and the most recent tool results are never touched, so
+        a long task keeps what it just read. Each squashed result keeps a head
+        and tail excerpt instead of a few characters.
+        """
+        latest_user_index = max(
+            (i for i, m in enumerate(conv) if m.get("role") == "user"), default=0
+        )
+        tool_indexes = [i for i, m in enumerate(conv) if m.get("role") == "tool"]
+        protected_tail = (
+            tool_indexes[-_RECENT_TOOL_RESULTS_KEPT]
+            if len(tool_indexes) >= _RECENT_TOOL_RESULTS_KEPT
+            else 0
+        )
+        protect_from = (
+            min(latest_user_index, protected_tail)
+            if protect_current_turn
+            else protected_tail
+        )
+        for index in tool_indexes:
+            if total_tokens <= budget_tokens or index >= protect_from:
+                break
+            message = conv[index]
+            content = str(message.get("content", ""))
+            if len(content) <= _SQUASHED_TOOL_RESULT_CHARS or "[SQUASHED" in content:
+                continue
+            head = (_SQUASHED_TOOL_RESULT_CHARS * 3) // 5
+            tail = _SQUASHED_TOOL_RESULT_CHARS - head
+            name = message.get("name", "tool")
+            squashed = (
+                f"[SQUASHED - {name}, {len(content)} chars]\n"
+                f"{content[:head]}\n...\n{content[-tail:]}"
+            )
+            total_tokens -= (len(content) - len(squashed)) // 4
+            message["content"] = squashed
+        return total_tokens
+
+    def _relieve_context_pressure(
+        self, session_key: str, history: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Keep one very long turn inside the model window.
+
+        History is normally trimmed once per turn, so a task with dozens of tool
+        calls could outgrow the model's window mid-turn. Past 1.5x the budget,
+        shrink the oldest tool results, including ones from this turn, while
+        keeping the most recent results intact.
+        """
+        if len(history) <= 1:
+            return history
+        budget = self._context_budget_tokens()
+        total = self._estimate_tokens(history)
+        if total <= int(budget * 1.5):
+            return history
+        conv = history[1:]
+        squashed_total = self._squash_old_tool_results(
+            conv, budget, total, protect_current_turn=False
+        )
+        if squashed_total < total:
+            logger.info(
+                f"Shrunk older tool results mid-turn ({total} -> {squashed_total} tokens)."
+            )
+            self._mark_dirty(session_key)
+        return history
+
+    async def _trim_history(
+        self, session_key: str, max_tokens: Optional[int] = None
+    ) -> None:
+        max_tokens = int(max_tokens) if max_tokens else self._context_budget_tokens()
         if session_key not in self.history or len(self.history[session_key]) <= 1:
             return
 
@@ -3214,17 +3322,13 @@ class AgentLoop:
                 )
                 m["content"] = text + " [Image evicted]"
 
-        for m in conv[:-2]:
-            if m.get("role") == "tool":
-                c = str(m.get("content", ""))
-                if len(c) > 200 and "[SQUASHED" not in c:
-                    name = m.get("name", "tool")
-                    m["content"] = (
-                        f"[SQUASHED - {name}]\n{c[:80]}…\n…({len(c)} chars)…\n…{c[-80:]}"
-                    )
 
         sys_tokens = self._estimate_tokens([system_msg])
         total_tokens = self._estimate_tokens(conv) + sys_tokens
+        if total_tokens > max_tokens:
+            total_tokens = self._squash_old_tool_results(
+                conv, max_tokens, total_tokens
+            )
 
         if total_tokens <= max_tokens:
             self._history_replace(session_key, [system_msg] + conv)
@@ -3261,7 +3365,11 @@ class AgentLoop:
             summary_messages = [
                 {
                     "role": "system",
-                    "content": "Summarise in ≤200 words: key decisions, user facts, task state.",
+                    "content": (
+                        "Summarise in at most 400 words. Keep exact file paths, identifiers, "
+                        "commands and their results, decisions, user facts, the task goal, "
+                        "what is done, and what remains."
+                    ),
                 },
                 {
                     "role": "user",
@@ -3276,7 +3384,7 @@ class AgentLoop:
                 provider,
                 ChatRequest(
                     messages=summary_messages,
-                    max_tokens=300,
+                    max_tokens=800,
                     session_id=f"{session_key}::history-summary",
                 ),
             )
@@ -5511,7 +5619,7 @@ class AgentLoop:
                             raw_reply = recovery_blocked
                             force_direct_reply = True
                         if not recovery_blocked:
-                            max_iterations = getattr(self.config, "max_iterations", 30)
+                            max_iterations = getattr(self.config, "max_iterations", 40)
                             iteration = 0
                             artifact_requested = self._artifact_delivery_requested(content)
                             artifact_reserve_steps = max(
@@ -5606,6 +5714,9 @@ class AgentLoop:
                                 )
                                 normalized_history = self._normalize_history_in_place(
                                     session_key
+                                )
+                                normalized_history = self._relieve_context_pressure(
+                                    session_key, normalized_history
                                 )
                                 post_tool_messages = normalized_history
                                 post_tool_definitions = self._recovery_tool_definitions(
