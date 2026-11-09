@@ -90,39 +90,9 @@ class CapabilityService:
                 catalog.extend(registry.get_capability_catalog(include_inactive=True))
             except Exception:
                 pass
-        try:
-            for tool in self._get_tool_definitions():
-                function = tool.get("function") if isinstance(tool, dict) else {}
-                if not isinstance(function, dict):
-                    continue
-                name = str(function.get("name") or "").strip()
-                if not name:
-                    continue
-                description = redact_sensitive_text(
-                    re.sub(r"\s+", " ", str(function.get("description") or "")).strip()
-                )[:140]
-                state = "ready"
-                kind = "mcp_tool" if name.startswith("mcp_") else "native_tool"
-                if name.startswith("mcp_"):
-                    try:
-                        from core.mcp_client import get_mcp_manager
-
-                        server = name.split("_", 2)[1]
-                        state = str(
-                            get_mcp_manager().get_status().get(server, "Offline")
-                        ).lower()
-                    except Exception:
-                        state = "unknown"
-                catalog.append(
-                    {
-                        "name": name,
-                        "type": kind,
-                        "description": description,
-                        "state": state,
-                    }
-                )
-        except Exception:
-            pass
+        # Native and MCP tools are not listed here: their names, descriptions and
+        # argument schemas already reach the model in the request's tool list, and
+        # repeating them costs about a thousand tokens on every call.
         try:
             from core.mcp_client import get_mcp_manager
 
@@ -158,7 +128,7 @@ class CapabilityService:
             return ""
         lines = [
             "\n--- CAPABILITY INVENTORY ---",
-            "Compact discovery snapshot (not full manuals). `ready` means a native tool is registered or a skill is enabled with declared dependencies present; it does not prove external credentials are connected.",
+            "Compact discovery snapshot of skills, MCP servers and subagents (not full manuals); native tools are in the tool list. `ready` means a skill is enabled with declared dependencies present; it does not prove external credentials are connected.",
         ]
         for item in catalog[:32]:
             name = str(item.get("name") or "")
