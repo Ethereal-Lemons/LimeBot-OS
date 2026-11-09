@@ -252,6 +252,21 @@ context. Persona updates invalidate one sender's entries; model and tool
 definition changes clear the cache. `AgentLoop` keeps its prompt methods as
 compatibility wrappers and supplies capability routing/catalog callbacks.
 
+### `core/prompt_prefix.py` — Cache-friendly request prefix
+
+`PromptCoordinator` puts `PER_MESSAGE_BOUNDARY` between the text that is the
+same on every message (persona, rules, capability catalog, subagent list) and
+the text rebuilt per message (matched skill docs, recalled memory, clock).
+History keeps the full prompt; `relocate_per_message_context()` runs on the
+outgoing request only, in `llm_call_service`: the system message keeps the
+stable head and the per-message block goes right after the newest user message.
+That keeps the request prefix identical between turns so providers with prefix
+caching reuse the whole earlier conversation. Measure it with
+`scripts/evaluate_live.py`: reports include `cached_tokens_in` and
+`cache_hit_rate`, and `multi-turn-notes` sends follow-up messages in one chat.
+Providers that fold every system message into one top-level field (some
+Anthropic/Gemini routes) get no benefit but are not harmed.
+
 ### `core/turn_preparation_service.py` — Pre-inference context
 
 Runs bounded Auto-RAG and persisted-history loading concurrently before prompt

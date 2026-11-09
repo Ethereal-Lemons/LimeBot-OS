@@ -132,7 +132,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         extra = " (budget cap hit)" if row.budget_exceeded else ""
         print(
             f"  [{mark}] {row.case_id} #{row.repeat + 1}: {row.status}, "
-            f"{row.model_calls} calls, {row.tokens_in + row.tokens_out:,} tokens, "
+            f"{row.model_calls} calls, {row.tokens_in + row.tokens_out:,} tokens "
+            f"({row.cached_tokens_in:,} cached), "
             f"{row.wall_time_ms / 1000:.0f}s{extra}   (total {spent:,})"
         )
 
@@ -141,7 +142,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(
         f"\nPassed {summary['passed']}/{summary['runs']} "
         f"({summary['pass_rate']:.0%}); false successes: {summary['false_successes']}; "
-        f"avg calls: {summary['avg_model_calls']}; tokens spent: {report['tokens_spent']:,}"
+        f"avg calls: {summary['avg_model_calls']}; tokens spent: {report['tokens_spent']:,}; "
+        f"prefix-cache hit rate: {summary['cache_hit_rate']:.0%}"
     )
     print(f"Report: {report['report_path']}")
     return 0

@@ -8,6 +8,7 @@ from loguru import logger
 
 from core.events import InboundMessage, OutboundMessage
 from core.llm_client import ChatRequest
+from core.prompt_prefix import relocate_per_message_context
 from core.provider_circuit_breaker import ProviderCircuitOpenError
 
 
@@ -153,7 +154,7 @@ async def llm_call_with_retry(
             llm_call = llm_client.complete(
                 provider,
                 ChatRequest(
-                    messages=messages,
+                    messages=relocate_per_message_context(messages),
                     tools=tools or None,
                     stream=stream,
                     session_id=session_key,
