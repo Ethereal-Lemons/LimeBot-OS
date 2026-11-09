@@ -10,6 +10,7 @@ from core.live_eval import (
     BudgetExceeded,
     LivePlan,
     LiveRunEvidence,
+    assemble_reply,
     command_allowed,
     compare_reports,
     evaluate_checks,
@@ -246,3 +247,23 @@ def test_end_to_end_with_the_built_in_fake_model(tmp_path, monkeypatch):
     assert run["checks"]["request_timeout_updated"] is False
     assert run["false_success"] is True and report["summary"]["false_successes"] == 1
     assert (tmp_path / "parent-state" / "data" / "evaluations").is_dir()
+
+def _outbound(content, **metadata):
+    return SimpleNamespace(content=content, metadata=metadata)
+
+
+def test_reply_uses_the_final_answer_not_chunks_joined_with_newlines():
+    # The model streams "E104" in pieces; joining chunks with newlines broke it.
+    messages = [
+        _outbound("E", type="chunk"),
+        _outbound("104 appears most", type="chunk"),
+        _outbound("", type="activity"),
+        _outbound("E104 appears most often: 58 times.", event_kind="assistant_message", terminal=True),
+    ]
+    assert assemble_reply(messages) == "E104 appears most often: 58 times."
+
+
+def test_reply_falls_back_to_chunks_joined_without_separators():
+    messages = [_outbound("E", type="chunk"), _outbound("104", type="chunk"), _outbound("x", type="thinking")]
+    assert assemble_reply(messages) == "E104"
+    assert assemble_reply([]) == ""

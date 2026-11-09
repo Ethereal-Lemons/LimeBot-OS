@@ -144,12 +144,43 @@ def is_coding_goal(goal: str) -> bool:
     )
 
 
+_CHANGE_VERB = re.compile(
+    r"\b(create|write|edit|delete|remove|update|add|fix|implement|refactor|rename|"
+    r"change|set|convert|bump|patch|install|replace|move|merge|pull|push|commit|"
+    r"deploy|build|compile|generate|save|apply|migrate|extract|"
+    r"crea|crear|escribe|edita|borra|elimina|actualiza|agrega|a\u00f1ade|arregla|"
+    r"corrige|implementa|refactoriza|renombra|cambia|convierte|sube|instala|"
+    r"reemplaza|mueve|genera|guarda|aplica|migra|extrae|haz|hazme)\b",
+    re.IGNORECASE,
+)
+_INSPECTION = re.compile(
+    r"(\?|^\s*(look at|check|read|show|list|find|count|tell|explain|summari[sz]e|"
+    r"which|what|who|when|where|how many|how much|why|revisa|mira|dime|cu\u00e1ntos|"
+    r"cu\u00e1l|qu\u00e9|qui\u00e9n|cu\u00e1ndo|d\u00f3nde|por qu\u00e9|explica|resume|"
+    r"muestra|lista|encuentra|cuenta)\b)",
+    re.IGNORECASE,
+)
+
+
+def is_read_only_request(goal: str) -> bool:
+    """True for a question or inspection that asks for no change.
+
+    ``is_coding_goal`` is a keyword match, so "which error code appears most
+    often?" counts as coding. A request with no change verb and the shape of a
+    question has nothing to verify, as long as the turn changed nothing.
+    """
+    text = str(goal or "")
+    return bool(text.strip()) and not _CHANGE_VERB.search(text) and bool(
+        _INSPECTION.search(text)
+    )
+
+
 def derive_acceptance_criteria(goal: str) -> List[str]:
     """Produce conservative criteria without pretending the LLM said success."""
     text = str(goal or "").strip()
     criteria = ["The original user request is satisfied."]
     lowered = text.lower()
-    if is_coding_goal(text):
+    if is_coding_goal(text) and not is_read_only_request(text):
         criteria.append("The changed files pass the available verification checks.")
     if re.search(r"\b(test|pytest|lint|typecheck|build|compile)\b", lowered):
         criteria.append("The explicitly requested test, lint, typecheck, or build passes.")

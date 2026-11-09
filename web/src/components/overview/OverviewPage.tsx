@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import {
-    Activity,
-    Cpu,
+    Copy,
     Download,
-    Globe,
-    KeyRound,
+    Eraser,
     RefreshCw,
     RotateCcw,
     Trash2,
@@ -27,9 +25,19 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+    FactRow,
+    PageBody,
+    PageFrame,
+    QuietButton,
+    RefreshButton,
+    RequestError,
+    SectionHead,
+    SkeletonRows,
+    StatusDot,
+    StatusGlyph,
+} from "@/components/ops/ops-ui";
+import { toRowState, toneText, type Tone } from "@/lib/ops-status";
 
 interface Stats {
     uptime: number;
@@ -72,48 +80,61 @@ interface SetupStatus {
     persona_missing?: string[];
 }
 
-interface SummaryItemProps {
+interface HealthTileProps {
     label: string;
     value: string;
     detail: string;
-    status?: "ready" | "warning" | "error" | "neutral";
+    tone?: Tone;
 }
 
-function SummaryItem({ label, value, detail, status = "neutral" }: SummaryItemProps) {
+function HealthTile({ label, value, detail, tone = "neutral" }: HealthTileProps) {
     return (
-        <div className="min-w-0 bg-card px-5 py-4 sm:px-6">
+        <div className="min-w-0 border-border/60 pl-4 max-lg:odd:border-l-0 max-lg:odd:pl-0 lg:first:border-l-0 lg:first:pl-0 border-l">
             <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                <span
-                    className={cn(
-                        "h-2 w-2 rounded-full",
-                        status === "ready" && "bg-primary",
-                        status === "warning" && "bg-amber-500",
-                        status === "error" && "bg-destructive",
-                        status === "neutral" && "bg-muted-foreground/40",
-                    )}
-                />
+                <StatusDot tone={tone} />
                 {label}
             </div>
-            <div className="mt-2 truncate text-lg font-semibold text-foreground">{value}</div>
-            <div className="mt-0.5 truncate text-xs text-muted-foreground" title={detail}>{detail}</div>
+            <div className="mt-1.5 truncate text-xl font-semibold tracking-tight text-foreground" title={value}>{value}</div>
+            <div className={cn("mt-0.5 truncate text-xs", tone === "error" ? "text-red-500" : "text-muted-foreground")} title={detail}>{detail}</div>
         </div>
     );
 }
 
-function SectionStatus({ children, tone = "ready" }: { children: React.ReactNode; tone?: "ready" | "warning" | "error" }) {
+/** Channel health uses the same glyphs as tool rows: only real failures are red. */
+function channelGlyphState(status: string) {
+    if (/fail|error/i.test(status)) return "failed" as const;
+    if (/^(connecting|starting|initiali[sz]ing|reconnecting)/i.test(status)) return "running" as const;
+    return toRowState(status);
+}
+
+function ActionRow({
+    label,
+    hint,
+    icon,
+    tone = "default",
+    onClick,
+    disabled,
+}: {
+    label: string;
+    hint: string;
+    icon: React.ReactNode;
+    tone?: "default" | "danger";
+    onClick: () => void;
+    disabled?: boolean;
+}) {
     return (
-        <Badge
-            variant="outline"
-            className={cn(
-                "gap-1.5 font-medium",
-                tone === "ready" && "border-primary/25 bg-primary/8 text-primary",
-                tone === "warning" && "border-amber-500/25 bg-amber-500/8 text-amber-600 dark:text-amber-400",
-                tone === "error" && "border-destructive/25 bg-destructive/8 text-destructive",
-            )}
+        <button
+            type="button"
+            onClick={onClick}
+            disabled={disabled}
+            className="group -mx-2 flex w-[calc(100%+1rem)] items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-foreground/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
-            <span className={cn("h-1.5 w-1.5 rounded-full", tone === "ready" && "bg-primary", tone === "warning" && "bg-amber-500", tone === "error" && "bg-destructive")} />
-            {children}
-        </Badge>
+            <span className={cn("min-w-0 flex-1", tone === "danger" ? "text-red-500" : "text-foreground")}>
+                <span className="block text-sm font-medium">{label}</span>
+                <span className="block truncate text-xs text-muted-foreground">{hint}</span>
+            </span>
+            <span className={cn("shrink-0 [&_svg]:h-4 [&_svg]:w-4", tone === "danger" ? "text-red-500" : "text-muted-foreground group-hover:text-foreground")}>{icon}</span>
+        </button>
     );
 }
 
@@ -126,6 +147,8 @@ export function OverviewPage() {
     const [gatewayTokenLabel, setGatewayTokenLabel] = useState("");
     const [gatewayTokenValue, setGatewayTokenValue] = useState("");
     const [loading, setLoading] = useState(true);
+    const [statsError, setStatsError] = useState<unknown>(null);
+    const [refreshing, setRefreshing] = useState(false);
     const [checkingLLM, setCheckingLLM] = useState(false);
     const [actionBusy, setActionBusy] = useState<null | "connect" | "token">(null);
     const [confirmAction, setConfirmAction] = useState<ConfirmActionState | null>(null);
@@ -139,9 +162,13 @@ export function OverviewPage() {
     }, []);
 
     const fetchStats = useCallback(() => {
-        axios.get(`${API_BASE_URL}/api/stats`)
-            .then((res) => setStats(res.data))
+        return axios.get(`${API_BASE_URL}/api/stats`)
+            .then((res) => {
+                setStats(res.data);
+                setStatsError(null);
+            })
             .catch((error: unknown) => {
+                setStatsError(error);
                 if (!isUnauthorized(error)) console.error("Failed to fetch stats:", error);
             })
             .finally(() => setLoading(false));
@@ -180,7 +207,8 @@ export function OverviewPage() {
     }, []);
 
     const refreshAll = useCallback(() => {
-        fetchStats();
+        setRefreshing(true);
+        void fetchStats().finally(() => setRefreshing(false));
         fetchIdentity();
         fetchGatewayConfig();
         fetchPersonaStatus();
@@ -330,7 +358,7 @@ export function OverviewPage() {
 
     useEffect(() => {
         refreshAll();
-        const interval = setInterval(fetchStats, 5000);
+        const interval = setInterval(() => void fetchStats(), 5000);
         return () => clearInterval(interval);
     }, [fetchStats, refreshAll]);
 
@@ -341,241 +369,198 @@ export function OverviewPage() {
         personaStatus?.telegram_style,
         personaStatus?.whatsapp_style,
     ].filter(Boolean).length;
-    const llmTone = llmHealth?.status === "Healthy" ? "ready" : llmHealth?.status === "Error" || llmHealth?.status === "Quota Exceeded" ? "error" : "warning";
+    const llmTone: Tone = llmHealth?.status === "Healthy" ? "ready" : llmHealth?.status === "Error" || llmHealth?.status === "Quota Exceeded" ? "error" : "warning";
     const sessionCount = stats?.sessions_count ?? stats?.sessions ?? 0;
+    const connectedChannels = stats?.channels?.filter((channel) => channel.status === "Connected").length || 0;
+    const cronRunning = stats?.cron_status?.toLowerCase() === "running";
+    const pageActions = (
+        <>
+            <span className="hidden items-center gap-1.5 text-[11px] text-muted-foreground sm:inline-flex">
+                <StatusDot tone={statsError ? "warning" : "ready"} pulse={!statsError} />
+                {statsError ? "Not updating" : "Live, every 5s"}
+            </span>
+            <RefreshButton onClick={refreshAll} busy={refreshing || checkingLLM} />
+        </>
+    );
 
-    if (loading && !stats) {
+    if (loading && !stats && !statsError) {
         return (
-            <div className="flex h-full min-h-[50vh] items-center justify-center bg-background">
-                <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
-            </div>
+            <PageFrame title="Overview" description="Runtime health, connected services and maintenance." actions={pageActions}>
+                <PageBody>
+                    <SkeletonRows rows={6} className="-mx-4" />
+                </PageBody>
+            </PageFrame>
         );
     }
 
     return (
-        <div className="h-full overflow-y-auto bg-background">
-            <div className="mx-auto max-w-7xl space-y-5 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-                <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                    <div>
-                        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Overview</h1>
-                        <p className="mt-1 text-sm text-muted-foreground">Runtime health, connected services, and maintenance.</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                        <span className="hidden text-xs text-muted-foreground sm:inline">Runtime updates every 5 seconds</span>
-                        <Button variant="outline" size="sm" onClick={refreshAll}>
-                            <RefreshCw className={cn((loading || checkingLLM) && "animate-spin")} />
-                            Refresh
-                        </Button>
-                    </div>
-                </header>
+        <PageFrame title="Overview" description="Runtime health, connected services and maintenance." actions={pageActions}>
+            <PageBody className="space-y-8 py-6">
+                {statsError ? (
+                    <RequestError error={statsError} what="runtime stats" onRetry={refreshAll} retrying={refreshing} stale={!!stats} />
+                ) : null}
 
-                <Card className="overflow-hidden shadow-none">
-                    <CardContent className="grid gap-px bg-border p-0 sm:grid-cols-2 xl:grid-cols-4">
-                        <SummaryItem label="Runtime" value="Online" detail={`${formatUptime(stats?.uptime || 0)} uptime`} status="ready" />
-                        <SummaryItem
-                            label="Model"
-                            value={llmHealth?.model || "Checking connection"}
-                            detail={llmHealth?.latency_ms ? `${llmHealth.latency_ms} ms response` : llmHealth?.status || "Waiting for health check"}
-                            status={llmTone}
-                        />
-                        <SummaryItem
-                            label="Activity"
-                            value={`${sessionCount} session${sessionCount === 1 ? "" : "s"}`}
-                            detail={`${stats?.instances_count || 0} instances · ${stats?.subagents_count || 0} sub-agents`}
-                            status="neutral"
-                        />
-                        <SummaryItem
-                            label="Automation"
-                            value={stats?.cron_status || "Unknown"}
-                            detail={`${stats?.channels?.filter((channel) => channel.status === "Connected").length || 0} connected channels`}
-                            status={stats?.cron_status?.toLowerCase() === "running" ? "ready" : "neutral"}
-                        />
-                    </CardContent>
-                </Card>
+                <section aria-label="Runtime summary" className="grid grid-cols-2 gap-y-6 lg:grid-cols-4">
+                    <HealthTile
+                        label="Runtime"
+                        value={stats ? "Online" : statsError ? "Unreachable" : "Checking"}
+                        detail={stats ? `${formatUptime(stats.uptime || 0)} uptime` : statsError ? "No answer from the backend" : "Waiting for stats"}
+                        tone={stats ? "ready" : statsError ? "error" : "neutral"}
+                    />
+                    <HealthTile
+                        label="Model"
+                        value={llmHealth?.model && llmHealth.model !== "Unknown" ? llmHealth.model : llmHealth?.status || "Checking"}
+                        detail={
+                            llmHealth?.error
+                                ? llmHealth.error
+                                : llmHealth?.latency_ms
+                                    ? `${llmHealth.latency_ms} ms response`
+                                    : checkingLLM
+                                        ? "Checking connection"
+                                        : llmHealth?.status || "Waiting for health check"
+                        }
+                        tone={llmHealth ? llmTone : "neutral"}
+                    />
+                    <HealthTile
+                        label="Activity"
+                        value={`${sessionCount} session${sessionCount === 1 ? "" : "s"}`}
+                        detail={`${stats?.instances_count || 0} instances · ${stats?.subagents_count || 0} sub-agents`}
+                    />
+                    <HealthTile
+                        label="Automation"
+                        value={stats?.cron_status || "Unknown"}
+                        detail={`${connectedChannels} connected channel${connectedChannels === 1 ? "" : "s"}`}
+                        tone={cronRunning ? "ready" : "neutral"}
+                    />
+                </section>
 
-                <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
-                    <div className="space-y-5">
-                        <Card className="shadow-none">
-                            <CardHeader className="flex-row items-start justify-between space-y-0 pb-3">
-                                <div>
-                                    <CardTitle className="text-base">Channels</CardTitle>
-                                    <CardDescription className="mt-1">Connections currently available to LimeBot.</CardDescription>
-                                </div>
-                                <Globe className="h-4 w-4 text-muted-foreground" />
-                            </CardHeader>
-                            <CardContent>
-                                {stats?.channels?.length ? (
-                                    <div className="divide-y rounded-md border">
-                                        {stats.channels.map((channel) => {
-                                            const connected = channel.status === "Connected";
-                                            return (
-                                                <div key={`${channel.name}-${channel.type}`} className="flex items-center justify-between gap-4 px-4 py-3">
-                                                    <div className="min-w-0">
-                                                        <div className="truncate text-sm font-medium capitalize text-foreground">{channel.name}</div>
-                                                        <div className="mt-0.5 truncate text-xs text-muted-foreground">{channel.type}</div>
-                                                    </div>
-                                                    <SectionStatus tone={connected ? "ready" : "warning"}>{channel.status}</SectionStatus>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
+                <div className="grid gap-x-12 gap-y-8 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+                    <div className="space-y-8">
+                        <section>
+                            <SectionHead title="Channels" hint="Connections available to LimeBot" />
+                            {stats?.channels?.length ? (
+                                <ul className="mt-1 divide-y divide-border/50 border-y border-border/50">
+                                    {stats.channels.map((channel) => (
+                                        <li key={`${channel.name}-${channel.type}`} className="flex items-center gap-3 py-2.5">
+                                            <StatusGlyph state={channelGlyphState(channel.status)} />
+                                            <div className="min-w-0 flex-1">
+                                                <div className="truncate text-sm font-medium capitalize text-foreground">{channel.name}</div>
+                                                <div className="truncate text-xs text-muted-foreground">{channel.type}</div>
+                                            </div>
+                                            <span className={cn("shrink-0 text-xs font-medium", toneText(channel.status === "Connected" ? "ready" : /fail|error/i.test(channel.status) ? "error" : "neutral"))}>
+                                                {channel.status}
+                                            </span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <p className="mt-1 border-y border-dashed border-border/60 py-6 text-center text-sm text-muted-foreground">
+                                    {statsError && !stats ? "Channel status is unavailable until the backend answers." : "No channels are configured yet. Add one from the Channels page."}
+                                </p>
+                            )}
+                        </section>
+
+                        <section>
+                            <SectionHead title="Gateway access" hint="For companion apps and remote clients" />
+                            <dl className="mt-1 border-t border-border/50">
+                                <FactRow label="WebSocket endpoint" title={stats?.gateway_url}>
+                                    <code className="font-mono text-xs">{stats?.gateway_url || "Not available"}</code>
+                                </FactRow>
+                                <FactRow label="Authentication">
+                                    <span className={cn("inline-flex items-center gap-1.5", toneText(gatewayTokenLabel ? "ready" : "warning"))}>
+                                        <StatusDot tone={gatewayTokenLabel ? "ready" : "warning"} />
+                                        {gatewayTokenLabel ? `API key ${gatewayTokenLabel}` : "No key cached in this browser"}
+                                    </span>
+                                </FactRow>
+                            </dl>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                                <QuietButton tone="primary" onClick={connectClient} disabled={actionBusy !== null || !stats?.gateway_url}>
+                                    <Copy />
+                                    Copy client URL
+                                </QuietButton>
+                                <QuietButton onClick={generateNewToken} disabled={actionBusy !== null}>
+                                    <RefreshCw className={cn(actionBusy === "token" && "animate-spin")} />
+                                    Rotate token
+                                </QuietButton>
+                            </div>
+                        </section>
+                    </div>
+
+                    <div className="space-y-8">
+                        <section>
+                            <SectionHead title="Persona" hint="Loaded by the agent" />
+                            <div className="mt-2 flex items-center gap-3">
+                                {identity?.avatar ? (
+                                    <img src={identity.avatar} alt="" className="h-10 w-10 rounded-full border border-border object-cover" />
                                 ) : (
-                                    <div className="rounded-md border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-                                        No channels are configured yet.
+                                    <div className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-foreground/10">
+                                        <User className="h-4 w-4 text-muted-foreground" />
                                     </div>
                                 )}
-                            </CardContent>
-                        </Card>
-
-                        <Card className="shadow-none">
-                            <CardHeader>
-                                <div className="flex items-center gap-2">
-                                    <KeyRound className="h-4 w-4 text-muted-foreground" />
-                                    <CardTitle className="text-base">Gateway access</CardTitle>
-                                </div>
-                                <CardDescription>Connection details for companion apps and remote clients.</CardDescription>
-                            </CardHeader>
-                            <CardContent className="space-y-4">
-                                <div className="grid gap-4 md:grid-cols-2">
-                                    <div className="space-y-1.5">
-                                        <div className="text-xs font-medium text-muted-foreground">WebSocket endpoint</div>
-                                        <code className="block truncate rounded-md border bg-muted/30 px-3 py-2.5 text-xs text-foreground" title={stats?.gateway_url}>
-                                            {stats?.gateway_url || "Not available"}
-                                        </code>
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <div className="text-xs font-medium text-muted-foreground">Authentication</div>
-                                        <div className="flex h-[38px] items-center justify-between rounded-md border px-3 text-sm">
-                                            <span>{gatewayTokenLabel ? "API key configured" : "No key cached"}</span>
-                                            <SectionStatus tone={gatewayTokenLabel ? "ready" : "warning"}>{gatewayTokenLabel || "Setup needed"}</SectionStatus>
-                                        </div>
+                                <div className="min-w-0 flex-1">
+                                    <div className="truncate text-sm font-semibold text-foreground">{identity?.name || "LimeBot"}</div>
+                                    <div className={cn("inline-flex items-center gap-1.5 text-xs font-medium", toneText(!setupStatus ? "neutral" : setupStatus.persona_ready ? "ready" : "warning"))}>
+                                        <StatusDot tone={!setupStatus ? "neutral" : setupStatus.persona_ready ? "ready" : "warning"} />
+                                        {!setupStatus ? "Status unknown" : setupStatus.persona_ready ? "Ready" : "Setup incomplete"}
                                     </div>
                                 </div>
-                                <div className="flex flex-wrap gap-2">
-                                    <Button size="sm" onClick={connectClient} disabled={actionBusy !== null || !stats?.gateway_url}>
-                                        <Globe />
-                                        Copy client URL
-                                    </Button>
-                                    <Button variant="outline" size="sm" onClick={generateNewToken} disabled={actionBusy !== null}>
-                                        <RefreshCw className={cn(actionBusy === "token" && "animate-spin")} />
-                                        Rotate token
-                                    </Button>
-                                </div>
-                            </CardContent>
-                        </Card>
-                    </div>
+                            </div>
 
-                    <div className="space-y-5">
-                        <Card className="shadow-none">
-                            <CardHeader className="pb-4">
-                                <CardTitle className="text-base">Persona</CardTitle>
-                                <CardDescription>Identity and behavior currently loaded by the agent.</CardDescription>
-                            </CardHeader>
-                            <CardContent className="space-y-5">
-                                <div className="flex items-center gap-3">
-                                    {identity?.avatar ? (
-                                        <img src={identity.avatar} alt="" className="h-11 w-11 rounded-full border object-cover" />
-                                    ) : (
-                                        <div className="flex h-11 w-11 items-center justify-center rounded-full border bg-muted">
-                                            <User className="h-5 w-5 text-muted-foreground" />
-                                        </div>
-                                    )}
-                                    <div className="min-w-0 flex-1">
-                                        <div className="truncate font-medium text-foreground">{identity?.name || "LimeBot"}</div>
-                                        <div className="mt-1">
-                                            <SectionStatus tone={setupStatus?.persona_ready ? "ready" : "warning"}>
-                                                {setupStatus?.persona_ready ? "Ready" : "Setup incomplete"}
-                                            </SectionStatus>
-                                        </div>
-                                    </div>
-                                </div>
+                            <dl className="mt-3 border-t border-border/50">
+                                <FactRow label="Dynamic personality">{personaStatus?.enable_dynamic_personality ? "Enabled" : "Disabled"}</FactRow>
+                                <FactRow label="Mood" title={personaStatus?.mood}>{personaStatus?.mood?.trim() || "Not set"}</FactRow>
+                                <FactRow label="Closest relationship">{strongestRelationship?.name || "None yet"}</FactRow>
+                                <FactRow label="Channel styles">{styleCoverage} of 4</FactRow>
+                            </dl>
 
-                                <dl className="divide-y rounded-md border text-sm">
-                                    <div className="flex items-start justify-between gap-4 px-3 py-2.5">
-                                        <dt className="text-muted-foreground">Dynamic personality</dt>
-                                        <dd className="font-medium">{personaStatus?.enable_dynamic_personality ? "Enabled" : "Disabled"}</dd>
-                                    </div>
-                                    <div className="flex items-start justify-between gap-4 px-3 py-2.5">
-                                        <dt className="text-muted-foreground">Mood</dt>
-                                        <dd className="max-w-[60%] truncate text-right font-medium" title={personaStatus?.mood}>{personaStatus?.mood?.trim() || "Not set"}</dd>
-                                    </div>
-                                    <div className="flex items-start justify-between gap-4 px-3 py-2.5">
-                                        <dt className="text-muted-foreground">Closest relationship</dt>
-                                        <dd className="text-right font-medium">{strongestRelationship?.name || "None yet"}</dd>
-                                    </div>
-                                    <div className="flex items-start justify-between gap-4 px-3 py-2.5">
-                                        <dt className="text-muted-foreground">Channel styles</dt>
-                                        <dd className="font-medium">{styleCoverage} of 4</dd>
-                                    </div>
-                                </dl>
+                            {setupStatus?.persona_missing?.length ? (
+                                <p className="mt-3 rounded-lg border-l-2 border-amber-400/70 bg-amber-500/[0.06] py-2 pl-3 pr-2 text-xs text-muted-foreground">
+                                    <span className="font-semibold text-foreground">Still missing: </span>
+                                    {setupStatus.persona_missing.join(", ")}
+                                </p>
+                            ) : null}
 
-                                {setupStatus?.persona_missing?.length ? (
-                                    <p className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                                        Missing: {setupStatus.persona_missing.join(", ")}
-                                    </p>
-                                ) : null}
+                            <div className="mt-3 flex gap-2">
+                                <QuietButton onClick={exportPersona}>
+                                    <Download /> Export
+                                </QuietButton>
+                                <label className="relative inline-flex">
+                                    <span className="inline-flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground transition-colors focus-within:ring-2 focus-within:ring-ring hover:bg-foreground/[0.07] [&_svg]:h-3.5 [&_svg]:w-3.5">
+                                        <Upload /> Import
+                                    </span>
+                                    <input
+                                        type="file"
+                                        className="absolute inset-0 cursor-pointer opacity-0"
+                                        aria-label="Import persona backup"
+                                        accept=".md,.markdown"
+                                        onChange={(event) => {
+                                            const file = event.target.files?.[0];
+                                            if (!file) return;
+                                            openConfirm({
+                                                title: "Import persona backup?",
+                                                description: "This will overwrite the current Identity and Soul files. A backup will be created automatically.",
+                                                actionLabel: "Import persona",
+                                                tone: "destructive",
+                                                onConfirm: async () => importPersonaFile(file),
+                                            });
+                                            event.target.value = "";
+                                        }}
+                                    />
+                                </label>
+                            </div>
+                        </section>
 
-                                <div className="flex gap-2 border-t pt-4">
-                                    <Button variant="outline" size="sm" className="flex-1" onClick={exportPersona}>
-                                        <Download /> Export
-                                    </Button>
-                                    <Button variant="outline" size="sm" className="relative flex-1" asChild>
-                                        <label>
-                                            <Upload /> Import
-                                            <input
-                                                type="file"
-                                                className="sr-only"
-                                                accept=".md,.markdown"
-                                                onChange={(event) => {
-                                                    const file = event.target.files?.[0];
-                                                    if (!file) return;
-                                                    openConfirm({
-                                                        title: "Import persona backup?",
-                                                        description: "This will overwrite the current Identity and Soul files. A backup will be created automatically.",
-                                                        actionLabel: "Import persona",
-                                                        tone: "destructive",
-                                                        onConfirm: async () => importPersonaFile(file),
-                                                    });
-                                                    event.target.value = "";
-                                                }}
-                                            />
-                                        </label>
-                                    </Button>
-                                </div>
-                            </CardContent>
-                        </Card>
-
-                        <Card className="shadow-none">
-                            <CardHeader>
-                                <div className="flex items-center gap-2">
-                                    <Activity className="h-4 w-4 text-muted-foreground" />
-                                    <CardTitle className="text-base">Maintenance</CardTitle>
-                                </div>
-                                <CardDescription>Occasional runtime and diagnostic actions.</CardDescription>
-                            </CardHeader>
-                            <CardContent className="space-y-2">
-                                <Button variant="outline" className="w-full justify-between" onClick={() => clearRuntimeData("cache")}>
-                                    Clear tool cache
-                                    <RefreshCw />
-                                </Button>
-                                <Button variant="outline" className="w-full justify-between" onClick={() => clearRuntimeData("logs")}>
-                                    Clear system logs
-                                    <Trash2 />
-                                </Button>
-                                <Button variant="destructive" className="w-full justify-between" onClick={restartBackend}>
-                                    Restart backend
-                                    <RotateCcw />
-                                </Button>
-                            </CardContent>
-                        </Card>
-
-                        <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
-                            <Cpu className="h-3.5 w-3.5" />
-                            <span className="truncate">Model check: {checkingLLM ? "in progress" : llmHealth?.status || "unavailable"}</span>
-                        </div>
+                        <section>
+                            <SectionHead title="Maintenance" hint="Occasional runtime actions" />
+                            <div className="mt-1 space-y-0.5">
+                                <ActionRow label="Clear tool cache" hint="Drops cached tool results for all sessions" icon={<Eraser />} onClick={() => clearRuntimeData("cache")} />
+                                <ActionRow label="Clear system logs" hint="Empties the log buffer shown on the Logs page" icon={<Trash2 />} onClick={() => clearRuntimeData("logs")} />
+                                <ActionRow label="Restart backend" hint="Briefly interrupts live sessions" icon={<RotateCcw />} tone="danger" onClick={restartBackend} />
+                            </div>
+                        </section>
                     </div>
                 </div>
-            </div>
+            </PageBody>
 
             <AlertDialog open={confirmAction !== null} onOpenChange={(open) => !open && setConfirmAction(null)}>
                 <AlertDialogContent>
@@ -587,14 +572,14 @@ export function OverviewPage() {
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction
                             onClick={runConfirmAction}
-                            className={cn(confirmAction?.tone === "destructive" && "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
+                            className={cn(confirmAction?.tone === "destructive" && "bg-red-600 text-white hover:bg-red-700")}
                         >
                             {confirmAction?.actionLabel || "Confirm"}
                         </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
-        </div>
+        </PageFrame>
     );
 }
 
