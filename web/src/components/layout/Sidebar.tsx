@@ -10,14 +10,12 @@ import {
     User2,
     Brain,
     Cpu,
-    ActivitySquare,
     Bot,
-    ShieldCheck,
-    Wifi,
-    WifiOff,
     List,
     Globe,
     Volume2,
+    PanelLeftClose,
+    PanelLeftOpen,
     type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -36,6 +34,8 @@ import {
 
 interface SidebarProps {
     className?: string;
+    /** Forces the full-width layout, used inside the mobile drawer. */
+    forceExpanded?: boolean;
     botIdentity?: { name: string; avatar: string | null };
     activeView?: string;
     onNavigate?: (view: string) => void;
@@ -67,24 +67,85 @@ function parseSelectionOptions(value: unknown): SelectionOption[] | null {
     return options.length ? options : null;
 }
 
+const COLLAPSE_KEY = "limebot-sidebar-collapsed";
+
+function readCollapsed(): boolean {
+    try {
+        return window.localStorage.getItem(COLLAPSE_KEY) === "1";
+    } catch {
+        return false;
+    }
+}
+
+interface NavEntry {
+    id: string;
+    icon: LucideIcon;
+    label: string;
+}
+
+const NAV_GROUPS: Array<{ title: string; items: NavEntry[] }> = [
+    {
+        title: "Workspace",
+        items: [
+            { id: "chat", icon: MessageSquare, label: "Chat" },
+            { id: "overview", icon: LayoutDashboard, label: "Overview" },
+            { id: "queue", icon: List, label: "Task Queue" },
+            { id: "memory", icon: Brain, label: "Memory" },
+            { id: "channels", icon: Activity, label: "Channels" },
+            { id: "logs", icon: FileText, label: "System Logs" },
+            { id: "instances", icon: Users, label: "Instances" },
+            { id: "cron", icon: Zap, label: "Cron Jobs" },
+        ],
+    },
+    {
+        title: "Agent",
+        items: [
+            { id: "profiles", icon: Users, label: "Agents" },
+            { id: "skills", icon: Zap, label: "Skills" },
+            { id: "subagents", icon: Bot, label: "Subagents" },
+            { id: "browsers", icon: Globe, label: "Browser Sessions" },
+            { id: "mcp", icon: Cpu, label: "MCP" },
+            { id: "voice", icon: Volume2, label: "ElevenLabs Voice" },
+        ],
+    },
+    {
+        title: "Settings",
+        items: [
+            { id: "persona", icon: User2, label: "Persona" },
+            { id: "appearance", icon: Palette, label: "Appearance" },
+            { id: "config", icon: Settings, label: "Configuration" },
+        ],
+    },
+];
+
 export function Sidebar({
     className,
+    forceExpanded,
     botIdentity,
-    activeView = 'chat',
+    activeView = "chat",
     onNavigate,
     runtimeStatus,
 }: SidebarProps) {
+    const [collapsedPreference, setCollapsedPreference] = useState(readCollapsed);
+    const collapsed = !forceExpanded && collapsedPreference;
     const [activeModel, setActiveModel] = useState("Loading...");
     const [memoryLabel, setMemoryLabel] = useState("Checking...");
-    const [memoryTone, setMemoryTone] = useState("text-muted-foreground");
     const [subagentSelection, setSubagentSelection] = useState("auto");
     const [subagentOptions, setSubagentOptions] = useState<Array<{ value: string; label: string }>>([
         { value: "auto", label: "Auto" },
     ]);
     const [savingSubagentSelection, setSavingSubagentSelection] = useState(false);
 
-    const handleNav = (view: string) => {
-        onNavigate?.(view);
+    const toggleCollapsed = () => {
+        setCollapsedPreference((value) => {
+            const next = !value;
+            try {
+                window.localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
+            } catch {
+                // Preference only; the sidebar still works without storage.
+            }
+            return next;
+        });
     };
 
     const handleSubagentSelectionChange = async (value: string) => {
@@ -108,32 +169,6 @@ export function Sidebar({
         }
     };
 
-    const navItems = [
-        { id: 'chat', icon: MessageSquare, label: "Chat" },
-        { id: 'overview', icon: LayoutDashboard, label: "Overview" },
-        { id: 'queue', icon: List, label: "Task Queue" },
-        { id: 'memory', icon: Brain, label: "Memory" },
-        { id: 'channels', icon: Activity, label: "Channels" },
-        { id: 'logs', icon: FileText, label: "System Logs" },
-        { id: 'instances', icon: Users, label: "Instances" },
-        { id: 'cron', icon: Zap, label: "Cron Jobs" },
-    ];
-
-    const agentItems = [
-        { id: 'profiles', icon: Users, label: "Agents" },
-        { id: 'skills', icon: Zap, label: "Skills" },
-        { id: 'subagents', icon: Bot, label: "Subagents" },
-        { id: 'browsers', icon: Globe, label: "Browser Sessions" },
-        { id: 'mcp', icon: Cpu, label: "MCP" },
-        { id: 'voice', icon: Volume2, label: "ElevenLabs Voice" },
-    ];
-
-    const configItems = [
-        { id: 'persona', icon: User2, label: "Persona" },
-        { id: 'appearance', icon: Palette, label: "Appearance" },
-        { id: 'config', icon: Settings, label: "Configuration" }
-    ];
-
     useEffect(() => {
         let isMounted = true;
 
@@ -156,14 +191,11 @@ export function Sidebar({
                 const enabled = memoryRes.data?.enabled;
                 const mode = memoryRes.data?.mode || (enabled ? "vector" : "grep_fallback");
                 if (mode === "grep_fallback") {
-                    setMemoryLabel("Markdown Fallback");
-                    setMemoryTone("text-amber-500");
+                    setMemoryLabel("Markdown fallback");
                 } else if (enabled === false) {
                     setMemoryLabel("Offline");
-                    setMemoryTone("text-amber-500");
                 } else {
-                    setMemoryLabel("Vector Online");
-                    setMemoryTone("text-primary");
+                    setMemoryLabel("Vector online");
                 }
             } catch (error: unknown) {
                 const status = getApiErrorStatus(error);
@@ -173,7 +205,6 @@ export function Sidebar({
                 if (!isMounted) return;
                 setActiveModel("Unavailable");
                 setMemoryLabel("Unavailable");
-                setMemoryTone("text-muted-foreground");
                 setSubagentSelection("auto");
             }
         };
@@ -186,159 +217,175 @@ export function Sidebar({
         };
     }, []);
 
+    const connected = !!runtimeStatus?.isConnected;
+    const pending = runtimeStatus?.pendingApprovals || 0;
+
     return (
-        <div className={cn("hidden h-[calc(100vh-2rem)] m-4 w-72 flex-col rounded-2xl bg-card border border-border md:flex shadow-xl", className)}>
-            <div className="flex h-20 items-center px-6">
-                <a
-                    className="flex items-center gap-3 font-bold text-xl cursor-pointer group"
-                    onClick={() => onNavigate?.('persona')}
+        <aside
+            className={cn(
+                "hidden h-full shrink-0 flex-col border-r border-border/60 bg-card/40 backdrop-blur-sm transition-[width] duration-200 md:flex",
+                collapsed ? "w-[68px]" : "w-64",
+                className
+            )}
+        >
+            <div className={cn("flex h-14 shrink-0 items-center gap-2 px-3", collapsed && "justify-center px-0")}>
+                <button
+                    type="button"
+                    className={cn("group flex min-w-0 items-center gap-2.5 rounded-lg p-1 text-left", !collapsed && "flex-1")}
+                    onClick={() => onNavigate?.("persona")}
+                    title={botIdentity?.name || "LimeBot"}
                 >
-                    <BotVisual
-                        avatar={botIdentity?.avatar}
-                        size="sidebar"
-                    />
-                    <span className="text-foreground group-hover:text-primary transition-colors">{botIdentity?.name || "LimeBot"}</span>
-                </a>
-            </div>
-            <div className="flex-1 overflow-auto py-4 px-3">
-                <div className="mb-5 rounded-xl border border-border/70 bg-background/60 p-3">
-                    <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                        Assistant Mode
-                    </div>
-                    <Select
-                        value={subagentSelection}
-                        onValueChange={handleSubagentSelectionChange}
-                        disabled={savingSubagentSelection}
+                    <BotVisual avatar={botIdentity?.avatar} size="sidebar" />
+                    {!collapsed && (
+                        <span className="truncate text-[15px] font-semibold tracking-tight text-foreground transition-colors group-hover:text-primary">
+                            {botIdentity?.name || "LimeBot"}
+                        </span>
+                    )}
+                </button>
+                {!collapsed && !forceExpanded && (
+                    <button
+                        type="button"
+                        onClick={toggleCollapsed}
+                        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        aria-label="Collapse sidebar"
+                        title="Collapse sidebar"
                     >
-                        <SelectTrigger className="h-9 rounded-lg border-border/70 bg-card/70 text-sm">
-                            <SelectValue placeholder="Choose a mode" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            {subagentOptions.map((option) => (
-                                <SelectItem key={option.value} value={option.value}>
-                                    {option.label}
-                                </SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
-                    <div className="mt-2 text-[11px] text-muted-foreground">
-                        Applies to web, Discord, Telegram, and WhatsApp.
-                    </div>
-                </div>
-
-                <nav className="grid items-start gap-1">
-                    <div className="px-3 py-2 text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
-                        Chat
-                    </div>
-                    {navItems.map((item) => (
-                        <NavItem
-                            key={item.id}
-                            icon={item.icon}
-                            label={item.label}
-                            active={activeView === item.id}
-                            onClick={() => handleNav(item.id)}
-                        />
-                    ))}
-
-                    <div className="mt-6 px-3 py-2 text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
-                        Agent
-                    </div>
-                    {agentItems.map((item) => (
-                        <NavItem
-                            key={item.id}
-                            icon={item.icon}
-                            label={item.label}
-                            active={activeView === item.id}
-                            onClick={() => handleNav(item.id)}
-                        />
-                    ))}
-
-                    <div className="mt-6 px-3 py-2 text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
-                        Settings
-                    </div>
-                    {configItems.map((item) => (
-                        <NavItem
-                            key={item.id}
-                            icon={item.icon}
-                            label={item.label}
-                            active={activeView === item.id}
-                            onClick={() => handleNav(item.id)}
-                        />
-                    ))}
-                </nav>
+                        <PanelLeftClose className="h-4 w-4" />
+                    </button>
+                )}
             </div>
-            <div className="mt-auto m-2 rounded-xl border border-border bg-muted/30 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-muted-foreground">
-                        Runtime Status
+
+            {collapsed && (
+                <button
+                    type="button"
+                    onClick={toggleCollapsed}
+                    className="mx-auto mb-1 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    aria-label="Expand sidebar"
+                    title="Expand sidebar"
+                >
+                    <PanelLeftOpen className="h-4 w-4" />
+                </button>
+            )}
+
+            <nav className="flex-1 space-y-4 overflow-y-auto px-2 py-2">
+                {!collapsed && (
+                    <div className="px-1">
+                        <Select
+                            value={subagentSelection}
+                            onValueChange={handleSubagentSelectionChange}
+                            disabled={savingSubagentSelection}
+                        >
+                            <SelectTrigger
+                                className="h-8 rounded-lg border-border/60 bg-background/50 text-xs"
+                                title="Assistant mode: applies to web, Discord, Telegram and WhatsApp"
+                            >
+                                <Bot className="mr-1.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                <SelectValue placeholder="Assistant mode" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {subagentOptions.map((option) => (
+                                    <SelectItem key={option.value} value={option.value}>
+                                        {option.label}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
                     </div>
-                    <span
-                        className={cn(
-                            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
-                            runtimeStatus?.isConnected
-                                ? "border-primary/20 bg-primary/10 text-primary"
-                                : "border-amber-500/20 bg-amber-500/10 text-amber-500"
+                )}
+
+                {NAV_GROUPS.map((group, index) => (
+                    <div key={group.title} className="space-y-0.5">
+                        {collapsed ? (
+                            index > 0 && <div className="mx-3 mb-2 h-px bg-border/60" />
+                        ) : (
+                            <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">
+                                {group.title}
+                            </div>
                         )}
-                    >
-                        {runtimeStatus?.isConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
-                        {runtimeStatus?.isConnected ? "Gateway Live" : "Reconnecting"}
-                    </span>
-                </div>
+                        {group.items.map((item) => (
+                            <NavItem
+                                key={item.id}
+                                icon={item.icon}
+                                label={item.label}
+                                collapsed={collapsed}
+                                active={activeView === item.id}
+                                badge={item.id === "chat" && pending > 0 ? pending : undefined}
+                                onClick={() => onNavigate?.(item.id)}
+                            />
+                        ))}
+                    </div>
+                ))}
+            </nav>
 
-                <div className="grid grid-cols-2 gap-2">
-                    <StatusTile icon={Bot} label="Model" value={activeModel} />
-                    <StatusTile icon={ShieldCheck} label="Mode" value={runtimeStatus?.autonomousMode ? "Autonomous" : "Guarded"} />
-                    <StatusTile icon={Brain} label="Memory" value={memoryLabel} valueClassName={memoryTone} />
-                    <StatusTile
-                        icon={ActivitySquare}
-                        label="Approvals"
-                        value={runtimeStatus?.pendingApprovals ? String(runtimeStatus.pendingApprovals) : "Clear"}
-                        valueClassName={runtimeStatus?.pendingApprovals ? "text-amber-500" : "text-primary"}
-                    />
+            <div className="shrink-0 border-t border-border/60 p-2">
+                <div
+                    className={cn(
+                        "flex items-center gap-2.5 rounded-lg px-2 py-2",
+                        collapsed && "justify-center px-0"
+                    )}
+                    title={`${connected ? "Gateway live" : "Reconnecting"} · ${activeModel} · ${runtimeStatus?.autonomousMode ? "Autonomous" : "Guarded"} · Memory: ${memoryLabel}`}
+                >
+                    <span className="relative flex h-2.5 w-2.5 shrink-0">
+                        {connected && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/40" />}
+                        <span className={cn("relative inline-flex h-2.5 w-2.5 rounded-full", connected ? "bg-primary" : "bg-amber-500")} />
+                    </span>
+                    {!collapsed && (
+                        <div className="min-w-0 flex-1">
+                            <div className="truncate text-xs font-medium text-foreground">{activeModel}</div>
+                            <div className="truncate text-[10px] text-muted-foreground">
+                                {connected ? "Live" : "Reconnecting"} · {runtimeStatus?.autonomousMode ? "Autonomous" : "Guarded"}
+                                {pending > 0 ? ` · ${pending} to approve` : ""}
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
-        </div>
+        </aside>
     );
 }
 
-function StatusTile({
+function NavItem({
     icon: Icon,
     label,
-    value,
-    valueClassName,
+    active,
+    collapsed,
+    badge,
+    onClick,
 }: {
     icon: LucideIcon;
     label: string;
-    value: string;
-    valueClassName?: string;
+    active?: boolean;
+    collapsed?: boolean;
+    badge?: number;
+    onClick?: () => void;
 }) {
     return (
-        <div className="rounded-lg border border-border/70 bg-background/60 p-2.5">
-            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                <Icon className="h-3 w-3" />
-                {label}
-            </div>
-            <div className={cn("truncate text-xs font-medium text-foreground", valueClassName)}>
-                {value}
-            </div>
-        </div>
-    );
-}
-
-function NavItem({ icon: Icon, label, active, onClick }: { icon: LucideIcon, label: string, active?: boolean, onClick?: () => void }) {
-    return (
         <button
+            type="button"
             onClick={onClick}
+            title={collapsed ? label : undefined}
+            aria-current={active ? "page" : undefined}
             className={cn(
-                "group w-full flex items-center gap-3 rounded-xl px-3 py-2.5 transition-all duration-200",
+                "group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+                collapsed && "justify-center px-0",
                 active
-                    ? "bg-primary/10 text-primary shadow-sm"
-                    : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                    ? "bg-primary/10 font-medium text-primary"
+                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
             )}
         >
-            <Icon className={cn("h-4 w-4 transition-transform group-hover:scale-110", active && "fill-current")} />
-            <span className="font-medium text-sm">{label}</span>
-            {active && <div className="ml-auto w-1 h-1 rounded-full bg-primary" />}
+            {active && <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-primary" />}
+            <Icon className="h-4 w-4 shrink-0" />
+            {!collapsed && <span className="truncate">{label}</span>}
+            {badge !== undefined && (
+                <span
+                    className={cn(
+                        "flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-black",
+                        collapsed ? "absolute right-2 top-1" : "ml-auto"
+                    )}
+                >
+                    {badge}
+                </span>
+            )}
         </button>
     );
 }

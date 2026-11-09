@@ -1,6 +1,7 @@
 import { Sidebar } from "./Sidebar";
 import { useState } from "react";
-import { Menu, Wifi, WifiOff, X } from "lucide-react";
+import { Menu, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { BotVisual } from "@/components/pet/BotVisual";
 
@@ -34,71 +35,55 @@ export function AppLayout({
         setMobileMenuOpen(false); // Close menu on navigation
     };
 
+    const connected = !!runtimeStatus?.isConnected;
+
     return (
-        <div className="flex h-screen bg-transparent overflow-hidden relative">
-            {/* Desktop Sidebar */}
+        <div className="relative flex h-screen overflow-hidden bg-background">
+            {/* Desktop sidebar: full height, collapsible to an icon rail */}
             <Sidebar
-                className="hidden md:flex"
                 botIdentity={botIdentity}
                 activeView={activeView}
                 onNavigate={onNavigate}
                 runtimeStatus={runtimeStatus}
             />
 
-            {/* Mobile Header */}
-            <div className="md:hidden absolute top-0 left-0 right-0 z-50 border-b border-border bg-background/88 backdrop-blur-md">
-                <div className="flex items-start gap-3 px-4 py-3">
-                    <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)} className="mt-0.5 shrink-0">
-                        <Menu className="h-6 w-6" />
+            {/* Mobile header */}
+            <header className="absolute inset-x-0 top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md md:hidden">
+                <div className="flex items-center gap-2 px-2 py-2">
+                    <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)} aria-label="Open menu">
+                        <Menu className="h-5 w-5" />
                     </Button>
-                    <div className="min-w-0 flex-1 space-y-1">
-                        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                            <BotVisual
-                                avatar={botIdentity?.avatar}
-                                size="tiny"
-                            />
-                            <span className="truncate">{botIdentity?.name || "LimeBot"}</span>
-                            <span
-                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal ${
-                                    runtimeStatus?.isConnected
-                                        ? "border-primary/20 bg-primary/10 text-primary"
-                                        : "border-amber-500/20 bg-amber-500/10 text-amber-500"
-                                }`}
-                            >
-                                {runtimeStatus?.isConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
-                                {runtimeStatus?.isConnected ? "Connected" : "Reconnecting"}
-                            </span>
+                    <BotVisual avatar={botIdentity?.avatar} size="tiny" />
+                    <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold leading-tight text-foreground">
+                            {pageTitle || botIdentity?.name || "LimeBot"}
                         </div>
-                        <div className="min-w-0">
-                            <div className="truncate text-base font-semibold text-foreground">
-                                {pageTitle || botIdentity?.name || "LimeBot"}
-                            </div>
-                            <div className="truncate text-xs text-muted-foreground">
-                                {pageDescription || "LimeBot control surface"}
-                            </div>
-                        </div>
+                        {pageDescription && (
+                            <div className="truncate text-[11px] leading-tight text-muted-foreground">{pageDescription}</div>
+                        )}
                     </div>
+                    <span className="relative mr-2 flex h-2.5 w-2.5" title={connected ? "Connected" : "Reconnecting"}>
+                        <span className={cn("relative inline-flex h-2.5 w-2.5 rounded-full", connected ? "bg-primary" : "bg-amber-500")} />
+                    </span>
                 </div>
-            </div>
+            </header>
 
-            {/* Mobile Sidebar Drawer */}
+            {/* Mobile drawer */}
             {mobileMenuOpen && (
                 <div className="fixed inset-0 z-50 md:hidden">
-                    {/* Backdrop */}
                     <div
-                        className="absolute inset-0 bg-background/80 backdrop-blur-sm"
+                        className="absolute inset-0 bg-background/70 backdrop-blur-sm animate-in fade-in duration-150"
                         onClick={() => setMobileMenuOpen(false)}
                     />
-
-                    {/* Drawer Content */}
-                    <div className="absolute left-0 top-0 bottom-0 w-[80%] max-w-sm bg-card border-r border-border p-4 shadow-2xl animate-in slide-in-from-left duration-200 flex flex-col">
-                        <div className="flex justify-end mb-2 shrink-0">
-                            <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(false)}>
+                    <div className="absolute inset-y-0 left-0 flex w-[82%] max-w-xs flex-col border-r border-border bg-card shadow-2xl animate-in slide-in-from-left duration-200">
+                        <div className="flex shrink-0 justify-end p-2">
+                            <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(false)} aria-label="Close menu">
                                 <X className="h-5 w-5" />
                             </Button>
                         </div>
                         <Sidebar
-                            className="flex flex-1 min-h-0 h-full w-full m-0 border-none shadow-none"
+                            forceExpanded
+                            className="flex min-h-0 w-full flex-1 border-none bg-transparent"
                             botIdentity={botIdentity}
                             activeView={activeView}
                             onNavigate={handleNavigate}
@@ -108,10 +93,8 @@ export function AppLayout({
                 </div>
             )}
 
-            <main className="flex-1 h-full min-w-0 pt-20 md:pt-4 md:py-4 md:pr-4 relative z-0">
-                <div className="h-full rounded-none md:rounded-2xl overflow-hidden shadow-none md:shadow-2xl border-t md:border border-border bg-card">
-                    {children}
-                </div>
+            <main className="relative z-0 h-full min-w-0 flex-1 pt-12 md:pt-0">
+                <div className="h-full overflow-hidden bg-card/30">{children}</div>
             </main>
         </div>
     );

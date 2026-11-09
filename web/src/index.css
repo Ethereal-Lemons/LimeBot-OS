@@ -72,40 +72,35 @@
     --user-bubble-foreground: 0 0% 100%;
   }
 
+  /* Quiet, theme-neutral scrollbars: visible on hover, never a coloured bar. */
   html {
-    scrollbar-color: hsl(var(--primary) / 0.55) hsl(var(--background));
+    scrollbar-color: hsl(var(--muted-foreground) / 0.32) transparent;
     scrollbar-width: thin;
   }
 
   ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
   }
 
   ::-webkit-scrollbar-track {
-    background: hsl(var(--background));
+    background: transparent;
   }
 
   ::-webkit-scrollbar-thumb {
-    background: linear-gradient(
-      180deg,
-      hsl(var(--primary) / 0.72) 0%,
-      hsl(var(--accent) / 0.62) 100%
-    );
-    border: 2px solid hsl(var(--background));
+    background: hsl(var(--muted-foreground) / 0.28);
+    border: 2px solid transparent;
+    background-clip: content-box;
     border-radius: 999px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(
-      180deg,
-      hsl(var(--primary) / 0.88) 0%,
-      hsl(var(--accent) / 0.78) 100%
-    );
+    background: hsl(var(--muted-foreground) / 0.5);
+    background-clip: content-box;
   }
 
   ::-webkit-scrollbar-corner {
-    background: hsl(var(--background));
+    background: transparent;
   }
 
   /* --- PREDEFINED THEMES --- */
