@@ -1,0 +1,70 @@
+{
+  "id": "spanish-find-best-branch",
+  "category": "long-read",
+  "prompt": "Revisa todos los archivos de workspace/sucursales. ¿Qué sucursal tuvo las ventas más altas este mes (ventas_mes, no el mes anterior)? Respóndeme con el nombre y el monto.",
+  "fixtures": [
+    {
+      "path": "workspace/sucursales/s01.txt",
+      "content": "sucursal: Zona Norte\nempleados: 38\nventas_mes_anterior: 139846\nventas_mes: 72950\ngastos_mes: 25649\n"
+    },
+    {
+      "path": "workspace/sucursales/s02.txt",
+      "content": "sucursal: Zona Sur\nempleados: 10\nventas_mes_anterior: 135889\nventas_mes: 69906\ngastos_mes: 24032\n"
+    },
+    {
+      "path": "workspace/sucursales/s03.txt",
+      "content": "sucursal: Centro\nempleados: 17\nventas_mes_anterior: 122632\nventas_mes: 46224\ngastos_mes: 28093\n"
+    },
+    {
+      "path": "workspace/sucursales/s04.txt",
+      "content": "sucursal: Puerto\nempleados: 18\nventas_mes_anterior: 119509\nventas_mes: 43435\ngastos_mes: 20717\n"
+    },
+    {
+      "path": "workspace/sucursales/s05.txt",
+      "content": "sucursal: Aeropuerto\nempleados: 18\nventas_mes_anterior: 104979\nventas_mes: 50180\ngastos_mes: 23121\n"
+    },
+    {
+      "path": "workspace/sucursales/s06.txt",
+      "content": "sucursal: Universidad\nempleados: 16\nventas_mes_anterior: 132153\nventas_mes: 52562\ngastos_mes: 19102\n"
+    },
+    {
+      "path": "workspace/sucursales/s07.txt",
+      "content": "sucursal: Mercado\nempleados: 10\nventas_mes_anterior: 129649\nventas_mes: 37464\ngastos_mes: 10877\n"
+    },
+    {
+      "path": "workspace/sucursales/s08.txt",
+      "content": "sucursal: Terminal\nempleados: 35\nventas_mes_anterior: 115734\nventas_mes: 31348\ngastos_mes: 21193\n"
+    },
+    {
+      "path": "workspace/sucursales/s09.txt",
+      "content": "sucursal: Costa\nempleados: 7\nventas_mes_anterior: 112655\nventas_mes: 52918\ngastos_mes: 26282\n"
+    },
+    {
+      "path": "workspace/sucursales/s10.txt",
+      "content": "sucursal: Valle\nempleados: 5\nventas_mes_anterior: 122866\nventas_mes: 70209\ngastos_mes: 14676\n"
+    }
+  ],
+  "hidden_fixtures": [],
+  "solution": [],
+  "checks": {
+    "reply": [
+      {
+        "id": "right_branch",
+        "any_of": [
+          "Zona Norte"
+        ]
+      },
+      {
+        "id": "right_amount",
+        "any_of": [
+          "72950",
+          "72,950",
+          "72.950"
+        ]
+      }
+    ]
+  },
+  "timeout_seconds": 240,
+  "max_model_calls": 20,
+  "max_tokens": 150000
+}

@@ -1,0 +1,55 @@
+{
+  "id": "fix-failing-test",
+  "category": "bugfix",
+  "prompt": "Los tests de workspace/test_pricing.py fallan. Arregla el bug en workspace/pricing.py, corre los tests para confirmar y dime en una frase qué estaba mal.",
+  "fixtures": [
+    {
+      "path": "workspace/pricing.py",
+      "content": "def apply_discount(price, percent):\n    \"\"\"Return price reduced by percent (0-100), rounded to 2 decimals.\"\"\"\n    if percent < 0 or percent > 100:\n        raise ValueError(\"percent must be between 0 and 100\")\n    return round(price - price * percent / 10, 2)\n"
+    },
+    {
+      "path": "workspace/test_pricing.py",
+      "content": "import unittest\nfrom pricing import apply_discount\n\n\nclass PricingTest(unittest.TestCase):\n    def test_ten_percent(self):\n        self.assertEqual(apply_discount(100, 10), 90.0)\n\n    def test_no_discount(self):\n        self.assertEqual(apply_discount(50, 0), 50.0)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    }
+  ],
+  "hidden_fixtures": [
+    {
+      "path": "workspace/test_pricing_hidden.py",
+      "content": "import unittest\nfrom pricing import apply_discount\n\n\nclass HiddenPricingTest(unittest.TestCase):\n    def test_quarter_off(self):\n        self.assertEqual(apply_discount(200, 25), 150.0)\n\n    def test_rounding(self):\n        self.assertEqual(apply_discount(19.99, 15), 16.99)\n\n    def test_full_discount(self):\n        self.assertEqual(apply_discount(80, 100), 0.0)\n\n    def test_invalid_percent(self):\n        with self.assertRaises(ValueError):\n            apply_discount(10, 101)\n        with self.assertRaises(ValueError):\n            apply_discount(10, -1)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    }
+  ],
+  "solution": [
+    {
+      "path": "workspace/pricing.py",
+      "content": "def apply_discount(price, percent):\n    \"\"\"Return price reduced by percent (0-100), rounded to 2 decimals.\"\"\"\n    if percent < 0 or percent > 100:\n        raise ValueError(\"percent must be between 0 and 100\")\n    return round(price - price * percent / 100, 2)\n"
+    }
+  ],
+  "checks": {
+    "commands": [
+      {
+        "id": "hidden_tests_pass",
+        "argv": [
+          "python",
+          "-m",
+          "unittest",
+          "test_pricing_hidden"
+        ]
+      }
+    ],
+    "reply": [
+      {
+        "id": "explains_cause",
+        "any_of": [
+          "100",
+          "divid",
+          "/ 10",
+          "porcentaje",
+          "percent"
+        ]
+      }
+    ]
+  },
+  "timeout_seconds": 240,
+  "max_model_calls": 20,
+  "max_tokens": 120000
+}

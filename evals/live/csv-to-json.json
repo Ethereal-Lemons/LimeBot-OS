@@ -1,0 +1,33 @@
+{
+  "id": "csv-to-json",
+  "category": "data-transform",
+  "prompt": "Convert workspace/people.csv into workspace/people.json: a JSON list of objects with name (string), age (integer) and city (string), sorted by age descending and then by name ascending.",
+  "fixtures": [
+    {
+      "path": "workspace/people.csv",
+      "content": "name,age,city\n\"Smith, Anna\",34,Lima\nBruno Diaz,41,Quito\nCarla Ruiz,34,Bogota\n\"Doe, John\",29,Lima\nElena Soto,41,Quito\n"
+    }
+  ],
+  "hidden_fixtures": [],
+  "solution": [
+    {
+      "path": "workspace/people.json",
+      "content": "[\n  {\n    \"name\": \"Bruno Diaz\",\n    \"age\": 41,\n    \"city\": \"Quito\"\n  },\n  {\n    \"name\": \"Elena Soto\",\n    \"age\": 41,\n    \"city\": \"Quito\"\n  },\n  {\n    \"name\": \"Carla Ruiz\",\n    \"age\": 34,\n    \"city\": \"Bogota\"\n  },\n  {\n    \"name\": \"Smith, Anna\",\n    \"age\": 34,\n    \"city\": \"Lima\"\n  },\n  {\n    \"name\": \"Doe, John\",\n    \"age\": 29,\n    \"city\": \"Lima\"\n  }\n]\n"
+    }
+  ],
+  "checks": {
+    "commands": [
+      {
+        "id": "json_matches_exactly",
+        "argv": [
+          "python",
+          "-c",
+          "import json; d = json.load(open('people.json')); expected = [{'name': 'Bruno Diaz', 'age': 41, 'city': 'Quito'}, {'name': 'Elena Soto', 'age': 41, 'city': 'Quito'}, {'name': 'Carla Ruiz', 'age': 34, 'city': 'Bogota'}, {'name': 'Smith, Anna', 'age': 34, 'city': 'Lima'}, {'name': 'Doe, John', 'age': 29, 'city': 'Lima'}]; assert d == expected, d"
+        ]
+      }
+    ]
+  },
+  "timeout_seconds": 240,
+  "max_model_calls": 15,
+  "max_tokens": 80000
+}

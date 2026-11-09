@@ -1,0 +1,98 @@
+{
+  "id": "rename-across-files",
+  "category": "refactor",
+  "prompt": "Rename the function get_user_name to fetch_display_name everywhere in the workspace folder: the definition, every caller, the tests and the docs. Behavior must not change. Run the tests when you are done.",
+  "fixtures": [
+    {
+      "path": "workspace/users.py",
+      "content": "USERS = {1: \"ada\", 2: \"linus\", 3: \"grace\"}\n\n\ndef get_user_name(user_id):\n    \"\"\"Return the display name for a user id.\"\"\"\n    return USERS[user_id].title()\n"
+    },
+    {
+      "path": "workspace/report.py",
+      "content": "from users import get_user_name\n\n\ndef build_report(ids):\n    return [f\"{i}: {get_user_name(i)}\" for i in ids]\n"
+    },
+    {
+      "path": "workspace/cli.py",
+      "content": "import sys\n\nfrom users import get_user_name\n\n\ndef main(argv):\n    for raw in argv:\n        print(get_user_name(int(raw)))\n\n\nif __name__ == \"__main__\":\n    main(sys.argv[1:])\n"
+    },
+    {
+      "path": "workspace/test_users.py",
+      "content": "import unittest\nfrom users import get_user_name\n\n\nclass UsersTest(unittest.TestCase):\n    def test_names(self):\n        self.assertEqual(get_user_name(1), \"Ada\")\n        self.assertEqual(get_user_name(3), \"Grace\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    },
+    {
+      "path": "workspace/docs.md",
+      "content": "# Users\n\nCall `get_user_name(user_id)` to get a display name. `get_user_name` raises KeyError for unknown ids.\n"
+    }
+  ],
+  "hidden_fixtures": [
+    {
+      "path": "workspace/test_rename_hidden.py",
+      "content": "import unittest\n\nimport report\nimport users\n\n\nclass RenameTest(unittest.TestCase):\n    def test_new_name_works(self):\n        self.assertEqual(users.fetch_display_name(2), \"Linus\")\n\n    def test_old_name_is_gone(self):\n        self.assertFalse(hasattr(users, \"get_user_name\"))\n\n    def test_callers_still_work(self):\n        self.assertEqual(report.build_report([1, 2]), [\"1: Ada\", \"2: Linus\"])\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    }
+  ],
+  "solution": [
+    {
+      "path": "workspace/users.py",
+      "content": "USERS = {1: \"ada\", 2: \"linus\", 3: \"grace\"}\n\n\ndef fetch_display_name(user_id):\n    \"\"\"Return the display name for a user id.\"\"\"\n    return USERS[user_id].title()\n"
+    },
+    {
+      "path": "workspace/report.py",
+      "content": "from users import fetch_display_name\n\n\ndef build_report(ids):\n    return [f\"{i}: {fetch_display_name(i)}\" for i in ids]\n"
+    },
+    {
+      "path": "workspace/cli.py",
+      "content": "import sys\n\nfrom users import fetch_display_name\n\n\ndef main(argv):\n    for raw in argv:\n        print(fetch_display_name(int(raw)))\n\n\nif __name__ == \"__main__\":\n    main(sys.argv[1:])\n"
+    },
+    {
+      "path": "workspace/test_users.py",
+      "content": "import unittest\nfrom users import fetch_display_name\n\n\nclass UsersTest(unittest.TestCase):\n    def test_names(self):\n        self.assertEqual(fetch_display_name(1), \"Ada\")\n        self.assertEqual(fetch_display_name(3), \"Grace\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    },
+    {
+      "path": "workspace/docs.md",
+      "content": "# Users\n\nCall `fetch_display_name(user_id)` to get a display name. `fetch_display_name` raises KeyError for unknown ids.\n"
+    }
+  ],
+  "checks": {
+    "files": [
+      {
+        "id": "no_old_name_users_py",
+        "path": "workspace/users.py",
+        "not_contains": "get_user_name"
+      },
+      {
+        "id": "no_old_name_report_py",
+        "path": "workspace/report.py",
+        "not_contains": "get_user_name"
+      },
+      {
+        "id": "no_old_name_cli_py",
+        "path": "workspace/cli.py",
+        "not_contains": "get_user_name"
+      },
+      {
+        "id": "no_old_name_test_users_py",
+        "path": "workspace/test_users.py",
+        "not_contains": "get_user_name"
+      },
+      {
+        "id": "no_old_name_docs_md",
+        "path": "workspace/docs.md",
+        "not_contains": "get_user_name"
+      }
+    ],
+    "commands": [
+      {
+        "id": "hidden_tests_pass",
+        "argv": [
+          "python",
+          "-m",
+          "unittest",
+          "test_rename_hidden"
+        ]
+      }
+    ]
+  },
+  "timeout_seconds": 240,
+  "max_model_calls": 30,
+  "max_tokens": 200000
+}

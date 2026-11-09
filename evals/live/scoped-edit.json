@@ -1,0 +1,40 @@
+{
+  "id": "scoped-edit",
+  "category": "precise-edit",
+  "prompt": "Change the request timeout from 30 to 60 seconds in workspace/settings.py.",
+  "fixtures": [
+    {
+      "path": "workspace/settings.py",
+      "content": "CONNECT_TIMEOUT = 5\nREQUEST_TIMEOUT = 30\nRETRY_TIMEOUT = 30\nMAX_RETRIES = 3\n"
+    }
+  ],
+  "hidden_fixtures": [],
+  "solution": [
+    {
+      "path": "workspace/settings.py",
+      "content": "CONNECT_TIMEOUT = 5\nREQUEST_TIMEOUT = 60\nRETRY_TIMEOUT = 30\nMAX_RETRIES = 3\n"
+    }
+  ],
+  "checks": {
+    "files": [
+      {
+        "id": "request_timeout_updated",
+        "path": "workspace/settings.py",
+        "regex": "REQUEST_TIMEOUT\\s*=\\s*60\\b"
+      },
+      {
+        "id": "retry_timeout_untouched",
+        "path": "workspace/settings.py",
+        "regex": "RETRY_TIMEOUT\\s*=\\s*30\\b"
+      },
+      {
+        "id": "connect_timeout_untouched",
+        "path": "workspace/settings.py",
+        "regex": "CONNECT_TIMEOUT\\s*=\\s*5\\b"
+      }
+    ]
+  },
+  "timeout_seconds": 240,
+  "max_model_calls": 12,
+  "max_tokens": 60000
+}

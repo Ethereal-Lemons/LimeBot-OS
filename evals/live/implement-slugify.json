@@ -1,0 +1,50 @@
+{
+  "id": "implement-slugify",
+  "category": "feature",
+  "prompt": "Create workspace/slug.py with a function slugify(text) that follows the rules in workspace/SPEC.md, and add your own tests in workspace/test_slug.py. Run your tests before you finish.",
+  "fixtures": [
+    {
+      "path": "workspace/SPEC.md",
+      "content": "# slugify(text)\n\nTurn a title into a URL slug.\n\n1. Lowercase the text.\n2. Transliterate accented letters to plain ASCII (é -> e, ñ -> n, ü -> u).\n3. Replace every run of characters that are not a-z or 0-9 with one hyphen.\n4. Remove leading and trailing hyphens.\n5. Truncate to at most 40 characters, then remove any trailing hyphen the cut leaves behind.\n6. If nothing is left, return \"untitled\".\n"
+    }
+  ],
+  "hidden_fixtures": [
+    {
+      "path": "workspace/test_slug_hidden.py",
+      "content": "import unittest\nfrom slug import slugify\n\n\nclass HiddenSlugTest(unittest.TestCase):\n    def test_basic(self):\n        self.assertEqual(slugify(\"Hello, World!\"), \"hello-world\")\n\n    def test_runs_collapse(self):\n        self.assertEqual(slugify(\"a  --  b\"), \"a-b\")\n\n    def test_accents(self):\n        self.assertEqual(slugify(\"Ni\\u00f1o \\u00dcber caf\\u00e9\"), \"nino-uber-cafe\")\n\n    def test_edges_trimmed(self):\n        self.assertEqual(slugify(\"  --Title--  \"), \"title\")\n\n    def test_empty(self):\n        self.assertEqual(slugify(\"\"), \"untitled\")\n        self.assertEqual(slugify(\"!!!\"), \"untitled\")\n\n    def test_truncation_has_no_trailing_hyphen(self):\n        text = \"word \" * 20\n        result = slugify(text)\n        self.assertLessEqual(len(result), 40)\n        self.assertFalse(result.endswith(\"-\"))\n        self.assertTrue(result.startswith(\"word-word\"))\n\n    def test_exact_cut_on_hyphen(self):\n        self.assertEqual(slugify(\"a\" * 39 + \" b\"), \"a\" * 39)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    }
+  ],
+  "solution": [
+    {
+      "path": "workspace/slug.py",
+      "content": "import re\nimport unicodedata\n\n\ndef slugify(text):\n    text = unicodedata.normalize(\"NFKD\", text).encode(\"ascii\", \"ignore\").decode(\"ascii\")\n    text = re.sub(r\"[^a-z0-9]+\", \"-\", text.lower()).strip(\"-\")\n    text = text[:40].rstrip(\"-\")\n    return text or \"untitled\"\n"
+    },
+    {
+      "path": "workspace/test_slug.py",
+      "content": "import unittest\nfrom slug import slugify\n\n\nclass SlugTest(unittest.TestCase):\n    def test_basic(self):\n        self.assertEqual(slugify(\"Hello World\"), \"hello-world\")\n"
+    }
+  ],
+  "checks": {
+    "files": [
+      {
+        "id": "has_own_tests",
+        "path": "workspace/test_slug.py",
+        "regex": "def test_"
+      }
+    ],
+    "commands": [
+      {
+        "id": "hidden_tests_pass",
+        "argv": [
+          "python",
+          "-m",
+          "unittest",
+          "test_slug_hidden"
+        ]
+      }
+    ]
+  },
+  "timeout_seconds": 240,
+  "max_model_calls": 25,
+  "max_tokens": 150000
+}

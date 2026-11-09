@@ -1,0 +1,44 @@
+{
+  "id": "compute-and-run",
+  "category": "run-command",
+  "prompt": "Write a Python script workspace/primes.py that prints the sum of all prime numbers below 2000, run it, and tell me the number it printed.",
+  "fixtures": [],
+  "hidden_fixtures": [],
+  "solution": [
+    {
+      "path": "workspace/primes.py",
+      "content": "print(sum(n for n in range(2, 2000) if all(n % d for d in range(2, int(n ** 0.5) + 1))))\n"
+    }
+  ],
+  "checks": {
+    "files": [
+      {
+        "id": "script_prints",
+        "path": "workspace/primes.py",
+        "regex": "print"
+      }
+    ],
+    "reply": [
+      {
+        "id": "reports_the_sum",
+        "any_of": [
+          "277050",
+          "277,050"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "id": "script_outputs_sum",
+        "argv": [
+          "python",
+          "primes.py"
+        ],
+        "stdout_contains": "277050"
+      }
+    ]
+  },
+  "timeout_seconds": 240,
+  "max_model_calls": 15,
+  "max_tokens": 80000
+}

@@ -1,0 +1,51 @@
+{
+  "id": "extract-helper",
+  "category": "refactor",
+  "prompt": "workspace/orders.py repeats the same email-cleaning code in three functions. Extract it into one helper function and use it in all three. Behavior must not change, and the tests must still pass.",
+  "fixtures": [
+    {
+      "path": "workspace/orders.py",
+      "content": "def create_order(email, items):\n    email = email.strip().lower()\n    if \"@\" not in email:\n        raise ValueError(\"invalid email\")\n    return {\"email\": email, \"items\": list(items)}\n\n\ndef cancel_order(email, order_id):\n    email = email.strip().lower()\n    if \"@\" not in email:\n        raise ValueError(\"invalid email\")\n    return {\"email\": email, \"cancelled\": order_id}\n\n\ndef order_status(email, order_id):\n    email = email.strip().lower()\n    if \"@\" not in email:\n        raise ValueError(\"invalid email\")\n    return {\"email\": email, \"status\": \"open\", \"id\": order_id}\n"
+    },
+    {
+      "path": "workspace/test_orders.py",
+      "content": "import unittest\nfrom orders import create_order\n\n\nclass OrdersTest(unittest.TestCase):\n    def test_create(self):\n        self.assertEqual(create_order(\" A@B.com \", [\"x\"])[\"email\"], \"a@b.com\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    }
+  ],
+  "hidden_fixtures": [
+    {
+      "path": "workspace/test_orders_hidden.py",
+      "content": "import unittest\nimport orders\n\n\nclass HiddenOrdersTest(unittest.TestCase):\n    def test_all_three_clean_the_email(self):\n        self.assertEqual(orders.create_order(\"  X@Y.IO \", [1, 2]), {\"email\": \"x@y.io\", \"items\": [1, 2]})\n        self.assertEqual(orders.cancel_order(\"  X@Y.IO \", 7), {\"email\": \"x@y.io\", \"cancelled\": 7})\n        self.assertEqual(orders.order_status(\"  X@Y.IO \", 7), {\"email\": \"x@y.io\", \"status\": \"open\", \"id\": 7})\n\n    def test_all_three_reject_bad_email(self):\n        for call in (lambda: orders.create_order(\"nope\", []), lambda: orders.cancel_order(\"nope\", 1),\n                     lambda: orders.order_status(\"nope\", 1)):\n            with self.assertRaises(ValueError):\n                call()\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+    }
+  ],
+  "solution": [
+    {
+      "path": "workspace/orders.py",
+      "content": "def _clean_email(email):\n    email = email.strip().lower()\n    if \"@\" not in email:\n        raise ValueError(\"invalid email\")\n    return email\n\n\ndef create_order(email, items):\n    return {\"email\": _clean_email(email), \"items\": list(items)}\n\n\ndef cancel_order(email, order_id):\n    return {\"email\": _clean_email(email), \"cancelled\": order_id}\n\n\ndef order_status(email, order_id):\n    return {\"email\": _clean_email(email), \"status\": \"open\", \"id\": order_id}\n"
+    }
+  ],
+  "checks": {
+    "commands": [
+      {
+        "id": "logic_appears_once",
+        "argv": [
+          "python",
+          "-c",
+          "src = open('orders.py', encoding='utf-8').read(); assert src.count('.strip().lower()') == 1, src.count('.strip().lower()')"
+        ]
+      },
+      {
+        "id": "behavior_unchanged",
+        "argv": [
+          "python",
+          "-m",
+          "unittest",
+          "test_orders_hidden"
+        ]
+      }
+    ]
+  },
+  "timeout_seconds": 240,
+  "max_model_calls": 20,
+  "max_tokens": 120000
+}
