@@ -31,6 +31,7 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         LIVE_TOOL_ALLOWLIST,
         MUTATING_TOOLS,
         BudgetedLLMClient,
+        assemble_reply,
         command_allowed,
         evaluate_checks,
         is_workspace_path,
@@ -213,7 +214,7 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             status = "incomplete"
 
-    reply_text = "\n".join(str(getattr(item, "content", "") or "") for item in collected)
+    reply_text = assemble_reply(collected)
     # Hidden fixtures (for example the real test suite) appear only now, so the
     # model could not have read or special-cased them.
     write_fixture_files(

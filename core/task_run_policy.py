@@ -9,7 +9,7 @@ from core.operator_invariants import (
     has_verification_evidence,
     turn_had_file_mutations,
 )
-from core.task_runs import is_coding_goal
+from core.task_runs import is_coding_goal, is_read_only_request
 
 
 def acceptance_satisfied(
@@ -47,10 +47,18 @@ def acceptance_satisfied(
     )
     if verdict.applies and not verdict.ok:
         return False
+    # A question that asks for no change and changed nothing has nothing to verify.
+    # Anything that mutated files, or a coding request that did not read as a
+    # question, still needs proof before it can claim completion.
+    read_only_answer = not mutated and is_read_only_request(goal)
     if not outcomes:
         checkpoint = getattr(run, "checkpoint", {}) or {}
+        if read_only_answer:
+            return True
         if mutated or coding_goal:
             return checkpoint.get("verification_state") == "passed"
+        return True
+    if read_only_answer:
         return True
     if mutated or coding_turn or coding_goal:
         return has_verification_evidence(outcomes, history=history)
