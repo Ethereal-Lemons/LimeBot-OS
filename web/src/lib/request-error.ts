@@ -95,3 +95,16 @@ export function classifyRequestError(error: unknown, what = "this page"): ToolEr
     const classified = classifyToolError(detail);
     return { ...classified, detail };
 }
+
+/**
+ * Short form for toasts: what failed plus a reason. A rejected request (other
+ * 4xx) shows the server's own explanation, since the person can act on it;
+ * everything else shows the classified title.
+ */
+export function requestFailureMessage(action: string, error: unknown): string {
+    const info = classifyRequestError(error);
+    const status = requestErrorStatus(error);
+    const rejected = status !== undefined && status >= 400 && status < 500 && ![401, 403, 404, 429].includes(status);
+    const reason = rejected || (status === undefined && info.category === "unknown") ? info.detail.replace(/^HTTP \d+: /, "") : info.title;
+    return `${action}: ${reason}`;
+}

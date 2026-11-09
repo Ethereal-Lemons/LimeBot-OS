@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyRequestError, requestErrorStatus } from "../src/lib/request-error.js";
+import { classifyRequestError, requestErrorStatus, requestFailureMessage } from "../src/lib/request-error.js";
 
 const http = (status: number, data?: unknown) => ({ message: `Request failed with status code ${status}`, response: { status, data } });
 
@@ -47,4 +47,10 @@ test("unknown shapes still produce a usable message", () => {
     assert.equal(info.detail, "boom");
     assert.equal(requestErrorStatus(null), undefined);
     assert.equal(requestErrorStatus(http(500)), 500);
+});
+
+test("requestFailureMessage shows the server reason only when the person can act on it", () => {
+    assert.equal(requestFailureMessage("Could not add the job", http(422, { detail: "bad cron" })), "Could not add the job: bad cron");
+    assert.match(requestFailureMessage("Could not pause the job", http(503)), /^Could not pause the job: The backend hit an error/);
+    assert.match(requestFailureMessage("Could not load", { message: "Network Error" }), /Can't reach the LimeBot backend/);
 });

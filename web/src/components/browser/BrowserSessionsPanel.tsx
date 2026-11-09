@@ -1,19 +1,24 @@
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { API_BASE_URL } from "@/lib/api";
-import { 
-    Globe, 
-    Trash2, 
-    RefreshCw, 
-    MonitorPlay, 
-    ShieldAlert, 
-    CheckCircle2,
-    XCircle
-} from "lucide-react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Button } from "@/components/ui/button";
+import { Globe, Lock, RefreshCw, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
+import { requestFailureMessage } from "@/lib/request-error";
+import {
+    Chip,
+    EmptyState,
+    InlineConfirm,
+    PageFrame,
+    PageHeader,
+    RequestError,
+    RowButton,
+    RowList,
+    SkeletonRows,
+    WarnGlyph,
+} from "@/components/ui/data-page";
+import { StatusGlyph } from "@/components/chat/tool-ui";
 
 interface BrowserSession {
     session_id: string;
@@ -27,158 +32,151 @@ interface BrowserSession {
     };
 }
 
+const MODE_HINT: Record<BrowserSession["mode"], string> = {
+    isolated: "Own throwaway profile",
+    shared: "Shared profile",
+    system: "Your system browser profile",
+    attach: "Attached over CDP",
+};
+
+function lastSeen(ts: number): string {
+    const seconds = Math.max(0, Date.now() / 1000 - ts);
+    if (seconds < 10) return "just now";
+    if (seconds < 60) return `${Math.floor(seconds)}s ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return new Date(ts * 1000).toLocaleDateString();
+}
+
+function SessionRow({ session, onEnd }: { session: BrowserSession; onEnd: (id: string) => Promise<void> }) {
+    const protectedSession = session.mode === "system";
+    return (
+        <div className="flex flex-col gap-2 px-4 py-3.5 sm:flex-row sm:items-center sm:gap-4">
+            <div className="flex min-w-0 flex-1 items-start gap-3">
+                <span className="mt-0.5">
+                    {session.is_live ? <StatusGlyph state="done" /> : <WarnGlyph label="Connection lost" />}
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="min-w-0 truncate font-mono text-[13px] font-medium text-foreground">{session.session_id}</span>
+                        <Chip title={MODE_HINT[session.mode]}>{session.mode}</Chip>
+                        {session.metadata.headless === false && <Chip tone="primary">Visible window</Chip>}
+                    </div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                        <span className={cn(!session.is_live && "text-amber-500")}>
+                            {session.is_live ? "Live" : "Connection lost"} · seen {lastSeen(session.last_active)}
+                        </span>
+                        {session.metadata.channel && <span>via {session.metadata.channel}</span>}
+                        {session.metadata.cdp_url && <span className="min-w-0 truncate font-mono text-[10px]">{session.metadata.cdp_url}</span>}
+                    </div>
+                </div>
+            </div>
+            <div className="flex shrink-0 items-center justify-end pl-8 sm:pl-0">
+                {protectedSession ? (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground" title="System profiles cannot be removed from here">
+                        <Lock className="h-3 w-3" /> Protected
+                    </span>
+                ) : (
+                    <InlineConfirm
+                        label="End session"
+                        icon={Trash2}
+                        prompt="Closes the browser."
+                        confirmLabel="End it"
+                        onConfirm={() => onEnd(session.session_id)}
+                    />
+                )}
+            </div>
+        </div>
+    );
+}
+
 export function BrowserSessionsPanel() {
     const [sessions, setSessions] = useState<BrowserSession[]>([]);
     const [loading, setLoading] = useState(true);
+    const [loaded, setLoaded] = useState(false);
+    const [loadError, setLoadError] = useState<unknown>(null);
     const [autoRefresh, setAutoRefresh] = useState(true);
-    const pollInterval = useRef<number | null>(null);
 
-    const fetchData = async () => {
+    const fetchData = useCallback(async () => {
         try {
             const res = await axios.get(`${API_BASE_URL}/api/browser/sessions`);
             setSessions(res.data.sessions || []);
+            setLoaded(true);
+            setLoadError(null);
         } catch (error) {
             console.error("Failed to fetch browser sessions:", error);
+            setLoadError(error);
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
     useEffect(() => {
-        fetchData();
-        if (autoRefresh) {
-            pollInterval.current = window.setInterval(fetchData, 3000);
-        }
-        return () => {
-            if (pollInterval.current) clearInterval(pollInterval.current);
-        };
-    }, [autoRefresh]);
+        void fetchData();
+        if (!autoRefresh) return;
+        const id = window.setInterval(() => void fetchData(), 3000);
+        return () => window.clearInterval(id);
+    }, [autoRefresh, fetchData]);
 
-    const handleDelete = async (sessionId: string) => {
-        if (!confirm(`Are you sure you want to forcibly remove session ${sessionId}? This will close the browser if it's currently running.`)) return;
-        
+    const handleEnd = async (sessionId: string) => {
         try {
             await axios.delete(`${API_BASE_URL}/api/browser/sessions/${sessionId}`);
-            fetchData();
+            toast.success(`Ended ${sessionId}`);
+            void fetchData();
         } catch (error) {
             console.error("Failed to delete session:", error);
-            alert("Failed to delete session. It might be protected.");
+            toast.error(requestFailureMessage("Could not end the session (it may be protected)", error));
         }
     };
 
-    const formatTime = (ts: number) => {
-        return new Date(ts * 1000).toLocaleTimeString();
-    };
-
-    const getModeColor = (mode: string) => {
-        switch (mode) {
-            case "isolated": return "bg-blue-500/10 text-blue-500 border-blue-500/20";
-            case "shared": return "bg-purple-500/10 text-purple-500 border-purple-500/20";
-            case "system": return "border-primary/20 bg-primary/10 text-primary";
-            case "attach": return "bg-amber-500/10 text-amber-500 border-amber-500/20";
-            default: return "bg-gray-500/10 text-gray-500 border-gray-500/20";
-        }
-    };
+    const liveCount = sessions.filter((session) => session.is_live).length;
 
     return (
-        <div className="h-full flex flex-col p-6 max-w-7xl mx-auto w-full gap-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-3xl font-bold tracking-tight">Browser Sessions</h1>
-                    <p className="text-muted-foreground mt-1">Manage active headless and attached browser profiles.</p>
-                </div>
-                <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm text-muted-foreground">Auto-refresh</span>
-                        <div 
-                            className={`h-5 w-10 cursor-pointer rounded-full p-1 transition-colors ${autoRefresh ? 'bg-primary' : 'bg-muted'}`}
-                            onClick={() => setAutoRefresh(!autoRefresh)}
-                        >
-                            <div className={`w-3 h-3 bg-white rounded-full transition-transform ${autoRefresh ? 'translate-x-5' : 'translate-x-0'}`} />
-                        </div>
-                    </div>
-                    <button 
-                        onClick={fetchData} 
-                        className="p-2 hover:bg-accent rounded-full transition-colors"
-                        disabled={loading}
-                    >
-                        <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-                    </button>
-                </div>
-            </div>
+        <PageFrame width="max-w-4xl">
+            <PageHeader
+                title="Browser sessions"
+                description="Browser profiles LimeBot is driving or attached to."
+                meta={
+                    loaded && sessions.length > 0 ? (
+                        <>
+                            <Chip>{sessions.length}</Chip>
+                            {liveCount < sessions.length && <Chip tone="amber">{sessions.length - liveCount} lost</Chip>}
+                        </>
+                    ) : undefined
+                }
+                actions={
+                    <>
+                        <label className="flex cursor-pointer items-center gap-2 pr-1 text-[11px] text-muted-foreground">
+                            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} aria-label="Auto-refresh every 3 seconds" className="h-4 w-7 [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3" />
+                            <span className="hidden sm:inline">Auto-refresh</span>
+                        </label>
+                        <RowButton onClick={() => void fetchData()} disabled={loading} aria-label="Refresh sessions" title="Refresh">
+                            <RefreshCw className={cn(loading && "animate-spin")} />
+                        </RowButton>
+                    </>
+                }
+            />
 
-            <Card className="flex-1 flex flex-col border-border/50 shadow-sm overflow-hidden min-h-[500px]">
-                <CardHeader className="bg-card pb-4 border-b border-border/50">
-                    <CardTitle className="flex items-center gap-2">
-                        <MonitorPlay className="w-5 h-5 text-indigo-500" />
-                        Active Profiles ({sessions.length})
-                    </CardTitle>
-                </CardHeader>
-                <CardContent className="flex-1 p-0 overflow-hidden">
-                    <ScrollArea className="h-full w-full">
-                        {sessions.length === 0 ? (
-                            <div className="h-60 flex flex-col items-center justify-center text-muted-foreground gap-4">
-                                <Globe className="w-12 h-12 opacity-20" />
-                                <p>No active browser sessions.</p>
-                            </div>
-                        ) : (
-                            <div className="p-4 space-y-4">
-                                {sessions.map(session => (
-                                    <div key={session.session_id} className="flex flex-col md:flex-row md:items-center justify-between p-4 rounded-xl border border-border bg-card/50 hover:bg-card/80 transition-all gap-4">
-                                        <div className="flex items-start gap-4">
-                                            <div className="mt-1">
-                                                {session.is_live ? (
-                                                    <div title="Connection Live">
-                                                        <CheckCircle2 className="h-5 w-5 text-primary" />
-                                                    </div>
-                                                ) : (
-                                                    <div title="Connection Lost / Stale">
-                                                        <XCircle className="w-5 h-5 text-amber-500" />
-                                                    </div>
-                                                )}
-                                            </div>
-                                            <div>
-                                                <div className="flex items-center gap-2 mb-1">
-                                                    <span className="font-semibold">{session.session_id}</span>
-                                                    <Badge variant="outline" className={getModeColor(session.mode)}>
-                                                        {session.mode}
-                                                    </Badge>
-                                                    {session.metadata.headless === false && (
-                                                        <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20">Visible</Badge>
-                                                    )}
-                                                </div>
-                                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                                                    <span>Last seen: {formatTime(session.last_active)}</span>
-                                                    {session.metadata.cdp_url && <span>CDP: {session.metadata.cdp_url}</span>}
-                                                </div>
-                                            </div>
-                                        </div>
-                                        
-                                        <div className="flex items-center gap-2">
-                                            {session.mode === "system" ? (
-                                                <div className="flex items-center text-xs text-amber-500 px-3 py-1.5 bg-amber-500/10 rounded-md border border-amber-500/20" title="System profiles cannot be forcibly removed">
-                                                    <ShieldAlert className="w-4 h-4 mr-1.5" />
-                                                    Protected
-                                                </div>
-                                            ) : (
-                                                <Button 
-                                                    variant="ghost" 
-                                                    size="sm" 
-                                                    className="text-red-500 hover:text-red-600 hover:bg-red-500/10"
-                                                    onClick={() => handleDelete(session.session_id)}
-                                                >
-                                                    <Trash2 className="w-4 h-4 mr-2" />
-                                                    End Session
-                                                </Button>
-                                            )}
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </ScrollArea>
-                </CardContent>
-            </Card>
-        </div>
+            {!loaded && loading && <SkeletonRows count={3} />}
+
+            {!loaded && !loading && <RequestError error={loadError} subject="browser sessions" onRetry={() => void fetchData()} retrying={loading} />}
+
+            {loaded && loadError !== null && <RequestError compact error={loadError} subject="browser sessions" onRetry={() => void fetchData()} retrying={loading} />}
+
+            {loaded &&
+                (sessions.length === 0 ? (
+                    <EmptyState
+                        icon={Globe}
+                        title="No active browser sessions"
+                        hint="A session appears here when LimeBot opens a page or you attach a browser. This list refreshes on its own."
+                    />
+                ) : (
+                    <RowList>
+                        {sessions.map((session) => (
+                            <SessionRow key={session.session_id} session={session} onEnd={handleEnd} />
+                        ))}
+                    </RowList>
+                ))}
+        </PageFrame>
     );
 }
