@@ -8,8 +8,6 @@ import os
 import sys
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, unquote
-import struct
 
 # --- Configuration ---
 # Pretend to be a real browser to avoid 403 Forbidden on some CDNs

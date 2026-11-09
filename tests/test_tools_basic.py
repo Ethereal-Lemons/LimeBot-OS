@@ -973,7 +973,6 @@ class TestToolsBasic(unittest.IsolatedAsyncioTestCase):
         from core.bus import MessageBus
         from core.tools import Toolbox
         import sys
-        import time as _time
 
         # Test 1: By default, STALL_TIMEOUT and COMMAND_TIMEOUT should be 0 (None)
         config = SimpleNamespace(skills=SimpleNamespace(enabled=[]), stall_timeout=0, command_timeout=0)

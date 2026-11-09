@@ -64,8 +64,6 @@ class TaskRunCompletionService:
             has_verification_evidence,
         )
         from core.task_runs import (
-            BLOCKED,
-            COMPLETED,
             REPAIRING,
             VERIFYING,
             is_coding_goal,

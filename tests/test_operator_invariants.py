@@ -14,7 +14,6 @@ from core.operator_invariants import (
     format_subagent_failure_block,
     has_verification_evidence,
     missing_verify_text,
-    unapplied_changeset_text,
 )
 
 
@@ -365,7 +364,7 @@ class TestOperatorInvariantLoop(unittest.IsolatedAsyncioTestCase):
                 )
             finally:
                 workspace.deactivate(token)
-            capture = await workspace.capture()
+            await workspace.capture()
             workspace.retain()
             applied = json.loads(
                 await toolbox.apply_workspace_changeset(workspace_id=workspace.workspace_id)

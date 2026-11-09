@@ -66,6 +66,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
+      - name: Lint (unused code and real mistakes)
+        run: python -m ruff check .
+
       - name: Run the full backend suite
         run: python -m pytest -q tests/
 

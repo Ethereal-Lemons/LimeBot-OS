@@ -204,6 +204,9 @@ class ElevenLabsTTS:
             except httpx.HTTPError as e:
                 logger.error(f"[TTS] HTTP request failed: {e}")
                 raise RuntimeError(f"HTTP request failed: {e}")
+            except RuntimeError:
+                # Already logged above; do not log the same failure twice.
+                raise
             except Exception as e:
                 logger.error(f"[TTS] TTS synthesis failed: {e}")
                 raise

@@ -141,8 +141,6 @@ class TestMemoryTags(unittest.IsolatedAsyncioTestCase):
         from core.bus import MessageBus
         from core.loop import AgentLoop
         from core.paths import RELATIONSHIPS_FILE, MOOD_FILE
-        import os
-        import shutil
 
         # Setup temporary backup for relationships & mood
         rel_existed = RELATIONSHIPS_FILE.exists()
