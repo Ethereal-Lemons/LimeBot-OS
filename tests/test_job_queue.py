@@ -65,7 +65,7 @@ class TestDurableJobQueue(unittest.TestCase):
         self.assertGreater(retried.next_retry_at or 0, time.time() - 1)
 
         later = DurableJobQueue(Path(self.tmp.name) / "jobs.sqlite")
-        claimed = later.claim(job.id, "w2", now=time.time() + 10)
+        later.claim(job.id, "w2", now=time.time() + 10)
         later.mark_side_effect(job.id, "write_file")
         failed = later.fail_or_retry(job.id, "503 again")
         self.assertEqual(failed.status, FAILED)

@@ -295,11 +295,16 @@ class MCPManager:
         except asyncio.TimeoutError:
             await exit_stack.aclose()
             self._mark_error(name, "Timeout (30s)")
-            logger.error(f"Timeout starting MCP server '{name}' (30s)")
+            logger.warning(
+                f"MCP server '{name}' did not start within 30s; continuing without it."
+            )
         except Exception as e:
             await exit_stack.aclose()
             self._mark_error(name, str(e))
-            logger.error(f"Error starting MCP server '{name}': {e}")
+            logger.warning(
+                f"MCP server '{name}' is unavailable ({e}); continuing without it. "
+                "Disable it in mcp/mcp_config.json if you do not use it."
+            )
 
     async def refresh_tools(self) -> List[Dict[str, Any]]:
         """Fetch tools from all active MCP servers and translate to OpenAI format."""

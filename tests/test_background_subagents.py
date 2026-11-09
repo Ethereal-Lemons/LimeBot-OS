@@ -1,7 +1,6 @@
 import asyncio
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from core.loop import AgentLoop

@@ -701,14 +701,19 @@ class DiscordVoiceConversation:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.exception(
-                    f"[Discord Voice] Could not process an utterance from user {utterance.speaker_id}: {exc}"
-                )
+                from core.stt import ElevenLabsSTTError
+
                 now = time.monotonic()
+                if isinstance(exc, ElevenLabsSTTError):
+                    # A key or plan problem repeats for every phrase; say it once.
+                    if now - session.error_notice_at >= _STATUS_NOTICE_COOLDOWN_SECONDS:
+                        logger.warning(f"[Discord Voice] {exc.user_message}")
+                else:
+                    logger.exception(
+                        f"[Discord Voice] Could not process an utterance from user {utterance.speaker_id}: {exc}"
+                    )
                 if now - session.error_notice_at >= _STATUS_NOTICE_COOLDOWN_SECONDS:
                     session.error_notice_at = now
-                    from core.stt import ElevenLabsSTTError
-
                     notice = (
                         exc.user_message
                         if isinstance(exc, ElevenLabsSTTError)
