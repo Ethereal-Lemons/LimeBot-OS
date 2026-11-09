@@ -277,6 +277,29 @@ def validate_live_case(case: LiveCase) -> None:
 # ---------------------------------------------------------------------------
 
 
+def assemble_reply(messages: Any) -> str:
+    """The user-visible answer from a turn's outbound messages.
+
+    Final answers arrive as ``assistant_message`` events. Streamed chunks are
+    pieces of the same text and must not be joined with separators, or "E104"
+    becomes "E", newline, "104" and a correct answer fails its check.
+    """
+    items = list(messages)
+    final = [
+        str(getattr(item, "content", "") or "")
+        for item in items
+        if (getattr(item, "metadata", None) or {}).get("event_kind") == "assistant_message"
+    ]
+    final = [text for text in final if text.strip()]
+    if final:
+        return "\n".join(final)
+    return "".join(
+        str(getattr(item, "content", "") or "")
+        for item in items
+        if (getattr(item, "metadata", None) or {}).get("type") == "chunk"
+    )
+
+
 def write_fixture_files(project_dir: Path, files: tuple[FixtureFile, ...]) -> None:
     root = (project_dir / "workspace").resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -737,6 +760,7 @@ __all__ = [
     "LivePlan",
     "LiveRunEvidence",
     "ReplyCheck",
+    "assemble_reply",
     "command_allowed",
     "compare_reports",
     "evaluate_checks",

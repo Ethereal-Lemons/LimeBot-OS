@@ -1,141 +1,110 @@
+import { classifyToolError, type ToolErrorInfo } from "./tool-display.js";
+
 /**
- * Turns a failed dashboard request into something a person can act on.
- * Same idea as `classifyToolError` in tool-display.ts, but for HTTP calls.
- * Pure and structural (no axios import) so it can be unit tested in Node.
+ * Turns a failed dashboard request into the same plain-language shape the tool
+ * rows use (`ToolErrorInfo`), so every page can say what happened, what to do,
+ * and whether a retry is worth offering. Works on axios errors by shape, so it
+ * has no runtime dependency on axios.
  */
 
-export type RequestErrorCategory =
-    | "unauthorized"
-    | "not_found"
-    | "rate_limit"
-    | "timeout"
-    | "network"
-    | "server"
-    | "rejected"
-    | "unknown";
-
-export interface RequestErrorInfo {
-    category: RequestErrorCategory;
-    /** One line, plain language. */
-    title: string;
-    /** What the person can do about it. */
-    hint: string;
-    /** True when trying again as-is can plausibly work. */
-    retryable: boolean;
-    /** Raw message from the server or the network layer, for a details panel. */
-    detail: string;
-    status?: number;
-}
-
-interface ErrorLike {
+interface ErrorShape {
     message?: unknown;
     code?: unknown;
     response?: { status?: unknown; data?: unknown };
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+function asShape(error: unknown): ErrorShape {
+    return typeof error === "object" && error !== null ? (error as ErrorShape) : {};
 }
 
-function serverMessage(data: unknown): string {
-    if (typeof data === "string") return data.trim().slice(0, 400);
-    const record = asRecord(data);
-    if (!record) return "";
-    for (const key of ["detail", "message", "error"]) {
-        const value = record[key];
-        if (typeof value === "string" && value.trim()) return value.trim().slice(0, 400);
+function serverDetail(data: unknown): string {
+    if (typeof data === "string") return data.trim();
+    if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+        const record = data as Record<string, unknown>;
+        for (const key of ["detail", "message", "error"]) {
+            const value = record[key];
+            if (typeof value === "string" && value.trim()) return value.trim();
+        }
     }
     return "";
 }
 
-export function classifyRequestError(error: unknown, subject = "this page"): RequestErrorInfo {
-    const like = (asRecord(error) || {}) as ErrorLike;
-    const status = typeof like.response?.status === "number" ? like.response.status : undefined;
-    const code = typeof like.code === "string" ? like.code : "";
-    const message = typeof like.message === "string" ? like.message : error instanceof Error ? error.message : "";
-    const detail = serverMessage(like.response?.data) || message || "No details were returned.";
-
-    if (status === 401 || status === 403) {
-        return {
-            category: "unauthorized",
-            title: "LimeBot did not accept the access key",
-            hint: "Enter the API key again from the sign-in prompt, or check APP_API_KEY in Configuration.",
-            retryable: false,
-            detail,
-            status,
-        };
-    }
-    if (status === 404) {
-        return {
-            category: "not_found",
-            title: `The backend has no endpoint for ${subject}`,
-            hint: "The running backend may be older than this dashboard. Update it and restart LimeBot.",
-            retryable: false,
-            detail,
-            status,
-        };
-    }
-    if (status === 429) {
-        return {
-            category: "rate_limit",
-            title: "Too many requests",
-            hint: "Wait a few seconds, then try again.",
-            retryable: true,
-            detail,
-            status,
-        };
-    }
-    if (status !== undefined && status >= 500) {
-        return {
-            category: "server",
-            title: `The backend failed while loading ${subject}`,
-            hint: "Its log usually says why. Try again, or restart LimeBot if it keeps happening.",
-            retryable: true,
-            detail,
-            status,
-        };
-    }
-    if (status !== undefined && status >= 400) {
-        return {
-            category: "rejected",
-            title: "The backend rejected the request",
-            hint: "Check the values you entered and try again.",
-            retryable: false,
-            detail,
-            status,
-        };
-    }
-    if (code === "ECONNABORTED" || code === "ETIMEDOUT" || /timeout/i.test(message)) {
-        return {
-            category: "timeout",
-            title: "The backend took too long to answer",
-            hint: "It may be busy. Try again in a moment.",
-            retryable: true,
-            detail,
-        };
-    }
-    if (!like.response || code === "ERR_NETWORK" || /network error|failed to fetch/i.test(message)) {
-        return {
-            category: "network",
-            title: "Could not reach the LimeBot backend",
-            hint: "Check that LimeBot is running (limebot status), then try again.",
-            retryable: true,
-            detail,
-        };
-    }
-    return {
-        category: "unknown",
-        title: "Something went wrong",
-        hint: "The details may explain it. Copy them if you need to report it.",
-        retryable: true,
-        detail,
-        status,
-    };
+export function requestErrorStatus(error: unknown): number | undefined {
+    const status = asShape(error).response?.status;
+    return typeof status === "number" ? status : undefined;
 }
 
-/** Short form for toasts: what failed plus the server's reason when it gave one. */
+export function classifyRequestError(error: unknown, what = "this page"): ToolErrorInfo {
+    const shape = asShape(error);
+    const status = requestErrorStatus(error);
+    const message = typeof shape.message === "string" ? shape.message : typeof error === "string" ? error : "";
+    const detail = serverDetail(shape.response?.data) || message || "No details were returned.";
+    const withDetail = (info: Omit<ToolErrorInfo, "detail">): ToolErrorInfo => ({
+        ...info,
+        detail: status ? `HTTP ${status}: ${detail}` : detail,
+    });
+
+    if (status === 401 || status === 403) {
+        return withDetail({
+            category: "authentication",
+            title: status === 401 ? "The dashboard is not signed in" : "This request is not allowed",
+            hint: "The API key is missing or wrong. Enter it again from the key prompt, or check APP_API_KEY in Configuration.",
+            retryable: false,
+        });
+    }
+    if (status === 404) {
+        return withDetail({
+            category: "not_found",
+            title: `The backend has no data for ${what}`,
+            hint: "The backend may be an older version than this dashboard. Update LimeBot and reload.",
+            retryable: false,
+        });
+    }
+    if (status === 429) {
+        return withDetail({
+            category: "rate_limit",
+            title: "Too many requests",
+            hint: "Wait a few seconds, then retry.",
+            retryable: true,
+        });
+    }
+    if (status !== undefined && status >= 500) {
+        return withDetail({
+            category: "unknown",
+            title: "The backend hit an error",
+            hint: "It may still be starting or restarting. Retry in a moment; the Logs page shows the cause.",
+            retryable: true,
+        });
+    }
+    if (!shape.response) {
+        if (shape.code === "ECONNABORTED" || /timeout/i.test(message)) {
+            return withDetail({
+                category: "timeout",
+                title: "The backend took too long to answer",
+                hint: "It may be busy. Retry in a moment.",
+                retryable: true,
+            });
+        }
+        return withDetail({
+            category: "network",
+            title: "Can't reach the LimeBot backend",
+            hint: "Check that LimeBot is running, then retry. This page keeps the last data it loaded.",
+            retryable: true,
+        });
+    }
+    const classified = classifyToolError(detail);
+    return { ...classified, detail };
+}
+
+/**
+ * Short form for toasts: what failed plus a reason. A rejected request (other
+ * 4xx) shows the server's own explanation, since the person can act on it;
+ * everything else shows the classified title.
+ */
 export function requestFailureMessage(action: string, error: unknown): string {
     const info = classifyRequestError(error);
-    const reason = info.category === "rejected" || info.category === "unknown" ? info.detail : info.title;
+    const status = requestErrorStatus(error);
+    const rejected = status !== undefined && status >= 400 && status < 500 && ![401, 403, 404, 429].includes(status);
+    const reason = rejected || (status === undefined && info.category === "unknown") ? info.detail.replace(/^HTTP d+: /, "") : info.title;
     return `${action}: ${reason}`;
 }

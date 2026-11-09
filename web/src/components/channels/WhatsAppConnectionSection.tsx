@@ -3,7 +3,8 @@ import axios from "axios";
 import { RotateCcw } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
 import { API_BASE_URL, api } from "@/lib/api";
-import { classifyRequestError, type RequestErrorInfo } from "@/lib/request-error";
+import { classifyRequestError } from "@/lib/request-error";
+import type { ToolErrorInfo } from "@/lib/tool-display";
 import { cn } from "@/lib/utils";
 import { InlineConfirm, RowButton, StatusPill } from "@/components/ui/data-page";
 import { describeWhatsAppStatus, type WhatsAppConnectionStatus } from "@/lib/whatsapp-status";
@@ -23,7 +24,7 @@ const STEPS = ["Open WhatsApp on your phone", "Go to Settings, then Linked devic
 export function WhatsAppConnectionSection() {
     const [status, setStatus] = useState<WhatsAppConnectionStatus>("disconnected");
     const [qrCode, setQrCode] = useState<string | null>(null);
-    const [statusError, setStatusError] = useState<RequestErrorInfo | null>(null);
+    const [statusError, setStatusError] = useState<ToolErrorInfo | null>(null);
     const [checkNonce, setCheckNonce] = useState(0);
     const [resetNote, setResetNote] = useState<{ ok: boolean; text: string } | null>(null);
 

@@ -1,21 +1,11 @@
-import { useEffect, useState } from 'react';
-import axios from 'axios';
+import { useCallback, useEffect, useMemo, useState } from "react";
+import axios from "axios";
 import { API_BASE_URL } from "@/lib/api";
-import {
-    Activity,
-    Bot,
-    Clock,
-    Code,
-    Database,
-    Hash,
-    MessageSquare,
-    Terminal,
-    Trash2,
-    Zap,
-    RefreshCw
-} from 'lucide-react';
+import { ChevronRight, CornerDownRight, Layers, Search, SearchX, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import { formatAgo, formatCount } from "@/lib/ops-status";
+import { getApiErrorMessage } from "@/lib/api-error";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -25,11 +15,19 @@ import {
     AlertDialogFooter,
     AlertDialogHeader,
     AlertDialogTitle,
-    AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search } from 'lucide-react';
+import { CopyButton } from "@/components/chat/tool-ui";
+import {
+    EmptyState,
+    IconButton,
+    PageFrame,
+    QuietButton,
+    RefreshButton,
+    RequestError,
+    SkeletonRows,
+    StatusGlyph,
+} from "@/components/ops/ops-ui";
 
 interface TokenUsage {
     input: number;
@@ -53,490 +51,401 @@ interface Instance {
     task?: string;
 }
 
+interface PendingDelete {
+    ids: string[];
+    title: string;
+    description: string;
+    action: string;
+}
+
+interface Row {
+    instance: Instance;
+    depth: number;
+}
+
+const ZERO_TOKENS: TokenUsage = { input: 0, output: 0, total: 0 };
+
 export function InstancesList({ currentSessionId }: { currentSessionId?: string }) {
     const [instances, setInstances] = useState<Instance[]>([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [error, setError] = useState<unknown>(null);
     const [searchQuery, setSearchQuery] = useState("");
     const [sortOrder, setSortOrder] = useState<"recent" | "oldest">("recent");
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
-    const [batchDeleting, setBatchDeleting] = useState(false);
+    const [expandedIds, setExpandedIds] = useState<string[]>([]);
+    const [deleting, setDeleting] = useState(false);
+    const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
 
-    const fetchInstances = () => {
-        axios.get(`${API_BASE_URL}/api/instances`)
-            .then(res => {
-                setInstances(res.data as Instance[]);
-                setLoading(false);
+    const fetchInstances = useCallback((manual = false) => {
+        if (manual) setRefreshing(true);
+        return axios
+            .get(`${API_BASE_URL}/api/instances`)
+            .then((res) => {
+                setInstances(Array.isArray(res.data) ? (res.data as Instance[]) : []);
+                setError(null);
             })
-            .catch(err => {
-                if (err.response?.status !== 401) {
+            .catch((err: unknown) => {
+                if (!(axios.isAxiosError(err) && err.response?.status === 401)) {
                     console.error("Failed to load instances:", err);
                 }
+                setError(err);
+            })
+            .finally(() => {
                 setLoading(false);
+                setRefreshing(false);
             });
-    };
-
-    useEffect(() => {
-        fetchInstances();
     }, []);
 
-    const handleDelete = (id: string) => {
-        axios.delete(`${API_BASE_URL}/api/instances/${id}`)
-            .then(() => {
-                setInstances(prev => prev.filter(i => i.id !== id));
-                setSelectedIds(prev => prev.filter(sid => sid !== id));
-            })
-            .catch(err => console.error("Error deleting instance:", err));
-    };
+    useEffect(() => {
+        void fetchInstances();
+    }, [fetchInstances]);
 
-    const handleDeleteBatch = (ids: string[]) => {
+    const runDelete = async (ids: string[]) => {
         if (ids.length === 0) return;
-        setBatchDeleting(true);
-        axios.post(`${API_BASE_URL}/api/instances/delete-batch`, { ids })
-            .then(() => {
-                setInstances(prev => prev.filter(i => !ids.includes(i.id)));
-                setSelectedIds(prev => prev.filter(sid => !ids.includes(sid)));
-                setBatchDeleting(false);
-            })
-            .catch(err => {
-                console.error("Error deleting batch:", err);
-                setBatchDeleting(false);
-            });
-    };
-
-    const filteredInstances = instances
-        .filter(inst => {
-            if (!searchQuery) return true;
-            const query = searchQuery.toLowerCase();
-            return (
-                inst.id.toLowerCase().includes(query) ||
-                inst.origin.toLowerCase().includes(query) ||
-                inst.model.toLowerCase().includes(query) ||
-                (inst.profile_name && inst.profile_name.toLowerCase().includes(query)) ||
-                (inst.profile_id && inst.profile_id.toLowerCase().includes(query)) ||
-                (inst.skills && inst.skills.some(s => s.toLowerCase().includes(query)))
-            );
-        })
-        .sort((a, b) => {
-            if (sortOrder === "recent") return b.last_active - a.last_active;
-            return a.last_active - b.last_active;
-        });
-
-    const toggleSelect = (id: string) => {
-        setSelectedIds(prev =>
-            prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
-        );
-    };
-
-    const handleSelectAll = () => {
-        const allFilteredIds = filteredInstances.map(i => i.id);
-        const allSelected = allFilteredIds.every(id => selectedIds.includes(id));
-        if (allSelected) {
-            setSelectedIds(prev => prev.filter(id => !allFilteredIds.includes(id)));
-        } else {
-            setSelectedIds(prev => Array.from(new Set([...prev, ...allFilteredIds])));
+        setDeleting(true);
+        try {
+            if (ids.length === 1) {
+                await axios.delete(`${API_BASE_URL}/api/instances/${ids[0]}`);
+            } else {
+                await axios.post(`${API_BASE_URL}/api/instances/delete-batch`, { ids });
+            }
+            setInstances((prev) => prev.filter((item) => !ids.includes(item.id)));
+            setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
+            toast.success(ids.length === 1 ? "Instance deleted" : `${ids.length} instances deleted`);
+        } catch (err) {
+            console.error("Error deleting instances:", err);
+            toast.error("Could not delete", { description: getApiErrorMessage(err, "The backend refused the request.") });
+        } finally {
+            setDeleting(false);
+            setPendingDelete(null);
         }
     };
 
-    if (loading && instances.length === 0) {
-        return (
-            <div className="flex items-center justify-center h-full">
-                <RefreshCw className="w-8 h-8 animate-spin text-primary" />
-            </div>
-        );
-    }
+    const filteredInstances = useMemo(() => {
+        const query = searchQuery.trim().toLowerCase();
+        return instances
+            .filter((inst) => {
+                if (!query) return true;
+                return (
+                    inst.id.toLowerCase().includes(query) ||
+                    (inst.origin || "").toLowerCase().includes(query) ||
+                    (inst.model || "").toLowerCase().includes(query) ||
+                    (inst.profile_name || "").toLowerCase().includes(query) ||
+                    (inst.profile_id || "").toLowerCase().includes(query) ||
+                    (inst.skills || []).some((skill) => skill.toLowerCase().includes(query))
+                );
+            })
+            .sort((a, b) => (sortOrder === "recent" ? b.last_active - a.last_active : a.last_active - b.last_active));
+    }, [instances, searchQuery, sortOrder]);
+
+    // Main sessions first, each followed by its sub-agents; sub-agents whose
+    // parent is filtered out or gone still appear, at the end.
+    const rows = useMemo<Row[]>(() => {
+        const ids = new Set(filteredInstances.map((item) => item.id));
+        const result: Row[] = [];
+        for (const inst of filteredInstances.filter((item) => !item.parent_id)) {
+            result.push({ instance: inst, depth: 0 });
+            for (const sub of filteredInstances.filter((item) => item.parent_id === inst.id)) {
+                result.push({ instance: sub, depth: 1 });
+            }
+        }
+        for (const orphan of filteredInstances.filter((item) => item.parent_id && !ids.has(item.parent_id))) {
+            result.push({ instance: orphan, depth: 0 });
+        }
+        return result;
+    }, [filteredInstances]);
+
+    const visibleIds = rows.map((row) => row.instance.id);
+    const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id));
+    const someSelected = selectedIds.length > 0;
+    const subAgentCount = instances.filter((item) => item.parent_id).length;
+
+    const toggleSelect = (id: string) => setSelectedIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+    const toggleExpanded = (id: string) => setExpandedIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+    const toggleAll = () => {
+        setSelectedIds((prev) => (allVisibleSelected ? prev.filter((id) => !visibleIds.includes(id)) : Array.from(new Set([...prev, ...visibleIds]))));
+    };
+
+    const askDeleteOne = (inst: Instance) =>
+        setPendingDelete({
+            ids: [inst.id],
+            title: "Delete this instance?",
+            description: `This permanently deletes the session context and chat log for ${inst.id}. It cannot be undone.`,
+            action: "Delete",
+        });
+    const askDeleteSelected = () =>
+        setPendingDelete({
+            ids: selectedIds,
+            title: `Delete ${selectedIds.length} instance${selectedIds.length === 1 ? "" : "s"}?`,
+            description: "This permanently deletes the selected session contexts and their chat logs. It cannot be undone.",
+            action: "Delete selected",
+        });
+    const askWipeAll = () =>
+        setPendingDelete({
+            ids: instances.map((item) => item.id),
+            title: "Delete every instance?",
+            description: `This permanently deletes all ${instances.length} instances, including the one you may be chatting in. It cannot be undone.`,
+            action: "Delete everything",
+        });
+
+    const description = loading
+        ? "Loading sessions…"
+        : error && instances.length === 0
+            ? "Unavailable"
+            : `${instances.length - subAgentCount} session${instances.length - subAgentCount === 1 ? "" : "s"}${subAgentCount ? ` · ${subAgentCount} sub-agent${subAgentCount === 1 ? "" : "s"}` : ""}`;
 
     return (
-        <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">
-            <div className="max-w-6xl mx-auto space-y-6">
-                <div className="sticky top-0 z-20 -mx-2 rounded-2xl border border-border/50 bg-background/82 px-2 py-4 backdrop-blur-md">
-                    <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                        <div>
-                            <h1 className="text-2xl font-bold flex items-center gap-2">
-                                <Terminal className="h-6 w-6 text-primary" />
-                                Instances Dashboard
-                            </h1>
-                            <p className="text-muted-foreground mt-1">
-                                Manage active agent contexts, skills, and memory.
-                            </p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <Button variant="outline" size="sm" onClick={fetchInstances} disabled={loading} className="w-full md:w-auto">
-                                Refresh
-                            </Button>
-                        </div>
-                    </header>
-
-                    <div className="mt-4 flex flex-col space-y-4">
-                        <div className="flex flex-col md:flex-row gap-4">
-                            <div className="relative flex-1">
-                                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                                <Input
-                                    placeholder="Search instances..."
-                                    className="pl-9"
-                                    value={searchQuery}
-                                    onChange={(e) => setSearchQuery(e.target.value)}
-                                />
-                            </div>
-                            <Select value={sortOrder} onValueChange={(value) => {
-                                if (value === "recent" || value === "oldest") setSortOrder(value);
-                            }}>
-                                <SelectTrigger className="w-full md:w-[180px]">
-                                    <SelectValue placeholder="Sort by" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="recent">Most Recent</SelectItem>
-                                    <SelectItem value="oldest">Oldest Active</SelectItem>
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        {(instances.length > 0 || filteredInstances.length > 0) && (
-                            <div className="flex flex-wrap items-center gap-3 p-3 bg-muted/40 border border-dashed rounded-lg animate-in fade-in slide-in-from-top-2 duration-200">
-                                <div className="flex items-center gap-2 pr-4 border-r border-border/50">
-                                    <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        onClick={handleSelectAll}
-                                        className="text-xs h-8 px-2"
-                                    >
-                                        {filteredInstances.length > 0 && filteredInstances.every(id => selectedIds.includes(id.id)) ? 'Deselect Page' : 'Select Page'}
-                                    </Button>
-                                    {selectedIds.length > 0 && (
-                                        <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={() => setSelectedIds([])}
-                                            className="text-xs h-8 px-2 text-muted-foreground"
-                                        >
-                                            Clear ({selectedIds.length})
-                                        </Button>
-                                    )}
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-2">
-                                    {/* Bulk Delete Selected */}
-                                    <AlertDialog>
-                                        <AlertDialogTrigger asChild>
-                                            <Button
-                                                variant="destructive"
-                                                size="sm"
-                                                disabled={selectedIds.length === 0 || batchDeleting}
-                                                className="h-8 gap-2"
-                                            >
-                                                <Trash2 className="h-3.5 w-3.5" />
-                                                Delete Selected
-                                            </Button>
-                                        </AlertDialogTrigger>
-                                        <AlertDialogContent>
-                                            <AlertDialogHeader>
-                                                <AlertDialogTitle>Delete {selectedIds.length} instances?</AlertDialogTitle>
-                                                <AlertDialogDescription>
-                                                    This will permanently delete {selectedIds.length} session contexts and their logs.
-                                                    This action cannot be undone.
-                                                </AlertDialogDescription>
-                                            </AlertDialogHeader>
-                                            <AlertDialogFooter>
-                                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                                <AlertDialogAction
-                                                    onClick={() => handleDeleteBatch(selectedIds)}
-                                                    className="bg-red-600 hover:bg-red-700 text-white"
-                                                >
-                                                    Delete All selected
-                                                </AlertDialogAction>
-                                            </AlertDialogFooter>
-                                        </AlertDialogContent>
-                                    </AlertDialog>
-
-                                    {/* WIPER: Wipe All */}
-                                    <AlertDialog>
-                                        <AlertDialogTrigger asChild>
-                                            <Button
-                                                variant="outline"
-                                                size="sm"
-                                                disabled={instances.length === 0 || batchDeleting}
-                                                className="h-8 text-red-500 border-red-500/20 hover:bg-red-500/10 gap-2"
-                                            >
-                                                <Zap className="h-3.5 w-3.5" />
-                                                Wipe All
-                                            </Button>
-                                        </AlertDialogTrigger>
-                                        <AlertDialogContent>
-                                            <AlertDialogHeader>
-                                                <AlertDialogTitle className="text-red-500">Wipe All Instances?</AlertDialogTitle>
-                                                <AlertDialogDescription>
-                                                    Are you absolutely sure? This will delete <span className="font-bold text-foreground">{instances.length}</span> instances.
-                                                    Everything will be cleared.
-                                                </AlertDialogDescription>
-                                            </AlertDialogHeader>
-                                            <AlertDialogFooter>
-                                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                                <AlertDialogAction
-                                                    onClick={() => handleDeleteBatch(instances.map(i => i.id))}
-                                                    className="bg-red-600 hover:bg-red-700 text-white"
-                                                >
-                                                    Yes, Wipe Everything
-                                                </AlertDialogAction>
-                                            </AlertDialogFooter>
-                                        </AlertDialogContent>
-                                    </AlertDialog>
-                                </div>
-                                {selectedIds.length > 0 && (
-                                    <div className="ml-auto text-[11px] font-medium text-muted-foreground uppercase tracking-wider px-2 py-1 bg-background/50 rounded border border-border">
-                                        {selectedIds.length} Selected
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                    </div>
+        <PageFrame
+            title="Instances"
+            description={description}
+            actions={<RefreshButton onClick={() => void fetchInstances(true)} busy={refreshing} />}
+            scroll={false}
+            maxWidth="max-w-none"
+        >
+            {/* ── Toolbar ── */}
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 px-4 py-2.5 sm:px-6">
+                <div className="relative min-w-[12rem] flex-1 sm:max-w-sm">
+                    <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                    <input
+                        type="text"
+                        aria-label="Search instances"
+                        placeholder="Search by id, agent, model or skill"
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        className="h-7 w-full rounded-md border border-border bg-transparent pl-8 pr-2 text-xs text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
                 </div>
+                <Select
+                    value={sortOrder}
+                    onValueChange={(value) => {
+                        if (value === "recent" || value === "oldest") setSortOrder(value);
+                    }}
+                >
+                    <SelectTrigger aria-label="Sort order" className="h-7 w-[9.5rem] px-2 text-xs">
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="recent">Most recent</SelectItem>
+                        <SelectItem value="oldest">Oldest active</SelectItem>
+                    </SelectContent>
+                </Select>
 
-                <div className="grid gap-4">
-                    {/* First, show main sessions */}
-                    {filteredInstances.filter(i => !i.parent_id).map(inst => (
-                        <div key={inst.id} className="space-y-4">
-                            <InstanceCard
-                                instance={inst}
-                                isCurrent={currentSessionId !== undefined && (inst.id === currentSessionId || inst.id.includes(currentSessionId))}
-                                onDelete={() => handleDelete(inst.id)}
-                                isSelected={selectedIds.includes(inst.id)}
-                                onSelect={() => toggleSelect(inst.id)}
-                            />
-
-                            {/* Then, show its sub-agents nested below it */}
-                            {filteredInstances.filter(sub => sub.parent_id === inst.id).map(sub => (
-                                <div key={sub.id} className="ml-8 pl-8 border-l-2 border-primary/20">
-                                    <InstanceCard
-                                        instance={sub}
-                                        isSubAgent
-                                        onDelete={() => handleDelete(sub.id)}
-                                        isSelected={selectedIds.includes(sub.id)}
-                                        onSelect={() => toggleSelect(sub.id)}
-                                    />
-                                </div>
-                            ))}
-                        </div>
-                    ))}
-
-                    {/* Show orphaned sub-agents if any */}
-                    {filteredInstances.filter(i => i.parent_id && !filteredInstances.some(p => p.id === i.parent_id)).map(sub => (
-                        <InstanceCard
-                            key={sub.id}
-                            instance={sub}
-                            isSubAgent
-                            onDelete={() => handleDelete(sub.id)}
-                            isSelected={selectedIds.includes(sub.id)}
-                            onSelect={() => toggleSelect(sub.id)}
-                        />
-                    ))}
-
-                    {filteredInstances.length === 0 && (
-                        <div className="p-12 text-center text-muted-foreground border border-dashed rounded-xl">
-                            {instances.length === 0
-                                ? "No active instances found. Start a chat/task to create one."
-                                : "No instances match your search filters."}
-                        </div>
+                <div className="ml-auto flex items-center gap-2">
+                    {someSelected ? (
+                        <>
+                            <span className="text-xs text-muted-foreground">{selectedIds.length} selected</span>
+                            <QuietButton onClick={() => setSelectedIds([])}>Clear</QuietButton>
+                            <QuietButton tone="danger" onClick={askDeleteSelected} disabled={deleting}>
+                                <Trash2 />
+                                Delete
+                            </QuietButton>
+                        </>
+                    ) : (
+                        instances.length > 0 && (
+                            <QuietButton tone="danger" onClick={askWipeAll} disabled={deleting}>
+                                Delete all
+                            </QuietButton>
+                        )
                     )}
                 </div>
             </div>
-        </div>
+
+            {error && instances.length > 0 ? (
+                <div className="shrink-0 px-4 pt-3 sm:px-6">
+                    <RequestError error={error} what="instances" onRetry={() => void fetchInstances(true)} retrying={refreshing} stale />
+                </div>
+            ) : null}
+
+            {/* ── List ── */}
+            <div className="min-h-0 flex-1 overflow-y-auto">
+                {loading ? (
+                    <SkeletonRows rows={6} />
+                ) : error && instances.length === 0 ? (
+                    <div className="mx-auto max-w-xl px-4 py-8">
+                        <RequestError error={error} what="instances" onRetry={() => void fetchInstances(true)} retrying={refreshing} />
+                    </div>
+                ) : instances.length === 0 ? (
+                    <EmptyState icon={Layers} title="No instances yet" hint="An instance is created for each chat, scheduled job and sub-agent. Start a chat or a task and it will appear here." />
+                ) : rows.length === 0 ? (
+                    <EmptyState
+                        icon={SearchX}
+                        title="No instances match your search"
+                        hint={`${instances.length} instances exist; none match "${searchQuery}".`}
+                        action={<QuietButton onClick={() => setSearchQuery("")}>Clear search</QuietButton>}
+                    />
+                ) : (
+                    <div role="table" aria-label="Instances">
+                        <div
+                            role="row"
+                            className="sticky top-0 z-10 flex items-center border-b border-border/60 bg-background/95 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80 backdrop-blur"
+                        >
+                            <div className="flex w-10 shrink-0 justify-center sm:w-12">
+                                <input
+                                    type="checkbox"
+                                    aria-label="Select all visible instances"
+                                    checked={allVisibleSelected}
+                                    onChange={toggleAll}
+                                    className="h-3.5 w-3.5 cursor-pointer accent-primary"
+                                />
+                            </div>
+                            <div className="grid min-w-0 flex-1 gap-3 md:grid-cols-[minmax(0,1fr)_10rem_4.5rem_5.5rem]">
+                                <span role="columnheader">Session</span>
+                                <span role="columnheader" className="hidden md:block">Model</span>
+                                <span role="columnheader" className="hidden text-right md:block">Tokens</span>
+                                <span role="columnheader" className="hidden text-right md:block">Active</span>
+                            </div>
+                            <div className="w-10 shrink-0 sm:w-12" />
+                        </div>
+
+                        <ul>
+                            {rows.map(({ instance, depth }) => {
+                                const isCurrent = currentSessionId !== undefined && (instance.id === currentSessionId || instance.id.includes(currentSessionId));
+                                const isSub = !!instance.parent_id;
+                                const selected = selectedIds.includes(instance.id);
+                                const expanded = expandedIds.includes(instance.id);
+                                const tokens = instance.total_tokens ?? ZERO_TOKENS;
+                                const agent = instance.profile_name || instance.profile_id || "Default";
+                                return (
+                                    <li
+                                        key={instance.id}
+                                        role="row"
+                                        className={cn("border-b border-border/50", selected ? "bg-primary/[0.06]" : isCurrent && "bg-primary/[0.03]")}
+                                    >
+                                        <div className="flex items-center">
+                                            <div className="flex w-10 shrink-0 justify-center sm:w-12">
+                                                <input
+                                                    type="checkbox"
+                                                    aria-label={`Select ${instance.id}`}
+                                                    checked={selected}
+                                                    onChange={() => toggleSelect(instance.id)}
+                                                    className="h-3.5 w-3.5 cursor-pointer accent-primary"
+                                                />
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => toggleExpanded(instance.id)}
+                                                aria-expanded={expanded}
+                                                className="grid min-w-0 flex-1 gap-x-3 gap-y-0.5 py-2.5 text-left transition-colors hover:bg-foreground/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_10rem_4.5rem_5.5rem] md:items-center"
+                                            >
+                                                <span className={cn("flex min-w-0 items-center gap-2", depth > 0 && "pl-4 sm:pl-6")}>
+                                                    {depth > 0 && <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />}
+                                                    <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                                                        {instance.task ? <StatusGlyph state="running" /> : <ChevronRight className={cn("h-3.5 w-3.5 text-muted-foreground/70 transition-transform duration-200", expanded && "rotate-90")} />}
+                                                    </span>
+                                                    <span className="min-w-0">
+                                                        <span className="flex min-w-0 items-center gap-2">
+                                                            <span className="truncate font-mono text-xs font-medium text-foreground" title={instance.id}>{instance.id}</span>
+                                                            {isCurrent && (
+                                                                <span className="shrink-0 rounded-full bg-primary px-1.5 py-px text-[10px] font-semibold text-primary-foreground">You</span>
+                                                            )}
+                                                            {isSub && (
+                                                                <span className="shrink-0 rounded-full border border-amber-500/40 px-1.5 py-px text-[10px] font-medium text-amber-500">Sub-agent</span>
+                                                            )}
+                                                        </span>
+                                                        <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                                                            <span className="uppercase">{instance.origin || "unknown"}</span> · {agent}
+                                                            <span className="md:hidden"> · {formatCount(tokens.total)} tokens · {formatAgo(instance.last_active)}</span>
+                                                        </span>
+                                                    </span>
+                                                </span>
+                                                <span className="hidden truncate font-mono text-[11px] text-muted-foreground md:block" title={instance.model}>{instance.model || "—"}</span>
+                                                <span className="hidden text-right font-mono text-[11px] tabular-nums text-foreground md:block" title={`${tokens.total.toLocaleString()} tokens`}>
+                                                    {formatCount(tokens.total)}
+                                                </span>
+                                                <span className="hidden text-right text-[11px] text-muted-foreground md:block" title={new Date(instance.last_active * 1000).toLocaleString()}>
+                                                    {formatAgo(instance.last_active)}
+                                                </span>
+                                            </button>
+                                            <div className="flex w-10 shrink-0 justify-center sm:w-12">
+                                                <IconButton label={`Delete ${instance.id}`} onClick={() => askDeleteOne(instance)} disabled={deleting} className="h-7 w-7 hover:bg-red-500/10 hover:text-red-500">
+                                                    <Trash2 />
+                                                </IconButton>
+                                            </div>
+                                        </div>
+
+                                        {expanded && (
+                                            <div className={cn("grid gap-x-8 gap-y-4 pb-4 pr-4 pt-1 text-xs animate-in fade-in slide-in-from-top-1 duration-150 sm:pr-6 md:grid-cols-2", depth > 0 ? "pl-[4.5rem] sm:pl-[5.5rem]" : "pl-[3.25rem] sm:pl-[3.75rem]")}>
+                                                {instance.task && (
+                                                    <div className="md:col-span-2">
+                                                        <Label>Active task</Label>
+                                                        <p className="border-l-2 border-primary/40 pl-3 font-mono text-[11px] leading-relaxed text-foreground/85">{instance.task}</p>
+                                                    </div>
+                                                )}
+                                                <div>
+                                                    <Label>Skills</Label>
+                                                    {instance.skills && instance.skills.length > 0 ? (
+                                                        <div className="flex flex-wrap gap-1.5">
+                                                            {instance.skills.map((skill) => (
+                                                                <span key={skill} className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">{skill}</span>
+                                                            ))}
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-muted-foreground">No specific skills loaded.</span>
+                                                    )}
+                                                </div>
+                                                <div>
+                                                    <Label>Context files</Label>
+                                                    {instance.injected_files.length > 0 ? (
+                                                        <div className="flex flex-wrap gap-1.5">
+                                                            {instance.injected_files.map((file, index) => (
+                                                                <span key={`${file}-${index}`} className="max-w-full truncate rounded-md border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground" title={file}>{file}</span>
+                                                            ))}
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-muted-foreground">No files in context.</span>
+                                                    )}
+                                                </div>
+                                                <div>
+                                                    <Label>Tokens</Label>
+                                                    <div className="font-mono text-[11px] text-muted-foreground">
+                                                        <span className="text-sm font-semibold text-foreground">{tokens.total.toLocaleString()}</span> total · {tokens.input.toLocaleString()} in · {tokens.output.toLocaleString()} out
+                                                    </div>
+                                                    <div className="mt-1 text-[11px] text-muted-foreground md:hidden">Model: <span className="font-mono">{instance.model || "—"}</span></div>
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <Label>Memory log</Label>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={instance.history_file}>{instance.history_file}</span>
+                                                        <CopyButton text={instance.history_file} label="Copy path" />
+                                                    </div>
+                                                    <div className="mt-1 text-[11px] text-muted-foreground">Created {formatAgo(instance.created_at)}</div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    </div>
+                )}
+            </div>
+
+            <AlertDialog open={pendingDelete !== null} onOpenChange={(open) => !open && !deleting && setPendingDelete(null)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>{pendingDelete?.title}</AlertDialogTitle>
+                        <AlertDialogDescription>{pendingDelete?.description}</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            disabled={deleting}
+                            onClick={(event) => {
+                                event.preventDefault();
+                                if (pendingDelete) void runDelete(pendingDelete.ids);
+                            }}
+                            className="bg-red-600 text-white hover:bg-red-700"
+                        >
+                            {deleting ? "Deleting…" : pendingDelete?.action}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+        </PageFrame>
     );
 }
 
-function InstanceCard({
-    instance,
-    onDelete,
-    isCurrent,
-    isSubAgent,
-    isSelected,
-    onSelect
-}: {
-    instance: Instance,
-    onDelete: () => void,
-    isCurrent?: boolean,
-    isSubAgent?: boolean,
-    isSelected: boolean,
-    onSelect: () => void
-}) {
-    return (
-        <div className={cn(
-            "bg-card border rounded-xl p-6 shadow-sm hover:shadow-md transition-all relative group",
-            isCurrent ? "border-primary/40 ring-1 ring-primary/20" : "border-border",
-            isSubAgent && "bg-muted/30 border-dashed",
-            isSelected && "border-primary bg-primary/5 ring-1 ring-primary/30"
-        )}>
-
-            {/* Selection Checkbox (Floating) */}
-            <div
-                className={cn(
-                    "absolute -left-3 top-1/2 -translate-y-1/2 z-10 p-1 bg-background border rounded-lg cursor-pointer transition-all hover:scale-110",
-                    isSelected ? "border-primary text-primary" : "border-border text-transparent hover:text-muted-foreground"
-                )}
-                onClick={(e) => {
-                    e.stopPropagation();
-                    onSelect();
-                }}
-            >
-                <div className={cn(
-                    "h-4 w-4 rounded flex items-center justify-center transition-colors",
-                    isSelected ? "bg-primary" : "bg-muted"
-                )}>
-                    {isSelected && <Zap className="h-3 w-3 text-primary-foreground fill-current" />}
-                </div>
-            </div>
-
-            {/* Context ID Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 pb-6 border-b border-border/50">
-                <div className="space-y-1">
-                    <div className="flex items-center gap-2 text-sm text-primary font-mono mb-1">
-                        <Hash className="h-4 w-4" />
-                        <span className="break-all font-bold">{instance.id}</span>
-                        {isCurrent && (
-                            <span className="ml-2 bg-primary text-primary-foreground text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide">
-                                You
-                            </span>
-                        )}
-                        {isSubAgent && (
-                            <span className="ml-2 bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide flex items-center gap-1">
-                                <Zap className="h-3 w-3" /> Sub-Agent
-                            </span>
-                        )}
-                    </div>
-                    <div className="flex items-center gap-2 text-muted-foreground text-xs">
-                        <Activity className="h-3 w-3" />
-                        Context: <span className="text-foreground font-medium uppercase">{instance.origin || "Unknown"}</span>
-                    </div>
-                    <div className="mt-1 flex items-center gap-2 text-xs">
-                        <Bot className="h-3 w-3 text-primary/70" />
-                        <span className="text-muted-foreground">Agent:</span>
-                        <span className="font-medium text-foreground">{instance.profile_name || instance.profile_id || "Default"}</span>
-                    </div>
-                </div>
-
-                <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <div className="flex items-center gap-1.5 bg-muted/50 px-3 py-1.5 rounded-full">
-                        <Clock className="h-3 w-3" />
-                        Last Active: {new Date(instance.last_active * 1000).toLocaleString()}
-                    </div>
-                    <div className="flex items-center gap-1.5 bg-muted/50 px-3 py-1.5 rounded-full">
-                        <Bot className="h-3 w-3" />
-                        Model: <span className="text-foreground">{instance.model}</span>
-                    </div>
-                    <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
-                                title="Terminate Instance"
-                            >
-                                <Trash2 className="h-4 w-4" />
-                            </Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                            <AlertDialogHeader>
-                                <AlertDialogTitle>Terminate Instance?</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                    This will permanently delete the session context and chat logs for
-                                    <span className="font-mono text-foreground"> {instance.id}</span>.
-                                    This action cannot be undone.
-                                </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction onClick={onDelete} className="bg-red-600 hover:bg-red-700 text-white">
-                                    Terminate
-                                </AlertDialogAction>
-                            </AlertDialogFooter>
-                        </AlertDialogContent>
-                    </AlertDialog>
-                </div>
-            </div>
-
-            {instance.task && (
-                <div className="mb-6 p-4 bg-zinc-950/50 rounded-xl border border-primary/10 shadow-inner">
-                    <div className="text-[10px] uppercase text-primary/70 font-black mb-2 flex items-center gap-1.5 tracking-widest">
-                        <Terminal className="h-3 w-3" /> Active Task
-                    </div>
-                    <p className="text-xs text-slate-300 font-mono italic leading-relaxed">
-                        "{instance.task}"
-                    </p>
-                </div>
-            )}
-
-            <div className="grid md:grid-cols-2 gap-6">
-
-                {/* Left Col: Capabilities */}
-                <div className="space-y-4">
-                    {/* Active Skills */}
-                    <div className="space-y-2">
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-                            <Zap className="h-3 w-3" />
-                            Active Skills
-                        </h3>
-                        <div className="flex flex-wrap gap-2">
-                            {(instance.skills && instance.skills.length > 0) ? (
-                                instance.skills.map(skill => (
-                                    <div key={skill} className="flex items-center gap-1.5 bg-primary/10 border border-primary/20 text-primary px-2 py-1 rounded text-xs font-medium">
-                                        {skill}
-                                    </div>
-                                ))
-                            ) : (
-                                <span className="text-xs text-muted-foreground italic pl-1">No specific skills loaded.</span>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* Injected Files */}
-                    <div className="space-y-2">
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-                            <Code className="h-3 w-3" />
-                            Context Files
-                        </h3>
-                        <div className="flex flex-wrap gap-2">
-                            {instance.injected_files.length > 0 ? (
-                                instance.injected_files.map((file, i) => (
-                                    <span key={i} className="text-[10px] px-2 py-1 rounded-md bg-white/5 border border-white/10 font-mono text-zinc-400">
-                                        {file}
-                                    </span>
-                                ))
-                            ) : (
-                                <span className="text-xs text-muted-foreground italic pl-1">No files in context.</span>
-                            )}
-                        </div>
-                    </div>
-                </div>
-
-                {/* Right Col: Stats & Storage */}
-                <div className="space-y-4">
-                    {/* Tokens */}
-                    <div className="bg-zinc-950/50 rounded-lg p-3 border border-border/50">
-                        <div className="text-[10px] uppercase text-muted-foreground mb-2 flex justify-between">
-                            <span>Token Usage</span>
-                            <span className="text-zinc-500 font-mono">Total</span>
-                        </div>
-                        <div className="flex items-end gap-1">
-                            <span className="text-2xl font-bold text-foreground font-mono">{instance.total_tokens.total.toLocaleString()}</span>
-                            <span className="text-xs text-muted-foreground mb-1 font-mono">tokens</span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-white/5">
-                            <div className="text-xs text-muted-foreground font-mono">In: <span className="text-zinc-400">{instance.total_tokens.input.toLocaleString()}</span></div>
-                            <div className="text-xs text-muted-foreground font-mono">Out: <span className="text-zinc-400">{instance.total_tokens.output.toLocaleString()}</span></div>
-                        </div>
-                    </div>
-
-                    {/* Memory Log */}
-                    <div className="space-y-1">
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-                            <Database className="h-3 w-3" />
-                            Memory Log
-                        </h3>
-                        <div className="group/file flex items-center gap-2 text-[10px] text-muted-foreground font-mono bg-black/20 p-2 rounded break-all border border-white/5 hover:border-primary/30 transition-colors">
-                            <MessageSquare className="h-3 w-3 shrink-0 text-primary/50" />
-                            <span className="truncate">{instance.history_file}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
+function Label({ children }: { children: string }) {
+    return <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80">{children}</div>;
 }

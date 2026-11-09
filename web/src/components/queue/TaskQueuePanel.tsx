@@ -1,22 +1,22 @@
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import axios from "axios";
 import { API_BASE_URL } from "@/lib/api";
+import { Bot, CheckCircle2, ChevronRight, CloudOff, Globe, Inbox, MessageSquare, RefreshCw, Send, Server, Zap } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { classifyToolError } from "@/lib/tool-display";
+import { formatAgo, formatDuration, statusLabel, toRowState, toneText } from "@/lib/ops-status";
+import { Switch } from "@/components/ui/switch";
+import { ErrorNotice } from "@/components/chat/tool-ui";
 import {
-    ActivitySquare,
-    CheckCircle2,
-    XCircle,
-    Clock,
-    RefreshCw,
-    Server,
-    Zap,
-    MessageSquare,
-    Globe,
-    Bot
-} from "lucide-react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    EmptyState,
+    IconButton,
+    PageFrame,
+    RequestError,
+    Segmented,
+    SkeletonRows,
+    StatusGlyph,
+} from "@/components/ops/ops-ui";
+
 
 interface Task {
     id: string;
@@ -116,288 +116,365 @@ const normalizeDelivery = (raw: unknown): Delivery => {
     };
 };
 
+const HISTORY_LIMIT = 50;
+
+type Pane = "work" | "deliveries";
+type Scope = "active" | "history";
+
+const ACTIVE_TASK = new Set(["queued", "running", "waiting", "retrying"]);
+const ACTIVE_DELIVERY = new Set(["queued", "sending", "retrying"]);
+
+/** Re-renders on an interval so relative times keep moving while polling is paused. */
+function useNow(intervalMs: number): number {
+    const [now, setNow] = useState(() => Date.now());
+    useEffect(() => {
+        const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+        return () => window.clearInterval(id);
+    }, [intervalMs]);
+    return now;
+}
+
+function typeIcon(type?: string) {
+    const normalized = String(type || "").toLowerCase();
+    const cls = "h-3.5 w-3.5 shrink-0 text-muted-foreground";
+    if (normalized.includes("message")) return <MessageSquare className={cls} />;
+    if (normalized.includes("browser")) return <Globe className={cls} />;
+    if (normalized.includes("job")) return <Zap className={cls} />;
+    if (normalized.includes("subagent")) return <Bot className={cls} />;
+    return <Server className={cls} />;
+}
+
+function stateTone(status: string) {
+    const state = toRowState(status);
+    if (state === "failed") return "error" as const;
+    if (state === "waiting") return "warning" as const;
+    if (state === "planned") return "neutral" as const;
+    return "ready" as const;
+}
+
+function clock(ts: number) {
+    return ts ? new Date(ts * 1000).toLocaleString() : "";
+}
+
+function Meta({ children }: { children: ReactNode }) {
+    return <span className="whitespace-nowrap">{children}</span>;
+}
+
+function QueueRow({
+    status,
+    icon,
+    title,
+    summary,
+    quote,
+    meta,
+    createdAt,
+    now,
+    error,
+    errorTool,
+    detail,
+}: {
+    status: string;
+    icon: ReactNode;
+    title: string;
+    summary: string;
+    quote?: boolean;
+    meta: ReactNode[];
+    createdAt: number;
+    now: number;
+    error?: string;
+    errorTool: string;
+    detail?: string;
+}) {
+    const [open, setOpen] = useState(false);
+    const state = toRowState(status);
+    const failed = state === "failed" || !!error;
+    const expandable = !!error || summary.length > 120 || !!detail;
+    const expanded = open || failed;
+    return (
+        <li className={cn(state === "waiting" && "bg-amber-500/[0.05]")}>
+            <button
+                type="button"
+                onClick={() => expandable && setOpen((value) => !value)}
+                aria-expanded={expandable ? expanded : undefined}
+                className={cn(
+                    "flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors",
+                    expandable ? "hover:bg-foreground/[0.05]" : "cursor-default"
+                )}
+            >
+                <span className="mt-0.5">
+                    <StatusGlyph state={state} />
+                </span>
+                <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                        {icon}
+                        <span className="min-w-0 truncate text-xs font-medium text-foreground">{title}</span>
+                        <span className={cn("shrink-0 text-[10px] font-medium", toneText(stateTone(status)))}>{statusLabel(status)}</span>
+                    </span>
+                    <span className={cn("mt-0.5 block text-[13px] leading-snug text-foreground/85", !expanded && "line-clamp-2", quote && "italic")}>
+                        {quote ? `“${summary}”` : summary}
+                    </span>
+                    <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
+                        {meta.map((item, index) => (
+                            <Meta key={index}>{item}</Meta>
+                        ))}
+                    </span>
+                </span>
+                <span className="flex shrink-0 items-center gap-1 pt-0.5 text-[11px] text-muted-foreground" title={clock(createdAt)}>
+                    {formatAgo(createdAt, now)}
+                    {expandable && <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-90")} />}
+                </span>
+            </button>
+            {expanded && (error || detail) && (
+                <div className="space-y-2 px-4 pb-3 pl-[2.9rem]">
+                    {error && <ErrorNotice info={classifyToolError(error)} tool={errorTool} />}
+                    {detail && <p className="font-mono text-[11px] text-muted-foreground">{detail}</p>}
+                </div>
+            )}
+        </li>
+    );
+}
+
+function Column({
+    title,
+    visible,
+    scope,
+    onScope,
+    activeCount,
+    historyCount,
+    activeLabel,
+    historyLabel,
+    children,
+}: {
+    title: string;
+    visible: boolean;
+    scope: Scope;
+    onScope: (scope: Scope) => void;
+    activeCount: number;
+    historyCount: number;
+    activeLabel: string;
+    historyLabel: string;
+    children: ReactNode;
+}) {
+    return (
+        <section className={cn("min-h-0 min-w-0 flex-1 flex-col", visible ? "flex" : "hidden lg:flex")} aria-label={title}>
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 px-4 py-2">
+                <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/90">{title}</h2>
+                <Segmented
+                    label={`${title} filter`}
+                    value={scope}
+                    onChange={onScope}
+                    options={[
+                        { value: "active", label: `${activeLabel} ${activeCount}` },
+                        { value: "history", label: `${historyLabel} ${historyCount}` },
+                    ]}
+                />
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+        </section>
+    );
+}
+
 export function TaskQueuePanel() {
     const [tasks, setTasks] = useState<Task[]>([]);
     const [deliveries, setDeliveries] = useState<Delivery[]>([]);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [error, setError] = useState<unknown>(null);
+    const [loaded, setLoaded] = useState(false);
     const [autoRefresh, setAutoRefresh] = useState(true);
-    const pollInterval = useRef<number | null>(null);
+    const [pane, setPane] = useState<Pane>("work");
+    const [workScope, setWorkScope] = useState<Scope>("active");
+    const [deliveryScope, setDeliveryScope] = useState<Scope>("active");
+    const now = useNow(15000);
 
-    const fetchData = async () => {
+    const fetchData = useCallback(async (manual = false) => {
+        if (manual) setRefreshing(true);
         try {
             const [tasksRes, deliveriesRes] = await Promise.all([
                 axios.get(`${API_BASE_URL}/api/tasks`),
-                axios.get(`${API_BASE_URL}/api/deliveries`)
+                axios.get(`${API_BASE_URL}/api/deliveries`),
             ]);
 
-            const sortedTasks = [...(tasksRes.data.tasks || [])]
-                .map(normalizeTask)
-                .sort((a, b) => b.createdAt - a.createdAt);
-            const sortedDeliveries = [...(deliveriesRes.data.deliveries || [])]
-                .map(normalizeDelivery)
-                .sort((a, b) => b.createdAt - a.createdAt);
-
-            setTasks(sortedTasks);
-            setDeliveries(sortedDeliveries);
-        } catch (error) {
-            console.error("Failed to fetch observability data:", error);
+            setTasks([...(tasksRes.data.tasks || [])].map(normalizeTask).sort((a, b) => b.createdAt - a.createdAt));
+            setDeliveries([...(deliveriesRes.data.deliveries || [])].map(normalizeDelivery).sort((a, b) => b.createdAt - a.createdAt));
+            setError(null);
+            setLoaded(true);
+        } catch (err) {
+            // Keep what is on screen; the notice says it may be out of date.
+            setError(err);
+            console.error("Failed to fetch observability data:", err);
         } finally {
             setLoading(false);
+            if (manual) setRefreshing(false);
         }
-    };
+    }, []);
 
     useEffect(() => {
-        fetchData();
-        if (autoRefresh) {
-            pollInterval.current = window.setInterval(fetchData, 2000);
-        }
-        return () => {
-            if (pollInterval.current) clearInterval(pollInterval.current);
-        };
-    }, [autoRefresh]);
+        void fetchData();
+        if (!autoRefresh) return;
+        const id = window.setInterval(() => void fetchData(), 2000);
+        return () => window.clearInterval(id);
+    }, [autoRefresh, fetchData]);
 
-    const activeTasks = tasks.filter((t) =>
-        t.status === "queued" || t.status === "running" || t.status === "waiting" || t.status === "retrying"
-    );
-    const completedTasks = tasks.filter((t) =>
-        t.status === "completed" || t.status === "failed" || t.status === "cancelled"
-    );
+    const activeTasks = tasks.filter((t) => ACTIVE_TASK.has(t.status));
+    const pastTasks = tasks.filter((t) => !ACTIVE_TASK.has(t.status));
+    const activeDeliveries = deliveries.filter((d) => ACTIVE_DELIVERY.has(d.status));
+    const pastDeliveries = deliveries.filter((d) => !ACTIVE_DELIVERY.has(d.status));
+    const failedTasks = pastTasks.filter((t) => t.status === "failed").length;
+    const failedDeliveries = pastDeliveries.filter((d) => d.status === "failed").length;
 
-    const activeDeliveries = deliveries.filter((d) =>
-        d.status === "queued" || d.status === "sending" || d.status === "retrying"
-    );
-    const pastDeliveries = deliveries.filter((d) =>
-        d.status === "sent" || d.status === "failed"
-    );
+    const shownTasks = workScope === "active" ? activeTasks : pastTasks.slice(0, HISTORY_LIMIT);
+    const shownDeliveries = deliveryScope === "active" ? activeDeliveries : pastDeliveries.slice(0, HISTORY_LIMIT);
 
-    const getStatusIcon = (status: string) => {
-        switch (status) {
-            case "running":
-            case "sending":
-            case "queued":
-            case "waiting":
-            case "retrying":
-                return <Clock className="w-4 h-4 text-blue-500 animate-pulse" />;
-            case "completed":
-            case "sent":
-                return <CheckCircle2 className="h-4 w-4 text-primary" />;
-            case "failed":
-            case "cancelled":
-                return <XCircle className="w-4 h-4 text-red-500" />;
-            default:
-                return <ActivitySquare className="w-4 h-4 text-gray-500" />;
-        }
-    };
-
-    const getTypeIcon = (type?: string) => {
-        const normalized = String(type || "").toLowerCase();
-        if (normalized.includes("message")) return <MessageSquare className="w-4 h-4" />;
-        if (normalized.includes("browser")) return <Globe className="w-4 h-4" />;
-        if (normalized.includes("job")) return <Zap className="w-4 h-4" />;
-        if (normalized.includes("subagent")) return <Bot className="w-4 h-4" />;
-        return <Server className="w-4 h-4" />;
-    };
-
-    const formatTime = (ts: number) => {
-        if (!ts) return "--:--:--";
-        return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    };
-
-    const renderTaskCard = (task: Task) => (
-        <div key={task.id} className="flex flex-col p-3 rounded-lg border border-border bg-card/50 hover:bg-card/80 transition-colors mb-2">
-            <div className="flex justify-between items-start mb-1">
-                <div className="flex items-center gap-2">
-                    {getTypeIcon(task.taskType)}
-                    <span className="font-medium text-sm">{task.taskType}</span>
-                    <Badge variant="outline" className="text-xs font-mono">{task.channel}</Badge>
-                    <Badge variant="secondary" className="text-xs">
-                        Agent: {asString(task.metadata.profile_name, asString(task.metadata.profile_id, "Default"))}
-                    </Badge>
-                </div>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                    {formatTime(task.createdAt)}
-                    {getStatusIcon(task.status)}
-                </div>
-            </div>
-            <p className="text-sm text-foreground/80 break-words">{task.summary}</p>
-            {task.error && (
-                <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20 text-xs text-red-500 font-mono break-all">
-                    {task.error}
-                </div>
-            )}
-            <div className="mt-2 flex justify-between text-xs text-muted-foreground">
-                <span className="font-mono">{task.id.slice(0, 8)}</span>
-                {task.completedAt && <span>Duration: {(task.completedAt - task.createdAt).toFixed(1)}s</span>}
-            </div>
-        </div>
+    const actions = (
+        <>
+            <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
+                <Switch
+                    checked={autoRefresh}
+                    onCheckedChange={setAutoRefresh}
+                    aria-label="Live updates"
+                    className="h-4 w-7 [&>span]:h-3 [&>span]:w-3 data-[state=checked]:[&>span]:translate-x-3"
+                />
+                <span className="hidden sm:inline">{autoRefresh ? "Live" : "Paused"}</span>
+            </label>
+            <IconButton label="Refresh now" onClick={() => void fetchData(true)} disabled={refreshing}>
+                <RefreshCw className={cn(refreshing && "animate-spin")} />
+            </IconButton>
+        </>
     );
 
-    const renderDeliveryCard = (delivery: Delivery) => (
-        <div key={delivery.id} className="flex flex-col p-3 rounded-lg border border-border bg-card/50 hover:bg-card/80 transition-colors mb-2">
-            <div className="flex justify-between items-start mb-1">
-                <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm capitalize">Delivery to {delivery.channel}</span>
-                    {(asString(delivery.metadata.profile_name) || asString(delivery.metadata.profile_id)) && (
-                        <Badge variant="outline" className="text-xs">
-                            Agent: {asString(delivery.metadata.profile_name, asString(delivery.metadata.profile_id, "Default"))}
-                        </Badge>
-                    )}
-                    <Badge variant={delivery.status === "failed" ? "destructive" : "secondary"} className="text-xs">
-                        {delivery.status}
-                    </Badge>
-                </div>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                    {formatTime(delivery.createdAt)}
-                    {getStatusIcon(delivery.status)}
-                </div>
-            </div>
-            <p className="text-sm text-foreground/80 break-words italic">"{delivery.preview}"</p>
-            {delivery.error && (
-                <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20 text-xs text-red-500 font-mono break-all">
-                    {delivery.error}
-                </div>
-            )}
-            <div className="mt-2 flex justify-between text-xs text-muted-foreground">
-                <span className="font-mono">{delivery.id.slice(0, 8)}</span>
-                <span>{delivery.messageKind}</span>
-            </div>
-        </div>
-    );
+    const unavailable = !loaded && !!error;
+    const summary = [
+        activeTasks.length ? `${activeTasks.length} running` : "Idle",
+        failedTasks ? `${failedTasks} failed` : null,
+        activeDeliveries.length ? `${activeDeliveries.length} pending delivery` : null,
+        failedDeliveries ? `${failedDeliveries} failed delivery` : null,
+    ]
+        .filter(Boolean)
+        .join(" · ");
+
+    const emptyBlock = (icon: typeof CheckCircle2, title: string, hint: string) => <EmptyState icon={icon} title={title} hint={hint} />;
 
     return (
-        <div className="h-full flex flex-col p-6 max-w-7xl mx-auto w-full gap-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-3xl font-bold tracking-tight">Task Queue</h1>
-                    <p className="text-muted-foreground mt-1">Real-time observability of agent operations and outbound deliveries.</p>
+        <PageFrame title="Task queue" description={loading ? "Loading agent work and deliveries…" : unavailable ? "Unavailable" : summary} actions={actions} scroll={false} maxWidth="max-w-none">
+            {error ? (
+                <div className="shrink-0 px-4 pt-3 sm:px-6">
+                    <RequestError error={error} what="the task queue" onRetry={() => void fetchData(true)} retrying={refreshing} stale={loaded} />
                 </div>
-                <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm text-muted-foreground">Live Updates</span>
-                        <div
-                            className={`h-5 w-10 cursor-pointer rounded-full p-1 transition-colors ${autoRefresh ? "bg-primary" : "bg-muted"}`}
-                            onClick={() => setAutoRefresh(!autoRefresh)}
-                        >
-                            <div className={`w-3 h-3 bg-white rounded-full transition-transform ${autoRefresh ? "translate-x-5" : "translate-x-0"}`} />
-                        </div>
-                    </div>
-                    <button
-                        onClick={fetchData}
-                        className="p-2 hover:bg-accent rounded-full transition-colors"
-                        disabled={loading}
-                    >
-                        <RefreshCw className={`w-5 h-5 ${loading ? "animate-spin" : ""}`} />
-                    </button>
-                </div>
+            ) : null}
+
+            <div className="flex shrink-0 justify-center border-b border-border/60 px-4 py-2 lg:hidden">
+                <Segmented
+                    label="Queue section"
+                    value={pane}
+                    onChange={setPane}
+                    options={[
+                        { value: "work", label: `Agent work ${activeTasks.length || ""}`.trim() },
+                        { value: "deliveries", label: `Deliveries ${activeDeliveries.length || ""}`.trim() },
+                    ]}
+                />
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[calc(100vh-180px)] min-h-[600px]">
-                <Card className="flex flex-col h-full border-border/50 shadow-sm overflow-hidden">
-                    <CardHeader className="bg-card pb-4 shrink-0">
-                        <CardTitle className="flex items-center gap-2">
-                            <ActivitySquare className="w-5 h-5 text-blue-500" />
-                            Agent Work
-                            {activeTasks.length > 0 && (
-                                <Badge variant="secondary" className="bg-blue-500/10 text-blue-500 ml-2">
-                                    {activeTasks.length} Active
-                                </Badge>
+            <div className="flex min-h-0 flex-1 lg:divide-x lg:divide-border/60">
+                <Column
+                    title="Agent work"
+                    visible={pane === "work"}
+                    scope={workScope}
+                    onScope={setWorkScope}
+                    activeCount={activeTasks.length}
+                    historyCount={pastTasks.length}
+                    activeLabel="In flight"
+                    historyLabel="History"
+                >
+                    {loading ? (
+                        <SkeletonRows rows={5} />
+                    ) : unavailable ? (
+                        emptyBlock(CloudOff, "Nothing to show yet", "Work and deliveries appear here once the backend answers.")
+                    ) : shownTasks.length === 0 ? (
+                        workScope === "active"
+                            ? emptyBlock(CheckCircle2, "Nothing running", "Work shows up here the moment the agent starts on it.")
+                            : emptyBlock(Inbox, "No task history yet", "Finished, failed and cancelled work is listed here.")
+                    ) : (
+                        <ul className="divide-y divide-border/50">
+                            {shownTasks.map((task) => {
+                                const agent = asString(task.metadata.profile_name, asString(task.metadata.profile_id, "Default"));
+                                return (
+                                    <QueueRow
+                                        key={task.id}
+                                        status={task.status}
+                                        icon={typeIcon(task.taskType)}
+                                        title={task.taskType}
+                                        summary={task.summary}
+                                        meta={[
+                                            task.channel,
+                                            agent,
+                                            task.id.slice(0, 8),
+                                            task.completedAt ? formatDuration(task.completedAt - task.createdAt) : "",
+                                        ].filter(Boolean)}
+                                        createdAt={task.createdAt}
+                                        now={now}
+                                        error={task.error}
+                                        errorTool={task.taskType}
+                                    />
+                                );
+                            })}
+                            {workScope === "history" && pastTasks.length > HISTORY_LIMIT && (
+                                <li className="px-4 py-3 text-center text-[11px] text-muted-foreground">Showing the latest {HISTORY_LIMIT} of {pastTasks.length}</li>
                             )}
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent className="flex-1 overflow-hidden p-0">
-                        <Tabs defaultValue="active" className="h-full flex flex-col">
-                            <div className="px-6 border-b border-border/50 bg-card">
-                                <TabsList className="bg-transparent mb-0 h-10 w-full justify-start">
-                                    <TabsTrigger value="active" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-blue-500 rounded-none px-4">
-                                        In-Flight ({activeTasks.length})
-                                    </TabsTrigger>
-                                    <TabsTrigger value="past" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-blue-500 rounded-none px-4">
-                                        Recent History ({completedTasks.length})
-                                    </TabsTrigger>
-                                </TabsList>
-                            </div>
+                        </ul>
+                    )}
+                </Column>
 
-                            <TabsContent value="active" className="flex-1 overflow-hidden m-0">
-                                <ScrollArea className="h-full w-full p-4">
-                                    {activeTasks.length === 0 ? (
-                                        <div className="h-40 flex flex-col items-center justify-center text-muted-foreground gap-2">
-                                            <CheckCircle2 className="w-8 h-8 opacity-20" />
-                                            <p>No active tasks</p>
-                                        </div>
-                                    ) : (
-                                        activeTasks.map(renderTaskCard)
-                                    )}
-                                </ScrollArea>
-                            </TabsContent>
-
-                            <TabsContent value="past" className="flex-1 overflow-hidden m-0">
-                                <ScrollArea className="h-full w-full p-4">
-                                    {completedTasks.length === 0 ? (
-                                        <div className="h-40 flex flex-col items-center justify-center text-muted-foreground">
-                                            <p>No task history</p>
-                                        </div>
-                                    ) : (
-                                        completedTasks.slice(0, 50).map(renderTaskCard)
-                                    )}
-                                </ScrollArea>
-                            </TabsContent>
-                        </Tabs>
-                    </CardContent>
-                </Card>
-
-                <Card className="flex flex-col h-full border-border/50 shadow-sm overflow-hidden">
-                    <CardHeader className="bg-card pb-4 shrink-0">
-                        <CardTitle className="flex items-center gap-2">
-                            <Server className="h-5 w-5 text-primary" />
-                            Outbound Deliveries
-                            {activeDeliveries.length > 0 && (
-                                <Badge variant="secondary" className="ml-2 bg-primary/10 text-primary">
-                                    {activeDeliveries.length} Pending
-                                </Badge>
+                <Column
+                    title="Outbound deliveries"
+                    visible={pane === "deliveries"}
+                    scope={deliveryScope}
+                    onScope={setDeliveryScope}
+                    activeCount={activeDeliveries.length}
+                    historyCount={pastDeliveries.length}
+                    activeLabel="Pending"
+                    historyLabel="Sent"
+                >
+                    {loading ? (
+                        <SkeletonRows rows={5} />
+                    ) : unavailable ? (
+                        emptyBlock(CloudOff, "Nothing to show yet", "Work and deliveries appear here once the backend answers.")
+                    ) : shownDeliveries.length === 0 ? (
+                        deliveryScope === "active"
+                            ? emptyBlock(CheckCircle2, "Nothing waiting to send", "Replies queue here while a channel is busy or retrying.")
+                            : emptyBlock(Send, "No deliveries yet", "Replies sent to Discord, WhatsApp and the web chat are listed here.")
+                    ) : (
+                        <ul className="divide-y divide-border/50">
+                            {shownDeliveries.map((delivery) => {
+                                const agent = asString(delivery.metadata.profile_name) || asString(delivery.metadata.profile_id);
+                                return (
+                                    <QueueRow
+                                        key={delivery.id}
+                                        status={delivery.status}
+                                        icon={<Send className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                                        title={`To ${delivery.channel}`}
+                                        summary={delivery.preview}
+                                        quote
+                                        meta={[
+                                            delivery.messageKind,
+                                            agent,
+                                            delivery.attempts > 1 ? `${delivery.attempts} attempts` : "",
+                                            delivery.id.slice(0, 8),
+                                        ].filter(Boolean)}
+                                        createdAt={delivery.createdAt}
+                                        now={now}
+                                        error={delivery.error}
+                                        errorTool={`${delivery.channel} delivery`}
+                                    />
+                                );
+                            })}
+                            {deliveryScope === "history" && pastDeliveries.length > HISTORY_LIMIT && (
+                                <li className="px-4 py-3 text-center text-[11px] text-muted-foreground">Showing the latest {HISTORY_LIMIT} of {pastDeliveries.length}</li>
                             )}
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent className="flex-1 overflow-hidden p-0">
-                        <Tabs defaultValue="active" className="h-full flex flex-col">
-                            <div className="px-6 border-b border-border/50 bg-card">
-                                <TabsList className="bg-transparent mb-0 h-10 w-full justify-start">
-                                    <TabsTrigger value="active" className="rounded-none px-4 data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent">
-                                        Queue ({activeDeliveries.length})
-                                    </TabsTrigger>
-                                    <TabsTrigger value="past" className="rounded-none px-4 data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent">
-                                        Sent ({pastDeliveries.length})
-                                    </TabsTrigger>
-                                </TabsList>
-                            </div>
-
-                            <TabsContent value="active" className="flex-1 overflow-hidden m-0">
-                                <ScrollArea className="h-full w-full p-4">
-                                    {activeDeliveries.length === 0 ? (
-                                        <div className="h-40 flex flex-col items-center justify-center text-muted-foreground gap-2">
-                                            <CheckCircle2 className="w-8 h-8 opacity-20" />
-                                            <p>Queue is empty</p>
-                                        </div>
-                                    ) : (
-                                        activeDeliveries.map(renderDeliveryCard)
-                                    )}
-                                </ScrollArea>
-                            </TabsContent>
-
-                            <TabsContent value="past" className="flex-1 overflow-hidden m-0">
-                                <ScrollArea className="h-full w-full p-4">
-                                    {pastDeliveries.length === 0 ? (
-                                        <div className="h-40 flex flex-col items-center justify-center text-muted-foreground">
-                                            <p>No delivery history</p>
-                                        </div>
-                                    ) : (
-                                        pastDeliveries.slice(0, 50).map(renderDeliveryCard)
-                                    )}
-                                </ScrollArea>
-                            </TabsContent>
-                        </Tabs>
-                    </CardContent>
-                </Card>
+                        </ul>
+                    )}
+                </Column>
             </div>
-        </div>
+        </PageFrame>
     );
 }

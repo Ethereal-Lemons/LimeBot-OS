@@ -1,7 +1,8 @@
 import { useEffect, useState, type ButtonHTMLAttributes, type ElementType, type ReactNode } from "react";
 import { AlertTriangle, Check, ChevronRight, Loader2, RefreshCw, X, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { classifyRequestError, type RequestErrorInfo } from "@/lib/request-error";
+import { classifyRequestError } from "@/lib/request-error";
+import type { ToolErrorInfo } from "@/lib/tool-display";
 import { StatusGlyph, CopyButton } from "@/components/chat/tool-ui";
 import type { RowState } from "@/lib/tool-state";
 
@@ -282,7 +283,7 @@ export function RequestError({
     className,
 }: {
     error?: unknown;
-    info?: RequestErrorInfo;
+    info?: ToolErrorInfo;
     subject?: string;
     onRetry?: () => void;
     retrying?: boolean;
@@ -292,7 +293,7 @@ export function RequestError({
 }) {
     const resolved = info || classifyRequestError(error, subject);
     const [open, setOpen] = useState(false);
-    const soft = resolved.category === "rate_limit" || resolved.category === "timeout" || resolved.category === "network";
+    const soft = resolved.category === "rate_limit" || resolved.category === "timeout" || resolved.category === "network" || resolved.category === "authentication";
     const showRetry = onRetry && (resolved.retryable || resolved.category === "unknown");
 
     const retryButton = showRetry && (
@@ -350,7 +351,6 @@ export function RequestError({
                     {open && resolved.detail && (
                         <div className="mt-2 space-y-1">
                             <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-background/70 p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
-                                {resolved.status ? `HTTP ${resolved.status}\n` : ""}
                                 {resolved.detail}
                             </pre>
                             <div className="flex justify-end">
