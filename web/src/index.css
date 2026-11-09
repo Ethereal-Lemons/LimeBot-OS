@@ -241,6 +241,9 @@
         #22c55e 100%
         /* Vibrant Grass Green */
       );
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 220 50% 10%;
   }
 
   [data-theme='angelcore-racing'] {
@@ -386,6 +389,10 @@
     --border: 25 20% 70%;
 
     --bg-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100' height='100' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E"), linear-gradient(to bottom, #fdfbf7, #f5f1e8);
+
+    --muted: 35 25% 84%;
+    --secondary: 35 25% 84%;
+    --secondary-foreground: 25 10% 20%;
   }
 
   [data-theme='synthwave-84'] {
@@ -456,6 +463,9 @@
         #e0f7fa 0%,
         #b2ebf2 50%,
         #80deea 100%);
+
+    --secondary: 210 30% 90%;
+    --secondary-foreground: 220 30% 20%;
   }
 
   [data-theme='coffee-shop'] {
@@ -486,6 +496,9 @@
     /* Light Cream for bot bubbles */
 
     --bg-image: url("data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23a1887f' fill-opacity='0.1' fill-rule='evenodd'%3E%3Ccircle cx='3' cy='3' r='3'/%3E%3Ccircle cx='13' cy='13' r='3'/%3E%3C/g%3E%3C/svg%3E"), linear-gradient(to bottom, #d7ccc8, #efebe9);
+
+    --secondary: 35 30% 88%;
+    --secondary-foreground: 25 30% 25%;
   }
 
   /* Override User Bubble for Coffee Shop to match theme */
@@ -927,6 +940,9 @@
     /* Light Pink for bot bubbles */
 
     --bg-image: url("data:image/svg+xml,%3Csvg width='50' height='50' viewBox='0 0 50 50' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23fbcfe8' fill-opacity='0.4' fill-rule='evenodd'%3E%3Cpath d='M25 25c-5 0-8-5-8-10s5-5 10-5 8 5 8 10-5 5-10 5z'/%3E%3C/g%3E%3C/svg%3E"), linear-gradient(135deg, #fff1f2 0%, #fce7f3 100%);
+
+    --secondary: 330 30% 95%;
+    --secondary-foreground: 330 40% 30%;
   }
 
   [data-theme='sunset-mirage'] {
@@ -954,6 +970,9 @@
     --bg-image: radial-gradient(circle at 15% 18%, rgba(255, 208, 146, 0.85) 0%, rgba(255, 208, 146, 0) 40%),
       radial-gradient(circle at 82% 12%, rgba(253, 164, 175, 0.8) 0%, rgba(253, 164, 175, 0) 38%),
       linear-gradient(145deg, #fff7ed 0%, #ffe4e6 42%, #fdf2f8 100%);
+
+    --secondary: 24 100% 95%;
+    --secondary-foreground: 320 28% 16%;
   }
 
   [data-theme='emerald-depths'] {
