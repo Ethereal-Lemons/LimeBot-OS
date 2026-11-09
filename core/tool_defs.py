@@ -122,12 +122,10 @@ BASE_TOOLS = [
     {
         "name": "edit_skill",
         "description": (
-            "Safely repair one registered local LimeBot skill in one transaction. The skill "
-            "must be local or legacy-local; bundled and Git-managed skills are read-only. "
-            "Use inspect_skill first. replace requires exact old_text (and may use occurrence "
-            "or replace_all), create requires content, and delete removes one file. All edits "
-            "are preflighted, validated for SKILL.md/Python/JSON/API importability, atomically "
-            "applied, reloaded into the registry/tool schemas, and rolled back on failure."
+            "Repair one local or legacy-local skill in one transaction; bundled and Git-managed "
+            "skills are read-only. Call inspect_skill first. replace needs exact old_text "
+            "(optionally occurrence or replace_all), create needs content, delete removes a file. "
+            "Edits are validated, applied atomically, reloaded, and rolled back on failure."
         ),
         "params": {
             "skill_name": {
@@ -471,11 +469,10 @@ BASE_TOOLS = [
                 "type": "string",
                 "enum": ["auto", "copy", "none"],
                 "description": (
-                    "Workspace mode for the sub-agent. 'auto' uses a temporary copy for coding, "
-                    "repository, review, and verification work; 'copy' always isolates file edits "
-                    "and retains the clone plus a structured changeset until "
-                    "apply_workspace_changeset merges it; 'none' keeps the existing workspace and "
-                    "should be reserved for read-only or explicitly shared tasks."
+                    "Workspace mode. 'auto' isolates coding, repository, review and verification "
+                    "work in a temporary copy; 'copy' always isolates edits and keeps a changeset "
+                    "until apply_workspace_changeset merges it; 'none' uses the live workspace "
+                    "(read-only or explicitly shared tasks only)."
                 ),
             },
         },
@@ -655,15 +652,14 @@ BASE_TOOLS = [
     {
         "name": "generate_image",
         "description": (
-            "Generate or edit a NEW image using the configured image-capable model. "
-            "Use this only when the user explicitly asks to create, draw, render, generate, or transform a picture. "
-            "Do NOT use this to download, find, or send an existing photo of a person or subject — "
-            "that is web_search(kind=\"images\"). "
-            "A mention of images already embedded in a document is not an image-generation request. "
-            "Never call this tool with a prompt that says image generation is unnecessary. "
-            "Images attached to the current message can be used automatically as visual references, "
-            "including for named people and follow-up requests such as 'make it' or 'generate it'. "
-            "The tool saves generated files locally and sends the image back to the active chat when supported."
+            "Generate or edit a NEW image. Use only when the user explicitly asks to create, draw, "
+            "render, generate, or transform a picture. Do NOT use this to download, find, or send an "
+            "existing photo — that is web_search(kind=\"images\"). Images merely embedded in a document "
+            "are not a generation request. Never call this with a prompt saying generation is "
+            "unnecessary. Images attached "
+            "to the current message are used automatically as references, including follow-ups such "
+            "as 'make it' or 'generate it'. Saves files locally and sends the image to the active chat "
+            "when supported."
         ),
         "params": {
             "prompt": {
@@ -673,9 +669,8 @@ BASE_TOOLS = [
             "model": {
                 "type": "string",
                 "description": (
-                    "Optional image backend. Examples: openai-codex/gpt-5.4-mini, openai/gpt-image-2, "
-                    "gemini/gemini-3.1-flash-image, gemini/gemini-3-pro-image, "
-                    "gemini/gemini-2.5-flash-image."
+                    "Optional image backend, e.g. openai/gpt-image-2 or gemini/gemini-3-pro-image. "
+                    "Omit to use the configured default."
                 ),
             },
             "size": {
@@ -694,16 +689,15 @@ BASE_TOOLS = [
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional allowed local image paths to use as visual references. "
-                    "Usually omit this for chat uploads; LimeBot carries the current or recently attached image automatically."
+                    "Optional allowed local image paths as references. Usually omit: "
+                    "chat uploads are attached automatically."
                 ),
             },
             "use_attached_images": {
                 "type": "boolean",
                 "description": (
-                    "Use images attached to the current or immediately preceding chat turn as references. "
-                    "Set true when the user says this image/photo, same image, make it, or generate it. "
-                    "Set false only when the user explicitly wants a fresh text-only image."
+                    "Use images from the current or previous chat turn as references. True for "
+                    "'this image', 'same image', 'make it'; false only for an explicit fresh text-only image."
                 ),
             },
         },
@@ -952,15 +946,10 @@ SEARCH_TOOLS = [
     {
         "name": "web_search",
         "description": (
-            "Host-owned live search for lookup queries (facts, headlines, existing photos). "
-            "The host looks up the query and returns structured results. Use kind='images' "
-            "to find existing photos and set attach_to_chat according to whether the "
-            "image should appear in the current conversation. Use kind='news' for recent news. "
-            "If the user named a page URL or "
-            "asked to open/visit/go to a page, call browser_navigate instead — you can "
-            "open pages. For a live FX rate, this tool should return a numeric rate for "
-            "the requested pair (USD and GTQ), not a default EUR/USD calculator figure "
-            "and not a JS-only Xe converter. Do not open a search engine "
+            "Live search for lookup queries (facts, headlines, existing photos). Use kind='images' "
+            "to find existing photos, with attach_to_chat=true when the image should appear in this "
+            "chat; kind='news' for recent news. If the user named a page URL or asked to "
+            "open/visit/go to a page, call browser_navigate instead. Do not open a search engine "
             "with browser tools. "
             "Example: web_search(query='Rosé BLACKPINK', kind='images', attach_to_chat=true)."
         ),
