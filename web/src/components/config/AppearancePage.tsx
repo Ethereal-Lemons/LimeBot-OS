@@ -1,14 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
-import { Palette, Code2, RotateCcw, Copy, Check, ChevronDown, Sun, Moon, Clock, ImageIcon, Trash2, ExternalLink } from 'lucide-react';
+import { Palette, Code2, RotateCcw, Copy, Check, Sun, Moon, Clock, ImageIcon, Trash2, AlertTriangle } from 'lucide-react';
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CustomThemeCreator } from './CustomThemeCreator';
 import { injectCss, CSS_STORAGE_KEY } from '@/lib/css-injector';
+import { Field, SaveBar, SettingsPage, SettingsSection, StatusPill, invalidInputClass } from '@/components/settings/kit';
+import { useSaveState } from '@/hooks/useSaveState';
+import { useBeforeUnloadGuard } from '@/hooks/useUnsaved';
+import { cn } from '@/lib/utils';
 
 interface AppearancePageProps {
     onThemeChange?: (theme: string) => void;
@@ -36,13 +38,11 @@ const DEFAULT_TIME_THEME_SETTINGS: TimeThemeSettings = {
 type WallpaperSettings = {
     url: string;
     overlay: number;
-    active: boolean;
 };
 
 const DEFAULT_WALLPAPER_SETTINGS: WallpaperSettings = {
     url: '',
     overlay: 60,
-    active: false,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,7 +59,7 @@ function loadWallpaperSettings(): WallpaperSettings {
         const overlay = typeof parsed.overlay === 'number' && Number.isFinite(parsed.overlay)
             ? Math.round(parsed.overlay * 100)
             : DEFAULT_WALLPAPER_SETTINGS.overlay;
-        return { url, overlay, active: Boolean(url) };
+        return { url, overlay };
     } catch {
         return DEFAULT_WALLPAPER_SETTINGS;
     }
@@ -118,310 +118,402 @@ const specialThemes = [
 
 const allThemeOptions = [...standardThemes, ...specialThemes];
 
+const hourOptions = Array.from({ length: 24 }, (_, hour) => ({
+    value: String(hour),
+    label: `${String(hour).padStart(2, '0')}:00`,
+}));
+
+/**
+ * A light syntax check for the custom CSS box: unclosed comments and
+ * unbalanced braces are the mistakes that silently disable the rules after
+ * them. This only warns; it never blocks a save.
+ */
+function findCssProblem(css: string): string | null {
+    const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+    if (withoutComments.includes('/*')) return 'A /* comment is never closed, so everything after it is ignored.';
+    const stripped = withoutComments.replace(/(["'])(?:\\.|(?!\1)[^\\\n])*\1/g, '');
+    let depth = 0;
+    for (const char of stripped) {
+        if (char === '{') depth += 1;
+        else if (char === '}') {
+            depth -= 1;
+            if (depth < 0) return 'There is a closing } with no matching {.';
+        }
+    }
+    if (depth > 0) return 'A { is never closed, so the rules after it may not apply.';
+    return null;
+}
+
 export function AppearancePage({
     onThemeChange,
     onTimeThemeSettingsChange,
 }: AppearancePageProps) {
     const [currentTheme, setCurrentTheme] = useState(() => localStorage.getItem('limebot-theme') || 'lime');
     const [timeTheme, setTimeTheme] = useState<TimeThemeSettings>(() => loadTimeThemeSettings());
-    const [openSection, setOpenSection] = useState<string | null>(null);
-    const [wallpaperSettings, setWallpaperSettings] = useState(loadWallpaperSettings);
-    const { url: wallpaperUrl, overlay: wallpaperOverlay, active: wallpaperActive } = wallpaperSettings;
-    const setWallpaperUrl = (url: string) => setWallpaperSettings((current) => ({ ...current, url }));
-    const setWallpaperOverlay = (overlay: number) => setWallpaperSettings((current) => ({ ...current, overlay }));
-    const setWallpaperActive = (active: boolean) => setWallpaperSettings((current) => ({ ...current, active }));
 
-    const hourOptions = Array.from({ length: 24 }, (_, hour) => ({
-        value: String(hour),
-        label: `${String(hour).padStart(2, '0')}:00`,
-    }));
+    // Wallpaper: what is applied now vs. what is being edited.
+    const [appliedWallpaper, setAppliedWallpaper] = useState(loadWallpaperSettings);
+    const [wallpaperUrl, setWallpaperUrl] = useState(appliedWallpaper.url);
+    const [wallpaperOverlay, setWallpaperOverlay] = useState(appliedWallpaper.overlay);
+    const [failedPreviewUrl, setFailedPreviewUrl] = useState('');
+
+    // Custom CSS: previewed live while typing, kept once saved.
+    const [savedCss, setSavedCss] = useState(() => localStorage.getItem(CSS_STORAGE_KEY) ?? '');
+    const [css, setCss] = useState(savedCss);
+    const savedCssRef = useRef(savedCss);
+    const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [copied, setCopied] = useState(false);
+
+    const { saving, error: saveError, savedAt, run, clearError } = useSaveState('your appearance settings');
 
     useEffect(() => {
         localStorage.setItem(TIME_THEME_STORAGE_KEY, JSON.stringify(timeTheme));
         onTimeThemeSettingsChange?.(timeTheme);
     }, [timeTheme, onTimeThemeSettingsChange]);
 
+    useEffect(() => {
+        savedCssRef.current = savedCss;
+    }, [savedCss]);
+
+    // The editor used to be mounted only while its section was open; it still
+    // injects the stored CSS on arrival, and puts the saved CSS back if the
+    // page is left with an unsaved preview.
+    useEffect(() => {
+        injectCss(savedCssRef.current);
+        return () => {
+            if (previewTimer.current) clearTimeout(previewTimer.current);
+            injectCss(savedCssRef.current);
+        };
+    }, []);
+
     const handleThemeSelect = (themeId: string) => {
         setCurrentTheme(themeId);
         onThemeChange?.(themeId);
     };
 
-    const toggleSection = (id: string) => setOpenSection(prev => prev === id ? null : id);
+    const handleCssChange = (value: string) => {
+        setCss(value);
+        if (previewTimer.current) clearTimeout(previewTimer.current);
+        previewTimer.current = setTimeout(() => injectCss(value), 300);
+    };
 
-    const applyWallpaper = () => {
-        if (!wallpaperUrl.trim()) return;
-        const overlayVal = (wallpaperOverlay / 100).toFixed(2);
-        const wp = { url: wallpaperUrl.trim(), overlay: parseFloat(overlayVal) };
-        localStorage.setItem('limebot-wallpaper', JSON.stringify(wp));
-        document.documentElement.style.setProperty(
-            '--bg-image',
-            `linear-gradient(rgba(0,0,0,${overlayVal}), rgba(0,0,0,${overlayVal})), url(${wp.url})`
-        );
-        setWallpaperActive(true);
+    const clearCss = () => {
+        if (previewTimer.current) clearTimeout(previewTimer.current);
+        setCss('');
+        setSavedCss('');
+        localStorage.removeItem(CSS_STORAGE_KEY);
+        injectCss('');
+    };
+
+    const copyCss = async () => {
+        try {
+            await navigator.clipboard.writeText(css);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        } catch (err) {
+            console.error('Could not copy CSS:', err);
+        }
     };
 
     const removeWallpaper = () => {
-        localStorage.removeItem('limebot-wallpaper');
+        localStorage.removeItem(WALLPAPER_STORAGE_KEY);
         setWallpaperUrl('');
-        setWallpaperActive(false);
+        setAppliedWallpaper((current) => ({ ...current, url: '' }));
         onThemeChange?.(currentTheme);
     };
 
+    // ── dirty state and validation ──────────────────────────────────────────
+
+    const wallpaperText = wallpaperUrl.trim();
+    const wallpaperActive = appliedWallpaper.url !== '';
+    const wallpaperDirty = wallpaperText !== appliedWallpaper.url
+        || (wallpaperText !== '' && wallpaperOverlay !== appliedWallpaper.overlay);
+    const wallpaperError = wallpaperText === '' && wallpaperActive
+        ? 'Enter an image address, or use Remove wallpaper.'
+        : null;
+    const previewFailed = wallpaperText !== '' && failedPreviewUrl === wallpaperText;
+
+    const cssDirty = css !== savedCss;
+    const cssProblem = findCssProblem(css);
+
+    const dirty = wallpaperDirty || cssDirty;
+    useBeforeUnloadGuard(dirty);
+
+    const pending = [wallpaperDirty ? 'wallpaper' : '', cssDirty ? 'custom CSS' : ''].filter(Boolean);
+
+    const handleSave = async () => {
+        if (wallpaperError) return;
+        await run(async () => {
+            if (cssDirty) {
+                localStorage.setItem(CSS_STORAGE_KEY, css);
+                injectCss(css);
+                setSavedCss(css);
+            }
+            if (wallpaperDirty && wallpaperText) {
+                const overlayVal = (wallpaperOverlay / 100).toFixed(2);
+                const wp = { url: wallpaperText, overlay: parseFloat(overlayVal) };
+                localStorage.setItem(WALLPAPER_STORAGE_KEY, JSON.stringify(wp));
+                document.documentElement.style.setProperty(
+                    '--bg-image',
+                    `linear-gradient(rgba(0,0,0,${overlayVal}), rgba(0,0,0,${overlayVal})), url(${wp.url})`
+                );
+                setAppliedWallpaper({ url: wallpaperText, overlay: wallpaperOverlay });
+                setWallpaperUrl(wallpaperText);
+            }
+        });
+    };
+
+    const handleDiscard = () => {
+        if (previewTimer.current) clearTimeout(previewTimer.current);
+        setCss(savedCss);
+        injectCss(savedCss);
+        setWallpaperUrl(appliedWallpaper.url);
+        setWallpaperOverlay(appliedWallpaper.overlay);
+        clearError();
+    };
+
+    const activeThemeName = allThemeOptions.find(t => t.id === currentTheme)?.name
+        ?? (currentTheme.startsWith('custom-') ? 'Custom theme' : currentTheme);
+
+    const sameThemes = timeTheme.dayTheme === timeTheme.nightTheme;
+    const sameHours = timeTheme.dayStart === timeTheme.nightStart;
+
     return (
-        <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">
-            <div className="max-w-2xl mx-auto space-y-5">
-                <header>
-                    <h1 className="text-2xl font-bold flex items-center gap-2">
-                        <Palette className="h-6 w-6 text-primary" />
-                        Appearance
-                    </h1>
-                    <p className="text-muted-foreground text-sm mt-1">
-                        Personalize the look and feel of your LimeBot.
-                    </p>
-                </header>
+        <SettingsPage
+            title="Appearance"
+            icon={Palette}
+            description="Personalize the look and feel of your LimeBot. Themes and the schedule apply instantly; wallpaper and custom CSS apply when you save."
+            saveBar={
+                <SaveBar
+                    dirty={dirty}
+                    saving={saving}
+                    onSave={() => void handleSave()}
+                    onDiscard={handleDiscard}
+                    error={saveError}
+                    onDismissError={clearError}
+                    disabled={!!wallpaperError}
+                    savedAt={savedAt}
+                    saveLabel="Save & apply"
+                    unsavedLabel={wallpaperError ? 'Fix the wallpaper address to save' : pending.length ? `Unsaved: ${pending.join(' and ')}` : undefined}
+                />
+            }
+        >
+            <SettingsSection
+                icon={Palette}
+                title="Color theme"
+                description="Pick an accent or a full theme. It changes right away."
+                badge={<StatusPill tone="ok">{activeThemeName}</StatusPill>}
+            >
+                <div className="flex flex-wrap gap-3" role="group" aria-label="Color themes">
+                    {standardThemes.map((theme) => (
+                        <button
+                            type="button"
+                            key={theme.id}
+                            onClick={() => handleThemeSelect(theme.id)}
+                            title={theme.name}
+                            aria-pressed={currentTheme === theme.id}
+                            className={cn(
+                                'group relative h-9 w-9 rounded-full transition-all duration-200',
+                                theme.color,
+                                currentTheme === theme.id
+                                    ? 'scale-110 ring-2 ring-primary ring-offset-2 ring-offset-background'
+                                    : 'opacity-80 hover:scale-105 hover:opacity-100',
+                            )}
+                        >
+                            {currentTheme === theme.id && (
+                                <Check className="absolute inset-0 m-auto h-4 w-4 text-white drop-shadow-md" />
+                            )}
+                            <span className="sr-only">{theme.name}</span>
+                        </button>
+                    ))}
+                </div>
 
-                <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
-                    <div className="p-5 pb-4">
-                        <h3 className="font-semibold text-sm flex items-center gap-2">
-                            <Palette className="h-4 w-4 text-primary" />
-                            Color Themes
-                        </h3>
-
-                        <div className="flex flex-wrap gap-3 mt-4">
-                            {standardThemes.map((theme) => (
-                                <button
-                                    key={theme.id}
-                                    onClick={() => handleThemeSelect(theme.id)}
-                                    title={theme.name}
-                                    className={`
-                                        group relative w-10 h-10 rounded-full transition-all duration-200
-                                        ${theme.color}
-                                        ${currentTheme === theme.id
-                                            ? 'ring-2 ring-primary ring-offset-2 ring-offset-card scale-110'
-                                            : 'hover:scale-105 opacity-80 hover:opacity-100'}
-                                    `}
-                                >
-                                    {currentTheme === theme.id && (
-                                        <Check className="absolute inset-0 m-auto h-4 w-4 text-white drop-shadow-md" />
-                                    )}
-                                    <span className="sr-only">{theme.name}</span>
-                                </button>
-                            ))}
-                        </div>
-
-                        <p className="text-xs text-muted-foreground mt-2">
-                            Active: <span className="text-foreground font-medium">{
-                                [...standardThemes, ...specialThemes].find(t => t.id === currentTheme)?.name
-                                ?? currentTheme
-                            }</span>
-                        </p>
-
-                        <div className="relative mt-5 mb-3">
-                            <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
-                            <div className="relative flex justify-center text-[10px] uppercase tracking-widest">
-                                <span className="bg-card px-2 text-muted-foreground font-semibold">Special Themes</span>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                            {specialThemes.map((theme) => (
-                                <button
-                                    key={theme.id}
-                                    onClick={() => handleThemeSelect(theme.id)}
-                                    className={`
-                                        relative flex flex-col items-center gap-1.5 p-2.5 rounded-lg border transition-all
-                                        ${currentTheme === theme.id
-                                            ? 'border-primary bg-primary/5 shadow-sm'
-                                            : 'border-transparent bg-muted/20 hover:bg-muted/40 hover:border-primary/20'}
-                                    `}
-                                >
-                                    <div className={`w-7 h-7 rounded-full shadow-sm shrink-0 ${theme.color}`} />
-                                    <span className="text-[10px] leading-tight font-medium text-center line-clamp-1">{theme.name}</span>
-                                    {currentTheme === theme.id && (
-                                        <div className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-primary" />
-                                    )}
-                                </button>
-                            ))}
-                        </div>
+                <div className="space-y-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Special themes</p>
+                    <div className="grid grid-cols-2 gap-1 sm:grid-cols-3" role="group" aria-label="Special themes">
+                        {specialThemes.map((theme) => (
+                            <button
+                                type="button"
+                                key={theme.id}
+                                onClick={() => handleThemeSelect(theme.id)}
+                                aria-pressed={currentTheme === theme.id}
+                                className={cn(
+                                    'flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
+                                    currentTheme === theme.id
+                                        ? 'bg-primary/10 font-medium text-primary'
+                                        : 'text-foreground hover:bg-muted/60',
+                                )}
+                            >
+                                <span className={cn('h-5 w-5 shrink-0 rounded-full', theme.color)} />
+                                <span className="min-w-0 flex-1 truncate">{theme.name}</span>
+                                {currentTheme === theme.id && <Check className="h-3.5 w-3.5 shrink-0" />}
+                            </button>
+                        ))}
                     </div>
                 </div>
+            </SettingsSection>
 
-                <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
-                    <button
-                        onClick={() => toggleSection('wallpaper')}
-                        className="w-full flex items-center justify-between p-4 text-left"
-                    >
-                        <div className="flex items-center gap-2">
-                            <ImageIcon className="h-4 w-4 text-primary" />
-                            <div>
-                                <h3 className="font-semibold text-sm">Wallpaper</h3>
-                                <p className="text-[11px] text-muted-foreground">Use a custom background image from any URL.</p>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                            {wallpaperActive && <Badge variant="secondary" className="text-[10px] h-5">Active</Badge>}
-                            <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${openSection === 'wallpaper' ? 'rotate-180' : ''}`} />
-                        </div>
-                    </button>
-                    {openSection === 'wallpaper' && (
-                        <div className="px-4 pb-4 space-y-3 border-t pt-3">
-                            <div className="flex gap-2">
-                                <Input
-                                    value={wallpaperUrl}
-                                    onChange={(e) => setWallpaperUrl(e.target.value)}
-                                    placeholder="https://example.com/image.jpg"
-                                    className="h-8 text-xs font-mono flex-1"
-                                />
-                                <Button size="sm" className="h-8 text-xs gap-1" onClick={applyWallpaper} disabled={!wallpaperUrl.trim()}>
-                                    <ExternalLink className="h-3 w-3" /> Apply
-                                </Button>
-                            </div>
-
-                            {wallpaperUrl.trim() && (
-                                <div className="relative rounded-lg overflow-hidden border border-border h-28">
-                                    <img
-                                        src={wallpaperUrl}
-                                        alt="Wallpaper preview"
-                                        className="w-full h-full object-cover"
-                                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                    />
-                                    <div
-                                        className="absolute inset-0"
-                                        style={{ background: `rgba(0,0,0,${wallpaperOverlay / 100})` }}
-                                    />
-                                    <span className="absolute bottom-1.5 right-2 text-[10px] text-white/60 font-mono">
-                                        Overlay {wallpaperOverlay}%
-                                    </span>
-                                </div>
-                            )}
-
-                            <div className="space-y-1">
-                                <Label className="text-xs text-muted-foreground">Overlay Darkness - {wallpaperOverlay}%</Label>
-                                <input
-                                    type="range"
-                                    min={0}
-                                    max={90}
-                                    value={wallpaperOverlay}
-                                    onChange={(e) => setWallpaperOverlay(Number(e.target.value))}
-                                    className="w-full h-1.5 accent-primary cursor-pointer"
-                                />
-                                <p className="text-[10px] text-muted-foreground">
-                                    Higher values make text easier to read. Recommended: 50-70%.
-                                </p>
-                            </div>
-
-                            {wallpaperActive && (
-                                <Button variant="ghost" size="sm" className="h-7 text-xs text-destructive/70 hover:text-destructive gap-1" onClick={removeWallpaper}>
-                                    <Trash2 className="h-3 w-3" /> Remove Wallpaper
-                                </Button>
-                            )}
-                        </div>
-                    )}
+            <SettingsSection
+                icon={Clock}
+                title="Time-based themes"
+                description="Switch between a day and a night theme automatically."
+                badge={timeTheme.enabled ? <StatusPill tone="ok">Active</StatusPill> : undefined}
+            >
+                <Field label="Switch by time of day" htmlFor="time_theme_enabled" inline>
+                    <Switch
+                        id="time_theme_enabled"
+                        checked={timeTheme.enabled}
+                        onCheckedChange={(checked) => setTimeTheme(prev => ({ ...prev, enabled: checked }))}
+                    />
+                </Field>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <Field label={<span className="inline-flex items-center gap-1.5"><Sun className="h-3.5 w-3.5 text-muted-foreground" /> Day theme</span>} htmlFor="time_day_theme">
+                        <Select value={timeTheme.dayTheme} onValueChange={(v) => setTimeTheme(prev => ({ ...prev, dayTheme: v }))}>
+                            <SelectTrigger id="time_day_theme"><SelectValue /></SelectTrigger>
+                            <SelectContent>{allThemeOptions.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}</SelectContent>
+                        </Select>
+                    </Field>
+                    <Field label={<span className="inline-flex items-center gap-1.5"><Moon className="h-3.5 w-3.5 text-muted-foreground" /> Night theme</span>} htmlFor="time_night_theme">
+                        <Select value={timeTheme.nightTheme} onValueChange={(v) => setTimeTheme(prev => ({ ...prev, nightTheme: v }))}>
+                            <SelectTrigger id="time_night_theme"><SelectValue /></SelectTrigger>
+                            <SelectContent>{allThemeOptions.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}</SelectContent>
+                        </Select>
+                    </Field>
+                    <Field label="Day starts" htmlFor="time_day_start">
+                        <Select value={String(timeTheme.dayStart)} onValueChange={(v) => setTimeTheme(prev => ({ ...prev, dayStart: Number(v) }))}>
+                            <SelectTrigger id="time_day_start"><SelectValue /></SelectTrigger>
+                            <SelectContent>{hourOptions.map(h => <SelectItem key={h.value} value={h.value}>{h.label}</SelectItem>)}</SelectContent>
+                        </Select>
+                    </Field>
+                    <Field label="Night starts" htmlFor="time_night_start">
+                        <Select value={String(timeTheme.nightStart)} onValueChange={(v) => setTimeTheme(prev => ({ ...prev, nightStart: Number(v) }))}>
+                            <SelectTrigger id="time_night_start"><SelectValue /></SelectTrigger>
+                            <SelectContent>{hourOptions.map(h => <SelectItem key={h.value} value={h.value}>{h.label}</SelectItem>)}</SelectContent>
+                        </Select>
+                    </Field>
                 </div>
+                {timeTheme.enabled && (sameThemes || sameHours) && (
+                    <p role="status" className="flex items-start gap-1.5 text-xs text-amber-500">
+                        <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                        {sameThemes
+                            ? 'Day and night use the same theme, so switching will not change anything.'
+                            : 'Day and night start at the same hour, so one of them will never apply.'}
+                    </p>
+                )}
+            </SettingsSection>
 
-                <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
-                    <button
-                        onClick={() => toggleSection('time')}
-                        className="w-full flex items-center justify-between p-4 text-left"
-                    >
-                        <div className="flex items-center gap-2">
-                            <Clock className="h-4 w-4 text-primary" />
-                            <div>
-                                <h3 className="font-semibold text-sm">Time-based Themes</h3>
-                                <p className="text-[11px] text-muted-foreground">Auto-switch between day and night.</p>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                            {timeTheme.enabled && <Badge variant="secondary" className="text-[10px] h-5">Active</Badge>}
-                            <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${openSection === 'time' ? 'rotate-180' : ''}`} />
-                        </div>
-                    </button>
-                    {openSection === 'time' && (
-                        <div className="px-4 pb-4 space-y-3 border-t pt-3">
-                            <div className="flex items-center justify-between">
-                                <Label className="text-xs">Enable time-based switching</Label>
-                                <Switch
-                                    checked={timeTheme.enabled}
-                                    onCheckedChange={(checked) => setTimeTheme(prev => ({ ...prev, enabled: checked }))}
-                                />
-                            </div>
-                            <div className="grid grid-cols-2 gap-3">
-                                <div className="space-y-1">
-                                    <Label className="text-[11px] text-muted-foreground flex items-center gap-1"><Sun className="h-3 w-3" /> Day Theme</Label>
-                                    <Select value={timeTheme.dayTheme} onValueChange={(v) => setTimeTheme(prev => ({ ...prev, dayTheme: v }))}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>{allThemeOptions.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}</SelectContent>
-                                    </Select>
-                                </div>
-                                <div className="space-y-1">
-                                    <Label className="text-[11px] text-muted-foreground flex items-center gap-1"><Moon className="h-3 w-3" /> Night Theme</Label>
-                                    <Select value={timeTheme.nightTheme} onValueChange={(v) => setTimeTheme(prev => ({ ...prev, nightTheme: v }))}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>{allThemeOptions.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}</SelectContent>
-                                    </Select>
-                                </div>
-                                <div className="space-y-1">
-                                    <Label className="text-[11px] text-muted-foreground">Day Starts</Label>
-                                    <Select value={String(timeTheme.dayStart)} onValueChange={(v) => setTimeTheme(prev => ({ ...prev, dayStart: Number(v) }))}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>{hourOptions.map(h => <SelectItem key={h.value} value={h.value}>{h.label}</SelectItem>)}</SelectContent>
-                                    </Select>
-                                </div>
-                                <div className="space-y-1">
-                                    <Label className="text-[11px] text-muted-foreground">Night Starts</Label>
-                                    <Select value={String(timeTheme.nightStart)} onValueChange={(v) => setTimeTheme(prev => ({ ...prev, nightStart: Number(v) }))}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>{hourOptions.map(h => <SelectItem key={h.value} value={h.value}>{h.label}</SelectItem>)}</SelectContent>
-                                    </Select>
-                                </div>
-                            </div>
-                        </div>
+            <SettingsSection
+                icon={ImageIcon}
+                title="Wallpaper"
+                description="Use a custom background image from any URL."
+                badge={wallpaperActive ? <StatusPill tone="ok">Active</StatusPill> : undefined}
+            >
+                <Field label="Image address" htmlFor="wallpaper_url" error={wallpaperError}>
+                    <Input
+                        id="wallpaper_url"
+                        value={wallpaperUrl}
+                        onChange={(e) => setWallpaperUrl(e.target.value)}
+                        placeholder="https://example.com/image.jpg"
+                        aria-invalid={!!wallpaperError}
+                        className={cn('font-mono text-xs', wallpaperError && invalidInputClass)}
+                    />
+                    {previewFailed && (
+                        <p role="status" className="flex items-start gap-1.5 text-xs text-amber-500">
+                            <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                            Could not load an image from this address. Check the link, or whether the site allows other pages to show its images.
+                        </p>
                     )}
-                </div>
+                </Field>
 
-                <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
-                    <button
-                        onClick={() => toggleSection('custom')}
-                        className="w-full flex items-center justify-between p-4 text-left"
-                    >
-                        <div className="flex items-center gap-2">
-                            <Palette className="h-4 w-4 text-primary" />
-                            <h3 className="font-semibold text-sm">Custom Themes</h3>
-                        </div>
-                        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${openSection === 'custom' ? 'rotate-180' : ''}`} />
-                    </button>
-                    {openSection === 'custom' && (
-                        <div className="px-4 pb-4 border-t pt-3">
-                            <CustomThemeCreator
-                                currentThemeId={currentTheme}
-                                onThemeSelect={handleThemeSelect}
-                            />
-                        </div>
-                    )}
-                </div>
+                {wallpaperText && !previewFailed && (
+                    <div className="relative h-28 overflow-hidden rounded-md border border-border/50">
+                        <img
+                            src={wallpaperText}
+                            alt="Wallpaper preview"
+                            className="h-full w-full object-cover"
+                            onError={() => setFailedPreviewUrl(wallpaperText)}
+                        />
+                        <div
+                            className="absolute inset-0"
+                            style={{ background: `rgba(0,0,0,${wallpaperOverlay / 100})` }}
+                        />
+                        <span className="absolute bottom-1.5 right-2 font-mono text-[10px] text-white/60">
+                            Overlay {wallpaperOverlay}%
+                        </span>
+                    </div>
+                )}
 
-                <div className="rounded-xl border border-border bg-card text-card-foreground shadow">
-                    <button
-                        onClick={() => toggleSection('css')}
-                        className="w-full flex items-center justify-between p-4 text-left"
-                    >
-                        <div className="flex items-center gap-2">
-                            <Code2 className="h-4 w-4 text-primary" />
-                            <div>
-                                <h3 className="font-semibold text-sm">Custom CSS</h3>
-                                <p className="text-[11px] text-muted-foreground">Inject raw CSS directly into the page.</p>
-                            </div>
-                        </div>
-                        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${openSection === 'css' ? 'rotate-180' : ''}`} />
-                    </button>
-                    {openSection === 'css' && (
-                        <div className="px-4 pb-4 border-t pt-3">
-                            <CustomCssEditor />
-                        </div>
+                <Field
+                    label={`Overlay darkness - ${wallpaperOverlay}%`}
+                    htmlFor="wallpaper_overlay"
+                    hint="Higher values make text easier to read. Recommended: 50-70%."
+                >
+                    <input
+                        id="wallpaper_overlay"
+                        type="range"
+                        min={0}
+                        max={90}
+                        value={wallpaperOverlay}
+                        onChange={(e) => setWallpaperOverlay(Number(e.target.value))}
+                        className="h-1.5 w-full cursor-pointer accent-primary"
+                    />
+                </Field>
+
+                {wallpaperActive && (
+                    <Button type="button" variant="ghost" size="sm" className="-ml-2 h-8 gap-1.5 px-2 text-xs text-red-500 hover:bg-red-500/10 hover:text-red-500" onClick={removeWallpaper}>
+                        <Trash2 className="h-3.5 w-3.5" /> Remove wallpaper
+                    </Button>
+                )}
+            </SettingsSection>
+
+            <SettingsSection
+                icon={Code2}
+                title="Custom CSS"
+                description="Inject raw CSS directly into the page. It previews live as you type and is kept in your browser once saved."
+                badge={cssDirty ? <StatusPill tone="warn">Unsaved</StatusPill> : savedCss ? <StatusPill tone="ok">Active</StatusPill> : undefined}
+            >
+                <Field label="Stylesheet" htmlFor="custom_css">
+                    <textarea
+                        id="custom_css"
+                        value={css}
+                        onChange={e => handleCssChange(e.target.value)}
+                        placeholder={CSS_PLACEHOLDER}
+                        spellCheck={false}
+                        aria-invalid={!!cssProblem}
+                        className={cn(
+                            'min-h-[180px] w-full resize-y rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed text-foreground',
+                            'placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-colors',
+                            cssDirty ? 'border-primary/60' : 'border-border/60',
+                        )}
+                    />
+                    {cssProblem && (
+                        <p role="status" className="flex items-start gap-1.5 text-xs text-amber-500">
+                            <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                            {cssProblem}
+                        </p>
                     )}
+                </Field>
+                <div className="-ml-2 flex gap-1">
+                    <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs text-muted-foreground" onClick={() => void copyCss()} disabled={!css}>
+                        {copied ? <><Check className="h-3.5 w-3.5" /> Copied</> : <><Copy className="h-3.5 w-3.5" /> Copy</>}
+                    </Button>
+                    <Button type="button" variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs text-muted-foreground hover:text-red-500" onClick={clearCss} disabled={!css && !savedCss}>
+                        <RotateCcw className="h-3.5 w-3.5" /> Clear
+                    </Button>
                 </div>
-            </div>
-        </div>
+            </SettingsSection>
+
+            <SettingsSection
+                icon={Palette}
+                title="Custom themes"
+                description="Build your own colour theme. New themes are saved to your browser straight away."
+            >
+                <CustomThemeCreator
+                    currentThemeId={currentTheme}
+                    onThemeSelect={handleThemeSelect}
+                />
+            </SettingsSection>
+        </SettingsPage>
     );
 }
 
@@ -439,83 +531,3 @@ Examples:
   /* Glassmorphism sidebar */
   aside { backdrop-filter: blur(12px) !important; background: rgba(0,0,0,0.4) !important; }
 */`;
-
-function CustomCssEditor() {
-    const [css, setCss] = useState(() => localStorage.getItem(CSS_STORAGE_KEY) ?? '');
-    const [saved, setSaved] = useState(true);
-    const [copied, setCopied] = useState(false);
-    const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-    useEffect(() => { injectCss(css); }, []);
-
-    const handleChange = (value: string) => {
-        setCss(value);
-        setSaved(false);
-        if (debounceRef.current) clearTimeout(debounceRef.current);
-        debounceRef.current = setTimeout(() => injectCss(value), 300);
-    };
-
-    const handleSave = () => {
-        localStorage.setItem(CSS_STORAGE_KEY, css);
-        injectCss(css);
-        setSaved(true);
-    };
-
-    const handleReset = () => {
-        setCss('');
-        localStorage.removeItem(CSS_STORAGE_KEY);
-        injectCss('');
-        setSaved(true);
-    };
-
-    const handleCopy = async () => {
-        await navigator.clipboard.writeText(css);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-    };
-
-    return (
-        <div className="space-y-3">
-            <div className="relative">
-                <textarea
-                    value={css}
-                    onChange={e => handleChange(e.target.value)}
-                    placeholder={CSS_PLACEHOLDER}
-                    spellCheck={false}
-                    className={`
-                        w-full min-h-[180px] resize-y rounded-lg border bg-muted/30 p-3
-                        font-mono text-xs leading-relaxed text-foreground
-                        placeholder:text-muted-foreground/40
-                        focus:outline-none focus:ring-2 focus:ring-primary/50
-                        transition-colors
-                        ${!saved ? 'border-primary/60' : 'border-border'}
-                    `}
-                />
-                {!saved && (
-                    <span className="absolute top-2 right-2 text-[10px] text-primary/70 font-mono">
-                        unsaved
-                    </span>
-                )}
-            </div>
-
-            <div className="flex items-center justify-between">
-                <div className="flex gap-2">
-                    <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs text-muted-foreground" onClick={handleCopy} disabled={!css}>
-                        {copied ? <><Check className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
-                    </Button>
-                    <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs text-destructive/70 hover:text-destructive" onClick={handleReset} disabled={!css}>
-                        <RotateCcw className="h-3 w-3" /> Clear
-                    </Button>
-                </div>
-                <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={handleSave} disabled={saved}>
-                    <Code2 className="h-3 w-3" />
-                    {saved ? 'Saved' : 'Save & Apply'}
-                </Button>
-            </div>
-
-            <p className="text-[10px] text-muted-foreground">
-                CSS is saved to your browser and re-applied on every page load.
-            </p>
-        </div>
-    );
-}

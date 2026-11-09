@@ -1,29 +1,15 @@
-import { useState, useEffect } from "react";
-import type { LucideIcon } from "lucide-react";
-import axios from "axios";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import axios, { AxiosError, type AxiosResponse } from "axios";
 import { API_BASE_URL } from "@/lib/api";
-import {
-    Card,
-    CardHeader,
-    CardContent,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import {
     Plus,
-    Save,
     Trash2,
     RefreshCcw,
     Cpu,
-    Circle,
-    Settings2,
-    Terminal,
-    Globe,
-    AlertCircle,
-    RefreshCw
+    ChevronRight,
 } from "lucide-react";
 import {
     Dialog,
@@ -32,27 +18,41 @@ import {
     DialogFooter,
     DialogHeader,
     DialogTitle,
-    DialogTrigger,
     DialogClose,
 } from "@/components/ui/dialog";
-import {
-    Tabs,
-    TabsContent,
-    TabsList,
-    TabsTrigger,
-} from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { classifySaveError, type SaveErrorInfo } from "@/lib/save-error";
+import { useUnsaved, useBeforeUnloadGuard } from "@/hooks/useUnsaved";
+import { useSaveState } from "@/hooks/useSaveState";
+import {
+    EmptyState,
+    Field,
+    invalidInputClass,
+    LoadFailed,
+    LoadingRows,
+    Note,
+    SaveBar,
+    SaveErrorNote,
+    SettingsPage,
+    SettingsSection,
+    StatusPill,
+} from "@/components/settings/kit";
 
 interface McpServerConfig {
-    command: string;
-    args: string[];
-    env: Record<string, string>;
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    // HTTP/SSE servers are recorded by the backend; keep those fields untouched.
+    url?: string;
+    type?: string;
 }
 
 interface McpConfig {
     mcpServers: Record<string, McpServerConfig>;
 }
+
+type ArgsOrEnv = string[] | Record<string, string>;
 
 function isStringArray(value: unknown): value is string[] {
     return Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -65,55 +65,104 @@ function isStringRecord(value: unknown): value is Record<string, string> {
         && Object.values(value).every((item) => typeof item === "string");
 }
 
+/** The backend answers 200 with `{error}` for a rejected config; surface that as a failed save. */
+function rejectedByServer(message: string): AxiosError {
+    const response = { data: { detail: message }, status: 422, statusText: "Unprocessable", headers: {}, config: {} } as AxiosResponse;
+    return new AxiosError(message, "ERR_BAD_REQUEST", undefined, undefined, response);
+}
+
+// Same rule the backend applies when it validates the file.
+function isHttpServer(cfg: McpServerConfig): boolean {
+    const transport = String(cfg.type ?? "").trim().toLowerCase();
+    return transport === "http" || transport === "sse" || Boolean(cfg.url?.trim());
+}
+
+function serverProblem(cfg: McpServerConfig): string | null {
+    if (isHttpServer(cfg)) {
+        return cfg.url?.trim() ? null : "A URL is required for HTTP servers.";
+    }
+    return cfg.command?.trim() ? null : "A command is required, for example npx, python or node.";
+}
+
+function serverSummary(cfg: McpServerConfig): string {
+    if (isHttpServer(cfg)) return cfg.url?.trim() || "No URL";
+    const parts = [cfg.command?.trim(), ...(cfg.args ?? [])].filter(Boolean);
+    return parts.length ? parts.join(" ") : "No command";
+}
+
+function statusInfo(raw: string | undefined, isNew: boolean): { tone: "ok" | "bad" | "muted" | "info"; label: string; dot: string; hint?: string } {
+    if (isNew) return { tone: "info", label: "Not saved yet", dot: "bg-muted-foreground/40", hint: "Save changes to connect this server." };
+    if (raw === "Online") return { tone: "ok", label: "Connected", dot: "bg-primary" };
+    if (raw === "Error") {
+        return {
+            tone: "bad",
+            label: "Error",
+            dot: "bg-red-500",
+            hint: "The server did not start or stopped answering. System Logs has the details.",
+        };
+    }
+    return { tone: "muted", label: raw || "Offline", dot: "bg-muted-foreground/40" };
+}
+
 interface JsonFieldProps {
+    id: string;
     label: string;
-    icon: LucideIcon;
-    value: string[] | Record<string, string>;
-    validate: (value: unknown) => value is string[] | Record<string, string>;
-    onChange: (val: string[] | Record<string, string>) => void;
+    hint: string;
+    shapeMessage: string;
+    value: ArgsOrEnv;
+    validate: (value: unknown) => value is ArgsOrEnv;
+    onChange: (val: ArgsOrEnv) => void;
+    onValidity: (valid: boolean) => void;
     placeholder?: string;
 }
 
-function JsonField({ label, icon: Icon, value, validate, onChange, placeholder }: JsonFieldProps) {
+function JsonField({ id, label, hint, shapeMessage, value, validate, onChange, onValidity, placeholder }: JsonFieldProps) {
     const [draft, setDraft] = useState<string | null>(null);
-    const [isValid, setIsValid] = useState(true);
-    const localValue = draft ?? JSON.stringify(value, null, 2);
+    const [error, setError] = useState<string | null>(null);
+    const text = draft ?? JSON.stringify(value, null, 2);
+
+    // A collapsed row drops its draft, so it must also stop blocking Save.
+    const validityRef = useRef(onValidity);
+    useEffect(() => {
+        validityRef.current = onValidity;
+    });
+    useEffect(() => () => validityRef.current(true), []);
 
     const handleChange = (val: string) => {
         setDraft(val);
+        let parsed: unknown;
         try {
-            const parsed: unknown = JSON.parse(val);
-            if (validate(parsed)) {
-                setIsValid(true);
-                setDraft(null);
-                onChange(parsed);
-            } else {
-                setIsValid(false);
-            }
-        } catch {
-            setIsValid(false);
+            parsed = JSON.parse(val);
+        } catch (parseError) {
+            setError(`Not valid JSON yet${parseError instanceof Error ? `: ${parseError.message}` : "."}`);
+            onValidity(false);
+            return;
         }
+        if (!validate(parsed)) {
+            setError(shapeMessage);
+            onValidity(false);
+            return;
+        }
+        setError(null);
+        onValidity(true);
+        onChange(parsed);
     };
 
     return (
-        <div className="space-y-2">
-            <Label className={cn("text-xs font-semibold flex items-center justify-between gap-2", !isValid && "text-destructive")}>
-                <span className="flex items-center gap-2">
-                    <Icon className="h-3.5 w-3.5 text-muted-foreground" />
-                    {label}
-                </span>
-                {!isValid && <span className="text-[10px] font-medium uppercase tracking-wider animate-pulse">Invalid JSON</span>}
-            </Label>
+        <Field label={label} htmlFor={id} hint={hint} error={error}>
             <Textarea
-                value={localValue}
+                id={id}
+                value={text}
                 onChange={(e) => handleChange(e.target.value)}
-                className={cn(
-                    "font-mono text-sm min-h-[140px] resize-none transition-colors",
-                    !isValid ? "border-destructive/50 focus-visible:ring-destructive/20 bg-destructive/5" : "bg-muted/30"
-                )}
+                onBlur={() => {
+                    if (!error) setDraft(null);
+                }}
+                aria-invalid={Boolean(error)}
+                spellCheck={false}
+                className={cn("min-h-[96px] resize-y font-mono text-xs", error && invalidInputClass)}
                 placeholder={placeholder}
             />
-        </div>
+        </Field>
     );
 }
 
@@ -121,345 +170,457 @@ export function McpPage() {
     const [config, setConfig] = useState<McpConfig>({ mcpServers: {} });
     const [statuses, setStatuses] = useState<Record<string, string>>({});
     const [isLoading, setIsLoading] = useState(true);
-    const [isSaving, setIsSaving] = useState(false);
+    const [loadError, setLoadError] = useState<unknown>(null);
+    const [expanded, setExpanded] = useState<Set<string>>(new Set());
+    const [invalidFields, setInvalidFields] = useState<Record<string, true>>({});
+    const [resetNonce, setResetNonce] = useState(0);
+    const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
     const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
     const [newServerName, setNewServerName] = useState("");
-    const [hasChanges, setHasChanges] = useState(false);
+    const [newServerCommand, setNewServerCommand] = useState("python");
 
-    const fetchData = async () => {
+    const { dirty, markSaved, restore, ready } = useUnsaved(config);
+    const { saving, error: saveError, savedAt, run, clearError } = useSaveState("your MCP server settings");
+    useBeforeUnloadGuard(dirty);
+
+    const statusTimer = useRef<number | undefined>(undefined);
+    useEffect(() => () => window.clearTimeout(statusTimer.current), []);
+
+    const fetchData = useCallback(async () => {
         setIsLoading(true);
         try {
             const [configRes, statusRes] = await Promise.all([
                 axios.get(`${API_BASE_URL}/api/mcp/config`),
                 axios.get(`${API_BASE_URL}/api/mcp/status`)
             ]);
-            setConfig(configRes.data);
+            const next: McpConfig = { ...configRes.data, mcpServers: configRes.data?.mcpServers ?? {} };
+            setConfig(next);
+            markSaved(next);
             setStatuses(statusRes.data.status || {});
-            setHasChanges(false);
+            setInvalidFields({});
+            setResetNonce((value) => value + 1);
+            setLoadError(null);
         } catch (error) {
             console.error("Error fetching MCP data:", error);
+            setLoadError(error);
         } finally {
             setIsLoading(false);
         }
-    };
+    }, [markSaved]);
 
-    useEffect(() => {
-        fetchData();
+    const refreshStatuses = useCallback(async () => {
+        try {
+            const statusRes = await axios.get(`${API_BASE_URL}/api/mcp/status`);
+            setStatuses(statusRes.data.status || {});
+            setLoadError(null);
+        } catch (error) {
+            console.error("Error fetching MCP status:", error);
+            setLoadError(error);
+        }
     }, []);
 
+    useEffect(() => {
+        void fetchData();
+    }, [fetchData]);
+
     const handleSave = async () => {
-        setIsSaving(true);
-        try {
-            await axios.post(`${API_BASE_URL}/api/mcp/config`, config);
-            setHasChanges(false);
-            setTimeout(fetchData, 2000);
+        const snapshot = config;
+        const ok = await run(async () => {
+            const res = await axios.post(`${API_BASE_URL}/api/mcp/config`, snapshot);
+            if (res.data?.error) throw rejectedByServer(String(res.data.error));
+        });
+        if (ok) {
+            markSaved(snapshot);
+            window.clearTimeout(statusTimer.current);
+            statusTimer.current = window.setTimeout(() => void refreshStatuses(), 2000);
             toast.success("MCP configuration saved");
-        } catch (error) {
-            console.error("Error saving MCP config:", error);
-            toast.error("Failed to save MCP configuration");
-        } finally {
-            setIsSaving(false);
         }
+    };
+
+    const handleDiscard = () => {
+        const saved = restore();
+        if (saved) {
+            setConfig(saved);
+            setInvalidFields({});
+            setResetNonce((value) => value + 1);
+        }
+        clearError();
+    };
+
+    const handleRefresh = () => {
+        // Unsaved edits are never replaced by a refresh; only live status updates.
+        if (dirty) void refreshStatuses();
+        else void fetchData();
+    };
+
+    const newNameError = useMemo(() => {
+        const name = newServerName.trim();
+        if (name && config.mcpServers[name]) return `A server named "${name}" already exists.`;
+        return null;
+    }, [newServerName, config.mcpServers]);
+    const newCommandError = newServerCommand.trim() ? null : "A command is required, for example npx, python or node.";
+
+    const openAddDialog = () => {
+        setNewServerName("");
+        setNewServerCommand("python");
+        setIsAddDialogOpen(true);
     };
 
     const addServer = () => {
         const serverName = newServerName.trim();
-        if (!serverName) return;
-        if (config.mcpServers[serverName]) {
-            toast.error("A server with this name already exists.");
-            return;
-        }
+        if (!serverName || newNameError || newCommandError) return;
 
         setConfig({
             ...config,
             mcpServers: {
                 ...config.mcpServers,
                 [serverName]: {
-                    command: "python",
+                    command: newServerCommand.trim(),
                     args: [],
                     env: {}
                 }
             }
         });
+        setExpanded((prev) => new Set(prev).add(serverName));
         setNewServerName("");
         setIsAddDialogOpen(false);
-        setHasChanges(true);
         toast.success("Server added to MCP configuration");
     };
 
     const updateServer = (name: string, fields: Partial<McpServerConfig>) => {
-        setConfig({
-            ...config,
+        setConfig((prev) => ({
+            ...prev,
             mcpServers: {
-                ...config.mcpServers,
+                ...prev.mcpServers,
                 [name]: {
-                    ...config.mcpServers[name],
+                    ...prev.mcpServers[name],
                     ...fields
                 }
             }
-        });
-        setHasChanges(true);
+        }));
     };
 
     const removeServer = (name: string) => {
         const newServers = { ...config.mcpServers };
         delete newServers[name];
         setConfig({ ...config, mcpServers: newServers });
-        setHasChanges(true);
+        setExpanded((prev) => {
+            const next = new Set(prev);
+            next.delete(name);
+            return next;
+        });
+        setInvalidFields((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => !key.startsWith(`${name}\u0000`))) as Record<string, true>);
+        setDeleteTarget(null);
     };
 
-    if (isLoading && Object.keys(config.mcpServers).length === 0) {
+    const setFieldValidity = useCallback((name: string, field: string, valid: boolean) => {
+        const key = `${name}\u0000${field}`;
+        setInvalidFields((prev) => {
+            if (valid && !prev[key]) return prev;
+            if (!valid && prev[key]) return prev;
+            if (valid) {
+                const next = { ...prev };
+                delete next[key];
+                return next;
+            }
+            return { ...prev, [key]: true };
+        });
+    }, []);
+
+    const toggleExpanded = (name: string) => {
+        setExpanded((prev) => {
+            const next = new Set(prev);
+            if (next.has(name)) next.delete(name);
+            else next.add(name);
+            return next;
+        });
+    };
+
+    const serverEntries = Object.entries(config.mcpServers);
+    const savedServers = restore()?.mcpServers ?? {};
+    const hasInvalid = Object.keys(invalidFields).length > 0 || serverEntries.some(([, cfg]) => serverProblem(cfg) !== null);
+    const changeCount = useMemo(() => {
+        const saved = restore()?.mcpServers ?? {};
+        const names = new Set([...Object.keys(saved), ...Object.keys(config.mcpServers)]);
+        return [...names].filter((name) => JSON.stringify(saved[name]) !== JSON.stringify(config.mcpServers[name])).length;
+    }, [config.mcpServers, restore]);
+
+    const pageProps = {
+        title: "MCP Servers",
+        description: "Extend LimeBot with external tools and models.",
+        icon: Cpu,
+    };
+
+    if (isLoading && !ready) {
         return (
-            <div className="flex items-center justify-center h-full min-h-[50vh]">
-                <RefreshCw className="w-8 h-8 animate-spin text-primary" />
-            </div>
+            <SettingsPage {...pageProps}>
+                <LoadingRows rows={4} className="py-8" label="Loading MCP servers" />
+            </SettingsPage>
         );
     }
 
-    return (
-        <div className="flex-1 space-y-8 pt-4 pb-12 animate-in fade-in duration-500">
-            {/* Header Section */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-2">
-                <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                        <Cpu className="h-5 w-5 text-primary" />
-                        <h2 className="text-2xl font-bold tracking-tight">
-                            MCP Servers
-                        </h2>
-                    </div>
-                    <p className="text-muted-foreground text-sm">
-                        Extend LimeBot with external tools and models.
-                    </p>
-                </div>
+    if (loadError && !ready) {
+        return (
+            <SettingsPage {...pageProps}>
+                <LoadFailed error={loadError} subject="your MCP servers" onRetry={() => void fetchData()} />
+            </SettingsPage>
+        );
+    }
 
-                <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={fetchData} disabled={isLoading}>
-                        <RefreshCcw className={cn("h-4 w-4 mr-2", isLoading && "animate-spin")} />
+    const refreshError: SaveErrorInfo | null = loadError ? classifySaveError(loadError, "your MCP servers") : null;
+
+    return (
+        <SettingsPage
+            {...pageProps}
+            actions={
+                <>
+                    <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isLoading} className="gap-1.5" title={dirty ? "Refreshes live status; your unsaved edits stay" : "Reload servers and status"}>
+                        <RefreshCcw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
                         Refresh
                     </Button>
-
-                    <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-                        <DialogTrigger asChild>
-                            <Button size="sm">
-                                <Plus className="h-4 w-4 mr-2" />
-                                Add Server
-                            </Button>
-                        </DialogTrigger>
-                        <DialogContent>
-                            <DialogHeader>
-                                <DialogTitle className="tracking-tight">Connect New Server</DialogTitle>
-                                <DialogDescription>
-                                    Enter a descriptive name for this MCP server.
-                                </DialogDescription>
-                            </DialogHeader>
-                            <div className="py-2 space-y-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="name">Server Name</Label>
-                                    <Input
-                                        id="name"
-                                        placeholder="e.g. storage-mcp"
-                                        value={newServerName}
-                                        onChange={(e) => setNewServerName(e.target.value)}
-                                        onKeyDown={(e) => e.key === 'Enter' && addServer()}
-                                        autoFocus
-                                    />
-                                </div>
-                            </div>
-                            <DialogFooter>
-                                <DialogClose asChild>
-                                    <Button variant="ghost">Cancel</Button>
-                                </DialogClose>
-                                <Button onClick={addServer} disabled={!newServerName.trim()}>Create</Button>
-                            </DialogFooter>
-                        </DialogContent>
-                    </Dialog>
-
-                    <Button
-                        size="sm"
-                        onClick={handleSave}
-                        disabled={isSaving || !hasChanges}
-                        className="relative"
-                    >
-                        <Save className="h-4 w-4 mr-2" />
-                        {isSaving ? "Saving..." : "Save Changes"}
-                        {hasChanges && (
-                            <span className="absolute -top-1 -right-1 flex h-3 w-3">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-3 w-3 bg-primary border-2 border-background"></span>
-                            </span>
-                        )}
+                    <Button size="sm" onClick={openAddDialog} className="gap-1.5">
+                        <Plus className="h-3.5 w-3.5" />
+                        Add server
                     </Button>
-                </div>
-            </div>
+                </>
+            }
+            saveBar={
+                <SaveBar
+                    dirty={dirty}
+                    saving={saving}
+                    onSave={() => void handleSave()}
+                    onDiscard={handleDiscard}
+                    error={saveError}
+                    onDismissError={clearError}
+                    disabled={hasInvalid}
+                    savedAt={savedAt}
+                    changeCount={changeCount}
+                    saveLabel="Save servers"
+                    unsavedLabel={hasInvalid ? "Fix the highlighted fields to save" : undefined}
+                />
+            }
+        >
+            {refreshError && (
+                <SaveErrorNote
+                    error={{ ...refreshError, title: refreshError.category === "network" ? "Could not refresh MCP status" : refreshError.title }}
+                    onRetry={() => void refreshStatuses()}
+                    onDismiss={() => setLoadError(null)}
+                    className="mt-4"
+                />
+            )}
 
-            {/* Servers List */}
-            <div className="space-y-6">
-                {Object.keys(config.mcpServers).length === 0 ? (
-                    <Card className="border-dashed bg-muted/20 flex flex-col items-center justify-center p-16 text-center rounded-xl">
-                        <Cpu className="h-12 w-12 text-muted-foreground/30 mb-4" />
-                        <h3 className="font-semibold text-xl mb-1">No servers connected</h3>
-                        <p className="text-muted-foreground text-sm max-w-sm mb-6">
-                            Connect external Model Context Protocol servers to provide the bot with additional capabilities.
-                        </p>
-                        <Button variant="outline" onClick={() => setIsAddDialogOpen(true)}>
-                            <Plus className="h-4 w-4 mr-2" />
-                            Connect Your First Server
-                        </Button>
-                    </Card>
+            <SettingsSection
+                title="Servers"
+                description="Each server runs as its own process. Tools it exposes appear in chat with an mcp_ prefix."
+            >
+                {serverEntries.length === 0 ? (
+                    <EmptyState
+                        icon={Cpu}
+                        title="No MCP servers yet"
+                        description="Connect external Model Context Protocol servers to give the bot additional tools."
+                        action={
+                            <Button variant="outline" size="sm" onClick={openAddDialog} className="gap-1.5">
+                                <Plus className="h-3.5 w-3.5" />
+                                Add your first server
+                            </Button>
+                        }
+                        className="py-10"
+                    />
                 ) : (
-                    <div className="grid grid-cols-1 gap-6">
-                        {Object.entries(config.mcpServers).map(([name, cfg]: [string, McpServerConfig]) => {
-                            const isOnline = statuses[name] === "Online";
+                    <ul className="divide-y divide-border/50 border-y border-border/50">
+                        {serverEntries.map(([name, cfg]) => {
+                            const isOpen = expanded.has(name);
+                            const savedCfg = savedServers[name];
+                            const status = statusInfo(statuses[name], !savedCfg);
+                            const problem = serverProblem(cfg);
+                            const edited = Boolean(savedCfg) && JSON.stringify(savedCfg) !== JSON.stringify(cfg);
+                            const http = isHttpServer(cfg);
                             return (
-                                <Card key={name} className="overflow-hidden border bg-card shadow-sm hover:shadow-md transition-shadow">
-                                    <CardHeader className="flex flex-row items-center justify-between py-4 bg-muted/30">
-                                        <div className="flex items-center gap-3">
-                                            <div className="font-bold text-lg tracking-tight px-1 uppercase">
-                                                {name}
-                                            </div>
-                                            <Badge
-                                                variant={isOnline ? "outline" : "secondary"}
-                                                className={cn(
-                                                    "flex gap-1.5 items-center px-2 py-0.5 text-[10px] font-bold uppercase",
-                                                    isOnline && "border-primary/20 bg-primary/10 text-primary"
-                                                )}
-                                            >
-                                                <Circle className={cn(
-                                                    "h-2 w-2 fill-current",
-                                                    isOnline ? 'animate-pulse' : 'text-muted-foreground/30'
-                                                )} />
-                                                {statuses[name] || "Offline"}
-                                            </Badge>
+                                <li key={name} className="py-2">
+                                    <div className="flex items-center gap-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => toggleExpanded(name)}
+                                            aria-expanded={isOpen}
+                                            className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-1 py-1.5 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                        >
+                                            <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", isOpen && "rotate-90")} />
+                                            <span className={cn("h-2 w-2 shrink-0 rounded-full", status.dot)} aria-hidden />
+                                            <span className="min-w-0 flex-1">
+                                                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                                    <span className="truncate font-mono text-sm font-medium text-foreground">{name}</span>
+                                                    {http && <StatusPill tone="muted">HTTP</StatusPill>}
+                                                    {edited && <StatusPill tone="warn">Edited</StatusPill>}
+                                                </span>
+                                                <span className={cn("block truncate font-mono text-xs", problem ? "text-red-500" : "text-muted-foreground")}>
+                                                    {problem ?? serverSummary(cfg)}
+                                                </span>
+                                            </span>
+                                            <span title={status.hint} className="shrink-0">
+                                                <StatusPill tone={status.tone}>{status.label}</StatusPill>
+                                            </span>
+                                        </button>
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                                            onClick={() => setDeleteTarget(name)}
+                                            aria-label={`Remove ${name}`}
+                                        >
+                                            <Trash2 className="h-4 w-4" />
+                                        </Button>
+                                    </div>
+
+                                    {isOpen && (
+                                        <div className="space-y-4 pb-3 pl-3 pt-3 sm:pl-10">
+                                            {(!http || Boolean(cfg.command)) && (
+                                                <Field
+                                                    label="Command"
+                                                    htmlFor={`mcp-${name}-command`}
+                                                    hint="The executable used to run the MCP server."
+                                                    error={!http ? problem : null}
+                                                >
+                                                    <Input
+                                                        id={`mcp-${name}-command`}
+                                                        value={cfg.command ?? ""}
+                                                        onChange={(e) => updateServer(name, { command: e.target.value })}
+                                                        className={cn("font-mono text-sm", !http && problem && invalidInputClass)}
+                                                        placeholder="e.g. npx, python, node"
+                                                        aria-invalid={!http && Boolean(problem)}
+                                                        spellCheck={false}
+                                                    />
+                                                </Field>
+                                            )}
+                                            {(http || cfg.url !== undefined) && (
+                                                <Field
+                                                    label="URL"
+                                                    htmlFor={`mcp-${name}-url`}
+                                                    hint="Where the HTTP or SSE server listens."
+                                                    error={http ? problem : null}
+                                                >
+                                                    <Input
+                                                        id={`mcp-${name}-url`}
+                                                        value={cfg.url ?? ""}
+                                                        onChange={(e) => updateServer(name, { url: e.target.value })}
+                                                        className={cn("font-mono text-sm", http && problem && invalidInputClass)}
+                                                        placeholder="https://example.com/mcp"
+                                                        aria-invalid={http && Boolean(problem)}
+                                                        spellCheck={false}
+                                                    />
+                                                </Field>
+                                            )}
+                                            <JsonField
+                                                key={`args-${name}-${resetNonce}`}
+                                                id={`mcp-${name}-args`}
+                                                label="Arguments"
+                                                hint="A JSON array of strings."
+                                                shapeMessage='Must be a JSON array of strings, for example ["--port", "7311"].'
+                                                value={cfg.args ?? []}
+                                                validate={isStringArray}
+                                                onChange={(val) => {
+                                                    if (isStringArray(val)) updateServer(name, { args: val });
+                                                }}
+                                                onValidity={(valid) => setFieldValidity(name, "args", valid)}
+                                                placeholder='["--some-arg", "value"]'
+                                            />
+                                            <JsonField
+                                                key={`env-${name}-${resetNonce}`}
+                                                id={`mcp-${name}-env`}
+                                                label="Environment variables"
+                                                hint="A JSON object of names and string values."
+                                                shapeMessage='Must be a JSON object whose values are all strings, for example {"API_KEY": "..."}.'
+                                                value={cfg.env ?? {}}
+                                                validate={isStringRecord}
+                                                onChange={(val) => {
+                                                    if (isStringRecord(val)) updateServer(name, { env: val });
+                                                }}
+                                                onValidity={(valid) => setFieldValidity(name, "env", valid)}
+                                                placeholder='{"API_KEY": "..."}'
+                                            />
                                         </div>
-
-                                        <Dialog>
-                                            <DialogTrigger asChild>
-                                                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive">
-                                                    <Trash2 className="h-4 w-4" />
-                                                </Button>
-                                            </DialogTrigger>
-                                            <DialogContent>
-                                                <DialogHeader>
-                                                    <DialogTitle>Delete Connection?</DialogTitle>
-                                                    <DialogDescription>
-                                                        Are you sure you want to remove the <span className="font-bold text-foreground">{name}</span> MCP server?
-                                                    </DialogDescription>
-                                                </DialogHeader>
-                                                <DialogFooter>
-                                                    <DialogClose asChild>
-                                                        <Button variant="ghost">Cancel</Button>
-                                                    </DialogClose>
-                                                    <Button variant="destructive" onClick={() => removeServer(name)}>Remove</Button>
-                                                </DialogFooter>
-                                            </DialogContent>
-                                        </Dialog>
-                                    </CardHeader>
-
-                                    <CardContent className="p-0">
-                                        <Tabs defaultValue="general" className="w-full">
-                                            <div className="px-6 border-b">
-                                                <TabsList className="h-10 bg-transparent gap-6 p-0">
-                                                    <TabsTrigger
-                                                        value="general"
-                                                        className="h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent shadow-none px-1 text-xs font-semibold"
-                                                    >
-                                                        General
-                                                    </TabsTrigger>
-                                                    <TabsTrigger
-                                                        value="args"
-                                                        className="h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent shadow-none px-1 text-xs font-semibold"
-                                                    >
-                                                        Arguments
-                                                    </TabsTrigger>
-                                                    <TabsTrigger
-                                                        value="env"
-                                                        className="h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent shadow-none px-1 text-xs font-semibold"
-                                                    >
-                                                        Environment
-                                                    </TabsTrigger>
-                                                </TabsList>
-                                            </div>
-
-                                            <div className="p-6">
-                                                <TabsContent value="general" className="mt-0 space-y-4">
-                                                    <div className="space-y-2">
-                                                        <Label className="text-xs font-semibold flex items-center gap-2">
-                                                            <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
-                                                            Command
-                                                        </Label>
-                                                        <Input
-                                                            value={cfg.command}
-                                                            onChange={(e) => updateServer(name, { command: e.target.value })}
-                                                            className="font-mono text-sm"
-                                                            placeholder="e.g. npx, python, node"
-                                                        />
-                                                        <p className="text-[11px] text-muted-foreground">The executable used to run the MCP server.</p>
-                                                    </div>
-                                                </TabsContent>
-
-                                                <TabsContent value="args" className="mt-0 space-y-4">
-                                                    <JsonField
-                                                        label="Arguments (JSON Array)"
-                                                        icon={Settings2}
-                                                        value={cfg.args}
-                                                        validate={isStringArray}
-                                                        onChange={(val) => {
-                                                            if (isStringArray(val)) updateServer(name, { args: val });
-                                                        }}
-                                                        placeholder='["--some-arg", "value"]'
-                                                    />
-                                                </TabsContent>
-
-                                                <TabsContent value="env" className="mt-0 space-y-4">
-                                                    <JsonField
-                                                        label="Environment Variables (JSON)"
-                                                        icon={Globe}
-                                                        value={cfg.env}
-                                                        validate={isStringRecord}
-                                                        onChange={(val) => {
-                                                            if (isStringRecord(val)) updateServer(name, { env: val });
-                                                        }}
-                                                        placeholder='{"API_KEY": "..."}'
-                                                    />
-                                                </TabsContent>
-                                            </div>
-                                        </Tabs>
-                                    </CardContent>
-                                </Card>
+                                    )}
+                                </li>
                             );
                         })}
-                    </div>
+                    </ul>
                 )}
-            </div>
+            </SettingsSection>
 
-            {/* Information Card */}
-            <Card className="bg-muted/10 border-muted">
-                <CardContent className="p-6">
-                    <div className="flex gap-4 items-start">
-                        <AlertCircle className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
-                        <div className="text-sm space-y-3">
-                            <h4 className="font-bold flex items-center gap-2">
-                                Model Context Protocol
-                            </h4>
-                            <p className="text-muted-foreground leading-relaxed">
-                                MCP is a standard for connecting external tool servers to AI agents.
-                                Once a server is connected, LimeBot automatically discovers its available tools and makes them accessible in the toolbox.
-                                Connected tools will appear with an <code className="bg-muted px-1 rounded text-xs">mcp_</code> prefix during chat.
-                            </p>
-                            <div className="pt-1">
-                                <a
-                                    href="https://modelcontextprotocol.io"
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-primary hover:underline font-semibold"
-                                >
-                                    Learn more about MCP &rarr;
-                                </a>
-                            </div>
-                        </div>
+            <SettingsSection title="About MCP">
+                <Note tone="info" title="Model Context Protocol">
+                    MCP is a standard for connecting external tool servers to AI agents.
+                    Once a server is connected, LimeBot automatically discovers its available tools and makes them accessible in the toolbox.
+                    Connected tools will appear with an <code className="rounded bg-muted px-1 text-[11px]">mcp_</code> prefix during chat.{" "}
+                    <a
+                        href="https://modelcontextprotocol.io"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-medium text-primary hover:underline"
+                    >
+                        Learn more about MCP &rarr;
+                    </a>
+                </Note>
+            </SettingsSection>
+
+            <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle className="tracking-tight">Connect new server</DialogTitle>
+                        <DialogDescription>
+                            Enter a descriptive name for this MCP server. You can add arguments and environment variables after it is created.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-2">
+                        <Field label="Server name" htmlFor="mcp-new-name" error={newNameError}>
+                            <Input
+                                id="mcp-new-name"
+                                placeholder="e.g. storage-mcp"
+                                value={newServerName}
+                                onChange={(e) => setNewServerName(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && addServer()}
+                                className={cn(newNameError && invalidInputClass)}
+                                aria-invalid={Boolean(newNameError)}
+                                autoFocus
+                            />
+                        </Field>
+                        <Field label="Command" htmlFor="mcp-new-command" error={newServerCommand.trim() ? null : newCommandError}>
+                            <Input
+                                id="mcp-new-command"
+                                placeholder="e.g. npx, python, node"
+                                value={newServerCommand}
+                                onChange={(e) => setNewServerCommand(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && addServer()}
+                                className={cn("font-mono text-sm", !newServerCommand.trim() && invalidInputClass)}
+                                spellCheck={false}
+                            />
+                        </Field>
                     </div>
-                </CardContent>
-            </Card>
-        </div>
+                    <DialogFooter>
+                        <DialogClose asChild>
+                            <Button variant="ghost">Cancel</Button>
+                        </DialogClose>
+                        <Button onClick={addServer} disabled={!newServerName.trim() || Boolean(newNameError) || Boolean(newCommandError)}>Create</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Delete connection?</DialogTitle>
+                        <DialogDescription>
+                            Are you sure you want to remove the <span className="font-bold text-foreground">{deleteTarget}</span> MCP server? The change applies when you save.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <DialogClose asChild>
+                            <Button variant="ghost">Cancel</Button>
+                        </DialogClose>
+                        <Button variant="destructive" onClick={() => deleteTarget && removeServer(deleteTarget)}>Remove</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </SettingsPage>
     );
 }

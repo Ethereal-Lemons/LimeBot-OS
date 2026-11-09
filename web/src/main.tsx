@@ -15,12 +15,18 @@ const OpsGallery = lazy(() =>
 const PagesGallery = lazy(() =>
   import('@/components/dev/PagesGallery').then((module) => ({ default: module.PagesGallery }))
 )
-const uiMode = new URLSearchParams(window.location.search).get('ui')
-const showGallery = uiMode === 'gallery'
-const showOpsGallery = uiMode === 'ops'
-const showPages = uiMode === 'pages'
+const uiFlag = new URLSearchParams(window.location.search).get('ui')
+const showGallery = uiFlag === 'gallery'
+const showOpsGallery = uiFlag === 'ops'
+const showPages = uiFlag === 'pages'
 
-createRoot(document.getElementById('root')!).render(
+// `?ui=mock` runs the real app against fake API data (see components/dev/mock-api.ts).
+const ready: Promise<unknown> =
+  uiFlag === 'mock'
+    ? import('@/components/dev/mock-api').then((module) => module.installMockApi())
+    : Promise.resolve()
+
+void ready.then(() => createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {showGallery ? (
       <Suspense fallback={null}>
@@ -38,4 +44,4 @@ createRoot(document.getElementById('root')!).render(
       <App />
     )}
   </StrictMode>,
-)
+))

@@ -1,10 +1,8 @@
 import { useState } from 'react';
-import { Plus, Trash2, Save } from 'lucide-react';
+import { Plus, Trash2, Save, Palette } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import {
     Select,
@@ -13,6 +11,8 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
+import { EmptyState, Field, FieldError, StatusPill, invalidInputClass } from "@/components/settings/kit";
+import { cn } from "@/lib/utils";
 
 // Helper to convert Hex to HSL for CSS variables
 const hexToHsl = (hex: string): string => {
@@ -49,7 +49,8 @@ const hexToHsl = (hex: string): string => {
     return `${h} ${s}% ${l}%`;
 };
 
-// ... (rest of the component code)
+const HEX_PATTERN = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+const HEX_ERROR = "Use a hex colour like #1a2b3c.";
 
 export interface CustomTheme {
     id: string;
@@ -88,6 +89,31 @@ function loadCustomThemes(): CustomTheme[] {
     }
 }
 
+/** A colour picker paired with its hex text box; the text box flags bad input. */
+function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+    const valid = HEX_PATTERN.test(value);
+    return (
+        <Field label={label} error={valid ? null : HEX_ERROR} className="space-y-1.5">
+            <div className="flex gap-2">
+                <Input
+                    type="color"
+                    aria-label={`${label} picker`}
+                    className="h-9 w-10 shrink-0 cursor-pointer p-1"
+                    value={value.length === 7 && valid ? value : '#000000'}
+                    onChange={(e) => onChange(e.target.value)}
+                />
+                <Input
+                    aria-label={`${label} hex value`}
+                    aria-invalid={!valid}
+                    className={cn("h-9 font-mono text-xs", !valid && invalidInputClass)}
+                    value={value}
+                    onChange={(e) => onChange(e.target.value)}
+                />
+            </div>
+        </Field>
+    );
+}
+
 interface CustomThemeCreatorProps {
     onThemeSelect: (themeId: string) => void;
     currentThemeId: string;
@@ -116,12 +142,17 @@ export function CustomThemeCreator({ onThemeSelect, currentThemeId }: CustomThem
     const [gradientEnd, setGradientEnd] = useState('#4c1d95'); // violet-900
     const [gradientDir, setGradientDir] = useState('135deg');
 
+    const nameError = name.trim() ? null : "Give the theme a name.";
+    const hasBadColor = Object.values(colors).some((value) => !HEX_PATTERN.test(value));
+    const canCreate = !nameError && !hasBadColor;
+
     const saveThemes = (newThemes: CustomTheme[]) => {
         setThemes(newThemes);
         localStorage.setItem('limebot-custom-themes', JSON.stringify(newThemes));
     };
 
     const handleCreate = () => {
+        if (!canCreate) return;
         const id = `custom-${Date.now()}`;
 
         // Construct CSS variables
@@ -155,7 +186,7 @@ export function CustomThemeCreator({ onThemeSelect, currentThemeId }: CustomThem
 
         const newTheme: CustomTheme = {
             id,
-            name,
+            name: name.trim(),
             variables,
             bgImage,
             createdAt: Date.now()
@@ -166,14 +197,15 @@ export function CustomThemeCreator({ onThemeSelect, currentThemeId }: CustomThem
         onThemeSelect(id);
     };
 
-    const handleDelete = (id: string, e: React.MouseEvent) => {
-        e.stopPropagation();
+    const handleDelete = (id: string) => {
         const newThemes = themes.filter(t => t.id !== id);
         saveThemes(newThemes);
         if (currentThemeId === id) {
             onThemeSelect('lime'); // Fallback to default
         }
     };
+
+    const setColor = (key: keyof typeof colors) => (value: string) => setColors((prev) => ({ ...prev, [key]: value }));
 
     // Preview Styles
     const previewStyle = {
@@ -187,220 +219,177 @@ export function CustomThemeCreator({ onThemeSelect, currentThemeId }: CustomThem
     } as React.CSSProperties;
 
     return (
-        <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    My Custom Themes
-                </h4>
-                {!isCreating && (
-                    <Button variant="outline" size="sm" onClick={() => setIsCreating(true)} className="h-8 gap-2">
+        <div className="space-y-5">
+            {!isCreating && (
+                <>
+                    {themes.length > 0 ? (
+                        <ul className="divide-y divide-border/40">
+                            {themes.map(theme => (
+                                <li key={theme.id} className="flex items-center gap-1 py-1.5 first:pt-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => onThemeSelect(theme.id)}
+                                        className={cn(
+                                            "flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/60",
+                                            currentThemeId === theme.id && "bg-primary/10",
+                                        )}
+                                    >
+                                        <span
+                                            className="h-6 w-6 shrink-0 rounded-full ring-1 ring-border"
+                                            style={{ background: theme.bgImage }}
+                                        />
+                                        <span className="min-w-0 flex-1 truncate text-sm font-medium">{theme.name}</span>
+                                        {currentThemeId === theme.id && <StatusPill tone="ok">Active</StatusPill>}
+                                    </button>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8 shrink-0 text-muted-foreground hover:bg-red-500/10 hover:text-red-500"
+                                        onClick={() => handleDelete(theme.id)}
+                                        title={`Delete ${theme.name}`}
+                                        aria-label={`Delete ${theme.name}`}
+                                    >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : (
+                        <EmptyState
+                            icon={Palette}
+                            title="No custom themes yet"
+                            description="Pick your own colours, corner radius and background gradient, then switch to it like any other theme."
+                            className="py-6"
+                        />
+                    )}
+                    <Button type="button" variant="outline" size="sm" onClick={() => setIsCreating(true)} className="gap-2">
                         <Plus className="h-3.5 w-3.5" />
-                        Create New
+                        Create new theme
                     </Button>
-                )}
-            </div>
-
-            {/* Existing Themes List */}
-            {!isCreating && themes.length > 0 && (
-                <div className="grid grid-cols-2 md:grid-cols-2 gap-4">
-                    {themes.map(theme => (
-                        <button
-                            key={theme.id}
-                            onClick={() => onThemeSelect(theme.id)}
-                            className={`
-                                relative flex items-center gap-3 p-3 rounded-xl border-2 transition-all group text-left
-                                ${currentThemeId === theme.id
-                                    ? 'border-primary bg-primary/5 shadow-md'
-                                    : 'border-transparent bg-muted/30 hover:border-primary/30'}
-                            `}
-                        >
-                            <div
-                                className="w-8 h-8 rounded-full shadow-sm ring-2 ring-offset-2 ring-offset-card ring-primary/20"
-                                style={{ background: theme.bgImage }}
-                            />
-                            <div className="flex flex-col items-start flex-1 min-w-0">
-                                <span className="font-medium text-base truncate w-full">{theme.name}</span>
-                                <span className="text-[10px] text-muted-foreground">Custom Theme</span>
-                            </div>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity absolute right-2 top-2"
-                                onClick={(e) => handleDelete(theme.id, e)}
-                            >
-                                <Trash2 className="h-3 w-3 text-destructive" />
-                            </Button>
-                            {currentThemeId === theme.id && (
-                                <Badge variant="secondary" className="absolute right-2 bottom-2 h-2 w-2 p-0 rounded-full bg-primary" />
-                            )}
-                        </button>
-                    ))}
-                </div>
+                </>
             )}
 
-            {/* Creator Form */}
             {isCreating && (
-                <Card className="p-4 border-2 border-primary/20 bg-muted/10 animate-in fade-in zoom-in-95 duration-200">
-                    <div className="space-y-6">
-                        <div className="space-y-2">
-                            <Label>Theme Name</Label>
-                            <Input
-                                value={name}
-                                onChange={(e) => setName(e.target.value)}
-                                placeholder="e.g. Midnight Runner"
-                            />
+                <div className="space-y-6 animate-in fade-in duration-200">
+                    <Field label="Theme name" htmlFor="custom_theme_name" error={nameError}>
+                        <Input
+                            id="custom_theme_name"
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            placeholder="e.g. Midnight Runner"
+                            aria-invalid={!!nameError}
+                            className={cn(nameError && invalidInputClass)}
+                        />
+                    </Field>
+
+                    <div className="grid grid-cols-1 gap-x-8 gap-y-6 md:grid-cols-2">
+                        <div className="space-y-4">
+                            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Base colors</p>
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                <ColorField label="Background" value={colors.background} onChange={setColor('background')} />
+                                <ColorField label="Foreground (text)" value={colors.foreground} onChange={setColor('foreground')} />
+                                <ColorField label="Card / surface" value={colors.card} onChange={setColor('card')} />
+                                <ColorField label="Borders" value={colors.border} onChange={setColor('border')} />
+                            </div>
+
+                            <p className="pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Accents</p>
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                <ColorField label="Primary" value={colors.primary} onChange={setColor('primary')} />
+                                <ColorField label="Secondary accent" value={colors.accent} onChange={setColor('accent')} />
+                            </div>
+
+                            <div className="space-y-2 pt-2">
+                                <Label htmlFor="custom_theme_radius" className="text-xs">Border radius: {radius}rem</Label>
+                                <input
+                                    id="custom_theme_radius"
+                                    type="range"
+                                    min="0" max="2" step="0.1"
+                                    className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-secondary accent-primary"
+                                    value={radius}
+                                    onChange={(e) => setRadius(parseFloat(e.target.value))}
+                                />
+                            </div>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div className="space-y-4">
-                                <Label className="text-xs uppercase text-muted-foreground font-bold">Base Colors</Label>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs">Background</Label>
-                                        <div className="flex gap-2">
-                                            <Input type="color" className="w-10 h-8 p-1 cursor-pointer" value={colors.background} onChange={e => setColors({ ...colors, background: e.target.value })} />
-                                            <Input className="h-8 font-mono text-xs" value={colors.background} onChange={e => setColors({ ...colors, background: e.target.value })} />
-                                        </div>
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs">Foreground (Text)</Label>
-                                        <div className="flex gap-2">
-                                            <Input type="color" className="w-10 h-8 p-1 cursor-pointer" value={colors.foreground} onChange={e => setColors({ ...colors, foreground: e.target.value })} />
-                                            <Input className="h-8 font-mono text-xs" value={colors.foreground} onChange={e => setColors({ ...colors, foreground: e.target.value })} />
-                                        </div>
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs">Card / Surface</Label>
-                                        <div className="flex gap-2">
-                                            <Input type="color" className="w-10 h-8 p-1 cursor-pointer" value={colors.card} onChange={e => setColors({ ...colors, card: e.target.value })} />
-                                            <Input className="h-8 font-mono text-xs" value={colors.card} onChange={e => setColors({ ...colors, card: e.target.value })} />
-                                        </div>
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs">Borders</Label>
-                                        <div className="flex gap-2">
-                                            <Input type="color" className="w-10 h-8 p-1 cursor-pointer" value={colors.border} onChange={e => setColors({ ...colors, border: e.target.value })} />
-                                            <Input className="h-8 font-mono text-xs" value={colors.border} onChange={e => setColors({ ...colors, border: e.target.value })} />
-                                        </div>
-                                    </div>
-                                </div>
+                        <div className="space-y-4">
+                            <Field
+                                label="Dark mode base"
+                                htmlFor="custom_theme_dark"
+                                hint="Start with dark defaults"
+                                inline
+                            >
+                                <Switch
+                                    id="custom_theme_dark"
+                                    checked={baseMode === 'dark'}
+                                    onCheckedChange={(checked) => setBaseMode(checked ? 'dark' : 'light')}
+                                />
+                            </Field>
 
-                                <Label className="text-xs uppercase text-muted-foreground font-bold mt-4 block">Accents</Label>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs">Primary</Label>
-                                        <div className="flex gap-2">
-                                            <Input type="color" className="w-10 h-8 p-1 cursor-pointer" value={colors.primary} onChange={e => setColors({ ...colors, primary: e.target.value })} />
-                                            <Input className="h-8 font-mono text-xs" value={colors.primary} onChange={e => setColors({ ...colors, primary: e.target.value })} />
-                                        </div>
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs">Secondary Accent</Label>
-                                        <div className="flex gap-2">
-                                            <Input type="color" className="w-10 h-8 p-1 cursor-pointer" value={colors.accent} onChange={e => setColors({ ...colors, accent: e.target.value })} />
-                                            <Input className="h-8 font-mono text-xs" value={colors.accent} onChange={e => setColors({ ...colors, accent: e.target.value })} />
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="space-y-3 pt-2">
-                                    <div className="flex justify-between">
-                                        <Label className="text-xs">Border Radius: {radius}rem</Label>
-                                    </div>
-                                    <input
-                                        type="range"
-                                        min="0" max="2" step="0.1"
-                                        className="w-full h-2 bg-secondary rounded-lg appearance-none cursor-pointer accent-primary"
-                                        value={radius}
-                                        onChange={(e) => setRadius(parseFloat(e.target.value))}
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="space-y-4">
-                                <Label className="text-xs uppercase text-muted-foreground font-bold">Base Options</Label>
-                                <div className="flex items-center justify-between rounded-lg border p-3 shadow-sm">
-                                    <div className="space-y-0.5">
-                                        <Label className="text-sm">Dark Mode Base</Label>
-                                        <div className="text-[10px] text-muted-foreground">
-                                            Start with dark defaults
-                                        </div>
-                                    </div>
-                                    <Switch
-                                        checked={baseMode === 'dark'}
-                                        onCheckedChange={(checked) => setBaseMode(checked ? 'dark' : 'light')}
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="space-y-4">
-                                <Label className="text-xs uppercase text-muted-foreground font-bold">Background Gradient</Label>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs">From Color</Label>
-                                        <div className="flex gap-2">
-                                            <Input type="color" className="w-10 h-8 p-1 cursor-pointer" value={gradientStart} onChange={e => setGradientStart(e.target.value)} />
-                                        </div>
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs">To Color</Label>
-                                        <div className="flex gap-2">
-                                            <Input type="color" className="w-10 h-8 p-1 cursor-pointer" value={gradientEnd} onChange={e => setGradientEnd(e.target.value)} />
-                                        </div>
-                                    </div>
-                                </div>
-
+                            <p className="pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Background gradient</p>
+                            <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-1.5">
-                                    <Label className="text-xs">Direction</Label>
-                                    <Select value={gradientDir} onValueChange={setGradientDir}>
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Select direction" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="to bottom">To Bottom</SelectItem>
-                                            <SelectItem value="to top">To Top</SelectItem>
-                                            <SelectItem value="to right">To Right</SelectItem>
-                                            <SelectItem value="to left">To Left</SelectItem>
-                                            <SelectItem value="45deg">45 Degrees</SelectItem>
-                                            <SelectItem value="135deg">135 Degrees</SelectItem>
-                                            <SelectItem value="225deg">225 Degrees</SelectItem>
-                                            <SelectItem value="315deg">315 Degrees</SelectItem>
-                                        </SelectContent>
-                                    </Select>
+                                    <Label htmlFor="custom_theme_from" className="text-xs">From color</Label>
+                                    <Input id="custom_theme_from" type="color" className="h-9 w-10 cursor-pointer p-1" value={gradientStart} onChange={e => setGradientStart(e.target.value)} />
                                 </div>
+                                <div className="space-y-1.5">
+                                    <Label htmlFor="custom_theme_to" className="text-xs">To color</Label>
+                                    <Input id="custom_theme_to" type="color" className="h-9 w-10 cursor-pointer p-1" value={gradientEnd} onChange={e => setGradientEnd(e.target.value)} />
+                                </div>
+                            </div>
 
-                                <Label className="text-xs pt-2 block">Live Preview</Label>
+                            <div className="space-y-1.5">
+                                <Label htmlFor="custom_theme_dir" className="text-xs">Direction</Label>
+                                <Select value={gradientDir} onValueChange={setGradientDir}>
+                                    <SelectTrigger id="custom_theme_dir">
+                                        <SelectValue placeholder="Select direction" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="to bottom">To Bottom</SelectItem>
+                                        <SelectItem value="to top">To Top</SelectItem>
+                                        <SelectItem value="to right">To Right</SelectItem>
+                                        <SelectItem value="to left">To Left</SelectItem>
+                                        <SelectItem value="45deg">45 Degrees</SelectItem>
+                                        <SelectItem value="135deg">135 Degrees</SelectItem>
+                                        <SelectItem value="225deg">225 Degrees</SelectItem>
+                                        <SelectItem value="315deg">315 Degrees</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <p className="pt-2 text-xs text-muted-foreground">Live preview</p>
+                            <div
+                                className="relative flex h-44 flex-col items-center justify-center gap-3 overflow-hidden rounded-md border border-border/50 p-4"
+                                style={previewStyle}
+                            >
+                                {/* Mock Card */}
                                 <div
-                                    className="rounded-xl border shadow-lg p-4 h-48 flex flex-col justify-center items-center gap-3 relative overflow-hidden"
-                                    style={previewStyle}
+                                    className="w-full max-w-[200px] p-4 rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--card))]"
+                                    style={{ color: 'hsl(var(--foreground))' }}
                                 >
-                                    {/* Mock Card */}
-                                    <div
-                                        className="w-full max-w-[200px] p-4 rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--card))]"
-                                        style={{ color: 'hsl(var(--foreground))' }}
-                                    >
-                                        <div className="h-2 w-16 rounded-full bg-[hsl(var(--primary))] mb-3" />
-                                        <div className="h-2 w-full rounded-full bg-[hsl(var(--foreground))/0.2] mb-2" />
-                                        <div className="h-2 w-2/3 rounded-full bg-[hsl(var(--foreground))/0.2]" />
+                                    <div className="h-2 w-16 rounded-full bg-[hsl(var(--primary))] mb-3" />
+                                    <div className="h-2 w-full rounded-full bg-[hsl(var(--foreground))/0.2] mb-2" />
+                                    <div className="h-2 w-2/3 rounded-full bg-[hsl(var(--foreground))/0.2]" />
 
-                                        <div className="mt-4 flex gap-2">
-                                            <div className="h-6 w-12 rounded-[calc(var(--radius)-4px)] bg-[hsl(var(--primary))]" />
-                                            <div className="h-6 w-12 rounded-[calc(var(--radius)-4px)] border border-[hsl(var(--border))]" />
-                                        </div>
+                                    <div className="mt-4 flex gap-2">
+                                        <div className="h-6 w-12 rounded-[calc(var(--radius)-4px)] bg-[hsl(var(--primary))]" />
+                                        <div className="h-6 w-12 rounded-[calc(var(--radius)-4px)] border border-[hsl(var(--border))]" />
                                     </div>
                                 </div>
                             </div>
-                        </div>
-
-                        <div className="flex justify-end gap-2 pt-2">
-                            <Button variant="ghost" onClick={() => setIsCreating(false)}>Cancel</Button>
-                            <Button onClick={handleCreate} className="gap-2">
-                                <Save className="h-4 w-4" />
-                                Save Custom Theme
-                            </Button>
                         </div>
                     </div>
-                </Card>
+
+                    {!canCreate && <FieldError message="Fix the highlighted values to save this theme." />}
+
+                    <div className="flex justify-end gap-2">
+                        <Button type="button" variant="ghost" size="sm" onClick={() => setIsCreating(false)}>Cancel</Button>
+                        <Button type="button" size="sm" onClick={handleCreate} disabled={!canCreate} className="gap-2">
+                            <Save className="h-3.5 w-3.5" />
+                            Save custom theme
+                        </Button>
+                    </div>
+                </div>
             )}
         </div>
     );

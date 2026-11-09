@@ -1,28 +1,24 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import { Bot, Pencil, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import { ArrowLeft, Bot, Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 import { API_BASE_URL } from "@/lib/api";
-import { getApiErrorMessage } from "@/lib/api-error";
-import { Badge } from "@/components/ui/badge";
+import { classifySaveError, saveErrorToastText, type SaveErrorInfo } from "@/lib/save-error";
+import { useBeforeUnloadGuard, useUnsaved } from "@/hooks/useUnsaved";
+import { useSaveState } from "@/hooks/useSaveState";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -32,6 +28,20 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  EmptyState,
+  Field,
+  LoadFailed,
+  LoadingRows,
+  Note,
+  SaveBar,
+  SaveErrorNote,
+  SettingsPage,
+  SettingsSection,
+  StatusPill,
+  invalidInputClass,
+} from "@/components/settings/kit";
+import { cn } from "@/lib/utils";
 
 type Subagent = {
   id: string;
@@ -71,6 +81,8 @@ type FormState = {
   location: string;
 };
 
+type FieldName = "name" | "description" | "prompt";
+
 const EMPTY_FORM: FormState = {
   name: "",
   description: "",
@@ -82,6 +94,13 @@ const EMPTY_FORM: FormState = {
   background: false,
   location: "project_limebot",
 };
+
+const FALLBACK_LOCATIONS: LocationOption[] = [
+  { value: "project_limebot", label: "Project (.limebot/agents)", path: ".limebot/agents" },
+  { value: "project_claude", label: "Project (.claude/agents)", path: ".claude/agents" },
+  { value: "user_limebot", label: "Personal (~/.limebot/agents)", path: "~/.limebot/agents" },
+  { value: "user_claude", label: "Personal (~/.claude/agents)", path: "~/.claude/agents" },
+];
 
 function normalizeTools(text: string): string[] | null {
   const values = text
@@ -113,34 +132,67 @@ function formFromSubagent(subagent: Subagent): FormState {
   };
 }
 
+/** Mirrors how the backend turns a name into the saved file name. */
+function slugifyFilename(name: string): string {
+  const text = name.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^[-_]+|[-_]+$/g, "");
+  return (text || "subagent").toLowerCase();
+}
+
+const REQUIRED_MESSAGES: Record<FieldName, string> = {
+  name: "Give the subagent a name.",
+  description: "Describe when LimeBot should choose this subagent.",
+  prompt: "Write the instructions this subagent should follow.",
+};
+
+function validateForm(form: FormState): Partial<Record<FieldName, string>> {
+  const errors: Partial<Record<FieldName, string>> = {};
+  if (!form.name.trim()) errors.name = REQUIRED_MESSAGES.name;
+  if (!form.description.trim()) errors.description = REQUIRED_MESSAGES.description;
+  if (!form.prompt.trim()) errors.prompt = REQUIRED_MESSAGES.prompt;
+  return errors;
+}
+
+type ConfirmState =
+  | { kind: "delete"; subagent: Subagent }
+  | { kind: "discard" }
+  | null;
+
 export function SubagentsPage() {
   const [subagents, setSubagents] = useState<Subagent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
   const [search, setSearch] = useState("");
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [listError, setListError] = useState<SaveErrorInfo | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [touched, setTouched] = useState<Partial<Record<FieldName, boolean>>>({});
+  const [attempted, setAttempted] = useState(false);
 
-  const loadSubagents = async () => {
+  const { dirty, markSaved, restore } = useUnsaved(form);
+  const { saving, error: saveError, run, clearError } = useSaveState("this subagent");
+  useBeforeUnloadGuard(editing && dirty);
+
+  const loadSubagents = useCallback(async () => {
     try {
       setLoading(true);
       const res = await axios.get(`${API_BASE_URL}/api/subagents`);
       setSubagents(res.data.subagents || []);
       setLocationOptions(res.data.location_options || []);
-      setError(null);
+      setLoadError(null);
     } catch (error: unknown) {
       console.error("Failed to load subagents:", error);
-      setError(getApiErrorMessage(error, "Failed to load subagents."));
+      setLoadError(error);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    loadSubagents();
-  }, []);
+    void loadSubagents();
+  }, [loadSubagents]);
 
   const filteredSubagents = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -159,22 +211,51 @@ export function SubagentsPage() {
     );
   }, [search, subagents]);
 
-  const openCreateDialog = () => {
-    setForm(EMPTY_FORM);
-    setError(null);
-    setDialogOpen(true);
+  const locations = locationOptions.length > 0 ? locationOptions : FALLBACK_LOCATIONS;
+  const errors = useMemo(() => validateForm(form), [form]);
+  const shownError = (field: FieldName) => (attempted || touched[field] ? errors[field] ?? null : null);
+
+  const openEditor = (next: FormState) => {
+    setForm(next);
+    markSaved(next);
+    setTouched({});
+    setAttempted(false);
+    clearError();
+    setListError(null);
+    setEditing(true);
   };
 
-  const openEditDialog = (subagent: Subagent) => {
-    setForm(formFromSubagent(subagent));
-    setError(null);
-    setDialogOpen(true);
+  const openCreateDialog = () => openEditor(EMPTY_FORM);
+  const openEditDialog = (subagent: Subagent) => openEditor(formFromSubagent(subagent));
+
+  const closeEditor = () => {
+    setEditing(false);
+    setForm(EMPTY_FORM);
+    clearError();
+  };
+
+  const requestClose = () => {
+    if (dirty && !saving) setConfirm({ kind: "discard" });
+    else closeEditor();
+  };
+
+  const discardChanges = () => {
+    const base = restore();
+    if (base) setForm(base);
+    setTouched({});
+    setAttempted(false);
+    clearError();
   };
 
   const saveSubagent = async () => {
-    try {
-      setSaving(true);
-      setError(null);
+    const invalid = (Object.keys(errors) as FieldName[])[0];
+    if (invalid) {
+      setAttempted(true);
+      document.getElementById(`subagent-${invalid}`)?.focus();
+      return;
+    }
+    const wasNew = !form.id;
+    const ok = await run(async () => {
       const payload = {
         name: form.name,
         description: form.description,
@@ -194,363 +275,411 @@ export function SubagentsPage() {
         : await axios.post(url, payload);
       setSubagents(res.data.subagents || []);
       setLocationOptions(res.data.location_options || []);
-      setDialogOpen(false);
-      setForm(EMPTY_FORM);
-    } catch (error: unknown) {
-      console.error("Failed to save subagent:", error);
-      setError(getApiErrorMessage(error, "Failed to save subagent."));
-    } finally {
-      setSaving(false);
+    });
+    if (ok) {
+      markSaved();
+      toast.success(wasNew ? "Subagent created." : "Subagent saved.");
+      closeEditor();
     }
   };
 
   const deleteSubagent = async (subagent: Subagent) => {
-    const confirmed = window.confirm(
-      `Delete the subagent "${subagent.name}" from ${subagent.location_label || subagent.location}?`
-    );
-    if (!confirmed) return;
-
+    setDeletingId(subagent.id);
     try {
       const res = await axios.delete(
         `${API_BASE_URL}/api/subagents/${encodeURIComponent(subagent.id)}`
       );
       setSubagents(res.data.subagents || []);
       setLocationOptions(res.data.location_options || []);
-      setError(null);
+      setListError(null);
+      toast.success(`Deleted ${subagent.name}.`);
     } catch (error: unknown) {
       console.error("Failed to delete subagent:", error);
-      setError(getApiErrorMessage(error, "Failed to delete subagent."));
+      const info = classifySaveError(error, "that subagent");
+      setListError({ ...info, title: `Could not delete ${subagent.name}`, hint: info.category === "network" ? info.hint : `${info.title}. ${info.hint}` });
+      toast.error(saveErrorToastText(info));
+    } finally {
+      setDeletingId(null);
     }
   };
 
-  return (
-    <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">
-      <div className="max-w-6xl mx-auto space-y-8">
-        <header className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
-              <Bot className="h-7 w-7 text-primary" />
-              Subagents
-            </h1>
-            <p className="text-muted-foreground mt-1 max-w-3xl">
-              Lightweight Claude-style specialists. The main agent can choose one automatically when a task matches its description, or you can call one explicitly.
-            </p>
-          </div>
-          <div className="flex w-full lg:w-auto gap-3">
-            <div className="relative flex-1 lg:w-72">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search subagents..."
-                className="pl-9 bg-background/50"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            <Button onClick={openCreateDialog} className="gap-2">
-              <Plus className="h-4 w-4" />
-              New Subagent
-            </Button>
-          </div>
-        </header>
+  const setField = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+    setForm((prev) => ({ ...prev, [key]: value }));
 
-        {error && (
-          <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-            {error}
-          </div>
+  // ── editor ───────────────────────────────────────────────────────────────
+
+  if (editing) {
+    const fileName = slugifyFilename(form.name);
+    const collides = subagents.some(
+      (item) =>
+        !item.builtin &&
+        item.location === form.location &&
+        item.filename === fileName &&
+        item.id !== form.id
+    );
+    const maxTurnsIgnored = form.maxTurns.trim() !== "" && normalizeMaxTurns(form.maxTurns) === null;
+    const locationPath = locations.find((option) => option.value === form.location)?.path;
+
+    return (
+      <SettingsPage
+        title={form.id ? "Edit subagent" : "New subagent"}
+        description="Keep the description focused on when LimeBot should choose this helper. That description is what drives auto-selection."
+        icon={Bot}
+        actions={
+          <Button variant="ghost" size="sm" className="gap-1.5" onClick={requestClose}>
+            <ArrowLeft className="h-3.5 w-3.5" />
+            All subagents
+          </Button>
+        }
+        saveBar={
+          <SaveBar
+            dirty={dirty}
+            saving={saving}
+            onSave={() => void saveSubagent()}
+            onDiscard={discardChanges}
+            error={saveError}
+            onDismissError={clearError}
+            saveLabel={form.id ? "Save changes" : "Create subagent"}
+            unsavedLabel={form.id ? "Unsaved changes" : "Not created yet"}
+          />
+        }
+      >
+        <SettingsSection title="Basics" description="What this helper is called, where it is stored, and when it should be picked.">
+          <Field
+            label="Name"
+            htmlFor="subagent-name"
+            error={shownError("name")}
+            hint={
+              form.name.trim() ? (
+                <>
+                  Saved as <span className="font-mono">{fileName}.md</span>
+                  {locationPath ? <> in <span className="font-mono">{locationPath}</span></> : null}.
+                </>
+              ) : (
+                "Short and lowercase works best, for example code-reviewer."
+              )
+            }
+          >
+            <Input
+              id="subagent-name"
+              value={form.name}
+              onChange={(e) => setField("name", e.target.value)}
+              onBlur={() => setTouched((prev) => ({ ...prev, name: true }))}
+              placeholder="code-reviewer"
+              aria-invalid={Boolean(shownError("name"))}
+              className={cn(shownError("name") && invalidInputClass)}
+            />
+            {collides && (
+              <Note tone="warn">
+                {form.id
+                  ? "A subagent with this file name already exists in this location, so saving will be rejected. Pick another name or location."
+                  : "A subagent with this file name already exists in this location. Creating it will replace the existing one."}
+              </Note>
+            )}
+          </Field>
+
+          <Field label="Location" htmlFor="subagent-location" hint="Project locations are shared with the repository. Personal locations apply to you everywhere.">
+            <Select value={form.location} onValueChange={(value) => setField("location", value)}>
+              <SelectTrigger id="subagent-location">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {locations.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+
+          <Field label="Description" htmlFor="subagent-description" error={shownError("description")}>
+            <Textarea
+              id="subagent-description"
+              value={form.description}
+              onChange={(e) => setField("description", e.target.value)}
+              onBlur={() => setTouched((prev) => ({ ...prev, description: true }))}
+              className={cn("min-h-[90px]", shownError("description") && invalidInputClass)}
+              placeholder="Review code for bugs, regressions, and missing tests."
+              aria-invalid={Boolean(shownError("description"))}
+            />
+          </Field>
+        </SettingsSection>
+
+        <SettingsSection title="Instructions" description="The system prompt this subagent runs with.">
+          <Field label="System prompt" htmlFor="subagent-prompt" error={shownError("prompt")}>
+            <Textarea
+              id="subagent-prompt"
+              value={form.prompt}
+              onChange={(e) => setField("prompt", e.target.value)}
+              onBlur={() => setTouched((prev) => ({ ...prev, prompt: true }))}
+              className={cn("min-h-[180px] font-mono text-sm", shownError("prompt") && invalidInputClass)}
+              placeholder="Focus on concrete findings first. Keep the report concise and actionable."
+              aria-invalid={Boolean(shownError("prompt"))}
+            />
+          </Field>
+        </SettingsSection>
+
+        <SettingsSection title="Tool access" description="Separate tool names with commas.">
+          <Field label="Tools" htmlFor="subagent-tools" optional hint="Leave empty to inherit the main agent's tools.">
+            <Input
+              id="subagent-tools"
+              value={form.toolsText}
+              onChange={(e) => setField("toolsText", e.target.value)}
+              placeholder="Read, Grep, Bash"
+            />
+          </Field>
+          <Field label="Disallowed tools" htmlFor="subagent-disallowed-tools" optional hint="Blocked even when the tools above would allow them.">
+            <Input
+              id="subagent-disallowed-tools"
+              value={form.disallowedToolsText}
+              onChange={(e) => setField("disallowedToolsText", e.target.value)}
+              placeholder="Delete, Write"
+            />
+          </Field>
+        </SettingsSection>
+
+        <SettingsSection title="Run settings" description="Model, turn limit and whether it keeps running while you chat.">
+          <Field label="Model" htmlFor="subagent-model" hint="Use inherit to follow the main agent's model.">
+            <Input
+              id="subagent-model"
+              value={form.model}
+              onChange={(e) => setField("model", e.target.value)}
+              placeholder="inherit"
+            />
+          </Field>
+          <Field
+            label="Max turns"
+            htmlFor="subagent-max-turns"
+            optional
+            hint={
+              maxTurnsIgnored ? (
+                <span className="text-amber-500">That is not a whole number above 0, so no limit will be set.</span>
+              ) : (
+                "Stop after this many model turns. Leave empty for no limit."
+              )
+            }
+          >
+            <Input
+              id="subagent-max-turns"
+              inputMode="numeric"
+              value={form.maxTurns}
+              onChange={(e) => setField("maxTurns", e.target.value)}
+              placeholder="8"
+              className="sm:max-w-[10rem]"
+            />
+          </Field>
+          <Field label="Background" htmlFor="subagent-background" inline hint="Return later instead of waiting for the result.">
+            <Switch
+              id="subagent-background"
+              checked={form.background}
+              onCheckedChange={(checked) => setField("background", checked)}
+            />
+          </Field>
+        </SettingsSection>
+
+        {renderConfirm()}
+      </SettingsPage>
+    );
+  }
+
+  // ── list ─────────────────────────────────────────────────────────────────
+
+  function renderConfirm() {
+    return (
+      <AlertDialog open={confirm !== null} onOpenChange={(open) => { if (!open) setConfirm(null); }}>
+        <AlertDialogContent>
+          {confirm?.kind === "delete" && (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete {confirm.subagent.name}?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Delete the subagent "{confirm.subagent.name}" from {confirm.subagent.location_label || confirm.subagent.location}? The file is removed and this cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    const target = confirm.subagent;
+                    setConfirm(null);
+                    void deleteSubagent(target);
+                  }}
+                >
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          )}
+          {confirm?.kind === "discard" && (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Discard your changes?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  You have unsaved edits to this subagent. Leaving now throws them away.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Keep editing</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    setConfirm(null);
+                    closeEditor();
+                  }}
+                >
+                  Discard
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          )}
+        </AlertDialogContent>
+      </AlertDialog>
+    );
+  }
+
+  const newButton = (
+    <Button onClick={openCreateDialog} size="sm" className="gap-1.5">
+      <Plus className="h-4 w-4" />
+      New Subagent
+    </Button>
+  );
+
+  let body;
+  if (loading) {
+    body = <LoadingRows rows={4} className="mt-6" label="Loading subagents" />;
+  } else if (loadError && subagents.length === 0) {
+    body = <LoadFailed error={loadError} subject="your subagents" onRetry={() => void loadSubagents()} />;
+  } else if (subagents.length === 0) {
+    body = (
+      <EmptyState
+        icon={Bot}
+        title="No subagents yet"
+        description={
+          <>
+            Start with a specialist like <span className="font-mono">code-reviewer</span>, <span className="font-mono">planner</span>, or <span className="font-mono">researcher</span>.
+          </>
+        }
+        action={newButton}
+      />
+    );
+  } else {
+    body = (
+      <div className="mt-4 space-y-4">
+        {listError && (
+          <SaveErrorNote error={listError} onDismiss={() => setListError(null)} />
         )}
-
-        <Card className="border-border/70 bg-card/60">
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-primary" />
-              How To Test
-            </CardTitle>
-            <CardDescription>
-              Create a subagent here, then ask LimeBot something like: <span className="font-mono">Use the code-reviewer subagent to inspect my auth changes</span> or simply <span className="font-mono">Review my auth changes for bugs and missing tests</span>.
-            </CardDescription>
-          </CardHeader>
-        </Card>
-
-        {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {[1, 2, 3, 4].map((i) => (
-              <div key={i} className="h-56 rounded-xl bg-muted/50 animate-pulse" />
-            ))}
-          </div>
-        ) : filteredSubagents.length === 0 ? (
-          <Card className="border-dashed border-border/70 bg-card/50">
-            <CardContent className="py-12 text-center text-muted-foreground">
-              <div className="inline-flex items-center justify-center p-4 rounded-full bg-muted mb-4">
-                <Bot className="h-6 w-6 opacity-60" />
-              </div>
-              <p className="font-medium text-foreground">No subagents yet.</p>
-              <p className="mt-2 text-sm">
-                Start with a specialist like <span className="font-mono">code-reviewer</span>, <span className="font-mono">planner</span>, or <span className="font-mono">researcher</span>.
-              </p>
-            </CardContent>
-          </Card>
+        <Note tone="info" title="Try one out">
+          Create a subagent here, then ask LimeBot something like: <span className="font-mono">Use the code-reviewer subagent to inspect my auth changes</span> or simply <span className="font-mono">Review my auth changes for bugs and missing tests</span>.
+        </Note>
+        <div className="relative w-full sm:w-72">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            aria-label="Search subagents"
+            placeholder="Search subagents..."
+            className="h-9 pl-9"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        {filteredSubagents.length === 0 ? (
+          <EmptyState icon={Search} title={`No subagents match "${search}"`} description="Try a different word, or clear the search to see all of them." />
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <ul className="divide-y divide-border/50 border-y border-border/50">
             {filteredSubagents.map((subagent) => (
-              <Card
-                key={subagent.id}
-                className="border-border hover:border-primary/30 transition-colors group"
-              >
-                <CardHeader className="pb-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="space-y-2">
-                      <CardTitle className="text-base flex items-center gap-2">
-                        {subagent.name}
-                        {subagent.active ? (
-                          <Badge variant="outline" className="border-primary/30 text-primary">
-                            Active
-                          </Badge>
-                        ) : (
-                          <Badge variant="secondary">Shadowed</Badge>
-                        )}
-                        <Badge variant="outline">
-                          {subagent.location_label || subagent.location}
-                        </Badge>
-                        {subagent.builtin && (
-                          <Badge variant="secondary">Built-in</Badge>
-                        )}
-                      </CardTitle>
-                      <CardDescription>{subagent.description}</CardDescription>
-                    </div>
-                    {!subagent.builtin && (
-                      <div className="flex gap-2">
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          onClick={() => openEditDialog(subagent)}
-                          title="Edit subagent"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          onClick={() => deleteSubagent(subagent)}
-                          title="Delete subagent"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
+              <li key={subagent.id} className={cn("flex items-start gap-3 py-4", !subagent.active && "opacity-70")}>
+                <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                  <Bot className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <h3 className="break-all text-sm font-semibold text-foreground">{subagent.name}</h3>
+                    {subagent.active ? (
+                      <StatusPill tone="ok">Active</StatusPill>
+                    ) : (
+                      <StatusPill tone="muted">Shadowed</StatusPill>
                     )}
+                    {subagent.builtin && <StatusPill tone="info">Built-in</StatusPill>}
+                    <span className="text-[11px] text-muted-foreground">
+                      {subagent.location_label || subagent.location}
+                    </span>
                   </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="text-sm text-muted-foreground line-clamp-5 whitespace-pre-wrap">
+                  <p className="text-sm leading-relaxed text-foreground/90">{subagent.description}</p>
+                  <p className="line-clamp-2 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
                     {subagent.prompt}
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <Badge variant="outline">model: {subagent.model || "inherit"}</Badge>
+                  </p>
+                  <div className="flex flex-wrap gap-1.5 pt-0.5 font-mono text-[11px] text-muted-foreground">
+                    <span className="rounded bg-muted px-1.5 py-0.5">model: {subagent.model || "inherit"}</span>
                     {subagent.max_turns ? (
-                      <Badge variant="outline">max_turns: {subagent.max_turns}</Badge>
+                      <span className="rounded bg-muted px-1.5 py-0.5">max_turns: {subagent.max_turns}</span>
                     ) : null}
                     {subagent.background ? (
-                      <Badge variant="outline">background</Badge>
+                      <span className="rounded bg-muted px-1.5 py-0.5">background</span>
                     ) : null}
                     {subagent.tools === null ? (
-                      <Badge variant="outline">tools: inherit</Badge>
+                      <span className="rounded bg-muted px-1.5 py-0.5">tools: inherit</span>
                     ) : subagent.tools.length === 0 ? (
-                      <Badge variant="outline">tools: none</Badge>
+                      <span className="rounded bg-muted px-1.5 py-0.5">tools: none</span>
                     ) : (
                       subagent.tools.map((tool) => (
-                        <Badge key={tool} variant="secondary">
+                        <span key={tool} className="rounded bg-muted px-1.5 py-0.5 text-foreground/80">
                           {tool}
-                        </Badge>
+                        </span>
                       ))
                     )}
                     {subagent.disallowed_tools?.map((tool) => (
-                      <Badge key={`blocked-${tool}`} variant="outline">
+                      <span key={`blocked-${tool}`} className="rounded bg-red-500/10 px-1.5 py-0.5 text-red-500">
                         blocked: {tool}
-                      </Badge>
+                      </span>
                     ))}
                   </div>
-
-                  <div className="pt-4 border-t border-border text-xs text-muted-foreground font-mono space-y-1">
-                    <div>{subagent.path}</div>
-                    {!subagent.active && subagent.shadowed_by && (
-                      <div>shadowed by: {subagent.shadowed_by}</div>
-                    )}
+                  <p className="break-all font-mono text-[11px] text-muted-foreground/70">
+                    {subagent.path}
+                    {!subagent.active && subagent.shadowed_by ? ` · shadowed by: ${subagent.shadowed_by}` : ""}
+                  </p>
+                </div>
+                {!subagent.builtin && (
+                  <div className="flex shrink-0 gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => openEditDialog(subagent)}
+                      title="Edit subagent"
+                      aria-label={`Edit ${subagent.name}`}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground hover:text-red-500"
+                      disabled={deletingId === subagent.id}
+                      onClick={() => setConfirm({ kind: "delete", subagent })}
+                      title="Delete subagent"
+                      aria-label={`Delete ${subagent.name}`}
+                    >
+                      {deletingId === subagent.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                    </Button>
                   </div>
-                </CardContent>
-              </Card>
+                )}
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </div>
+    );
+  }
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{form.id ? "Edit Subagent" : "Create Subagent"}</DialogTitle>
-            <DialogDescription>
-              Keep the description focused on when LimeBot should choose this helper. That description is what drives auto-selection.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="grid gap-4 py-2">
-            <div className="grid gap-2">
-              <Label htmlFor="subagent-name">Name</Label>
-              <Input
-                id="subagent-name"
-                value={form.name}
-                onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-                placeholder="code-reviewer"
-              />
-            </div>
-
-            <div className="grid gap-2">
-              <Label htmlFor="subagent-location">Location</Label>
-              <Select
-                value={form.location}
-                onValueChange={(value) =>
-                  setForm((prev) => ({ ...prev, location: value }))
-                }
-              >
-                <SelectTrigger id="subagent-location">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(locationOptions.length > 0
-                    ? locationOptions
-                    : [
-                        {
-                          value: "project_limebot",
-                          label: "Project (.limebot/agents)",
-                          path: ".limebot/agents",
-                        },
-                        {
-                          value: "project_claude",
-                          label: "Project (.claude/agents)",
-                          path: ".claude/agents",
-                        },
-                        {
-                          value: "user_limebot",
-                          label: "Personal (~/.limebot/agents)",
-                          path: "~/.limebot/agents",
-                        },
-                        {
-                          value: "user_claude",
-                          label: "Personal (~/.claude/agents)",
-                          path: "~/.claude/agents",
-                        },
-                      ]).map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="grid gap-2">
-              <Label htmlFor="subagent-description">Description</Label>
-              <Textarea
-                id="subagent-description"
-                value={form.description}
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, description: e.target.value }))
-                }
-                className="min-h-[90px]"
-                placeholder="Review code for bugs, regressions, and missing tests."
-              />
-            </div>
-
-            <div className="grid gap-2">
-              <Label htmlFor="subagent-prompt">System Prompt</Label>
-              <Textarea
-                id="subagent-prompt"
-                value={form.prompt}
-                onChange={(e) => setForm((prev) => ({ ...prev, prompt: e.target.value }))}
-                className="min-h-[180px] font-mono text-sm"
-                placeholder="Focus on concrete findings first. Keep the report concise and actionable."
-              />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="subagent-tools">Tools</Label>
-                <Input
-                  id="subagent-tools"
-                  value={form.toolsText}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, toolsText: e.target.value }))
-                  }
-                  placeholder="Read, Grep, Bash"
-                />
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="subagent-disallowed-tools">Disallowed Tools</Label>
-                <Input
-                  id="subagent-disallowed-tools"
-                  value={form.disallowedToolsText}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, disallowedToolsText: e.target.value }))
-                  }
-                  placeholder="Delete, Write"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="subagent-model">Model</Label>
-                <Input
-                  id="subagent-model"
-                  value={form.model}
-                  onChange={(e) => setForm((prev) => ({ ...prev, model: e.target.value }))}
-                  placeholder="inherit"
-                />
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="subagent-max-turns">Max Turns</Label>
-                <Input
-                  id="subagent-max-turns"
-                  value={form.maxTurns}
-                  onChange={(e) => setForm((prev) => ({ ...prev, maxTurns: e.target.value }))}
-                  placeholder="8"
-                />
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="subagent-background">Background</Label>
-                <div className="flex h-10 items-center justify-between rounded-md border border-input bg-background px-3">
-                  <span className="text-sm text-muted-foreground">
-                    Return later
-                  </span>
-                  <Switch
-                    id="subagent-background"
-                    checked={form.background}
-                    onCheckedChange={(checked) =>
-                      setForm((prev) => ({ ...prev, background: checked }))
-                    }
-                  />
-                </div>
-              </div>
-            </div>
-
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setDialogOpen(false)}
-              disabled={saving}
-            >
-              Cancel
-            </Button>
-            <Button onClick={saveSubagent} disabled={saving}>
-              {saving ? "Saving..." : form.id ? "Save Changes" : "Create Subagent"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+  return (
+    <SettingsPage
+      title="Subagents"
+      icon={Bot}
+      description="Lightweight Claude-style specialists. The main agent can choose one automatically when a task matches its description, or you can call one explicitly."
+      width="max-w-5xl"
+      actions={!loading && !loadError && subagents.length > 0 ? newButton : undefined}
+    >
+      {body}
+      {renderConfirm()}
+    </SettingsPage>
   );
 }
