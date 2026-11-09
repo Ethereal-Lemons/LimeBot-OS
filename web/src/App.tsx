@@ -17,6 +17,7 @@ import { ChatInterface } from "@/components/chat/ChatInterface";
 import { AuthKeyModal } from "@/components/auth/AuthKeyModal";
 import { injectCss, CSS_STORAGE_KEY } from "@/lib/css-injector";
 import { Toaster } from "@/components/ui/sonner";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useTheme, applyThemeWithSchedule } from "@/hooks/useTheme";
@@ -464,7 +465,8 @@ function App() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <Suspense fallback={<div className="h-full min-h-[40vh] bg-card/10 rounded-2xl border border-border/30" />}>
+      <ErrorBoundary resetKey={currentView} area={currentViewMeta.title}>
+      <Suspense fallback={<div className="h-full min-h-[40vh] animate-pulse bg-card/10" />}>
         {
           currentView === 'instances' ? (
             <InstancesList currentSessionId={sessionId} />
@@ -528,6 +530,7 @@ function App() {
           )
         }
       </Suspense>
+      </ErrorBoundary>
       <Toaster position="top-right" />
     </AppLayout >
   );

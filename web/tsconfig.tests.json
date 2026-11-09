@@ -26,6 +26,8 @@
     "src/lib/pet.ts",
     "src/lib/setup-state.ts",
     "src/lib/stream-rendering.ts",
+    "src/lib/tool-display.ts",
+    "src/lib/tool-state.ts",
     "src/lib/whatsapp-contact-identity.ts",
     "src/components/chat/ChatImage.tsx",
     "tests/agent-readiness.test.ts",
@@ -38,6 +40,8 @@
     "tests/setup-state.test.ts",
     "tests/stream-rendering.test.ts",
     "tests/theme-accent.test.ts",
+    "tests/tool-display.test.ts",
+    "tests/tool-state.test.ts",
     "tests/whatsapp-contact-identity.test.ts"
   ]
 }

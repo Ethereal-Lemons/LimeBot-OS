@@ -1414,27 +1414,21 @@ export function ChatInterface({
             </div>
 
             {/* Input Area */}
-            <div className="chat-composer-shell border-t border-border bg-background p-4 relative z-20">
+            <div className="chat-composer-shell relative z-20 border-t border-border/50 bg-background/80 px-4 pb-3 pt-3 backdrop-blur">
                 <div className="mx-auto max-w-[48rem] relative group font-sans">
-                    <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
-                        <StatusChip
-                            label="Compose"
-                            value="Enter sends"
-                        />
-                        <StatusChip
-                            label="Line break"
-                            value="Shift+Enter"
-                        />
-                        {waitingToolCount > 0 && (
-                            <StatusChip label="Pending approval" value={String(waitingToolCount)} tone="warn" />
-                        )}
-                        {ponytailActive && (
-                            <StatusChip label="Ponytail" value="Full" tone="good" />
-                        )}
-                        {selectedAttachment && (
-                            <StatusChip label="Attachment" value={selectedAttachment.name} tone="good" />
-                        )}
-                    </div>
+                    {(waitingToolCount > 0 || ponytailActive || selectedAttachment) && (
+                        <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
+                            {waitingToolCount > 0 && (
+                                <StatusChip label="Pending approval" value={String(waitingToolCount)} tone="warn" />
+                            )}
+                            {ponytailActive && (
+                                <StatusChip label="Ponytail" value="Full" tone="good" />
+                            )}
+                            {selectedAttachment && (
+                                <StatusChip label="Attachment" value={selectedAttachment.name} tone="good" />
+                            )}
+                        </div>
+                    )}
 
                     <div
                         className={cn(
@@ -1752,10 +1746,10 @@ export function ChatInterface({
                 <div className="mx-auto mt-2 flex max-w-[48rem] flex-wrap justify-between gap-2 px-1 text-[10px] font-medium text-muted-foreground">
                     <span>
                         {waitingToolCount > 0
-                            ? "Pending approvals are handled directly in the tool timeline."
-                            : "Secure channel with guarded tool execution."}
+                            ? "Approve or deny the pending action in the activity above."
+                            : "Enter to send · Shift+Enter for a new line"}
                     </span>
-                    <span>LimeBot v1.0.12</span>
+                    <span className="opacity-60">v1.0.12</span>
                 </div>
             </div>
         </div>
