@@ -31,6 +31,7 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         LIVE_TOOL_ALLOWLIST,
         MUTATING_TOOLS,
         BudgetedLLMClient,
+        assemble_reply,
         command_allowed,
         evaluate_checks,
         is_workspace_path,
@@ -93,6 +94,7 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     ]
     original_execute = agent._execute_tool
     observed: list[str] = []
+    trace: list[str] = []
     failures = 0
 
     async def guarded_execute(name: str, arguments: dict, session_key: str):
@@ -120,6 +122,11 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         result = await original_execute(name, arguments, session_key)
         if str(result or "").startswith("Error:"):
             failures += 1
+        if os.environ.get("LIMEBOT_EVAL_KEEP_REPLIES"):
+            trace.append(
+                f"{name} {json.dumps(arguments, ensure_ascii=False)[:160]} -> "
+                f"{len(str(result or ''))} chars: {str(result or '')[:100]!r}"
+            )
         return result
 
     agent._execute_tool = guarded_execute
@@ -207,7 +214,7 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             status = "incomplete"
 
-    reply_text = "\n".join(str(getattr(item, "content", "") or "") for item in collected)
+    reply_text = assemble_reply(collected)
     # Hidden fixtures (for example the real test suite) appear only now, so the
     # model could not have read or special-cased them.
     write_fixture_files(
@@ -222,6 +229,9 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         target = Path(keep_dir)
         target.mkdir(parents=True, exist_ok=True)
         (target / f"{case.id}-{run_id[-8:]}.txt").write_text(reply_text, encoding="utf-8")
+        (target / f"{case.id}-{run_id[-8:]}.trace.txt").write_text(
+            "\n".join(trace), encoding="utf-8"
+        )
 
     result = {
         "worker_code": "ok",
