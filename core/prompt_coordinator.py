@@ -9,6 +9,7 @@ from loguru import logger
 
 from core import prompt as prompt_module
 from core.prompt_modes import build_ponytail_prompt_addition
+from core.prompt_prefix import PER_MESSAGE_BOUNDARY
 from core.voice_tool_policy import voice_prompt_addition
 from core.paths import IDENTITY_FILE, SOUL_FILE, PersonaPaths
 from core.profile_context import get_current_persona_paths, get_current_profile_id
@@ -176,11 +177,15 @@ class PromptCoordinator:
             current_message=current_message,
             persona_paths=self._persona_paths(),
         )
+        # Everything before the boundary is identical from one message to the
+        # next, so providers can cache it together with the history that follows.
+        # Everything after it is rebuilt per message (see core/prompt_prefix.py).
         return (
             stable
             + capability_docs
-            + (skills_docs + "\n" if skills_docs else "")
             + (subagent_docs + "\n" if subagent_docs else "")
+            + PER_MESSAGE_BOUNDARY
+            + (skills_docs + "\n" if skills_docs else "")
             + (ponytail_docs + "\n" if ponytail_docs else "")
             + volatile
             + voice_prompt_addition(session_key)

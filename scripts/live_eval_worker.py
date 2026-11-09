@@ -31,7 +31,7 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         LIVE_TOOL_ALLOWLIST,
         MUTATING_TOOLS,
         BudgetedLLMClient,
-        assemble_reply,
+        assemble_conversation_reply,
         command_allowed,
         evaluate_checks,
         is_workspace_path,
@@ -146,13 +146,13 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
 
     run_id = str(payload["run_id"])
     chat_id = f"{case.id}-{run_id[-8:]}"
-    message = InboundMessage(
-        channel="web",
-        sender_id="live-evaluator",
-        chat_id=chat_id,
-        content=case.prompt,
-        metadata={"task_run_id": run_id, "workspace_id": "evaluation"},
-    )
+    # Follow-ups continue the same chat, so the history (and the provider's
+    # prefix cache) carries over exactly as it does for a real conversation.
+    turns = [(run_id, case.prompt)] + [
+        (f"{run_id}_f{index}", prompt)
+        for index, prompt in enumerate(case.follow_ups, start=1)
+    ]
+    last_turn_id = turns[-1][0]
 
     collected: list[Any] = []
     saw_terminal_reply = asyncio.Event()
@@ -180,20 +180,32 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     runner_task = asyncio.create_task(agent.run())
     error = ""
     try:
-        await bus.publish_inbound(message)
         deadline = time.monotonic() + case.timeout_seconds
-        while time.monotonic() < deadline:
-            task_run = agent.task_runs.get(run_id)
-            if task_run is not None and task_run.terminal:
+        for turn_id, prompt in turns:
+            saw_terminal_reply.clear()
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="web",
+                    sender_id="live-evaluator",
+                    chat_id=chat_id,
+                    content=prompt,
+                    metadata={"task_run_id": turn_id, "workspace_id": "evaluation"},
+                )
+            )
+            while time.monotonic() < deadline:
+                task_run = agent.task_runs.get(turn_id)
+                if task_run is not None and task_run.terminal:
+                    break
+                if saw_terminal_reply.is_set() and task_run is None:
+                    break
+                if client.exceeded:
+                    error = "budget_exceeded"
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                error = "turn_timeout"
+            if error:
                 break
-            if saw_terminal_reply.is_set() and task_run is None:
-                break
-            if client.exceeded:
-                error = "budget_exceeded"
-                break
-            await asyncio.sleep(0.1)
-        else:
-            error = "turn_timeout"
     except Exception:
         error = "turn_error"
     finally:
@@ -204,7 +216,7 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         runner_task.cancel()
         await asyncio.gather(runner_task, return_exceptions=True)
 
-    task_run = agent.task_runs.get(run_id)
+    task_run = agent.task_runs.get(last_turn_id)
     status = str(getattr(task_run, "status", "") or "")
     if status not in {"completed", "blocked", "cancelled"}:
         if error:
@@ -214,7 +226,7 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             status = "incomplete"
 
-    reply_text = assemble_reply(collected)
+    reply_text = assemble_conversation_reply(collected)
     # Hidden fixtures (for example the real test suite) appear only now, so the
     # model could not have read or special-cased them.
     write_fixture_files(
@@ -230,7 +242,16 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         target.mkdir(parents=True, exist_ok=True)
         (target / f"{case.id}-{run_id[-8:]}.txt").write_text(reply_text, encoding="utf-8")
         (target / f"{case.id}-{run_id[-8:]}.trace.txt").write_text(
-            "\n".join(trace), encoding="utf-8"
+            "\n".join(
+                trace
+                + [
+                    "outbound "
+                    f"{(getattr(item, 'metadata', None) or {}).get('event_kind') or (getattr(item, 'metadata', None) or {}).get('type') or '?'} "
+                    f"{str(getattr(item, 'content', '') or '')[:80]!r}"
+                    for item in collected
+                ]
+            ),
+            encoding="utf-8",
         )
 
     result = {
@@ -242,6 +263,7 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
         "model_calls": client.calls,
         "tokens_in": client.tokens_in,
         "tokens_out": client.tokens_out,
+        "cached_tokens_in": client.cached_tokens_in,
         "budget_exceeded": bool(client.exceeded),
     }
     await agent.stop()

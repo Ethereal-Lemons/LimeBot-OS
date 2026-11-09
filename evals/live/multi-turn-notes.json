@@ -1,0 +1,49 @@
+{
+  "id": "multi-turn-notes",
+  "category": "conversation",
+  "prompt": "Read workspace/notes.md and tell me the project codename.",
+  "follow_ups": [
+    "Who is the owner listed in that same file?",
+    "Now append a line `status: reviewed` to the end of workspace/notes.md."
+  ],
+  "fixtures": [
+    {
+      "path": "workspace/notes.md",
+      "content": "# Project notes\n\ncodename: Marigold\nowner: Renata Quispe\nregion: Quetzaltenango\nbudget: 12000\nstatus: draft\n"
+    }
+  ],
+  "hidden_fixtures": [],
+  "solution": [
+    {
+      "path": "workspace/notes.md",
+      "content": "# Project notes\n\ncodename: Marigold\nowner: Renata Quispe\nregion: Quetzaltenango\nbudget: 12000\nstatus: draft\nstatus: reviewed\n"
+    }
+  ],
+  "checks": {
+    "files": [
+      {
+        "id": "status_line_appended",
+        "path": "workspace/notes.md",
+        "regex": "status: reviewed\\s*$"
+      },
+      {
+        "id": "original_notes_kept",
+        "path": "workspace/notes.md",
+        "contains": "owner: Renata Quispe"
+      }
+    ],
+    "reply": [
+      {
+        "id": "codename_reported",
+        "any_of": ["Marigold"]
+      },
+      {
+        "id": "owner_reported",
+        "any_of": ["Renata Quispe"]
+      }
+    ]
+  },
+  "timeout_seconds": 300,
+  "max_model_calls": 20,
+  "max_tokens": 120000
+}

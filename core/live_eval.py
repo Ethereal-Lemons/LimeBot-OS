@@ -105,6 +105,8 @@ class LiveCase:
     timeout_seconds: int = 240
     max_model_calls: int = DEFAULT_MAX_CALLS
     max_tokens: int = DEFAULT_MAX_TOKENS
+    # Further user messages sent in the same chat after the first prompt.
+    follow_ups: tuple[str, ...] = ()
 
     @property
     def check_ids(self) -> tuple[str, ...]:
@@ -140,6 +142,8 @@ class LiveRunEvidence:
     budget_exceeded: bool = False
     skipped: bool = False
     worker_code: str = "ok"
+    # Prompt tokens the provider served from its prefix cache (a subset of tokens_in).
+    cached_tokens_in: int = 0
 
     @property
     def passed(self) -> bool:
@@ -211,6 +215,7 @@ def live_case_from_dict(value: Mapping[str, Any]) -> LiveCase:
             timeout_seconds=int(value.get("timeout_seconds") or 240),
             max_model_calls=int(value.get("max_model_calls") or DEFAULT_MAX_CALLS),
             max_tokens=int(value.get("max_tokens") or DEFAULT_MAX_TOKENS),
+            follow_ups=tuple(str(item) for item in value.get("follow_ups") or ()),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("Invalid live task case structure") from exc
@@ -233,6 +238,10 @@ def validate_live_case(case: LiveCase) -> None:
         raise ValueError(f"Invalid case id: {case.id!r}")
     if not case.prompt.strip() or len(case.prompt) > 4_000:
         raise ValueError(f"Case {case.id} has an invalid prompt")
+    if len(case.follow_ups) > 5 or any(
+        not item.strip() or len(item) > 4_000 for item in case.follow_ups
+    ):
+        raise ValueError(f"Case {case.id} has invalid follow-up prompts")
     if not (1 <= case.timeout_seconds <= 900):
         raise ValueError(f"Case {case.id} has an invalid timeout")
     if not (1 <= case.max_model_calls <= 200):
@@ -298,6 +307,23 @@ def assemble_reply(messages: Any) -> str:
         for item in items
         if (getattr(item, "metadata", None) or {}).get("type") == "chunk"
     )
+
+
+def assemble_conversation_reply(messages: Any) -> str:
+    """The user-visible answers of every turn in a chat, in order.
+
+    Each turn is assembled on its own: one turn may stream its answer as chunks
+    while the next sends a final ``assistant_message``, and mixing them would
+    drop the first answer.
+    """
+    segments: list[list[Any]] = [[]]
+    for item in messages:
+        segments[-1].append(item)
+        meta = getattr(item, "metadata", None) or {}
+        if (meta.get("event_kind") or meta.get("type")) == "turn_terminal":
+            segments.append([])
+    answers = (assemble_reply(segment) for segment in segments if segment)
+    return "\n".join(text for text in answers if text.strip())
 
 
 def write_fixture_files(project_dir: Path, files: tuple[FixtureFile, ...]) -> None:
@@ -429,6 +455,29 @@ def _usage_numbers(usage: Any) -> tuple[int, int]:
     return read("prompt_tokens"), read("completion_tokens")
 
 
+def _cached_prompt_tokens(usage: Any) -> int:
+    """Prompt tokens served from the provider's prefix cache, across usage shapes."""
+
+    def field(source: Any, name: str) -> Any:
+        if source is None:
+            return None
+        return source.get(name) if isinstance(source, dict) else getattr(source, name, None)
+
+    candidates = (
+        field(field(usage, "prompt_tokens_details"), "cached_tokens"),
+        field(usage, "cache_read_input_tokens"),
+        field(usage, "cached_tokens"),
+    )
+    for value in candidates:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            return number
+    return 0
+
+
 class _UsageStream:
     def __init__(self, stream: Any, on_usage) -> None:
         self._iterator = stream.__aiter__()
@@ -455,6 +504,7 @@ class BudgetedLLMClient:
         self.calls = 0
         self.tokens_in = 0
         self.tokens_out = 0
+        self.cached_tokens_in = 0
         self.exceeded = False
 
     def __getattr__(self, name: str) -> Any:
@@ -468,6 +518,7 @@ class BudgetedLLMClient:
         prompt, completion = _usage_numbers(usage)
         self.tokens_in += prompt
         self.tokens_out += completion
+        self.cached_tokens_in += _cached_prompt_tokens(usage)
 
     async def complete(self, provider: Any, request: Any) -> Any:
         if getattr(request, "session_id", None) == "__warmup__":
@@ -651,6 +702,7 @@ def _run_case(
         model_calls=int(result.get("model_calls") or 0),
         tokens_in=int(result.get("tokens_in") or 0),
         tokens_out=int(result.get("tokens_out") or 0),
+        cached_tokens_in=int(result.get("cached_tokens_in") or 0),
         wall_time_ms=int((time.perf_counter() - started) * 1000),
         budget_exceeded=bool(result.get("budget_exceeded")),
         worker_code=worker_code,
@@ -660,6 +712,8 @@ def _run_case(
 def summarize(rows: list[LiveRunEvidence]) -> dict[str, Any]:
     ran = [row for row in rows if not row.skipped]
     passed = sum(row.passed for row in ran)
+    tokens_in = sum(r.tokens_in for r in ran)
+    cached_in = sum(r.cached_tokens_in for r in ran)
     by_case: dict[str, list[bool]] = {}
     for row in ran:
         by_case.setdefault(row.case_id, []).append(row.passed)
@@ -674,8 +728,10 @@ def summarize(rows: list[LiveRunEvidence]) -> dict[str, Any]:
         "false_successes": sum(row.false_success for row in ran),
         "budget_exceeded": sum(row.budget_exceeded for row in ran),
         "avg_model_calls": round(sum(r.model_calls for r in ran) / len(ran), 1) if ran else 0.0,
-        "tokens_in": sum(r.tokens_in for r in ran),
+        "tokens_in": tokens_in,
         "tokens_out": sum(r.tokens_out for r in ran),
+        "cached_tokens_in": cached_in,
+        "cache_hit_rate": round(cached_in / tokens_in, 3) if tokens_in else 0.0,
         "by_case": {k: round(sum(v) / len(v), 3) for k, v in sorted(by_case.items())},
         "by_category": {k: round(sum(v) / len(v), 3) for k, v in sorted(by_category.items())},
     }

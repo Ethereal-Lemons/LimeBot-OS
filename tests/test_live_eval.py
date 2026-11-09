@@ -10,6 +10,8 @@ from core.live_eval import (
     BudgetExceeded,
     LivePlan,
     LiveRunEvidence,
+    _cached_prompt_tokens,
+    assemble_conversation_reply,
     assemble_reply,
     command_allowed,
     compare_reports,
@@ -164,6 +166,32 @@ def test_budget_client_counts_usage_and_refuses_past_the_call_cap():
     assert client.resolve_provider("m") == ("provider", "m")
 
 
+def test_cached_prompt_tokens_read_the_common_usage_shapes():
+    openai_style = SimpleNamespace(prompt_tokens_details=SimpleNamespace(cached_tokens=640))
+    dict_style = {"prompt_tokens_details": {"cached_tokens": 512}}
+    anthropic_style = SimpleNamespace(cache_read_input_tokens=300)
+    for usage, expected in ((openai_style, 640), (dict_style, 512), (anthropic_style, 300)):
+        assert _cached_prompt_tokens(usage) == expected
+    for usage in (None, SimpleNamespace(), SimpleNamespace(prompt_tokens_details=None), {}):
+        assert _cached_prompt_tokens(usage) == 0
+
+
+def test_budget_client_tracks_cached_tokens():
+    inner = _FakeClient()
+    client = BudgetedLLMClient(inner, max_calls=5, max_tokens=1_000_000)
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=50,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=1536),
+    )
+    client._record(usage)
+    client._record(usage)
+    assert client.cached_tokens_in == 3072 and client.tokens_in == 4000
+    row = _row("a", True)
+    summary = summarize([LiveRunEvidence(**{**row.__dict__, "cached_tokens_in": 500})])
+    assert summary["cached_tokens_in"] == 500 and summary["cache_hit_rate"] == 0.5
+
+
 def test_budget_client_refuses_past_the_token_cap_and_warmup_is_free():
     inner = _FakeClient()
     client = BudgetedLLMClient(inner, max_calls=50, max_tokens=1_000)
@@ -267,3 +295,18 @@ def test_reply_falls_back_to_chunks_joined_without_separators():
     messages = [_outbound("E", type="chunk"), _outbound("104", type="chunk"), _outbound("x", type="thinking")]
     assert assemble_reply(messages) == "E104"
     assert assemble_reply([]) == ""
+
+
+def test_conversation_reply_keeps_streamed_answers_next_to_final_ones():
+    messages = [
+        _outbound("The codename is ", type="chunk"),
+        _outbound("Marigold.", type="chunk"),
+        _outbound("", type="turn_terminal"),
+        _outbound("Owner: Renata.", type="chunk"),
+        _outbound("Owner: Renata.", event_kind="assistant_message"),
+        _outbound("", type="turn_terminal"),
+    ]
+    # One shared assembly drops the streamed first answer; per-turn assembly keeps it.
+    assert "Marigold" not in assemble_reply(messages)
+    assert assemble_conversation_reply(messages) == "The codename is Marigold.\nOwner: Renata."
+    assert assemble_conversation_reply([]) == ""
