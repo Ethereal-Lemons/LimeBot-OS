@@ -1,29 +1,33 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { API_BASE_URL } from "@/lib/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Brain, Trash2, KeyRound, Search, ArrowUpDown, RefreshCw, AlertTriangle, Settings } from "lucide-react";
+import { ArrowUpDown, Brain, KeyRound, RefreshCw, Search, Settings, Trash2 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import { requestFailureMessage } from "@/lib/request-error";
+import {
+    Chip,
+    EmptyState,
+    InlineConfirm,
+    Notice,
+    PageFrame,
+    PageHeader,
+    RequestError,
+    RowButton,
+    RowList,
+    SkeletonRows,
+    StatusPill,
+} from "@/components/ui/data-page";
 
 type SortOrder = "newest" | "oldest";
 
-interface MemoryEntry {
+export interface MemoryEntry {
     id: string;
     text: string;
     category?: string;
@@ -36,6 +40,121 @@ interface MemoryPageProps {
     onNavigate?: (view: string) => void;
 }
 
+function learnedAgo(timestamp: MemoryEntry["timestamp"]): string {
+    if (!timestamp) return "recently";
+    const date = new Date(timestamp);
+    return Number.isNaN(date.getTime()) ? "recently" : formatDistanceToNow(date, { addSuffix: true });
+}
+
+const CLAMP_PX = 120; // matches max-h-[7.5rem]
+
+function ClampedMarkdown({ text }: { text: string }) {
+    const ref = useRef<HTMLDivElement>(null);
+    const [expanded, setExpanded] = useState(false);
+    const [overflows, setOverflows] = useState(false);
+
+    useLayoutEffect(() => {
+        const node = ref.current;
+        if (!node) return;
+        const measure = () => setOverflows(node.scrollHeight > CLAMP_PX + 1);
+        measure();
+        const observer = new ResizeObserver(measure);
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, [text]);
+
+    return (
+        <div>
+            <div
+                ref={ref}
+                className={cn(
+                    "relative break-words text-[13px] leading-relaxed text-foreground/90",
+                    !expanded && "max-h-[7.5rem] overflow-hidden",
+                    !expanded && overflows && "[mask-image:linear-gradient(to_bottom,black_70%,transparent)]"
+                )}
+            >
+                <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                        p: ({ node, ...props }) => {
+                            void node;
+                            return <p {...props} className="mb-2 last:mb-0" />;
+                        },
+                        h1: ({ node, ...props }) => {
+                            void node;
+                            return <h3 className="mb-1 mt-2 text-[13px] font-semibold first:mt-0" {...props} />;
+                        },
+                        h2: ({ node, ...props }) => {
+                            void node;
+                            return <h3 className="mb-1 mt-2 text-[13px] font-semibold first:mt-0" {...props} />;
+                        },
+                        h3: ({ node, ...props }) => {
+                            void node;
+                            return <h4 className="mb-0.5 mt-1.5 text-xs font-semibold first:mt-0" {...props} />;
+                        },
+                        ul: ({ node, ...props }) => {
+                            void node;
+                            return <ul className="mb-2 ml-4 list-disc last:mb-0" {...props} />;
+                        },
+                        ol: ({ node, ...props }) => {
+                            void node;
+                            return <ol className="mb-2 ml-4 list-decimal last:mb-0" {...props} />;
+                        },
+                        li: ({ node, ...props }) => {
+                            void node;
+                            return <li className="mb-0.5" {...props} />;
+                        },
+                        code: ({ node, ...props }) => {
+                            void node;
+                            return <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]" {...props} />;
+                        },
+                    }}
+                >
+                    {text}
+                </ReactMarkdown>
+            </div>
+            {(overflows || expanded) && (
+                <button
+                    type="button"
+                    onClick={() => setExpanded((value) => !value)}
+                    className="mt-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                >
+                    {expanded ? "Show less" : "Show more"}
+                </button>
+            )}
+        </div>
+    );
+}
+
+function MemoryRow({ entry, canDelete, onDelete }: { entry: MemoryEntry; canDelete: boolean; onDelete: (id: string) => Promise<void> }) {
+    return (
+        <article className="group px-4 py-3.5 transition-colors hover:bg-muted/30 focus-within:bg-muted/30">
+            <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                <Chip>{entry.category || "General"}</Chip>
+                <span>Learned {learnedAgo(entry.timestamp)}</span>
+                {entry.source && (
+                    <span className="hidden min-w-0 max-w-[40%] truncate font-mono text-[10px] opacity-70 sm:inline" title={entry.source}>
+                        {entry.source}
+                    </span>
+                )}
+                {canDelete && (
+                    <span className="ml-auto opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+                        <InlineConfirm
+                            iconOnly
+                            icon={Trash2}
+                            label="Forget this memory"
+                            prompt="Forget it?"
+                            confirmLabel="Forget"
+                            onConfirm={() => onDelete(entry.id)}
+                        />
+                    </span>
+                )}
+            </div>
+            <ClampedMarkdown text={entry.text} />
+        </article>
+    );
+}
+
 export function MemoryPage({ onNavigate }: MemoryPageProps) {
     const [memories, setMemories] = useState<MemoryEntry[]>([]);
     const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -43,307 +162,240 @@ export function MemoryPage({ onNavigate }: MemoryPageProps) {
     const [readOnly, setReadOnly] = useState(false);
     const [notice, setNotice] = useState("");
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState<unknown>(null);
 
     const [searchQuery, setSearchQuery] = useState("");
     const [selectedCategory, setSelectedCategory] = useState("all");
     const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
-    const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-    const fetchMemories = async () => {
+    const fetchMemories = useCallback(async () => {
+        setLoading(true);
         try {
-            setLoading(true);
             const res = await axios.get(`${API_BASE_URL}/api/memory`);
             setEnabled(res.data.enabled);
             setMode((res.data.mode || (res.data.enabled ? "vector" : "grep_fallback")) as "vector" | "grep_fallback");
             setReadOnly(Boolean(res.data.read_only));
             setNotice(res.data.notice || "");
             setMemories(res.data.memories || []);
+            setLoadError(null);
         } catch (err) {
             console.error("Failed to fetch memories:", err);
+            setLoadError(err);
         } finally {
             setLoading(false);
         }
-    };
-
-    useEffect(() => {
-        fetchMemories();
     }, []);
 
-    const requestDelete = (id: string) => {
-        if (readOnly) {
-            toast.warning("Memory Explorer is read-only while vector memory is offline.");
-            return;
-        }
-        setPendingDeleteId(id);
-    };
+    useEffect(() => {
+        void fetchMemories();
+    }, [fetchMemories]);
 
-    const handleDelete = async () => {
-        if (!pendingDeleteId) return;
+    const handleDelete = async (id: string) => {
         try {
-            await axios.delete(`${API_BASE_URL}/api/memory/${pendingDeleteId}`);
-            setMemories(prev => prev.filter(m => m.id !== pendingDeleteId));
-            toast.success("Memory deleted");
+            await axios.delete(`${API_BASE_URL}/api/memory/${id}`);
+            setMemories((prev) => prev.filter((m) => m.id !== id));
+            toast.success("Memory forgotten");
         } catch (err) {
             console.error("Failed to delete memory:", err);
-            toast.error("Failed to delete memory");
-        } finally {
-            setPendingDeleteId(null);
+            toast.error(requestFailureMessage("Could not delete the memory", err));
         }
     };
 
     const categories = useMemo(() => {
         const cats = new Set<string>();
-        memories.forEach(m => cats.add(m.category || "General"));
+        memories.forEach((m) => cats.add(m.category || "General"));
         return Array.from(cats).sort();
     }, [memories]);
 
     const filteredMemories = useMemo(() => {
         let result = [...memories];
-
         if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase();
-            result = result.filter(m =>
-                (m.text || "").toLowerCase().includes(q) ||
-                (m.category || "").toLowerCase().includes(q) ||
-                (m.path || "").toLowerCase().includes(q)
+            result = result.filter(
+                (m) => (m.text || "").toLowerCase().includes(q) || (m.category || "").toLowerCase().includes(q) || (m.path || "").toLowerCase().includes(q)
             );
         }
-
         if (selectedCategory !== "all") {
-            result = result.filter(m => (m.category || "General") === selectedCategory);
+            result = result.filter((m) => (m.category || "General") === selectedCategory);
         }
-
         result.sort((a, b) => {
-            const ta = new Date(a.timestamp || 0).getTime();
-            const tb = new Date(b.timestamp || 0).getTime();
+            const ta = new Date(a.timestamp || 0).getTime() || 0;
+            const tb = new Date(b.timestamp || 0).getTime() || 0;
             return sortOrder === "newest" ? tb - ta : ta - tb;
         });
-
         return result;
     }, [memories, searchQuery, selectedCategory, sortOrder]);
 
     const usingFallback = mode === "grep_fallback";
     const canDelete = !readOnly && enabled === true;
+    const filtered = searchQuery.trim() !== "" || selectedCategory !== "all";
+    const hasData = enabled !== null;
 
-    if (loading) {
+    const refreshButton = (
+        <RowButton onClick={() => void fetchMemories()} disabled={loading} aria-label="Refresh memories" title="Refresh">
+            <RefreshCw className={cn(loading && "animate-spin")} />
+            <span className="hidden sm:inline">Refresh</span>
+        </RowButton>
+    );
+
+    // Nothing loaded yet: skeleton first, then a full error with retry.
+    if (!hasData) {
         return (
-            <div className="flex items-center justify-center h-full">
-                <RefreshCw className="w-8 h-8 animate-spin text-primary" />
-            </div>
+            <PageFrame width="max-w-3xl">
+                <PageHeader title="Memory" description="What LimeBot has learned about you and your setup." actions={refreshButton} />
+                {loading ? (
+                    <SkeletonRows count={5} />
+                ) : (
+                    <RequestError error={loadError} subject="memory" onRetry={() => void fetchMemories()} retrying={loading} />
+                )}
+            </PageFrame>
         );
     }
 
     if (enabled === false && memories.length === 0) {
         return (
-            <div className="h-full p-8 flex items-center justify-center">
-                <Card className="max-w-md w-full border-yellow-500/30 bg-yellow-500/5">
-                    <CardHeader className="text-center">
-                        <div className="mx-auto w-12 h-12 bg-yellow-500/20 text-yellow-500 rounded-full flex items-center justify-center mb-4">
-                            <KeyRound className="w-6 h-6" />
-                        </div>
-                        <CardTitle className="text-xl">Memory System Disabled</CardTitle>
-                        <CardDescription className="pt-2 text-yellow-500/80">
-                            Your vector storage subsystem is currently offline.
-                        </CardDescription>
-                    </CardHeader>
-                    <CardContent className="text-sm text-muted-foreground text-center space-y-4">
-                        <p className="text-yellow-400 font-semibold">
-                            {notice || "Using Markdown memory files as the fallback."}
-                        </p>
-                        <p>
-                            To unlock advanced Long-Term Memory capabilities, LimeBot requires an active <strong>Embedding Model</strong>.
-                        </p>
-                        <p>
-                            Please ensure you have configured a valid <code className="bg-muted px-1 rounded">GEMINI_API_KEY</code> or <code className="bg-muted px-1 rounded">OPENAI_API_KEY</code> within your System Settings or <code className="bg-muted px-1 rounded">.env</code> file.
-                        </p>
-                        <div className="flex flex-col sm:flex-row gap-2 justify-center">
-                            <Button onClick={() => onNavigate?.('config')} className="gap-2">
+            <PageFrame width="max-w-3xl">
+                <PageHeader title="Memory" description="What LimeBot has learned about you and your setup." actions={refreshButton} />
+                <EmptyState
+                    icon={KeyRound}
+                    title="Vector memory is off"
+                    hint={
+                        <>
+                            {notice || "LimeBot is using its Markdown memory files instead."} Long-term recall needs an embedding model: add a{" "}
+                            <code className="rounded bg-muted px-1 font-mono text-[11px]">GEMINI_API_KEY</code> or{" "}
+                            <code className="rounded bg-muted px-1 font-mono text-[11px]">OPENAI_API_KEY</code> in Configuration.
+                        </>
+                    }
+                    action={
+                        <>
+                            <Button size="sm" onClick={() => onNavigate?.("config")} className="gap-2">
                                 <Settings className="h-4 w-4" />
                                 Open Configuration
                             </Button>
-                            <Button variant="outline" onClick={fetchMemories}>
-                                <RefreshCw className="h-4 w-4 mr-2" />
-                                Retry
+                            <Button size="sm" variant="outline" onClick={() => void fetchMemories()} disabled={loading}>
+                                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                                Check again
                             </Button>
-                        </div>
-                    </CardContent>
-                </Card>
-            </div>
+                        </>
+                    }
+                />
+            </PageFrame>
         );
     }
 
     return (
-        <div className="h-full overflow-y-auto">
-            <div className="space-y-6 p-8">
-                <div className="sticky top-0 z-20 -mx-8 border-b border-border/60 bg-background/82 px-8 py-4 backdrop-blur-md">
-                    <div className="flex items-center justify-between gap-4">
-                        <div>
-                            <h2 className="text-3xl font-bold tracking-tight flex items-center gap-3">
-                                <Brain className="w-8 h-8 text-primary" />
-                                Memory Explorer
-                            </h2>
-                            <p className="text-muted-foreground text-sm">
-                                {usingFallback
-                                    ? "Using Markdown memory files as the fallback. Memory Explorer is read-only while vector entries are unavailable or not indexed yet."
-                                    : "View and manage facts the bot has learned about you or your environment."}
-                            </p>
-                        </div>
-                        <div className="bg-primary/10 text-primary px-3 py-1 rounded-full text-xs font-bold font-mono">
-                            {filteredMemories.length === memories.length
-                                ? `${memories.length} Entries`
-                                : `${filteredMemories.length} of ${memories.length} Entries`
-                            }
-                        </div>
+        <PageFrame width="max-w-3xl">
+            <PageHeader
+                sticky
+                title="Memory"
+                description={
+                    usingFallback
+                        ? "Read-only view of the Markdown memory files."
+                        : "What LimeBot has learned about you and your setup. Hover an entry to forget it."
+                }
+                meta={
+                    <>
+                        <Chip>{filtered ? `${filteredMemories.length} of ${memories.length}` : `${memories.length} ${memories.length === 1 ? "entry" : "entries"}`}</Chip>
+                        <StatusPill state={usingFallback ? "waiting" : "done"} label={usingFallback ? "Markdown fallback" : "Vector index"} className="hidden sm:inline-flex" />
+                    </>
+                }
+                actions={refreshButton}
+            />
+
+            {loadError !== null && <RequestError compact error={loadError} subject="memory" onRetry={() => void fetchMemories()} retrying={loading} />}
+
+            {usingFallback && (
+                <Notice
+                    title={notice || "Using Markdown memory files as the fallback."}
+                    action={
+                        <RowButton onClick={() => onNavigate?.("config")} className="border border-border">
+                            <Settings /> Open Configuration
+                        </RowButton>
+                    }
+                >
+                    Vector entries are unavailable or not indexed yet, so entries cannot be deleted here.
+                </Notice>
+            )}
+
+            {memories.length > 0 && (
+                <div className="flex flex-col gap-2 sm:flex-row">
+                    <div className="relative flex-1">
+                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                            placeholder="Search memories"
+                            aria-label="Search memories"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="h-9 pl-8 text-sm"
+                        />
                     </div>
-
-                    {memories.length > 0 && (
-                        <div className="mt-4 flex flex-col sm:flex-row gap-3">
-                            <div className="relative flex-1">
-                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                                <Input
-                                    placeholder="Search memories..."
-                                    value={searchQuery}
-                                    onChange={e => setSearchQuery(e.target.value)}
-                                    className="pl-9"
-                                />
-                            </div>
-                            <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-                                <SelectTrigger className="w-full sm:w-[180px]">
-                                    <SelectValue placeholder="Category" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="all">All Categories</SelectItem>
-                                    {categories.map(cat => (
-                                        <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                            <Button
-                                variant="outline"
-                                size="icon"
-                                onClick={() => setSortOrder(s => s === "newest" ? "oldest" : "newest")}
-                                title={sortOrder === "newest" ? "Showing newest first" : "Showing oldest first"}
-                                className="shrink-0"
-                            >
-                                <ArrowUpDown className="h-4 w-4" />
-                            </Button>
-                        </div>
-                    )}
-                </div>
-
-                {usingFallback && (
-                    <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-500 flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-2">
-                            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-                            <div>
-                                <p className="font-semibold">{notice || "Using Markdown memory files as the fallback."}</p>
-                                <p className="text-yellow-500/80">Vector entries are unavailable or not indexed yet, so this view is currently read-only.</p>
-                            </div>
-                        </div>
-                        <Button variant="outline" size="sm" onClick={() => onNavigate?.('config')} className="shrink-0 border-yellow-500/30 bg-transparent hover:bg-yellow-500/10">
-                            Open Configuration
+                    <div className="flex gap-2">
+                        <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+                            <SelectTrigger className="h-9 flex-1 sm:w-[160px] sm:flex-none" aria-label="Category">
+                                <SelectValue placeholder="Category" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All categories</SelectItem>
+                                {categories.map((cat) => (
+                                    <SelectItem key={cat} value={cat}>
+                                        {cat}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                        <Button
+                            variant="outline"
+                            size="icon"
+                            onClick={() => setSortOrder((s) => (s === "newest" ? "oldest" : "newest"))}
+                            title={sortOrder === "newest" ? "Newest first (click to flip)" : "Oldest first (click to flip)"}
+                            aria-label="Flip sort order"
+                            className="h-9 w-9 shrink-0"
+                        >
+                            <ArrowUpDown className="h-4 w-4" />
                         </Button>
                     </div>
-                )}
+                </div>
+            )}
 
-                {filteredMemories.length === 0 && memories.length > 0 ? (
-                    <div className="p-12 text-center text-muted-foreground border rounded-lg border-dashed">
-                        <Search className="w-12 h-12 mx-auto mb-4 opacity-20" />
-                        <p>No memories match your search.</p>
-                        <p className="text-xs mt-2 opacity-50">Try a different keyword or clear the filters.</p>
-                    </div>
-                ) : memories.length === 0 ? (
-                    <div className="p-12 text-center text-muted-foreground border rounded-lg border-dashed">
-                        <Brain className="w-12 h-12 mx-auto mb-4 opacity-20" />
-                        <p>{usingFallback ? "No Markdown fallback memories found yet." : "No memories have been stored yet."}</p>
-                        <p className="text-xs mt-2 opacity-50">
-                            {usingFallback ? "Try chatting more so journal entries can be recalled." : "Tell the bot something important to remember!"}
-                        </p>
-                        <div className="mt-4 flex flex-col sm:flex-row justify-center gap-2">
-                            {usingFallback && (
-                                <Button onClick={() => onNavigate?.('config')} className="gap-2">
-                                    <Settings className="h-4 w-4" />
-                                    Fix Memory Setup
-                                </Button>
-                            )}
-                            <Button variant="outline" onClick={fetchMemories}>
-                                <RefreshCw className="h-4 w-4 mr-2" />
-                                Refresh
+            {memories.length === 0 ? (
+                <EmptyState
+                    icon={Brain}
+                    title={usingFallback ? "No Markdown memories yet" : "Nothing remembered yet"}
+                    hint={usingFallback ? "Keep chatting and journal entries will show up here." : "Tell LimeBot something worth remembering and it will appear here."}
+                    action={
+                        usingFallback ? (
+                            <Button size="sm" onClick={() => onNavigate?.("config")} className="gap-2">
+                                <Settings className="h-4 w-4" />
+                                Fix memory setup
                             </Button>
-                        </div>
-                    </div>
-                ) : (
-                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                        {filteredMemories.map(m => (
-                            <Card key={m.id} className="group relative overflow-hidden transition-all duration-300 hover:bg-muted/90 hover:border-primary/30 hover:shadow-md">
-                                <CardHeader className="p-4 pb-2">
-                                    <div className="flex justify-between items-start">
-                                        <div className="bg-primary/20 text-primary uppercase tracking-widest text-[10px] font-bold px-2 py-0.5 rounded">
-                                            {m.category || "General"}
-                                        </div>
-                                        {canDelete && (
-                                            <Button
-                                                variant="ghost"
-                                                size="icon"
-                                                className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:bg-destructive/10"
-                                                onClick={() => requestDelete(m.id)}
-                                                title="Forget this memory"
-                                            >
-                                                <Trash2 className="h-3 w-3" />
-                                            </Button>
-                                        )}
-                                    </div>
-                                </CardHeader>
-                                <CardContent className="p-4 pt-0">
-                                    <div className="prose prose-sm dark:prose-invert max-w-none break-words leading-snug text-inherit">
-                                        <ReactMarkdown
-                                            remarkPlugins={[remarkGfm]}
-                                            components={{
-                                                 p: ({ node, ...props }) => { void node; return <p {...props} className="mb-2 last:mb-0" />; },
-                                                 h1: ({ node, ...props }) => { void node; return <h1 className="text-sm font-bold mt-2 mb-1" {...props} />; },
-                                                 h2: ({ node, ...props }) => { void node; return <h2 className="text-xs font-bold mt-1.5 mb-1 opacity-90" {...props} />; },
-                                                 h3: ({ node, ...props }) => { void node; return <h3 className="text-xs font-bold mt-1 mb-0.5 opacity-80" {...props} />; },
-                                                 ul: ({ node, ...props }) => { void node; return <ul className="list-disc ml-4 mb-2" {...props} />; },
-                                                 ol: ({ node, ...props }) => { void node; return <ol className="list-decimal ml-4 mb-2" {...props} />; },
-                                                 li: ({ node, ...props }) => { void node; return <li className="mb-1" {...props} />; },
-                                            }}
-                                        >
-                                            {m.text}
-                                        </ReactMarkdown>
-                                    </div>
-                                    <div className="mt-4 flex items-center justify-between text-[10px] text-muted-foreground">
-                                        <span>
-                                            Learned {m.timestamp ? formatDistanceToNow(new Date(m.timestamp), { addSuffix: true }) : "recently"}
-                                        </span>
-                                        {m.source && (
-                                            <span className="opacity-70 truncate max-w-[40%]" title={m.source}>
-                                                {m.source}
-                                            </span>
-                                        )}
-                                    </div>
-                                </CardContent>
-                            </Card>
-                        ))}
-                    </div>
-                )}
-            </div>
-
-            <AlertDialog open={pendingDeleteId !== null} onOpenChange={(open) => !open && setPendingDeleteId(null)}>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Delete memory?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            This entry will be permanently removed from vector memory and won&apos;t be recalled again.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={handleDelete} className="bg-red-600 hover:bg-red-700 text-white">
-                            Delete memory
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-        </div>
+                        ) : undefined
+                    }
+                />
+            ) : filteredMemories.length === 0 ? (
+                <EmptyState
+                    icon={Search}
+                    title="No memories match"
+                    hint="Try a different keyword or clear the filters."
+                    action={
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                                setSearchQuery("");
+                                setSelectedCategory("all");
+                            }}
+                        >
+                            Clear filters
+                        </Button>
+                    }
+                />
+            ) : (
+                <RowList>
+                    {filteredMemories.map((m) => (
+                        <MemoryRow key={m.id} entry={m} canDelete={canDelete} onDelete={handleDelete} />
+                    ))}
+                </RowList>
+            )}
+        </PageFrame>
     );
 }

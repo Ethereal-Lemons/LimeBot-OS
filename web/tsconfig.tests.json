@@ -24,11 +24,14 @@
     "src/lib/markdown-spacing.ts",
     "src/lib/llm-models.ts",
     "src/lib/pet.ts",
+    "src/lib/request-error.ts",
+    "src/lib/schedule-format.ts",
     "src/lib/setup-state.ts",
     "src/lib/stream-rendering.ts",
     "src/lib/tool-display.ts",
     "src/lib/tool-state.ts",
     "src/lib/whatsapp-contact-identity.ts",
+    "src/lib/whatsapp-status.ts",
     "src/components/chat/ChatImage.tsx",
     "tests/agent-readiness.test.ts",
     "tests/chat-state.test.ts",
@@ -37,11 +40,14 @@
     "tests/markdown-spacing.test.ts",
     "tests/llm-models.test.ts",
     "tests/pet.test.ts",
+    "tests/request-error.test.ts",
+    "tests/schedule-format.test.ts",
     "tests/setup-state.test.ts",
     "tests/stream-rendering.test.ts",
     "tests/theme-accent.test.ts",
     "tests/tool-display.test.ts",
     "tests/tool-state.test.ts",
-    "tests/whatsapp-contact-identity.test.ts"
+    "tests/whatsapp-contact-identity.test.ts",
+    "tests/whatsapp-status.test.ts"
   ]
 }
