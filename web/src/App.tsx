@@ -149,7 +149,10 @@ type ShellRuntimeStatus = {
 
 function App() {
   const setupRouteRequested = window.location.pathname === '/setup';
-  const [currentView, setCurrentView] = useState('chat');
+  const [currentView, setCurrentView] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('ui') === 'mock' && params.get('view') ? params.get('view')! : 'chat';
+  });
   const [forceSetup, setForceSetup] = useState(setupRouteRequested);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
