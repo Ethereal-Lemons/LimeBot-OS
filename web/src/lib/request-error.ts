@@ -105,6 +105,6 @@ export function requestFailureMessage(action: string, error: unknown): string {
     const info = classifyRequestError(error);
     const status = requestErrorStatus(error);
     const rejected = status !== undefined && status >= 400 && status < 500 && ![401, 403, 404, 429].includes(status);
-    const reason = rejected || (status === undefined && info.category === "unknown") ? info.detail.replace(/^HTTP d+: /, "") : info.title;
+    const reason = rejected || (status === undefined && info.category === "unknown") ? info.detail.replace(/^HTTP \d+: /, "") : info.title;
     return `${action}: ${reason}`;
 }
