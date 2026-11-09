@@ -1,14 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/api-error";
-import { Search, Zap, CheckCircle2, AlertCircle, Box } from 'lucide-react';
+import { classifySaveError, saveErrorToastText } from "@/lib/save-error";
+import { AlertTriangle, Box, Loader2, RefreshCw, Search, Zap } from 'lucide-react';
 import { Input } from "@/components/ui/input";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState, LoadFailed, LoadingRows, SettingsPage, StatusPill } from "@/components/settings/kit";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+
+interface DepGroups {
+    python?: string[];
+    node?: string[];
+    binaries?: string[];
+}
 
 interface Skill {
     id: string;
@@ -20,46 +27,92 @@ interface Skill {
     source_kind?: 'bundled' | 'git-managed' | 'local' | 'legacy-local' | string;
     editable?: boolean;
     deps_ok?: boolean;
-    missing_deps?: {
-        python?: string[];
-        node?: string[];
-        binaries?: string[];
-    };
-    required_deps?: {
-        python?: string[];
-        node?: string[];
-        binaries?: string[];
-    };
+    missing_deps?: DepGroups;
+    required_deps?: DepGroups;
+}
+
+type RowNote = { tone: "bad" | "warn"; title: string; detail?: string };
+
+function formatDeps(deps?: DepGroups): string {
+    const source = deps || {};
+    const parts: string[] = [];
+    if (source.python?.length) parts.push(`python: ${source.python.join(", ")}`);
+    if (source.node?.length) parts.push(`node: ${source.node.join(", ")}`);
+    if (source.binaries?.length) parts.push(`binaries: ${source.binaries.join(", ")}`);
+    return parts.join(" | ");
+}
+
+/** Plain-language failure for a row: transport problems read differently from server rejections. */
+function describeFailure(error: unknown, subject: string, fallback: string): { title: string; detail?: string; toast: string } {
+    if (axios.isAxiosError(error)) {
+        const info = classifySaveError(error, subject);
+        const server = info.category !== "network" && info.category !== "timeout" && info.detail !== info.title;
+        return { title: info.title, detail: server ? info.detail : info.hint, toast: saveErrorToastText(info) };
+    }
+    const message = getApiErrorMessage(error, fallback);
+    return { title: message, toast: message };
 }
 
 export function SkillsPage() {
     const [skills, setSkills] = useState<Skill[]>([]);
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState<unknown>(null);
+    const [refreshing, setRefreshing] = useState(false);
     const [search, setSearch] = useState("");
     const [installingSkillId, setInstallingSkillId] = useState<string | null>(null);
+    const [togglingIds, setTogglingIds] = useState<string[]>([]);
+    const [notes, setNotes] = useState<Record<string, RowNote>>({});
 
-    const loadSkills = async () => {
+    const setNote = (id: string, note: RowNote | null) =>
+        setNotes((current) => {
+            const next = { ...current };
+            if (note) next[id] = note;
+            else delete next[id];
+            return next;
+        });
+
+    const loadSkills = useCallback(async (): Promise<boolean> => {
         try {
             const res = await axios.get(`${API_BASE_URL}/api/skills`);
             setSkills(res.data.skills || []);
-            setLoading(false);
+            setLoadError(null);
+            return true;
         } catch (err) {
             console.error("Failed to load skills:", err);
+            setLoadError(err);
+            return false;
+        } finally {
             setLoading(false);
         }
-    };
-
-    useEffect(() => {
-        loadSkills();
     }, []);
 
+    useEffect(() => {
+        void loadSkills();
+    }, [loadSkills]);
+
+    const refresh = async () => {
+        setRefreshing(true);
+        const ok = await loadSkills();
+        setRefreshing(false);
+        if (!ok) toast.error("Could not refresh the skills list.");
+    };
+
+    const retryLoad = () => {
+        setLoading(true);
+        setLoadError(null);
+        void loadSkills();
+    };
+
     const toggleSkill = async (skill: Skill, enable: boolean) => {
+        setNote(skill.id, null);
         if (skill.deps_ok === false && enable) {
             toast.error(`Install dependencies for ${skill.name} before enabling it.`);
+            setNote(skill.id, { tone: "warn", title: "Install the missing dependencies first", detail: "This skill cannot be enabled until they are installed." });
             return;
         }
+        setTogglingIds((current) => [...current, skill.id]);
         // Optimistic update
-        setSkills(skills.map(s => s.id === skill.id ? {
+        setSkills((current) => current.map((s) => s.id === skill.id ? {
             ...s,
             enabled: enable,
             active: enable && s.deps_ok !== false,
@@ -75,17 +128,22 @@ export function SkillsPage() {
         } catch (err) {
             console.error("Failed to toggle skill:", err);
             // Revert on error
-            setSkills(skills.map(s => s.id === skill.id ? {
+            setSkills((current) => current.map((s) => s.id === skill.id ? {
                 ...s,
                 enabled: skill.enabled,
                 active: skill.active,
             } : s));
-            toast.error(`Failed to ${enable ? "enable" : "disable"} ${skill.name}`);
+            const failure = describeFailure(err, skill.name, `Failed to ${enable ? "enable" : "disable"} ${skill.name}`);
+            setNote(skill.id, { tone: "bad", title: `Could not ${enable ? "enable" : "disable"} ${skill.name}`, detail: failure.detail || failure.title });
+            toast.error(`Could not ${enable ? "enable" : "disable"} ${skill.name}. ${failure.toast}`);
+        } finally {
+            setTogglingIds((current) => current.filter((id) => id !== skill.id));
         }
     };
 
     const installDeps = async (skill: Skill) => {
         setInstallingSkillId(skill.id);
+        setNote(skill.id, null);
         try {
             const res = await axios.post(`${API_BASE_URL}/api/skills/${skill.id}/deps`);
             const status = res.data?.status;
@@ -93,200 +151,172 @@ export function SkillsPage() {
                 toast.success(`Dependencies installed for ${skill.name}`);
             } else if (status === "partial") {
                 toast.warning(`Some dependencies for ${skill.name} are still missing`);
+                setNote(skill.id, { tone: "warn", title: "Some dependencies are still missing", detail: res.data?.message || "Check what is left below, then install it manually." });
             } else if (status === "error") {
-                toast.error(res.data?.message || `Failed to install dependencies for ${skill.name}`);
+                const message = res.data?.message || `Failed to install dependencies for ${skill.name}`;
+                toast.error(message);
+                setNote(skill.id, { tone: "bad", title: "The install did not finish", detail: message });
             } else {
                 throw new Error(res.data?.message || "Failed to install dependencies");
             }
             await loadSkills();
         } catch (error: unknown) {
             console.error("Failed to install skill deps:", error);
-            toast.error(getApiErrorMessage(error, `Failed to install dependencies for ${skill.name}`));
+            const failure = describeFailure(error, skill.name, `Failed to install dependencies for ${skill.name}`);
+            setNote(skill.id, { tone: "bad", title: "Could not install dependencies", detail: failure.detail || failure.title });
+            toast.error(failure.toast);
         } finally {
             setInstallingSkillId(null);
         }
     };
 
+    const query = search.trim().toLowerCase();
     const filteredSkills = skills.filter(skill =>
-        skill.name.toLowerCase().includes(search.toLowerCase()) ||
-        skill.description.toLowerCase().includes(search.toLowerCase())
+        skill.name.toLowerCase().includes(query) ||
+        (skill.description || "").toLowerCase().includes(query)
     );
+    const enabledCount = skills.filter((skill) => skill.enabled).length;
 
-    const formatMissingDeps = (skill: Skill) => {
-        const missing = skill.missing_deps || {};
-        const python = missing.python || [];
-        const node = missing.node || [];
-        const binaries = missing.binaries || [];
-        const parts: string[] = [];
-        if (python.length) parts.push(`python: ${python.join(", ")}`);
-        if (node.length) parts.push(`node: ${node.join(", ")}`);
-        if (binaries.length) parts.push(`binaries: ${binaries.join(", ")}`);
-        return parts.join(" | ");
-    };
-
-    const formatRequiredDeps = (skill: Skill) => {
-        const required = skill.required_deps || {};
-        const python = required.python || [];
-        const node = required.node || [];
-        const binaries = required.binaries || [];
-        const parts: string[] = [];
-        if (python.length) parts.push(`python: ${python.join(", ")}`);
-        if (node.length) parts.push(`node: ${node.join(", ")}`);
-        if (binaries.length) parts.push(`binaries: ${binaries.join(", ")}`);
-        return parts.join(" | ");
-    };
-
-    const SkillCard = ({ skill }: { skill: Skill }) => {
+    const renderRow = (skill: Skill) => {
         const missingDeps = skill.deps_ok === false;
-        const missingSummary = missingDeps ? formatMissingDeps(skill) : "";
+        const missingSummary = missingDeps ? formatDeps(skill.missing_deps) : "";
         const disableEnable = missingDeps && !skill.enabled;
-        const requiredSummary = formatRequiredDeps(skill);
-        const hasRequired = !!requiredSummary;
-        const isConfigured = skill.enabled;
-        const isRunnable = skill.active;
+        const requiredSummary = formatDeps(skill.required_deps);
+        const note = notes[skill.id];
+        const installing = installingSkillId === skill.id;
 
         return (
-        <Card className="border-border hover:border-primary/30 transition-colors group">
-            <CardHeader className="pb-3">
-                <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                        <div className={`p-2 rounded-lg transition-colors ${
-                            skill.active 
-                                ? 'bg-primary/10 text-primary'
-                                : 'bg-muted text-muted-foreground'
-                        }`}>
-                            <Zap className="h-5 w-5" />
-                        </div>
-                        <div>
-                            <CardTitle className="text-base flex items-center gap-2">
-                                {skill.name}
-                                {missingDeps && (
-                                    <Badge
-                                        variant="destructive"
-                                        className="text-[10px] h-5"
-                                        title={missingSummary}
-                                    >
-                                        MISSING DEPS
-                                    </Badge>
-                                )}
-                            </CardTitle>
-                        </div>
+            <li key={skill.id} className="flex items-start gap-3 py-4">
+                <span className={cn(
+                    "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors",
+                    skill.active ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
+                )}>
+                    <Zap className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <h3 className="break-all text-sm font-semibold text-foreground">{skill.name}</h3>
+                        {skill.active ? (
+                            <StatusPill tone="ok">Active</StatusPill>
+                        ) : skill.enabled ? (
+                            <StatusPill tone="warn">Needs dependencies</StatusPill>
+                        ) : (
+                            <StatusPill tone="muted">Disabled</StatusPill>
+                        )}
+                        <span className="font-mono text-[11px] text-muted-foreground">
+                            {skill.source_kind || 'local'}{skill.editable ? ' · editable' : ' · read-only'}
+                        </span>
                     </div>
-                    <Switch
-                        checked={skill.enabled}
-                        disabled={disableEnable}
-                        onCheckedChange={(checked) => toggleSkill(skill, checked)}
-                    />
-                </div>
-            </CardHeader>
-            <CardContent>
-                <CardDescription className="line-clamp-3 text-sm min-h-[60px]">
-                    {skill.description}
-                </CardDescription>
-                {hasRequired && (
-                    <div className="mt-3 text-[11px] text-muted-foreground font-mono bg-muted/40 rounded-lg px-2.5 py-2 border border-border/60">
-                        <span className="uppercase tracking-wide text-[9px] text-muted-foreground/70 block mb-1">Dependencies</span>
-                        <div className="whitespace-pre-wrap break-words">{requiredSummary}</div>
-                    </div>
-                )}
-                {missingDeps && (
-                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
-                        <div className="min-w-0 text-[11px] text-red-200/90">
-                            <div className="font-medium text-red-300">Dependency install required</div>
-                            <div className="break-words text-red-200/70">{missingSummary}</div>
+                    {skill.description && (
+                        <p className="line-clamp-3 text-sm leading-relaxed text-muted-foreground">{skill.description}</p>
+                    )}
+                    {requiredSummary && (
+                        <p className="break-words font-mono text-[11px] text-muted-foreground/80">
+                            <span className="mr-1.5 uppercase tracking-wide">Requires</span>
+                            {requiredSummary}
+                        </p>
+                    )}
+                    {missingDeps && (
+                        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-l-2 border-red-500/60 py-0.5 pl-3">
+                            <div className="min-w-0 text-xs">
+                                <p className="font-medium text-foreground">Dependencies are missing</p>
+                                <p className="break-words font-mono text-[11px] text-muted-foreground">{missingSummary}</p>
+                            </div>
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 shrink-0 gap-1.5 text-xs"
+                                disabled={installing}
+                                onClick={() => installDeps(skill)}
+                            >
+                                {installing && <Loader2 className="h-3 w-3 animate-spin" />}
+                                {installing ? "Installing..." : "Install Deps"}
+                            </Button>
                         </div>
-                        <Button
-                            size="sm"
-                            variant="outline"
-                            className="shrink-0"
-                            disabled={installingSkillId === skill.id}
-                            onClick={() => installDeps(skill)}
+                    )}
+                    {note && (
+                        <p
+                            role={note.tone === "bad" ? "alert" : "status"}
+                            className={cn("flex items-start gap-1.5 text-xs", note.tone === "bad" ? "text-red-500" : "text-amber-500")}
                         >
-                            {installingSkillId === skill.id ? "Installing..." : "Install Deps"}
-                        </Button>
-                    </div>
-                )}
-                <div className="mt-4 pt-4 border-t border-border flex items-center justify-between text-xs text-muted-foreground font-mono">
-                    <span className="truncate max-w-[150px] opacity-70">
-                        {skill.source_kind || 'local'}{skill.editable ? ' · editable' : ' · read-only'}
-                    </span>
-                    {isRunnable ? (
-                        <span className="flex items-center gap-1 text-primary">
-                            <CheckCircle2 className="h-3 w-3" /> Enabled
-                        </span>
-                    ) : isConfigured ? (
-                        <span className="flex items-center gap-1 text-amber-400">
-                            <AlertCircle className="h-3 w-3" /> Needs Deps
-                        </span>
-                    ) : (
-                        <span className="flex items-center gap-1">
-                            <AlertCircle className="h-3 w-3" /> Disabled
-                        </span>
+                            <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                            <span className="min-w-0 break-words">
+                                <span className="font-medium">{note.title}.</span>
+                                {note.detail && note.detail !== note.title ? <span className="text-muted-foreground"> {note.detail}</span> : null}
+                            </span>
+                        </p>
                     )}
                 </div>
-            </CardContent>
-        </Card>
-    );
+                <Switch
+                    aria-label={`Enable ${skill.name}`}
+                    className="mt-1 shrink-0"
+                    checked={skill.enabled}
+                    disabled={disableEnable || togglingIds.includes(skill.id)}
+                    onCheckedChange={(checked) => toggleSkill(skill, checked)}
+                />
+            </li>
+        );
     };
 
-    return (
-        <div className="h-full overflow-y-auto p-6 md:p-8 bg-background/50">
-            <div className="max-w-6xl mx-auto space-y-10">
-                <header className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                    <div>
-                        <h1 className="text-2xl font-bold flex items-center gap-2">
-                            <Box className="h-7 w-7 text-primary" />
-                            Skills Library
-                        </h1>
-                        <p className="text-muted-foreground mt-1">
-                            Manage LimeBot's core capabilities and ClawHub extensions.
-                        </p>
-                    </div>
-                    <div className="relative w-full md:w-72">
-                        <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+    const refreshButton = (
+        <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => void refresh()} disabled={loading || refreshing}>
+            <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+            <span className="hidden sm:inline">Refresh</span>
+        </Button>
+    );
+
+    let body;
+    if (loading) {
+        body = <LoadingRows rows={5} className="mt-6" label="Loading skills" />;
+    } else if (loadError && skills.length === 0) {
+        body = <LoadFailed error={loadError} subject="your skills" onRetry={retryLoad} />;
+    } else if (skills.length === 0) {
+        body = (
+            <EmptyState
+                icon={Box}
+                title="No skills installed yet"
+                description={<>Skills add capabilities such as documents, scraping or chat integrations. Install one from the command line with <span className="font-mono">npm run lime-bot skill install &lt;url&gt;</span>.</>}
+                action={<Button variant="outline" size="sm" className="gap-1.5" onClick={() => void refresh()}><RefreshCw className="h-3.5 w-3.5" /> Check again</Button>}
+            />
+        );
+    } else {
+        body = (
+            <div className="mt-4">
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pb-3">
+                    <div className="relative w-full sm:w-72">
+                        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                         <Input
+                            aria-label="Search skills"
                             placeholder="Search skills..."
-                            className="pl-9 bg-background/50"
+                            className="h-9 pl-9"
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
                         />
                     </div>
-                </header>
-
-                {loading ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {[1, 2, 3, 4, 5, 6].map(i => (
-                            <div key={i} className="h-48 rounded-xl bg-muted/50 animate-pulse" />
-                        ))}
-                    </div>
+                    <p className="text-xs text-muted-foreground">
+                        {skills.length} installed · {enabledCount} enabled
+                    </p>
+                </div>
+                {filteredSkills.length > 0 ? (
+                    <ul className="divide-y divide-border/50 border-y border-border/50">
+                        {filteredSkills.map(renderRow)}
+                    </ul>
                 ) : (
-                    <div className="space-y-10">
-                        {filteredSkills.length > 0 && (
-                            <div className="space-y-4">
-                                <div className="flex items-center gap-2 pb-2 border-b border-border/50">
-                                    <Zap className="h-5 w-5 text-primary" />
-                                    <h2 className="text-lg font-semibold">Skills</h2>
-                                    <Badge variant="outline" className="ml-2">{filteredSkills.length}</Badge>
-                                </div>
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                    {filteredSkills.map(skill => (
-                                        <SkillCard key={skill.id} skill={skill} />
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        {filteredSkills.length === 0 && (
-                            <div className="col-span-full py-12 text-center text-muted-foreground">
-                                <div className="inline-flex items-center justify-center p-4 rounded-full bg-muted mb-4">
-                                    <Search className="h-6 w-6 opacity-50" />
-                                </div>
-                                <p>No skills found matching "{search}"</p>
-                            </div>
-                        )}
-                    </div>
+                    <EmptyState icon={Search} title={`No skills match "${search}"`} description="Try a different word, or clear the search to see everything installed." />
                 )}
             </div>
-        </div>
+        );
+    }
+
+    return (
+        <SettingsPage
+            title="Skills"
+            icon={Box}
+            description="Manage LimeBot's core capabilities and ClawHub extensions. Changing a skill restarts the backend briefly."
+            width="max-w-5xl"
+            actions={refreshButton}
+        >
+            {body}
+        </SettingsPage>
     );
 }
